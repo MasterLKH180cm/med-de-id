@@ -4,7 +4,7 @@
 
 **Goal:** Build the first CSV/XLSX tabular adapter path with schema inference, field-level PHI review decisions, vault-backed reversible encoding, and honest batch summaries for partial failures.
 
-**Architecture:** This slice adds a focused `mdid-adapters` crate with a tabular module that normalizes CSV/XLSX inputs into one shared in-memory representation. The application layer composes that adapter with `mdid-vault` so repeated PHI values reuse the same mapping record/token, approved cells are encoded, review-required cells stay explicit, and the run returns batch summaries instead of pretending every row succeeded.
+**Architecture:** This slice adds a focused `mdid-adapters` crate with a tabular module that normalizes CSV/XLSX inputs into one shared in-memory representation. The application layer composes that adapter with `mdid-vault` so repeated PHI values reuse the same token while each cell keeps its own scoped mapping record, approved cells are encoded, review-required cells stay explicit, and the run returns batch summaries instead of pretending every row succeeded.
 
 **Tech Stack:** Rust workspace, Cargo, Serde, Chrono, UUID, thiserror, csv, calamine, rust_xlsxwriter, tempfile.
 
@@ -15,7 +15,7 @@
 This plan covers **Slice 3 — CSV/Excel deep support** only. It does not implement DICOM, PDF/OCR, or image/video/FCS adapters. To keep scope truthful and shippable, the slice lands tabular support in five narrow tasks:
 
 1. tabular workflow/domain vocabulary
-2. vault token-reuse support for repeated PHI values
+2. vault token-reuse support for repeated PHI values while preserving per-cell scope provenance
 3. CSV adapter + schema inference
 4. application orchestration + batch summary flow
 5. XLSX parity on the same tabular engine
@@ -244,7 +244,7 @@ git add crates/mdid-domain/src/lib.rs crates/mdid-domain/tests/tabular_workflow_
 git commit -m "feat: add tabular workflow domain models"
 ```
 
-### Task 2: Reuse existing vault mappings for repeated PHI values
+### Task 2: Reuse existing vault tokens for repeated PHI values while preserving per-scope records
 
 **Files:**
 - Modify: `crates/mdid-vault/src/lib.rs`
@@ -256,15 +256,16 @@ Add to `crates/mdid-vault/tests/local_vault_store.rs`:
 
 ```rust
 #[test]
-fn ensure_mapping_reuses_existing_record_for_same_phi_type_and_value() {
+fn ensure_mapping_reuses_existing_record_for_same_scope_phi_type_and_value() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("vault.mdid");
     let mut vault = LocalVaultStore::create(&path, "correct horse battery staple").unwrap();
 
+    let first_scope = sample_scope("rows/1/columns/0/patient_id");
     let first = vault
         .ensure_mapping(
             NewMappingRecord {
-                scope: sample_scope("patient_id"),
+                scope: first_scope.clone(),
                 phi_type: "patient_id".into(),
                 original_value: "MRN-001".into(),
             },
@@ -274,7 +275,7 @@ fn ensure_mapping_reuses_existing_record_for_same_phi_type_and_value() {
     let second = vault
         .ensure_mapping(
             NewMappingRecord {
-                scope: sample_scope("patient_id"),
+                scope: first_scope,
                 phi_type: "patient_id".into(),
                 original_value: "MRN-001".into(),
             },
@@ -283,8 +284,42 @@ fn ensure_mapping_reuses_existing_record_for_same_phi_type_and_value() {
         .unwrap();
 
     assert_eq!(first.id, second.id);
+    assert_eq!(first.scope, second.scope);
     assert_eq!(first.token, second.token);
     assert_eq!(vault.audit_events().len(), 1);
+}
+
+#[test]
+fn ensure_mapping_reuses_token_but_creates_a_new_record_for_a_new_scope() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("vault.mdid");
+    let mut vault = LocalVaultStore::create(&path, "correct horse battery staple").unwrap();
+
+    let first = vault
+        .ensure_mapping(
+            NewMappingRecord {
+                scope: sample_scope("rows/1/columns/0/patient_id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let second = vault
+        .ensure_mapping(
+            NewMappingRecord {
+                scope: sample_scope("rows/2/columns/0/patient_id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    assert_ne!(first.id, second.id);
+    assert_ne!(first.scope, second.scope);
+    assert_eq!(first.token, second.token);
+    assert_eq!(vault.audit_events().len(), 2);
 }
 ```
 
@@ -294,14 +329,15 @@ Run:
 
 ```bash
 source "$HOME/.cargo/env"
-cargo test -p mdid-vault --test local_vault_store ensure_mapping_reuses_existing_record_for_same_phi_type_and_value -- --exact
+cargo test -p mdid-vault --test local_vault_store ensure_mapping_reuses_existing_record_for_same_scope_phi_type_and_value -- --exact
+cargo test -p mdid-vault --test local_vault_store ensure_mapping_reuses_token_but_creates_a_new_record_for_a_new_scope -- --exact
 ```
 
-Expected: FAIL because `ensure_mapping` does not exist yet.
+Expected: the new-scope test FAILS because the first implementation incorrectly returns the first scoped record instead of creating a new record with the reused token.
 
 - [ ] **Step 3: Write the minimal vault implementation**
 
-Add to `crates/mdid-vault/src/lib.rs`:
+Update `crates/mdid-vault/src/lib.rs` so `ensure_mapping` first reuses an exact existing `(scope, phi_type, original_value)` record, then reuses only the token for later scopes with the same `(phi_type, original_value)`:
 
 ```rust
 impl LocalVaultStore {
@@ -310,17 +346,72 @@ impl LocalVaultStore {
         record: NewMappingRecord,
         actor: SurfaceKind,
     ) -> Result<MappingRecord, VaultError> {
-        if let Some(existing) = self.find_mapping_by_value(&record.phi_type, &record.original_value) {
+        if let Some(existing) =
+            self.find_mapping(&record.scope, &record.phi_type, &record.original_value)
+        {
             return Ok(existing);
         }
 
-        self.store_mapping(record, actor)
+        let reusable_token = self
+            .find_mapping_by_value(&record.phi_type, &record.original_value)
+            .map(|record| record.token);
+
+        self.store_mapping_with_token(record, actor, reusable_token)
+    }
+
+    fn store_mapping_with_token(
+        &mut self,
+        record: NewMappingRecord,
+        actor: SurfaceKind,
+        reusable_token: Option<String>,
+    ) -> Result<MappingRecord, VaultError> {
+        let stored = MappingRecord {
+            id: Uuid::new_v4(),
+            scope: record.scope,
+            phi_type: record.phi_type,
+            token: reusable_token.unwrap_or_else(|| format!("tok-{}", Uuid::new_v4().simple())),
+            original_value: record.original_value,
+            created_at: Utc::now(),
+        };
+
+        let mut staged_state = self.state.clone();
+        staged_state.records.push(stored.clone());
+        staged_state.audit_events.push(AuditEvent {
+            id: Uuid::new_v4(),
+            kind: AuditEventKind::Encode,
+            actor,
+            detail: format!("encoded mapping {}", stored.scope.scope_key()),
+            recorded_at: Utc::now(),
+        });
+        self.flush_state(&staged_state)?;
+        self.state = staged_state;
+
+        Ok(stored)
+    }
+
+    fn find_mapping(
+        &self,
+        scope: &MappingScope,
+        phi_type: &str,
+        original_value: &str,
+    ) -> Option<MappingRecord> {
+        self.state
+            .records
+            .iter()
+            .find(|record| {
+                &record.scope == scope
+                    && record.phi_type == phi_type
+                    && record.original_value == original_value
+            })
+            .cloned()
     }
 
     fn find_mapping_by_value(&self, phi_type: &str, original_value: &str) -> Option<MappingRecord> {
-        self.state.records.iter().find(|record| {
-            record.phi_type == phi_type && record.original_value == original_value
-        }).cloned()
+        self.state
+            .records
+            .iter()
+            .find(|record| record.phi_type == phi_type && record.original_value == original_value)
+            .cloned()
     }
 }
 ```
@@ -331,7 +422,8 @@ Run:
 
 ```bash
 source "$HOME/.cargo/env"
-cargo test -p mdid-vault --test local_vault_store ensure_mapping_reuses_existing_record_for_same_phi_type_and_value -- --exact
+cargo test -p mdid-vault --test local_vault_store ensure_mapping_reuses_existing_record_for_same_scope_phi_type_and_value -- --exact
+cargo test -p mdid-vault --test local_vault_store ensure_mapping_reuses_token_but_creates_a_new_record_for_a_new_scope -- --exact
 cargo test -p mdid-vault
 ```
 
@@ -341,7 +433,7 @@ Expected: PASS.
 
 ```bash
 git add crates/mdid-vault/src/lib.rs crates/mdid-vault/tests/local_vault_store.rs
-git commit -m "feat: reuse vault mappings for repeated phi values"
+git commit -m "fix: preserve mapping scope when reusing vault tokens"
 ```
 
 ### Task 3: Add the `mdid-adapters` tabular CSV adapter and schema inference
@@ -773,7 +865,7 @@ git commit -m "feat: add xlsx tabular adapter parity"
 ### Spec coverage
 - schema inference → Task 3
 - field-level PHI policies → Tasks 3 and 4
-- consistent tokenization across rows/files → Task 2, then consumed in Task 4
+- consistent tokenization across rows/files with per-scope provenance → Task 2, then consumed in Task 4
 - review/override path → Tasks 1 and 4
 - decode compatibility via vault-backed mappings → Task 2 and Task 4
 - batch summaries and partial-failure reporting → Tasks 1 and 4
