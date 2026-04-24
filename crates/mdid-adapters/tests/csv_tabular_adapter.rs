@@ -30,3 +30,33 @@ fn field_policy_helpers_assign_expected_actions() {
     assert_eq!(encode.action, FieldPolicyAction::Encode);
     assert_eq!(review.action, FieldPolicyAction::Review);
 }
+
+#[test]
+fn extracted_tabular_data_debug_redacts_raw_rows() {
+    let csv_input = "patient_id,patient_name\nMRN-001,Alice Smith\n";
+    let adapter = CsvTabularAdapter::new(vec![
+        FieldPolicy::encode("patient_id", "patient_id"),
+        FieldPolicy::review("patient_name", "patient_name"),
+    ]);
+
+    let extracted = adapter.extract(csv_input.as_bytes()).unwrap();
+    let debug = format!("{extracted:?}");
+
+    assert!(debug.contains("ExtractedTabularData"));
+    assert!(debug.contains("rows_len"));
+    assert!(!debug.contains("MRN-001"));
+    assert!(!debug.contains("Alice Smith"));
+}
+
+#[test]
+fn whitespace_only_cells_do_not_create_phi_candidates() {
+    let csv_input = "patient_id,patient_name,notes\n   ,\t  ,kept\n";
+    let adapter = CsvTabularAdapter::new(vec![
+        FieldPolicy::encode("patient_id", "patient_id"),
+        FieldPolicy::review("patient_name", "patient_name"),
+    ]);
+
+    let extracted = adapter.extract(csv_input.as_bytes()).unwrap();
+
+    assert!(extracted.candidates.is_empty());
+}

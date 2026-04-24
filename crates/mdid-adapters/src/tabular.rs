@@ -39,12 +39,23 @@ impl FieldPolicy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExtractedTabularData {
     pub format: TabularFormat,
     pub columns: Vec<TabularColumn>,
     pub rows: Vec<Vec<String>>,
     pub candidates: Vec<PhiCandidate>,
+}
+
+impl std::fmt::Debug for ExtractedTabularData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtractedTabularData")
+            .field("format", &self.format)
+            .field("columns", &self.columns)
+            .field("rows_len", &self.rows.len())
+            .field("candidates", &self.candidates)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +95,7 @@ impl CsvTabularAdapter {
         let mut candidates = Vec::new();
         for (row_index, row) in rows.iter().enumerate() {
             for (column_index, value) in row.iter().enumerate() {
-                if value.is_empty() {
+                if is_blank(value) {
                     continue;
                 }
 
@@ -135,13 +146,12 @@ fn infer_kind(rows: &[Vec<String>], column_index: usize) -> &'static str {
             continue;
         };
 
-        let value = value.trim();
-        if value.is_empty() {
+        if is_blank(value) {
             continue;
         }
 
         saw_value = true;
-        if value.parse::<i64>().is_err() {
+        if value.trim().parse::<i64>().is_err() {
             return "string";
         }
     }
@@ -151,4 +161,8 @@ fn infer_kind(rows: &[Vec<String>], column_index: usize) -> &'static str {
     } else {
         "string"
     }
+}
+
+fn is_blank(value: &str) -> bool {
+    value.trim().is_empty()
 }
