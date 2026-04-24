@@ -42,12 +42,9 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 ## Architecture overview
 
 ```text
-shared Rust core
+shared Rust workspace today
 ├─ mdid-domain
-├─ mdid-policy
-├─ mdid-detection
 ├─ mdid-vault
-├─ mdid-adapters
 ├─ mdid-application
 ├─ mdid-runtime
 ├─ mdid-cli
@@ -55,14 +52,32 @@ shared Rust core
 └─ mdid-desktop
 ```
 
+Planned follow-on core crates from the design, not yet implemented in this repository:
+
+- `mdid-policy`
+- `mdid-detection`
+- `mdid-adapters`
+
 ## Current repository status
 
-This repository is currently in planning/foundation mode.
+This repository currently contains the Slice 1 workspace foundation plus the Slice 2 vault MVP work implemented so far.
+
+Implemented so far:
+
+- Shared domain models for pipeline, review, vault mapping, decode requests, and audit events
+- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, and portable subset export
+- Initial `mdid-application`, `mdid-runtime`, `mdid-cli`, `mdid-browser`, and `mdid-desktop` scaffolding from the foundation slice
+
+Planned next from the design:
+
+- Additional policy, detection, and adapter crates
+- Deeper application orchestration and surface behavior beyond the current scaffolds
 
 Available docs:
 
 - Design spec: `docs/superpowers/specs/2026-04-25-med-de-id-design.md`
 - Initial implementation plan: `docs/superpowers/plans/2026-04-25-med-de-id-foundation-implementation-plan.md`
+- Slice 2 vault/decode MVP plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-2-vault-encode-decode-mvp.md`
 
 ## Roadmap shape
 
@@ -78,4 +93,4 @@ Available docs:
 
 ## License
 
-License not set yet.
+Workspace metadata is currently marked `UNLICENSED`.

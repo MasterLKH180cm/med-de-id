@@ -83,6 +83,7 @@ pub struct PipelineRun {
 pub enum AuditEventKind {
     Encode,
     Decode,
+    Export,
 }
 
 impl AuditEventKind {
@@ -90,11 +91,12 @@ impl AuditEventKind {
         match self {
             AuditEventKind::Encode => "encode",
             AuditEventKind::Decode => "decode",
+            AuditEventKind::Export => "export",
         }
     }
 
     pub fn is_high_risk(&self) -> bool {
-        matches!(self, AuditEventKind::Decode)
+        matches!(self, AuditEventKind::Decode | AuditEventKind::Export)
     }
 }
 
@@ -119,7 +121,7 @@ impl MappingScope {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MappingRecord {
     pub id: Uuid,
     pub scope: MappingScope,
@@ -127,6 +129,19 @@ pub struct MappingRecord {
     pub token: String,
     pub original_value: String,
     pub created_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for MappingRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MappingRecord")
+            .field("id", &self.id)
+            .field("scope", &self.scope)
+            .field("phi_type", &self.phi_type)
+            .field("token", &self.token)
+            .field("original_value", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,12 +237,23 @@ pub enum DecodeRequestError {
     MissingJustification,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DecodedValue {
     pub record_id: Uuid,
     pub token: String,
     pub original_value: String,
     pub scope: MappingScope,
+}
+
+impl std::fmt::Debug for DecodedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedValue")
+            .field("record_id", &self.record_id)
+            .field("token", &self.token)
+            .field("original_value", &"<redacted>")
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
