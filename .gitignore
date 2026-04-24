@@ -1,0 +1,62 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Cargo artifacts
+/.cargo/
+
+# Browser / WASM build outputs
+/dist/
+/pkg/
+/browser-dist/
+/site/
+
+# Desktop / runtime local data
+/runtime-data/
+/vault-data/
+/local-data/
+/tmp/
+*.log
+*.pid
+*.sock
+
+# Embedded databases / vault state
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.redb
+*.rdb
+*.wal
+*.shm
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Coverage / test output
+/coverage/
+/.coverage
+/htmlcov/
+/junit.xml
+/nextest/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node tooling if introduced for auxiliary scripts
+/node_modules/
+
+# Local browser tool caches
+/.leptos/
+/trunk/
