@@ -347,7 +347,7 @@ impl LocalVaultStore {
         actor: SurfaceKind,
     ) -> Result<MappingRecord, VaultError> {
         if let Some(existing) =
-            self.find_mapping(&record.scope, &record.phi_type, &record.original_value)
+            self.find_exact_mapping(&record.scope, &record.phi_type, &record.original_value)
         {
             return Ok(existing);
         }
@@ -356,20 +356,20 @@ impl LocalVaultStore {
             .find_mapping_by_value(&record.phi_type, &record.original_value)
             .map(|record| record.token);
 
-        self.store_mapping_with_token(record, actor, reusable_token)
+        self.store_mapping_with_token(record, reusable_token.unwrap_or_else(|| format!("tok-{}", Uuid::new_v4().simple())), actor)
     }
 
     fn store_mapping_with_token(
         &mut self,
         record: NewMappingRecord,
+        token: String,
         actor: SurfaceKind,
-        reusable_token: Option<String>,
     ) -> Result<MappingRecord, VaultError> {
         let stored = MappingRecord {
             id: Uuid::new_v4(),
             scope: record.scope,
             phi_type: record.phi_type,
-            token: reusable_token.unwrap_or_else(|| format!("tok-{}", Uuid::new_v4().simple())),
+            token,
             original_value: record.original_value,
             created_at: Utc::now(),
         };
@@ -389,7 +389,7 @@ impl LocalVaultStore {
         Ok(stored)
     }
 
-    fn find_mapping(
+    fn find_exact_mapping(
         &self,
         scope: &MappingScope,
         phi_type: &str,
