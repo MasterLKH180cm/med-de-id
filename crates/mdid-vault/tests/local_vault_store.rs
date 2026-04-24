@@ -58,6 +58,73 @@ fn local_vault_store_encrypts_disk_state_and_can_decode_a_selected_mapping() {
 }
 
 #[test]
+fn ensure_mapping_reuses_existing_record_for_same_scope_phi_type_and_value() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("vault.mdid");
+    let mut vault = LocalVaultStore::create(&path, "correct horse battery staple").unwrap();
+
+    let first_scope = sample_scope("rows/1/columns/0/patient_id");
+    let first = vault
+        .ensure_mapping(
+            NewMappingRecord {
+                scope: first_scope.clone(),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let second = vault
+        .ensure_mapping(
+            NewMappingRecord {
+                scope: first_scope,
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    assert_eq!(first.id, second.id);
+    assert_eq!(first.scope, second.scope);
+    assert_eq!(first.token, second.token);
+    assert_eq!(vault.audit_events().len(), 1);
+}
+
+#[test]
+fn ensure_mapping_reuses_token_but_creates_a_new_record_for_a_new_scope() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("vault.mdid");
+    let mut vault = LocalVaultStore::create(&path, "correct horse battery staple").unwrap();
+
+    let first = vault
+        .ensure_mapping(
+            NewMappingRecord {
+                scope: sample_scope("rows/1/columns/0/patient_id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let second = vault
+        .ensure_mapping(
+            NewMappingRecord {
+                scope: sample_scope("rows/2/columns/0/patient_id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    assert_ne!(first.id, second.id);
+    assert_ne!(first.scope, second.scope);
+    assert_eq!(first.token, second.token);
+    assert_eq!(vault.audit_events().len(), 2);
+}
+
+#[test]
 fn local_vault_store_debug_redacts_passphrase() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("vault.mdid");

@@ -162,28 +162,26 @@ impl LocalVaultStore {
         record: NewMappingRecord,
         actor: SurfaceKind,
     ) -> Result<MappingRecord, VaultError> {
-        let stored = MappingRecord {
-            id: Uuid::new_v4(),
-            scope: record.scope,
-            phi_type: record.phi_type,
-            token: format!("tok-{}", Uuid::new_v4().simple()),
-            original_value: record.original_value,
-            created_at: Utc::now(),
-        };
+        self.store_mapping_with_token(record, format!("tok-{}", Uuid::new_v4().simple()), actor)
+    }
 
-        let mut staged_state = self.state.clone();
-        staged_state.records.push(stored.clone());
-        staged_state.audit_events.push(AuditEvent {
-            id: Uuid::new_v4(),
-            kind: AuditEventKind::Encode,
-            actor,
-            detail: format!("encoded mapping {}", stored.scope.scope_key()),
-            recorded_at: Utc::now(),
-        });
-        self.flush_state(&staged_state)?;
-        self.state = staged_state;
+    pub fn ensure_mapping(
+        &mut self,
+        record: NewMappingRecord,
+        actor: SurfaceKind,
+    ) -> Result<MappingRecord, VaultError> {
+        if let Some(existing) =
+            self.find_exact_mapping(&record.scope, &record.phi_type, &record.original_value)
+        {
+            return Ok(existing);
+        }
 
-        Ok(stored)
+        if let Some(existing) = self.find_mapping_by_value(&record.phi_type, &record.original_value)
+        {
+            return self.store_mapping_with_token(record, existing.token, actor);
+        }
+
+        self.store_mapping(record, actor)
     }
 
     pub fn decode(&mut self, request: DecodeRequest) -> Result<DecodeResult, VaultError> {
@@ -301,6 +299,61 @@ impl LocalVaultStore {
 
     pub fn audit_events(&self) -> &[AuditEvent] {
         &self.state.audit_events
+    }
+
+    fn store_mapping_with_token(
+        &mut self,
+        record: NewMappingRecord,
+        token: String,
+        actor: SurfaceKind,
+    ) -> Result<MappingRecord, VaultError> {
+        let stored = MappingRecord {
+            id: Uuid::new_v4(),
+            scope: record.scope,
+            phi_type: record.phi_type,
+            token,
+            original_value: record.original_value,
+            created_at: Utc::now(),
+        };
+
+        let mut staged_state = self.state.clone();
+        staged_state.records.push(stored.clone());
+        staged_state.audit_events.push(AuditEvent {
+            id: Uuid::new_v4(),
+            kind: AuditEventKind::Encode,
+            actor,
+            detail: format!("encoded mapping {}", stored.scope.scope_key()),
+            recorded_at: Utc::now(),
+        });
+        self.flush_state(&staged_state)?;
+        self.state = staged_state;
+
+        Ok(stored)
+    }
+
+    fn find_exact_mapping(
+        &self,
+        scope: &MappingScope,
+        phi_type: &str,
+        original_value: &str,
+    ) -> Option<MappingRecord> {
+        self.state
+            .records
+            .iter()
+            .find(|record| {
+                record.scope == *scope
+                    && record.phi_type == phi_type
+                    && record.original_value == original_value
+            })
+            .cloned()
+    }
+
+    fn find_mapping_by_value(&self, phi_type: &str, original_value: &str) -> Option<MappingRecord> {
+        self.state
+            .records
+            .iter()
+            .find(|record| record.phi_type == phi_type && record.original_value == original_value)
+            .cloned()
     }
 
     fn flush(&self) -> Result<(), VaultError> {
