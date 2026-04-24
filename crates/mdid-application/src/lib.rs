@@ -6,6 +6,7 @@ use mdid_domain::{
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
@@ -70,11 +71,21 @@ impl ApplicationService {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TabularDeidentificationOutput {
     pub csv: String,
     pub summary: BatchSummary,
     pub review_queue: Vec<PhiCandidate>,
+}
+
+impl fmt::Debug for TabularDeidentificationOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TabularDeidentificationOutput")
+            .field("csv", &"[REDACTED]")
+            .field("summary", &self.summary)
+            .field("review_queue_len", &self.review_queue.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Default)]
@@ -111,6 +122,10 @@ impl TabularDeidentificationService {
         let mut failed_rows = BTreeSet::new();
 
         for candidate in extracted.candidates {
+            if candidate.cell.row_index >= summary.total_rows {
+                continue;
+            }
+
             if candidate.decision.requires_human_review() {
                 summary.review_required_cells += 1;
                 review_queue.push(candidate);
