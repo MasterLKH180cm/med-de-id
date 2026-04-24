@@ -4,8 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+anyhow.workspace = true
+mdid-application = { path = "../mdid-application" }
+mdid-domain = { path = "../mdid-domain" }
+
 [[bin]]
 name = "mdid-cli"
 path = "src/main.rs"
-
-[dependencies]
