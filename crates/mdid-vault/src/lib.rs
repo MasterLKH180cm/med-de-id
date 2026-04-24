@@ -186,6 +186,19 @@ impl LocalVaultStore {
         Ok(stored)
     }
 
+    pub fn ensure_mapping(
+        &mut self,
+        record: NewMappingRecord,
+        actor: SurfaceKind,
+    ) -> Result<MappingRecord, VaultError> {
+        if let Some(existing) = self.find_mapping_by_value(&record.phi_type, &record.original_value)
+        {
+            return Ok(existing);
+        }
+
+        self.store_mapping(record, actor)
+    }
+
     pub fn decode(&mut self, request: DecodeRequest) -> Result<DecodeResult, VaultError> {
         let values = request
             .record_ids()
@@ -301,6 +314,14 @@ impl LocalVaultStore {
 
     pub fn audit_events(&self) -> &[AuditEvent] {
         &self.state.audit_events
+    }
+
+    fn find_mapping_by_value(&self, phi_type: &str, original_value: &str) -> Option<MappingRecord> {
+        self.state
+            .records
+            .iter()
+            .find(|record| record.phi_type == phi_type && record.original_value == original_value)
+            .cloned()
     }
 
     fn flush(&self) -> Result<(), VaultError> {
