@@ -6,6 +6,12 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+csv.workspace = true
+mdid-adapters = { path = "../mdid-adapters" }
 mdid-domain = { path = "../mdid-domain" }
+mdid-vault = { path = "../mdid-vault" }
 thiserror.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
