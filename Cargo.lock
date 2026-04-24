@@ -2700,7 +2700,11 @@ name = "mdid-application"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "csv",
+ "mdid-adapters",
  "mdid-domain",
+ "mdid-vault",
+ "tempfile",
  "thiserror 1.0.69",
  "uuid",
 ]
