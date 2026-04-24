@@ -1,10 +1,18 @@
+use std::io::Cursor;
+
+use calamine::{open_workbook_from_rs, Data, Reader, Xlsx, XlsxError};
 use mdid_domain::{PhiCandidate, ReviewDecision, TabularCellRef, TabularColumn, TabularFormat};
+use rust_xlsxwriter::Workbook;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TabularAdapterError {
     #[error("failed to parse CSV input: {0}")]
     Csv(#[from] csv::Error),
+    #[error("failed to parse XLSX input: {0}")]
+    Xlsx(#[from] XlsxError),
+    #[error("xlsx workbook did not contain any worksheets")]
+    MissingWorksheet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,57 +92,128 @@ impl CsvTabularAdapter {
             rows.push(record.iter().map(str::to_owned).collect::<Vec<_>>());
         }
 
-        let columns = headers
-            .iter()
-            .enumerate()
-            .map(|(index, header)| {
-                TabularColumn::new(index, header.clone(), infer_kind(&rows, index).into())
-            })
+        Ok(build_extracted_data(
+            TabularFormat::Csv,
+            headers,
+            rows,
+            &self.policies,
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct XlsxTabularAdapter {
+    policies: Vec<FieldPolicy>,
+}
+
+impl XlsxTabularAdapter {
+    pub fn new(policies: Vec<FieldPolicy>) -> Self {
+        Self { policies }
+    }
+
+    pub fn extract(&self, bytes: &[u8]) -> Result<ExtractedTabularData, TabularAdapterError> {
+        let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(bytes))?;
+        let range = workbook
+            .worksheet_range_at(0)
+            .ok_or(TabularAdapterError::MissingWorksheet)??;
+        let mut rows = range
+            .rows()
+            .map(|row| row.iter().map(cell_to_string).collect::<Vec<_>>())
             .collect::<Vec<_>>();
 
-        let mut candidates = Vec::new();
+        let headers = rows.first().cloned().unwrap_or_default();
+        let data_rows = if rows.is_empty() {
+            Vec::new()
+        } else {
+            rows.remove(0);
+            rows
+        };
+
+        Ok(build_extracted_data(
+            TabularFormat::Xlsx,
+            headers,
+            data_rows,
+            &self.policies,
+        ))
+    }
+
+    pub fn fixture_bytes(rows: Vec<Vec<&str>>) -> Vec<u8> {
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+
         for (row_index, row) in rows.iter().enumerate() {
             for (column_index, value) in row.iter().enumerate() {
-                if is_blank(value) {
-                    continue;
-                }
-
-                let Some(policy) = self
-                    .policies
-                    .iter()
-                    .find(|policy| policy.header == headers[column_index])
-                else {
-                    continue;
-                };
-
-                let decision = match policy.action {
-                    FieldPolicyAction::Encode => ReviewDecision::Approved,
-                    FieldPolicyAction::Review => ReviewDecision::NeedsReview,
-                    FieldPolicyAction::Ignore => continue,
-                };
-
-                candidates.push(PhiCandidate {
-                    format: TabularFormat::Csv,
-                    column: columns[column_index].clone(),
-                    cell: TabularCellRef::new(
-                        row_index,
-                        column_index,
-                        headers[column_index].clone(),
-                    ),
-                    phi_type: policy.phi_type.clone(),
-                    value: value.clone(),
-                    confidence: 100,
-                    decision,
-                });
+                worksheet
+                    .write_string(row_index as u32, column_index as u16, *value)
+                    .expect("fixture workbook cell write should succeed");
             }
         }
 
-        Ok(ExtractedTabularData {
-            format: TabularFormat::Csv,
-            columns,
-            rows,
-            candidates,
+        workbook
+            .save_to_buffer()
+            .expect("fixture workbook serialization should succeed")
+    }
+}
+
+fn build_extracted_data(
+    format: TabularFormat,
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+    policies: &[FieldPolicy],
+) -> ExtractedTabularData {
+    let columns = headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            TabularColumn::new(index, header.clone(), infer_kind(&rows, index).into())
         })
+        .collect::<Vec<_>>();
+
+    let mut candidates = Vec::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, value) in row.iter().enumerate() {
+            if is_blank(value) {
+                continue;
+            }
+
+            let Some(header) = headers.get(column_index) else {
+                continue;
+            };
+
+            let Some(policy) = policies.iter().find(|policy| policy.header == *header) else {
+                continue;
+            };
+
+            let decision = match policy.action {
+                FieldPolicyAction::Encode => ReviewDecision::Approved,
+                FieldPolicyAction::Review => ReviewDecision::NeedsReview,
+                FieldPolicyAction::Ignore => continue,
+            };
+
+            candidates.push(PhiCandidate {
+                format,
+                column: columns[column_index].clone(),
+                cell: TabularCellRef::new(row_index, column_index, header.clone()),
+                phi_type: policy.phi_type.clone(),
+                value: value.clone(),
+                confidence: 100,
+                decision,
+            });
+        }
+    }
+
+    ExtractedTabularData {
+        format,
+        columns,
+        rows,
+        candidates,
+    }
+}
+
+fn cell_to_string(cell: &Data) -> String {
+    match cell {
+        Data::Empty => String::new(),
+        _ => cell.to_string(),
     }
 }
 
