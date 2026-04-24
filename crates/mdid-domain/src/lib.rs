@@ -261,3 +261,110 @@ pub struct DecodeResult {
     pub values: Vec<DecodedValue>,
     pub audit_event: AuditEvent,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabularFormat {
+    Csv,
+    Xlsx,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabularColumn {
+    pub index: usize,
+    pub name: String,
+    pub inferred_kind: String,
+}
+
+impl TabularColumn {
+    pub fn new(index: usize, name: String, inferred_kind: String) -> Self {
+        Self {
+            index,
+            name,
+            inferred_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabularCellRef {
+    pub row_index: usize,
+    pub column_index: usize,
+    pub header: String,
+}
+
+impl TabularCellRef {
+    pub fn new(row_index: usize, column_index: usize, header: String) -> Self {
+        Self {
+            row_index,
+            column_index,
+            header,
+        }
+    }
+
+    pub fn field_path(&self) -> String {
+        format!(
+            "rows/{}/columns/{}/{}",
+            self.row_index,
+            self.column_index,
+            self.header.replace('/', "_")
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDecision {
+    Approved,
+    Rejected,
+    NeedsReview,
+}
+
+impl ReviewDecision {
+    pub fn allows_encode(&self) -> bool {
+        matches!(self, ReviewDecision::Approved)
+    }
+
+    pub fn requires_human_review(&self) -> bool {
+        matches!(self, ReviewDecision::NeedsReview)
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PhiCandidate {
+    pub format: TabularFormat,
+    pub column: TabularColumn,
+    pub cell: TabularCellRef,
+    pub phi_type: String,
+    pub value: String,
+    pub confidence: u8,
+    pub decision: ReviewDecision,
+}
+
+impl std::fmt::Debug for PhiCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhiCandidate")
+            .field("format", &self.format)
+            .field("column", &self.column)
+            .field("cell", &self.cell)
+            .field("phi_type", &self.phi_type)
+            .field("value", &"<redacted>")
+            .field("confidence", &self.confidence)
+            .field("decision", &self.decision)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BatchSummary {
+    pub total_rows: usize,
+    pub encoded_cells: usize,
+    pub review_required_cells: usize,
+    pub failed_rows: usize,
+}
+
+impl BatchSummary {
+    pub fn is_partial_failure(&self) -> bool {
+        self.failed_rows > 0
+    }
+}
