@@ -23,13 +23,15 @@ struct HealthResponse {
     status: &'static str,
 }
 
-pub fn build_router() -> Router {
-    let state = RuntimeState::default();
-
+pub fn build_router(state: RuntimeState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
         .with_state(state)
+}
+
+pub fn build_default_router() -> Router {
+    build_router(RuntimeState::default())
 }
 
 async fn health() -> impl IntoResponse {

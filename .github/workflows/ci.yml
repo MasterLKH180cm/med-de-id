@@ -16,6 +16,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --all -- --check
+      - name: Browser wasm target check
+        run: cargo check -p mdid-browser --target wasm32-unknown-unknown
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
