@@ -1,0 +1,11 @@
+[package]
+name = "mdid-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mdid-cli"
+path = "src/main.rs"
+
+[dependencies]
