@@ -45,6 +45,7 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 shared Rust workspace today
 ├─ mdid-domain
 ├─ mdid-vault
+├─ mdid-adapters
 ├─ mdid-application
 ├─ mdid-runtime
 ├─ mdid-cli
