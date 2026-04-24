@@ -5,3 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono.workspace = true
+mdid-domain = { path = "../mdid-domain" }
+thiserror.workspace = true
+uuid.workspace = true
