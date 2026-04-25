@@ -31,6 +31,30 @@ Build a **local-first strategic intelligence and moat-evolution loop** for `med-
 7. score moat improvement after each round
 8. continue iterating while gains justify further investment
 
+## Implementation Status
+
+### Shipped foundation slice on `feature/moat-loop-autonomy`
+
+The current branch has already landed a bounded local foundation for moat-loop execution:
+
+- domain models in `mdid-domain` for market structure, competitor intelligence, lock-in analysis, moat strategies, and round summaries
+- deterministic moat evaluation helpers in `mdid-application`
+- bounded round orchestration in `mdid-runtime`
+- `mdid-cli moat round` for local execution and inspection
+
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally, but it does not yet deliver the complete multi-agent autonomy requested by the user.
+
+### Still planned, not yet implemented
+
+The broader target from the user's Autonomous Multi-Agent System request remains future work. This spec still includes, but the current branch does not yet implement:
+
+- Planner / Coder / Reviewer role orchestration
+- persistent memory store and decision log
+- non-linear task graph persistence and scheduler control
+- GitFlow PR / release automation
+- live market / competitor / lock-in data collection
+- continuous improvement loop stopping on resource or improvement thresholds
+
 ## 3. Scope and Product Positioning
 
 This is **not** a generic business-automation engine for arbitrary companies.
