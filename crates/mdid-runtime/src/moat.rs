@@ -1,6 +1,7 @@
 use mdid_application::{
-    build_default_moat_task_graph, evaluate_moat_round, project_task_graph_progress,
-    select_top_strategies, summarize_round_memory, MoatImprovementThreshold,
+    build_default_moat_task_graph, build_moat_spec_handoff_ids, evaluate_moat_round,
+    project_task_graph_progress, select_top_strategies, summarize_round_memory,
+    MoatImprovementThreshold,
 };
 use mdid_domain::{
     AgentRole, CompetitorProfile, ContinueDecision, DecisionLogEntry, LockInReport,
@@ -123,16 +124,29 @@ fn stop_report(
     reason: &str,
 ) -> MoatRoundReport {
     let stop_reason = Some(reason.to_string());
+    let reached_spec_planning = executed_tasks.iter().any(|task| task == SPEC_PLANNING);
     let mut summary = evaluate_moat_round(
         round_id,
         &input.market,
         &input.competitor,
         &input.lock_in,
-        &selected_strategies,
-        usize::from(input.budget.max_spec_generations),
+        &[],
+        0,
         input.tests_passed,
         MoatImprovementThreshold(input.improvement_threshold),
     );
+    summary.selected_strategies = selected_strategies
+        .iter()
+        .map(|strategy| strategy.strategy_id.clone())
+        .collect();
+    summary.implemented_specs = if reached_spec_planning {
+        build_moat_spec_handoff_ids(
+            &selected_strategies,
+            usize::from(input.budget.max_spec_generations),
+        )
+    } else {
+        Vec::new()
+    };
     summary.continue_decision = ContinueDecision::Stop;
     summary.stop_reason = stop_reason.clone();
 

@@ -207,6 +207,8 @@ fn bounded_round_stops_before_review_when_review_budget_is_zero() {
         report.stop_reason.as_deref(),
         Some("review budget exhausted")
     );
+    assert_eq!(report.summary.moat_score_before, 90);
+    assert_eq!(report.summary.moat_score_after, 90);
     assert_eq!(
         report.summary.implemented_specs,
         vec!["moat-spec/workflow-audit".to_string()]
@@ -293,7 +295,7 @@ fn bounded_round_limits_implemented_specs_to_max_spec_generations() {
 fn bounded_round_stops_when_spec_or_implementation_budget_is_zero() {
     let report = run_bounded_round(MoatRoundInput {
         market: MarketMoatSnapshot {
-            moat_score: 50,
+            moat_score: 45,
             ..MarketMoatSnapshot::default()
         },
         competitor: CompetitorProfile {
@@ -335,6 +337,9 @@ fn bounded_round_stops_when_spec_or_implementation_budget_is_zero() {
             "strategy_generation".to_string(),
         ]
     );
+    assert_eq!(report.summary.moat_score_before, 90);
+    assert_eq!(report.summary.moat_score_after, 90);
+    assert!(report.summary.implemented_specs.is_empty());
     assert_eq!(
         report.stop_reason.as_deref(),
         Some("spec or implementation budget exhausted")
