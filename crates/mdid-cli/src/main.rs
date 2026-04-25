@@ -41,6 +41,13 @@ struct MoatAssignmentsCommand {
     role: Option<AgentRole>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoatTaskGraphCommand {
+    history_path: String,
+    role: Option<AgentRole>,
+    state: Option<MoatTaskNodeState>,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -68,6 +75,11 @@ fn main() {
         }
         Ok(CliCommand::MoatAssignments(command)) => {
             if let Err(error) = run_moat_assignments(&command) {
+                exit_with_error(error);
+            }
+        }
+        Ok(CliCommand::MoatTaskGraph(command)) => {
+            if let Err(error) = run_moat_task_graph(&command) {
                 exit_with_error(error);
             }
         }
@@ -115,6 +127,7 @@ enum CliCommand {
     MoatHistory(String),
     MoatDecisionLog(MoatDecisionLogCommand),
     MoatAssignments(MoatAssignmentsCommand),
+    MoatTaskGraph(MoatTaskGraphCommand),
     MoatExportSpecs {
         history_path: String,
         output_dir: String,
@@ -153,6 +166,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         ),
         [moat, assignments, rest @ ..] if moat == "moat" && assignments == "assignments" => Ok(
             CliCommand::MoatAssignments(parse_moat_assignments_command(rest)?),
+        ),
+        [moat, task_graph, rest @ ..] if moat == "moat" && task_graph == "task-graph" => Ok(
+            CliCommand::MoatTaskGraph(parse_moat_task_graph_command(rest)?),
         ),
         [moat, export_specs, rest @ ..] if moat == "moat" && export_specs == "export-specs" => {
             parse_moat_export_specs_command(rest)
@@ -272,6 +288,69 @@ fn parse_moat_assignments_role_filter(value: &str) -> Result<AgentRole, String> 
         "coder" => Ok(AgentRole::Coder),
         "reviewer" => Ok(AgentRole::Reviewer),
         other => Err(format!("unknown moat assignments role: {other}")),
+    }
+}
+
+fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand, String> {
+    let mut history_path = None;
+    let mut role = None;
+    let mut state = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--history-path" => {
+                let value = required_history_path_value(args, index)?.clone();
+                if history_path.is_some() {
+                    return Err(duplicate_flag_error("--history-path"));
+                }
+                history_path = Some(value);
+            }
+            "--role" => {
+                let value = required_flag_value(args, index, "--role", false)?;
+                if role.is_some() {
+                    return Err(duplicate_flag_error("--role"));
+                }
+                role = Some(parse_moat_task_graph_role_filter(value)?);
+            }
+            "--state" => {
+                let value = required_flag_value(args, index, "--state", false)?;
+                if state.is_some() {
+                    return Err(duplicate_flag_error("--state"));
+                }
+                state = Some(parse_moat_task_graph_state_filter(value)?);
+            }
+            flag => return Err(format!("unknown flag: {flag}")),
+        }
+
+        index += 2;
+    }
+
+    Ok(MoatTaskGraphCommand {
+        history_path: history_path
+            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        role,
+        state,
+    })
+}
+
+fn parse_moat_task_graph_role_filter(value: &str) -> Result<AgentRole, String> {
+    match value {
+        "planner" => Ok(AgentRole::Planner),
+        "coder" => Ok(AgentRole::Coder),
+        "reviewer" => Ok(AgentRole::Reviewer),
+        other => Err(format!("unknown moat task-graph role: {other}")),
+    }
+}
+
+fn parse_moat_task_graph_state_filter(value: &str) -> Result<MoatTaskNodeState, String> {
+    match value {
+        "pending" => Ok(MoatTaskNodeState::Pending),
+        "ready" => Ok(MoatTaskNodeState::Ready),
+        "in_progress" => Ok(MoatTaskNodeState::InProgress),
+        "completed" => Ok(MoatTaskNodeState::Completed),
+        "blocked" => Ok(MoatTaskNodeState::Blocked),
+        other => Err(format!("unknown moat task-graph state: {other}")),
     }
 }
 
@@ -707,6 +786,58 @@ fn run_moat_assignments(command: &MoatAssignmentsCommand) -> Result<(), String> 
     Ok(())
 }
 
+fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let latest = store.entries().last().ok_or_else(|| {
+        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
+    })?;
+
+    println!("moat task graph");
+    for node in latest
+        .report
+        .control_plane
+        .task_graph
+        .nodes
+        .iter()
+        .filter(|node| command.role.map(|role| node.role == role).unwrap_or(true))
+        .filter(|node| {
+            command
+                .state
+                .map(|state| node.state == state)
+                .unwrap_or(true)
+        })
+    {
+        println!(
+            "node={}|{}|{}|{}|{}|{}|{}",
+            format_agent_role(node.role),
+            escape_assignment_output_field(&node.node_id),
+            escape_assignment_output_field(&node.title),
+            format_moat_task_kind(node.kind),
+            format_task_node_state(node.state),
+            format_task_graph_dependencies(&node.depends_on),
+            node.spec_ref
+                .as_deref()
+                .map(escape_assignment_output_field)
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+    }
+
+    Ok(())
+}
+
+fn format_task_graph_dependencies(depends_on: &[String]) -> String {
+    if depends_on.is_empty() {
+        "<none>".to_string()
+    } else {
+        depends_on
+            .iter()
+            .map(|dependency| escape_assignment_output_field(dependency))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 fn escape_assignment_output_field(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -1024,7 +1155,7 @@ fn format_moat_task_kind(kind: MoatTaskNodeKind) -> &'static str {
     match kind {
         MoatTaskNodeKind::MarketScan => "market_scan",
         MoatTaskNodeKind::CompetitorAnalysis => "competitor_analysis",
-        MoatTaskNodeKind::LockInAnalysis => "lockin_analysis",
+        MoatTaskNodeKind::LockInAnalysis => "lock_in_analysis",
         MoatTaskNodeKind::StrategyGeneration => "strategy_generation",
         MoatTaskNodeKind::SpecPlanning => "spec_planning",
         MoatTaskNodeKind::Implementation => "implementation",
@@ -1098,7 +1229,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat assignments --history-path PATH [--role planner|coder|reviewer] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat assignments --history-path PATH [--role planner|coder|reviewer] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {

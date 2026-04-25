@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat assignments --history-path PATH [--role planner|coder|reviewer] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat assignments --history-path PATH [--role planner|coder|reviewer] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -784,6 +784,175 @@ fn cli_history_rejects_duplicate_history_path_flags() {
 
     cleanup_history_path(&first_history_path);
     cleanup_history_path(&second_history_path);
+}
+
+#[test]
+fn task_graph_requires_history_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "task-graph"])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph without history path");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing required flag: --history-path"));
+    assert!(stderr.contains(USAGE));
+}
+
+#[test]
+fn task_graph_rejects_unknown_role() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "history.json",
+            "--role",
+            "analyst",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with unknown role");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown moat task-graph role: analyst"));
+    assert!(stderr.contains(USAGE));
+}
+
+#[test]
+fn task_graph_rejects_unknown_state() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "history.json",
+            "--state",
+            "done",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with unknown state");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown moat task-graph state: done"));
+    assert!(stderr.contains(USAGE));
+}
+
+#[test]
+fn task_graph_prints_latest_persisted_graph() {
+    let history_path = unique_history_path("task-graph-success");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed task graph history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "task-graph", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect task graph");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("moat task graph\n"));
+    assert!(stdout
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout
+        .contains("node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|"));
+    assert!(stdout.contains(
+        "node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"
+    ));
+    assert!(stdout.contains(
+        "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n"
+    ));
+    assert!(stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn task_graph_filters_latest_graph_by_role_and_state() {
+    let history_path = unique_history_path("task-graph-filtered");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed stopped task graph history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "reviewer",
+            "--state",
+            "ready",
+        ])
+        .output()
+        .expect("failed to inspect filtered task graph");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat task graph\n",
+            "node=reviewer|review|Review|review|ready|implementation|<none>\n",
+        )
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn task_graph_rejects_missing_history_file_without_creating_it() {
+    let history_path = unique_history_path("task-graph-missing");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+        ])
+        .output()
+        .expect("failed to run task-graph with missing history");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to open moat history store"));
+    assert!(stderr.contains("moat history file does not exist"));
+    assert!(!history_path.exists());
+
+    cleanup_history_path(&history_path);
 }
 
 #[test]
