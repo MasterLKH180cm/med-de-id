@@ -338,9 +338,14 @@ git commit -m "feat: add dicom adapter extraction"
 Add tests named:
 - `rewrite_replaces_encoded_phi_tags_and_remaps_uid_family`
 - `rewrite_removes_private_tags_when_policy_is_remove`
+- `rewrite_drops_private_file_meta_information_when_policy_is_remove`
+- `rewrite_drops_private_file_meta_information_when_policy_is_review_required`
+- `rewrite_keeps_private_file_meta_information_when_policy_is_keep`
 - `sanitize_filename_replaces_phi_bearing_source_names_with_a_safe_neutral_output_name`
 - `sanitize_filename_hardens_windows_reserved_and_dot_only_names`
 - `sanitize_filename_whitelists_only_dcm_extension`
+
+The rewrite checks should keep private file meta only when `DicomPrivateTagPolicy::Keep`; both `Remove` and `ReviewRequired` must drop private file meta fields.
 
 The filename sanitization checks should keep the neutral basename `dicom-output`, preserve only the conservative `dcm` extension, and fall back to `dicom-output` for any other trailing extension.
 
