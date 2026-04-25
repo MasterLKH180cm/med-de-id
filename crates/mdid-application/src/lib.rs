@@ -344,6 +344,99 @@ pub fn build_moat_spec_handoff_ids(
         .collect()
 }
 
+pub fn render_moat_spec_markdown(
+    handoff_id: &str,
+    summary: &MoatRoundSummary,
+    selected_strategies: &[String],
+) -> Result<String, String> {
+    let slug = handoff_id
+        .strip_prefix("moat-spec/")
+        .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
+
+    let title = slug
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut word = first.to_ascii_uppercase().to_string();
+                    word.push_str(chars.as_str());
+                    word
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if title.is_empty() {
+        return Err(format!("expected non-empty moat spec slug in {handoff_id}"));
+    }
+
+    if !summary.implemented_specs.iter().any(|spec| spec == handoff_id) {
+        return Err(format!(
+            "handoff id {handoff_id} not present in summary.implemented_specs: {:?}",
+            summary.implemented_specs
+        ));
+    }
+
+    let selected_strategy_ids = resolve_render_selected_strategies(summary, selected_strategies)?;
+    let selected = if selected_strategy_ids.is_empty() {
+        "<none>".to_string()
+    } else {
+        selected_strategy_ids.join(",")
+    };
+    let improvement_delta = summary.improvement();
+
+    Ok(format!(
+        concat!(
+            "# {title} Moat Spec\n\n",
+            "- handoff_id: `{handoff_id}`\n",
+            "- source_round_id: `{round_id}`\n",
+            "- source_selected_strategies: `{selected}`\n",
+            "- moat_score_before: `{before}`\n",
+            "- moat_score_after: `{after}`\n",
+            "- improvement_delta: `{delta}`\n\n",
+            "## Objective\n\n",
+            "Ship the {slug} moat slice as a bounded engineering increment that preserves the moat gain identified by the latest round.\n\n",
+            "## Required Deliverables\n\n",
+            "- Persist a {slug} artifact inside the local-first med-de-id product surface.\n",
+            "- Expose the artifact through a deterministic operator-facing workflow.\n",
+            "- Add automated verification for the new {slug} behavior.\n\n",
+            "## Acceptance Tests\n\n",
+            "- `{handoff_id}` stays derivable from the selected strategy set `{selected}`.\n",
+            "- Re-rendering the same round preserves handoff `{handoff_id}` and moat delta `{delta}`.\n"
+        ),
+        title = title,
+        handoff_id = handoff_id,
+        round_id = summary.round_id,
+        selected = selected,
+        before = summary.moat_score_before,
+        after = summary.moat_score_after,
+        delta = improvement_delta,
+        slug = slug,
+    ))
+}
+
+fn resolve_render_selected_strategies<'a>(
+    summary: &'a MoatRoundSummary,
+    selected_strategies: &'a [String],
+) -> Result<&'a [String], String> {
+    if selected_strategies.is_empty() {
+        return Ok(&summary.selected_strategies);
+    }
+
+    if selected_strategies != summary.selected_strategies.as_slice() {
+        return Err(format!(
+            "selected strategy mismatch: summary={:?}, argument={:?}",
+            summary.selected_strategies, selected_strategies
+        ));
+    }
+
+    Ok(selected_strategies)
+}
+
 fn normalize_moat_strategy_handoff_id(strategy_id: &str) -> Option<String> {
     let mut normalized = String::new();
     let mut last_was_separator = false;

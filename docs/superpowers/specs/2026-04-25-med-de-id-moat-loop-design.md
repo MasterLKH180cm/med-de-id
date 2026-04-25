@@ -45,8 +45,10 @@ The repository currently contains a bounded local foundation for moat-loop execu
 - a bounded operator-facing `mdid-cli moat control-plane` runner over the same deterministic sample inputs, including override flags for stop-path inspection through canonical task states, ready-node visibility, and the latest bounded decision-memory summary
 - a bounded operator-facing `mdid-cli moat history --history-path PATH` summary surface for inspecting persisted local history, including the latest surfaced `implemented_specs` handoff IDs as `latest_implemented_specs`
 - a bounded operator-facing `mdid-cli moat continue --history-path PATH [--improvement-threshold N]` gate that truthfully reports whether the latest persisted round completed evaluation and cleared the configured continuation threshold, while requiring an already-persisted history file and failing for missing paths instead of creating a new one during inspection
+- a bounded operator-facing `mdid-cli moat schedule-next --history-path PATH [--improvement-threshold N]` one-shot scheduler control that requires an already-persisted history file, checks the same continuation gate as `moat continue`, appends exactly one deterministic bounded round only when `can_continue=true`, and otherwise leaves history unchanged
+- a bounded operator-facing `mdid-cli moat export-specs --history-path PATH --output-dir DIR` export surface that reads the latest persisted round, requires a pre-existing history file, fails for empty history or missing latest `implemented_specs` handoffs, creates the output directory as needed, and writes one markdown file per latest handoff via `mdid_application::render_moat_spec_markdown`
 
-This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic local round runner, bounded control-plane inspection, bounded local history persistence/inspection, and an inspection-only continuation gate over deterministic sample data. Its strategy-to-spec surface is currently limited to bounded normalized handoff IDs such as `moat-spec/workflow-audit`: the current repository does not automatically generate markdown spec documents from those IDs, the continuation gate does not start new rounds automatically, and there is no scheduler control, no live market crawling, and no full autonomous multi-agent runtime over user-supplied or external inputs.
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic local round runner, bounded control-plane inspection, bounded local history persistence/inspection, an inspection-only continuation gate over deterministic sample data, one-shot bounded local scheduler control, and bounded markdown export for the latest persisted `implemented_specs` handoff IDs such as `moat-spec/workflow-audit`. It still does not automatically generate plans beyond those exported spec markdown files, and there is no background scheduler/daemon, no live market crawling, and no full autonomous multi-agent runtime over user-supplied or external inputs.
 
 ### Still planned, not yet implemented
 
@@ -54,7 +56,7 @@ The broader Autonomous Multi-Agent System target described by this spec remains 
 
 - Planner / Coder / Reviewer role orchestration
 - full persistent memory store and decision-log workflow beyond bounded local round-history snapshots
-- non-linear task graph persistence and scheduler control
+- non-linear task graph persistence and background scheduler/daemon control
 - GitFlow PR / release automation
 - live market / competitor / lock-in data collection
 - continuous improvement loop stopping on resource or improvement thresholds

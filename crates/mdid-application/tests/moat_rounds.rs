@@ -1,6 +1,6 @@
 use mdid_application::{
-    build_moat_spec_handoff_ids, evaluate_moat_round, select_top_strategies,
-    MoatImprovementThreshold,
+    build_moat_spec_handoff_ids, evaluate_moat_round, render_moat_spec_markdown,
+    select_top_strategies, MoatImprovementThreshold,
 };
 use mdid_domain::{
     CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType,
@@ -254,4 +254,153 @@ fn evaluate_moat_round_stops_for_test_failures_with_test_failure_reason() {
     assert_eq!(summary.moat_score_before, 83);
     assert_eq!(summary.moat_score_after, 83);
     assert_eq!(summary.stop_reason.as_deref(), Some("tests failed"));
+}
+
+#[test]
+fn render_moat_spec_markdown_returns_deterministic_markdown_for_selected_handoff() {
+    let summary = evaluate_moat_round(
+        Uuid::nil(),
+        &MarketMoatSnapshot {
+            market_id: "healthcare-deid".into(),
+            industry_segment: "Healthcare De-Identification".into(),
+            moat_score: 40,
+            ..MarketMoatSnapshot::default()
+        },
+        &CompetitorProfile {
+            competitor_id: "comp-1".into(),
+            name: "Incumbent PACS".into(),
+            threat_score: 35,
+            ..CompetitorProfile::default()
+        },
+        &LockInReport {
+            lockin_score: 60,
+            workflow_dependency_strength: 70,
+            portability_risk: 20,
+            ..LockInReport::default()
+        },
+        &[
+            MoatStrategy {
+                strategy_id: "workflow-audit".into(),
+                title: "Workflow audit moat".into(),
+                rationale: "Export auditable workflow evidence to raise switching costs.".into(),
+                target_moat_type: MoatType::WorkflowLockIn,
+                implementation_cost: 2,
+                expected_moat_gain: 8,
+                dependencies: vec!["dicom-runtime".into()],
+                testable_hypotheses: vec![
+                    "Operators complete audit export without spreadsheets".into(),
+                    "Review evidence survives repeat runs".into(),
+                ],
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "compliance-ledger".into(),
+                title: "Compliance ledger moat".into(),
+                expected_moat_gain: 5,
+                implementation_cost: 1,
+                target_moat_type: MoatType::ComplianceMoat,
+                ..MoatStrategy::default()
+            },
+        ],
+        2,
+        true,
+        MoatImprovementThreshold(3),
+    );
+
+    let markdown = render_moat_spec_markdown(
+        "moat-spec/compliance-ledger",
+        &summary,
+        &summary.selected_strategies,
+    )
+    .expect("selected handoff should render");
+
+    assert_eq!(
+        markdown,
+        concat!(
+            "# Compliance Ledger Moat Spec\n\n",
+            "- handoff_id: `moat-spec/compliance-ledger`\n",
+            "- source_round_id: `00000000-0000-0000-0000-000000000000`\n",
+            "- source_selected_strategies: `workflow-audit,compliance-ledger`\n",
+            "- moat_score_before: `83`\n",
+            "- moat_score_after: `96`\n",
+            "- improvement_delta: `13`\n\n",
+            "## Objective\n\n",
+            "Ship the compliance-ledger moat slice as a bounded engineering increment that preserves the moat gain identified by the latest round.\n\n",
+            "## Required Deliverables\n\n",
+            "- Persist a compliance-ledger artifact inside the local-first med-de-id product surface.\n",
+            "- Expose the artifact through a deterministic operator-facing workflow.\n",
+            "- Add automated verification for the new compliance-ledger behavior.\n\n",
+            "## Acceptance Tests\n\n",
+            "- `moat-spec/compliance-ledger` stays derivable from the selected strategy set `workflow-audit,compliance-ledger`.\n",
+            "- Re-rendering the same round preserves handoff `moat-spec/compliance-ledger` and moat delta `13`.\n"
+        )
+    );
+}
+
+#[test]
+fn render_moat_spec_markdown_uses_summary_selected_strategies_when_argument_is_empty() {
+    let summary = mdid_domain::MoatRoundSummary {
+        round_id: Uuid::nil(),
+        selected_strategies: vec!["workflow-audit".into()],
+        implemented_specs: vec!["moat-spec/workflow-audit".into()],
+        moat_score_before: 10,
+        moat_score_after: 14,
+        ..mdid_domain::MoatRoundSummary::default()
+    };
+
+    let markdown = render_moat_spec_markdown("moat-spec/workflow-audit", &summary, &[])
+        .expect("empty argument should fall back to summary state");
+
+    assert!(markdown.contains("source_selected_strategies: `workflow-audit`"));
+}
+
+#[test]
+fn render_moat_spec_markdown_rejects_mismatched_selected_strategies() {
+    let summary = mdid_domain::MoatRoundSummary {
+        selected_strategies: vec!["workflow-audit".into()],
+        implemented_specs: vec!["moat-spec/workflow-audit".into()],
+        ..mdid_domain::MoatRoundSummary::default()
+    };
+
+    let error = render_moat_spec_markdown(
+        "moat-spec/workflow-audit",
+        &summary,
+        &["compliance-ledger".into()],
+    )
+    .expect_err("mismatched selected strategies should fail");
+
+    assert!(error.contains("selected strategy mismatch"));
+}
+
+#[test]
+fn render_moat_spec_markdown_rejects_handoff_ids_not_implemented_in_summary() {
+    let summary = mdid_domain::MoatRoundSummary {
+        implemented_specs: vec!["moat-spec/workflow-audit".into()],
+        ..mdid_domain::MoatRoundSummary::default()
+    };
+
+    let error = render_moat_spec_markdown("moat-spec/compliance-ledger", &summary, &[])
+        .expect_err("handoff id outside implemented specs should fail");
+
+    assert!(error.contains("implemented_specs"));
+}
+
+#[test]
+fn render_moat_spec_markdown_rejects_non_handoff_ids() {
+    let error = render_moat_spec_markdown(
+        "workflow-audit",
+        &mdid_domain::MoatRoundSummary::default(),
+        &[],
+    )
+    .expect_err("invalid handoff id should fail");
+
+    assert!(error.contains("expected moat-spec/ handoff id"));
+}
+
+#[test]
+fn render_moat_spec_markdown_rejects_empty_handoff_slug() {
+    let error = render_moat_spec_markdown("moat-spec/", &mdid_domain::MoatRoundSummary::default(), &[])
+        .expect_err("empty moat spec slug should fail");
+
+    assert!(error.contains("expected non-empty moat spec slug"));
 }
