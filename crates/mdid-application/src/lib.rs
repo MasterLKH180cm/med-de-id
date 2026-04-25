@@ -344,6 +344,72 @@ pub fn build_moat_spec_handoff_ids(
         .collect()
 }
 
+pub fn render_moat_spec_markdown(
+    handoff_id: &str,
+    summary: &MoatRoundSummary,
+    selected_strategies: &[String],
+) -> Result<String, String> {
+    let slug = handoff_id
+        .strip_prefix("moat-spec/")
+        .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
+
+    let title = slug
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut word = first.to_ascii_uppercase().to_string();
+                    word.push_str(chars.as_str());
+                    word
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if title.is_empty() {
+        return Err(format!("expected non-empty moat spec slug in {handoff_id}"));
+    }
+
+    let selected = if selected_strategies.is_empty() {
+        "<none>".to_string()
+    } else {
+        selected_strategies.join(",")
+    };
+
+    Ok(format!(
+        concat!(
+            "# {title} Moat Spec\n\n",
+            "- handoff_id: `{handoff_id}`\n",
+            "- source_round_id: `{round_id}`\n",
+            "- source_selected_strategies: `{selected}`\n",
+            "- moat_score_before: `{before}`\n",
+            "- moat_score_after: `{after}`\n",
+            "- improvement_delta: `{delta}`\n\n",
+            "## Objective\n\n",
+            "Ship the {slug} moat slice as a bounded engineering increment that preserves the moat gain identified by the latest round.\n\n",
+            "## Required Deliverables\n\n",
+            "- Persist a {slug} artifact inside the local-first med-de-id product surface.\n",
+            "- Expose the artifact through a deterministic operator-facing workflow.\n",
+            "- Add automated verification for the new {slug} behavior.\n\n",
+            "## Acceptance Tests\n\n",
+            "- Operators complete audit export without spreadsheets\n",
+            "- Review evidence survives repeat runs\n"
+        ),
+        title = title,
+        handoff_id = handoff_id,
+        round_id = summary.round_id,
+        selected = selected,
+        before = summary.moat_score_before,
+        after = summary.moat_score_after,
+        delta = summary.improvement(),
+        slug = slug,
+    ))
+}
+
 fn normalize_moat_strategy_handoff_id(strategy_id: &str) -> Option<String> {
     let mut normalized = String::new();
     let mut last_was_separator = false;

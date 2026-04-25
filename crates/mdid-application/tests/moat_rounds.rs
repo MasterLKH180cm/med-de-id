@@ -1,6 +1,6 @@
 use mdid_application::{
-    build_moat_spec_handoff_ids, evaluate_moat_round, select_top_strategies,
-    MoatImprovementThreshold,
+    build_moat_spec_handoff_ids, evaluate_moat_round, render_moat_spec_markdown,
+    select_top_strategies, MoatImprovementThreshold,
 };
 use mdid_domain::{
     CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType,
@@ -254,4 +254,87 @@ fn evaluate_moat_round_stops_for_test_failures_with_test_failure_reason() {
     assert_eq!(summary.moat_score_before, 83);
     assert_eq!(summary.moat_score_after, 83);
     assert_eq!(summary.stop_reason.as_deref(), Some("tests failed"));
+}
+
+#[test]
+fn render_moat_spec_markdown_returns_deterministic_markdown_for_known_handoff() {
+    let summary = evaluate_moat_round(
+        Uuid::nil(),
+        &MarketMoatSnapshot {
+            market_id: "healthcare-deid".into(),
+            industry_segment: "Healthcare De-Identification".into(),
+            moat_score: 40,
+            ..MarketMoatSnapshot::default()
+        },
+        &CompetitorProfile {
+            competitor_id: "comp-1".into(),
+            name: "Incumbent PACS".into(),
+            threat_score: 35,
+            ..CompetitorProfile::default()
+        },
+        &LockInReport {
+            lockin_score: 60,
+            workflow_dependency_strength: 70,
+            portability_risk: 20,
+            ..LockInReport::default()
+        },
+        &[MoatStrategy {
+            strategy_id: "workflow-audit".into(),
+            title: "Workflow audit moat".into(),
+            rationale: "Export auditable workflow evidence to raise switching costs.".into(),
+            target_moat_type: MoatType::WorkflowLockIn,
+            implementation_cost: 2,
+            expected_moat_gain: 8,
+            dependencies: vec!["dicom-runtime".into()],
+            testable_hypotheses: vec![
+                "Operators complete audit export without spreadsheets".into(),
+                "Review evidence survives repeat runs".into(),
+            ],
+            ..MoatStrategy::default()
+        }],
+        1,
+        true,
+        MoatImprovementThreshold(3),
+    );
+
+    let markdown = render_moat_spec_markdown(
+        "moat-spec/workflow-audit",
+        &summary,
+        &summary.selected_strategies,
+    )
+    .expect("known handoff should render");
+
+    assert_eq!(
+        markdown,
+        concat!(
+            "# Workflow Audit Moat Spec\n\n",
+            "- handoff_id: `moat-spec/workflow-audit`\n",
+            "- source_round_id: `00000000-0000-0000-0000-000000000000`\n",
+            "- source_selected_strategies: `workflow-audit`\n",
+            "- moat_score_before: `83`\n",
+            "- moat_score_after: `91`\n",
+            "- improvement_delta: `8`\n\n",
+            "## Objective\n\n",
+            "Ship the workflow-audit moat slice as a bounded engineering increment that preserves the moat gain identified by the latest round.\n\n",
+            "## Required Deliverables\n\n",
+            "- Persist a workflow-audit artifact inside the local-first med-de-id product surface.\n",
+            "- Expose the artifact through a deterministic operator-facing workflow.\n",
+            "- Add automated verification for the new workflow-audit behavior.\n\n",
+            "## Acceptance Tests\n\n",
+            "- Operators complete audit export without spreadsheets\n",
+            "- Review evidence survives repeat runs\n"
+        )
+    );
+}
+
+#[test]
+fn render_moat_spec_markdown_rejects_non_handoff_ids() {
+    let error = render_moat_spec_markdown(
+        "workflow-audit",
+        &mdid_domain::MoatRoundSummary::default(),
+        &[],
+    )
+    .expect_err("invalid handoff id should fail");
+
+    assert!(error.contains("expected moat-spec/ handoff id"));
 }
