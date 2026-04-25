@@ -48,7 +48,10 @@ impl DicomAdapter {
                 candidates.push(DicomPhiCandidate {
                     tag: dicom_tag_ref(element.tag(), "PrivateTag"),
                     phi_type: "private_tag".into(),
-                    value: element.to_str()?.into_owned(),
+                    value: match element.to_str() {
+                        Ok(value) => value.into_owned(),
+                        Err(_) => "<non-text>".into(),
+                    },
                     decision: ReviewDecision::NeedsReview,
                 });
             }
@@ -74,7 +77,7 @@ pub struct ExtractedDicomData {
 impl std::fmt::Debug for ExtractedDicomData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExtractedDicomData")
-            .field("source_name", &self.source_name)
+            .field("source_name", &"<redacted>")
             .field("candidates", &self.candidates)
             .field("private_tags", &self.private_tags)
             .field("burned_in_annotation", &self.burned_in_annotation)
