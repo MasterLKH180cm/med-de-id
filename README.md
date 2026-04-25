@@ -134,6 +134,7 @@ The control-plane command prints a deterministic snapshot containing:
 - `ready_nodes`
 - `latest_decision_summary`
 - `improvement_delta`
+- `agent_assignments=<none>|planner:<node_id>|coder:<node_id>|reviewer:<node_id>[,...]`
 - `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
 
 Inspect the latest persisted moat control-plane snapshot with:
@@ -142,7 +143,7 @@ Inspect the latest persisted moat control-plane snapshot with:
 cargo run -p mdid-cli -- moat control-plane --history-path .mdid/moat-history.json
 ```
 
-This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, and improvement delta. It does not schedule work, append rounds, start a daemon, crawl the web, or automate code changes.
+This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, improvement delta, and inspection-only agent assignment projection for ready nodes. `agent_assignments` is a projection only: it does not launch agents, start a daemon, dispatch Planner/Coder/Reviewer work, write code, schedule work, append rounds, crawl the web, or automate code changes.
 
 Inspect persisted local history with:
 

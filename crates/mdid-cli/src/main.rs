@@ -1,6 +1,6 @@
-use mdid_application::{render_moat_plan_markdown, render_moat_spec_markdown};
+use mdid_application::{render_moat_plan_markdown, render_moat_spec_markdown, MoatAgentAssignment};
 use mdid_domain::{
-    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
+    AgentRole, CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
     MoatTaskNodeState, MoatType, ResourceBudget,
 };
 use mdid_runtime::{
@@ -508,6 +508,10 @@ fn print_control_plane_snapshot(
         "improvement_delta={}",
         control_plane.memory.improvement_delta
     );
+    println!(
+        "agent_assignments={}",
+        format_agent_assignments(&control_plane.agent_assignments)
+    );
     println!("task_states={task_states}");
 }
 
@@ -785,6 +789,32 @@ fn format_task_states(nodes: &[mdid_domain::MoatTaskNode]) -> String {
         .map(|node| format!("{}:{}", node.node_id, format_task_node_state(node.state)))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn format_agent_assignments(assignments: &[MoatAgentAssignment]) -> String {
+    if assignments.is_empty() {
+        "<none>".to_string()
+    } else {
+        assignments
+            .iter()
+            .map(|assignment| {
+                format!(
+                    "{}:{}",
+                    format_agent_role(assignment.role),
+                    assignment.node_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+fn format_agent_role(role: AgentRole) -> &'static str {
+    match role {
+        AgentRole::Planner => "planner",
+        AgentRole::Coder => "coder",
+        AgentRole::Reviewer => "reviewer",
+    }
 }
 
 fn format_task_node_state(state: MoatTaskNodeState) -> &'static str {

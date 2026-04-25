@@ -454,9 +454,41 @@ fn cli_runs_default_moat_control_plane_and_prints_graph_snapshot() {
             "ready_nodes=<none>\n",
             "latest_decision_summary=review approved bounded moat round\n",
             "improvement_delta=8\n",
+            "agent_assignments=<none>\n",
             "task_states=market_scan:completed,competitor_analysis:completed,lockin_analysis:completed,strategy_generation:completed,spec_planning:completed,implementation:completed,review:completed,evaluation:completed\n",
         )
     );
+}
+
+#[test]
+fn moat_control_plane_prints_planner_assignment_for_strategy_ready_node() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--strategy-candidates", "0"])
+        .output()
+        .expect("failed to run mdid-cli moat control-plane with strategy override");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("agent_assignments=planner:strategy_generation\n"));
+}
+
+#[test]
+fn moat_control_plane_prints_reviewer_assignment_for_review_ready_node() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--review-loops", "0"])
+        .output()
+        .expect("failed to run mdid-cli moat control-plane with review override");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("agent_assignments=reviewer:review\n"));
 }
 
 #[test]
@@ -479,6 +511,7 @@ fn cli_runs_moat_control_plane_with_strategy_budget_override() {
             "ready_nodes=strategy_generation\n",
             "latest_decision_summary=planning stopped before implementation\n",
             "improvement_delta=0\n",
+            "agent_assignments=planner:strategy_generation\n",
             "task_states=market_scan:completed,competitor_analysis:completed,lockin_analysis:completed,strategy_generation:ready,spec_planning:pending,implementation:pending,review:pending,evaluation:pending\n",
         )
     );
@@ -527,6 +560,7 @@ fn cli_runs_moat_control_plane_from_latest_persisted_history_round() {
                 "ready_nodes=<none>\n",
                 "latest_decision_summary=review approved bounded moat round\n",
                 "improvement_delta=8\n",
+                "agent_assignments=<none>\n",
                 "task_states=market_scan:completed,competitor_analysis:completed,lockin_analysis:completed,strategy_generation:completed,spec_planning:completed,implementation:completed,review:completed,evaluation:completed\n",
             ),
             latest_round_id,
