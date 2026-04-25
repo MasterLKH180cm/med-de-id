@@ -23,6 +23,12 @@ struct MoatRoundCommand {
     history_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MoatControlPlaneCommand {
+    overrides: MoatRoundOverrides,
+    history_path: Option<String>,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -33,7 +39,11 @@ fn main() {
                 exit_with_error(error);
             }
         }
-        Ok(CliCommand::MoatControlPlane(overrides)) => run_moat_control_plane(&overrides),
+        Ok(CliCommand::MoatControlPlane(command)) => {
+            if let Err(error) = run_moat_control_plane(&command) {
+                exit_with_error(error);
+            }
+        }
         Ok(CliCommand::MoatHistory(history_path)) => {
             if let Err(error) = run_moat_history(&history_path) {
                 exit_with_error(error);
@@ -79,7 +89,7 @@ fn main() {
 enum CliCommand {
     Status,
     MoatRound(MoatRoundCommand),
-    MoatControlPlane(MoatRoundOverrides),
+    MoatControlPlane(MoatControlPlaneCommand),
     MoatHistory(String),
     MoatExportSpecs {
         history_path: String,
@@ -107,8 +117,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
             Ok(CliCommand::MoatRound(parse_moat_round_command(rest)?))
         }
         [moat, control_plane, rest @ ..] if moat == "moat" && control_plane == "control-plane" => {
-            let (overrides, _) = parse_moat_round_overrides(rest, false)?;
-            Ok(CliCommand::MoatControlPlane(overrides))
+            Ok(CliCommand::MoatControlPlane(
+                parse_moat_control_plane_command(rest)?,
+            ))
         }
         [moat, history, rest @ ..] if moat == "moat" && history == "history" => {
             Ok(CliCommand::MoatHistory(parse_required_history_path(rest)?))
@@ -132,6 +143,17 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
 fn parse_moat_round_command(args: &[String]) -> Result<MoatRoundCommand, String> {
     let (overrides, history_path) = parse_moat_round_overrides(args, true)?;
     Ok(MoatRoundCommand {
+        overrides,
+        history_path,
+    })
+}
+
+fn parse_moat_control_plane_command(args: &[String]) -> Result<MoatControlPlaneCommand, String> {
+    let (overrides, history_path) = parse_moat_round_overrides(args, true)?;
+    if history_path.is_some() && overrides != MoatRoundOverrides::default() {
+        return Err("cannot combine --history-path with control-plane override flags".to_string());
+    }
+    Ok(MoatControlPlaneCommand {
         overrides,
         history_path,
     })
@@ -431,9 +453,40 @@ fn append_report_to_history(history_path: &str, report: &MoatRoundReport) -> Res
         .map_err(|error| format!("failed to append moat history entry: {error}"))
 }
 
-fn run_moat_control_plane(overrides: &MoatRoundOverrides) {
-    let report = sample_round_report(overrides);
-    let control_plane = report.control_plane;
+fn run_moat_control_plane(command: &MoatControlPlaneCommand) -> Result<(), String> {
+    if let Some(history_path) = &command.history_path {
+        return run_persisted_moat_control_plane(history_path);
+    }
+
+    let report = sample_round_report(&command.overrides);
+    print_control_plane_snapshot("sample", None, None, &report);
+    Ok(())
+}
+
+fn run_persisted_moat_control_plane(history_path: &str) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let latest = store.entries().last().ok_or_else(|| {
+        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
+    })?;
+
+    let latest_round_id = latest.report.summary.round_id.to_string();
+    print_control_plane_snapshot(
+        "history",
+        Some(history_path),
+        Some(latest_round_id.as_str()),
+        &latest.report,
+    );
+    Ok(())
+}
+
+fn print_control_plane_snapshot(
+    source: &str,
+    history_path: Option<&str>,
+    latest_round_id: Option<&str>,
+    report: &MoatRoundReport,
+) {
+    let control_plane = &report.control_plane;
     let ready_nodes = format_ready_nodes(&control_plane.task_graph.ready_node_ids());
     let latest_decision_summary = control_plane
         .memory
@@ -442,6 +495,13 @@ fn run_moat_control_plane(overrides: &MoatRoundOverrides) {
     let task_states = format_task_states(&control_plane.task_graph.nodes);
 
     println!("moat control plane snapshot");
+    println!("source={source}");
+    if let Some(latest_round_id) = latest_round_id {
+        println!("latest_round_id={latest_round_id}");
+    }
+    if let Some(history_path) = history_path {
+        println!("history_path={history_path}");
+    }
     println!("ready_nodes={ready_nodes}");
     println!("latest_decision_summary={latest_decision_summary}");
     println!(
@@ -802,7 +862,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -890,9 +950,12 @@ mod tests {
                 "0".into(),
             ])
             .unwrap(),
-            CliCommand::MoatControlPlane(MoatRoundOverrides {
-                strategy_candidates: Some(0),
-                ..MoatRoundOverrides::default()
+            CliCommand::MoatControlPlane(MoatControlPlaneCommand {
+                overrides: MoatRoundOverrides {
+                    strategy_candidates: Some(0),
+                    ..MoatRoundOverrides::default()
+                },
+                history_path: None,
             })
         );
         assert_eq!(

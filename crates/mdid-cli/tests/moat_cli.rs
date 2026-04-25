@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -450,6 +450,7 @@ fn cli_runs_default_moat_control_plane_and_prints_graph_snapshot() {
         String::from_utf8_lossy(&output.stdout),
         concat!(
             "moat control plane snapshot\n",
+            "source=sample\n",
             "ready_nodes=<none>\n",
             "latest_decision_summary=review approved bounded moat round\n",
             "improvement_delta=8\n",
@@ -474,12 +475,133 @@ fn cli_runs_moat_control_plane_with_strategy_budget_override() {
         String::from_utf8_lossy(&output.stdout),
         concat!(
             "moat control plane snapshot\n",
+            "source=sample\n",
             "ready_nodes=strategy_generation\n",
             "latest_decision_summary=planning stopped before implementation\n",
             "improvement_delta=0\n",
             "task_states=market_scan:completed,competitor_analysis:completed,lockin_analysis:completed,strategy_generation:ready,spec_planning:pending,implementation:pending,review:pending,evaluation:pending\n",
         )
     );
+}
+
+#[test]
+fn cli_runs_moat_control_plane_from_latest_persisted_history_round() {
+    let history_path = unique_history_path("control-plane-history");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path).expect("history should exist");
+    let latest_round_id = store
+        .summary()
+        .latest_round_id
+        .expect("seeded history should expose latest round id");
+    drop(store);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run persisted moat control-plane inspection");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!(
+            concat!(
+                "moat control plane snapshot\n",
+                "source=history\n",
+                "latest_round_id={}\n",
+                "history_path={}\n",
+                "ready_nodes=<none>\n",
+                "latest_decision_summary=review approved bounded moat round\n",
+                "improvement_delta=8\n",
+                "task_states=market_scan:completed,competitor_analysis:completed,lockin_analysis:completed,strategy_generation:completed,spec_planning:completed,implementation:completed,review:completed,evaluation:completed\n",
+            ),
+            latest_round_id,
+            history_path.display()
+        )
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_control_plane_history_requires_existing_history_file() {
+    let history_path = unique_history_path("control-plane-missing-history");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run persisted moat control-plane inspection against missing history");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to open moat history store"));
+    assert!(stderr.contains("moat history file does not exist"));
+    assert!(!history_path.exists());
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_control_plane_rejects_empty_existing_history_file() {
+    let history_path = unique_history_path("control-plane-empty-history");
+    std::fs::write(&history_path, "[]").expect("empty history file should be writable");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run persisted moat control-plane inspection against empty history");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr
+        .contains("moat history is empty; run `mdid-cli moat round --history-path <path>` first"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_control_plane_rejects_history_path_combined_with_override_flags() {
+    let history_path = unique_history_path("control-plane-mixed-flags");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "control-plane",
+            "--history-path",
+            history_path_arg,
+            "--review-loops",
+            "0",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat control-plane with mixed history and override flags");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot combine --history-path with control-plane override flags"));
+    assert!(stderr.contains(USAGE));
+    assert!(!history_path.exists());
+
+    cleanup_history_path(&history_path);
 }
 
 #[test]
