@@ -1,7 +1,7 @@
 use mdid_application::{evaluate_moat_round, select_top_strategies, MoatImprovementThreshold};
 use mdid_domain::{
-    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatRoundSummary,
-    MoatStrategy, ResourceBudget,
+    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
+    ResourceBudget,
 };
 use uuid::Uuid;
 
@@ -26,13 +26,17 @@ pub struct MoatRoundInput {
 
 #[derive(Debug, Clone)]
 pub struct MoatRoundReport {
-    pub summary: MoatRoundSummary,
-    pub executed_tasks: Vec<&'static str>,
+    pub summary: mdid_domain::MoatRoundSummary,
+    pub executed_tasks: Vec<String>,
     pub stop_reason: Option<String>,
 }
 
 pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
-    let mut executed_tasks = vec![MARKET_SCAN, COMPETITOR_ANALYSIS, LOCKIN_ANALYSIS];
+    let mut executed_tasks = vec![
+        MARKET_SCAN.to_string(),
+        COMPETITOR_ANALYSIS.to_string(),
+        LOCKIN_ANALYSIS.to_string(),
+    ];
 
     if input.budget.max_strategy_candidates == 0 {
         return stop_report(
@@ -43,7 +47,7 @@ pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
         );
     }
 
-    executed_tasks.push(STRATEGY_SELECTION);
+    executed_tasks.push(STRATEGY_SELECTION.to_string());
 
     let selected_strategies = select_top_strategies(
         input.strategies.clone(),
@@ -59,9 +63,9 @@ pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
         );
     }
 
-    executed_tasks.push(SPEC_PLAN_HANDOFF);
-    executed_tasks.push(IMPLEMENTATION_GATE);
-    executed_tasks.push(EVALUATION);
+    executed_tasks.push(SPEC_PLAN_HANDOFF.to_string());
+    executed_tasks.push(IMPLEMENTATION_GATE.to_string());
+    executed_tasks.push(EVALUATION.to_string());
 
     let summary = evaluate_moat_round(
         Uuid::nil(),
@@ -82,29 +86,27 @@ pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
 }
 
 fn stop_report(
-    executed_tasks: Vec<&'static str>,
+    executed_tasks: Vec<String>,
     selected_strategies: Vec<MoatStrategy>,
     input: &MoatRoundInput,
     reason: &str,
 ) -> MoatRoundReport {
-    let moat_score_before = ((input.market.moat_score as i16 + input.lock_in.lockin_score as i16)
-        - (input.competitor.threat_score as i16 / 2))
-        .max(0);
     let stop_reason = Some(reason.to_string());
-    let summary = MoatRoundSummary {
-        round_id: Uuid::nil(),
-        selected_strategies: selected_strategies
-            .iter()
-            .map(|strategy| strategy.strategy_id.clone())
-            .collect(),
-        implemented_specs: Vec::new(),
-        tests_passed: input.tests_passed,
-        moat_score_before,
-        moat_score_after: moat_score_before,
-        continue_decision: ContinueDecision::Stop,
-        stop_reason: stop_reason.clone(),
-        pivot_reason: None,
-    };
+    let mut summary = evaluate_moat_round(
+        Uuid::nil(),
+        &input.market,
+        &input.competitor,
+        &input.lock_in,
+        &[],
+        input.tests_passed,
+        MoatImprovementThreshold(input.improvement_threshold),
+    );
+    summary.selected_strategies = selected_strategies
+        .iter()
+        .map(|strategy| strategy.strategy_id.clone())
+        .collect();
+    summary.continue_decision = ContinueDecision::Stop;
+    summary.stop_reason = stop_reason.clone();
 
     MoatRoundReport {
         summary,

@@ -1,6 +1,6 @@
 use mdid_domain::{
-    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
-    MoatType, ResourceBudget,
+    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType,
+    ResourceBudget,
 };
 use mdid_runtime::moat::{run_bounded_round, MoatRoundInput};
 
@@ -46,13 +46,13 @@ fn bounded_round_returns_continue_when_gain_exceeds_threshold() {
     assert_eq!(
         report.executed_tasks,
         vec![
-            "market_scan",
-            "competitor_analysis",
-            "lockin_analysis",
-            "strategy_selection",
-            "spec_plan_handoff",
-            "implementation_gate",
-            "evaluation",
+            "market_scan".to_string(),
+            "competitor_analysis".to_string(),
+            "lockin_analysis".to_string(),
+            "strategy_selection".to_string(),
+            "spec_plan_handoff".to_string(),
+            "implementation_gate".to_string(),
+            "evaluation".to_string(),
         ]
     );
     assert!(report.stop_reason.is_none());
@@ -87,9 +87,16 @@ fn bounded_round_stops_when_budget_disallows_strategy_work() {
     assert_eq!(report.summary.continue_decision, ContinueDecision::Stop);
     assert_eq!(
         report.executed_tasks,
-        vec!["market_scan", "competitor_analysis", "lockin_analysis"]
+        vec![
+            "market_scan".to_string(),
+            "competitor_analysis".to_string(),
+            "lockin_analysis".to_string(),
+        ]
     );
-    assert_eq!(report.stop_reason.as_deref(), Some("strategy budget exhausted"));
+    assert_eq!(
+        report.stop_reason.as_deref(),
+        Some("strategy budget exhausted")
+    );
 }
 
 #[test]
@@ -131,10 +138,10 @@ fn bounded_round_stops_when_spec_or_implementation_budget_is_zero() {
     assert_eq!(
         report.executed_tasks,
         vec![
-            "market_scan",
-            "competitor_analysis",
-            "lockin_analysis",
-            "strategy_selection"
+            "market_scan".to_string(),
+            "competitor_analysis".to_string(),
+            "lockin_analysis".to_string(),
+            "strategy_selection".to_string(),
         ]
     );
     assert_eq!(
