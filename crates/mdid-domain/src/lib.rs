@@ -330,6 +330,84 @@ impl ReviewDecision {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DicomPrivateTagPolicy {
+    Keep,
+    Remove,
+    ReviewRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BurnedInAnnotationStatus {
+    Clean,
+    Suspicious,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DicomTagRef {
+    pub group: u16,
+    pub element: u16,
+    pub keyword: String,
+}
+
+impl DicomTagRef {
+    pub fn new(group: u16, element: u16, keyword: String) -> Self {
+        Self {
+            group,
+            element,
+            keyword,
+        }
+    }
+
+    pub fn field_path(&self) -> String {
+        format!(
+            "dicom/{:04x},{:04x}/{}",
+            self.group, self.element, self.keyword
+        )
+    }
+
+    pub fn is_private(&self) -> bool {
+        self.group % 2 == 1
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DicomPhiCandidate {
+    pub tag: DicomTagRef,
+    pub phi_type: String,
+    pub value: String,
+    pub decision: ReviewDecision,
+}
+
+impl std::fmt::Debug for DicomPhiCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DicomPhiCandidate")
+            .field("tag", &self.tag)
+            .field("phi_type", &self.phi_type)
+            .field("value", &"<redacted>")
+            .field("decision", &self.decision)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DicomDeidentificationSummary {
+    pub total_tags: usize,
+    pub encoded_tags: usize,
+    pub review_required_tags: usize,
+    pub removed_private_tags: usize,
+    pub remapped_uids: usize,
+    pub burned_in_suspicions: usize,
+}
+
+impl DicomDeidentificationSummary {
+    pub fn requires_review(&self) -> bool {
+        self.review_required_tags > 0 || self.burned_in_suspicions > 0
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PhiCandidate {
     pub format: TabularFormat,
