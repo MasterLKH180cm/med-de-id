@@ -462,6 +462,96 @@ pub enum MoatType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    Planner,
+    Coder,
+    Reviewer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoatTaskNodeKind {
+    MarketScan,
+    CompetitorAnalysis,
+    LockInAnalysis,
+    StrategyGeneration,
+    SpecPlanning,
+    Implementation,
+    Review,
+    Evaluation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoatTaskNodeState {
+    Pending,
+    Ready,
+    InProgress,
+    Completed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatTaskNode {
+    pub node_id: String,
+    pub title: String,
+    pub role: AgentRole,
+    pub kind: MoatTaskNodeKind,
+    pub state: MoatTaskNodeState,
+    pub depends_on: Vec<String>,
+    pub spec_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatTaskGraph {
+    pub round_id: Uuid,
+    pub nodes: Vec<MoatTaskNode>,
+}
+
+impl MoatTaskGraph {
+    pub fn ready_node_ids(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|node| node.state == MoatTaskNodeState::Pending)
+            .filter(|node| {
+                node.depends_on.iter().all(|dependency| {
+                    self.nodes.iter().any(|candidate| {
+                        candidate.node_id == *dependency
+                            && candidate.state == MoatTaskNodeState::Completed
+                    })
+                })
+            })
+            .map(|node| node.node_id.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionLogEntry {
+    pub entry_id: Uuid,
+    pub round_id: Uuid,
+    pub author_role: AgentRole,
+    pub summary: String,
+    pub rationale: String,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatMemorySnapshot {
+    pub round_id: Uuid,
+    pub latest_score: i16,
+    pub improvement_delta: i16,
+    pub decisions: Vec<DecisionLogEntry>,
+}
+
+impl MoatMemorySnapshot {
+    pub fn latest_decision_summary(&self) -> Option<String> {
+        self.decisions.last().map(|entry| entry.summary.clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ContinueDecision {
     Continue,
     Stop,
