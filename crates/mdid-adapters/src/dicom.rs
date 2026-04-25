@@ -108,7 +108,8 @@ impl DicomAdapter {
             dataset = strip_private_tags(dataset);
         }
 
-        let file_obj = dataset.with_meta(file_meta_builder(&meta, strip_private))?;
+        let keep_private_file_meta = self.private_tag_policy == DicomPrivateTagPolicy::Keep;
+        let file_obj = dataset.with_meta(file_meta_builder(&meta, keep_private_file_meta))?;
         let mut rewritten = Vec::new();
         file_obj.write_all(&mut rewritten)?;
         Ok(rewritten)
@@ -195,13 +196,8 @@ pub fn sanitize_output_name(source_name: &str) -> String {
     let extension = std::path::Path::new(source_name)
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            ext.chars()
-                .filter(|ch| ch.is_ascii_alphanumeric())
-                .collect::<String>()
-                .to_ascii_lowercase()
-        })
-        .filter(|ext| matches!(ext.as_str(), "dcm" | "dicom"));
+        .map(str::to_ascii_lowercase)
+        .filter(|ext| ext == "dcm");
 
     match extension {
         Some(ext) => format!("dicom-output.{ext}"),
@@ -284,7 +280,7 @@ fn value_length(value: &DicomValue<InMemDicomObject, Vec<u8>>) -> Length {
     }
 }
 
-fn file_meta_builder(meta: &FileMetaTable, strip_private: bool) -> FileMetaTableBuilder {
+fn file_meta_builder(meta: &FileMetaTable, keep_private: bool) -> FileMetaTableBuilder {
     let mut builder = FileMetaTableBuilder::new()
         .information_version(meta.information_version)
         .transfer_syntax(meta.transfer_syntax())
@@ -302,7 +298,7 @@ fn file_meta_builder(meta: &FileMetaTable, strip_private: bool) -> FileMetaTable
     if let Some(value) = trimmed_optional(meta.receiving_application_entity_title.as_deref()) {
         builder = builder.receiving_application_entity_title(value);
     }
-    if !strip_private {
+    if keep_private {
         if let Some(value) = meta.private_information_creator_uid() {
             builder = builder.private_information_creator_uid(value);
         }

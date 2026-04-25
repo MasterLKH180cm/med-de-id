@@ -409,14 +409,12 @@ fn sanitize_filename_hardens_windows_reserved_and_dot_only_names() {
 }
 
 #[test]
-fn sanitize_filename_whitelists_only_dicom_safe_extensions() {
+fn sanitize_filename_whitelists_only_dcm_extension() {
     assert_eq!(sanitize_output_name("study.MRN12345"), "dicom-output");
     assert_eq!(sanitize_output_name("scan.123-45-6789"), "dicom-output");
     assert_eq!(sanitize_output_name("scan.dcm.exe"), "dicom-output");
-    assert_eq!(
-        sanitize_output_name("scan.real.dicom"),
-        "dicom-output.dicom"
-    );
+    assert_eq!(sanitize_output_name("scan.real.dicom"), "dicom-output");
+    assert_eq!(sanitize_output_name("scan.real.DCM"), "dicom-output.dcm");
 }
 
 fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec<u8> {

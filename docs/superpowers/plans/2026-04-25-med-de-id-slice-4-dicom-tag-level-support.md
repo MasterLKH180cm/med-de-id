@@ -340,9 +340,9 @@ Add tests named:
 - `rewrite_removes_private_tags_when_policy_is_remove`
 - `sanitize_filename_replaces_phi_bearing_source_names_with_a_safe_neutral_output_name`
 - `sanitize_filename_hardens_windows_reserved_and_dot_only_names`
-- `sanitize_filename_whitelists_only_dicom_safe_extensions`
+- `sanitize_filename_whitelists_only_dcm_extension`
 
-The filename sanitization checks should keep the neutral basename `dicom-output`, preserve only the DICOM-safe `dcm` and `dicom` extensions, and fall back to `dicom-output` for any other trailing extension.
+The filename sanitization checks should keep the neutral basename `dicom-output`, preserve only the conservative `dcm` extension, and fall back to `dicom-output` for any other trailing extension.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -386,8 +386,8 @@ pub fn sanitize_output_name(source_name: &str) -> String {
     let extension = std::path::Path::new(source_name)
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase())
-        .filter(|ext| matches!(ext.as_str(), "dcm" | "dicom"));
+        .map(str::to_ascii_lowercase)
+        .filter(|ext| ext == "dcm");
 
     match extension {
         Some(ext) => format!("dicom-output.{ext}"),
