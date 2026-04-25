@@ -147,23 +147,17 @@ Ok(CliCommand::MoatDecisionLog(history_path)) => {
 ```rust
 fn run_moat_decision_log(history_path: &str) -> Result<(), String> {
     let store = LocalMoatHistoryStore::open_existing(history_path)
-        .map_err(|error| format!("failed to open moat history: {error}"))?;
-    let summary = store
-        .summary()
-        .map_err(|error| format!("failed to read moat history: {error}"))?;
-    let latest = summary
-        .latest_report
-        .ok_or_else(|| "moat history is empty".to_string())?;
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let latest = store.entries().last().ok_or_else(|| {
+        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
+    })?;
+    let decisions = &latest.report.control_plane.memory.decisions;
 
-    println!(
-        "decision_log_entries={}",
-        latest.control_plane.memory.decisions.len()
-    );
-
-    for decision in latest.control_plane.memory.decisions {
+    println!("decision_log_entries={}", decisions.len());
+    for decision in decisions {
         println!(
             "decision={}|{}|{}",
-            render_agent_role(&decision.author_role),
+            format_agent_role(decision.author_role),
             decision.summary,
             decision.rationale
         );
