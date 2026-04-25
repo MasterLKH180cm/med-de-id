@@ -40,10 +40,10 @@ The repository currently contains a bounded local foundation for moat-loop execu
 - domain models in `mdid-domain` for market structure, competitor intelligence, lock-in analysis, moat strategies, round summaries, task-graph nodes, and decision-memory snapshots
 - deterministic moat evaluation helpers in `mdid-application`
 - bounded round orchestration in `mdid-runtime`
-- a deterministic sample `mdid-cli moat round` path for inspecting one bounded round contract with canonical executed task IDs: planner-owned `market_scan`, `competitor_analysis`, `lockin_analysis`, `strategy_generation`, and `spec_planning`; coder-owned `implementation`; reviewer/evaluation `review` and `evaluation`
-- a deterministic sample `mdid-cli moat control-plane` path for inspecting the bounded control-plane snapshot with canonical task states, ready-node visibility, and the latest bounded decision-memory summary
+- a bounded operator-facing `mdid-cli moat round` runner over deterministic sample inputs, including override flags for strategy/spec/implementation/review budgets plus `tests_passed`, canonical executed task IDs, and honest `stop_reason` reporting
+- a bounded operator-facing `mdid-cli moat control-plane` runner over the same deterministic sample inputs, including override flags for stop-path inspection through canonical task states, ready-node visibility, and the latest bounded decision-memory summary
 
-This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally through both the round report and control-plane snapshot, but the CLI is still a canned sample round rather than a general operator-facing runner over user-supplied or persisted data.
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally through both the round report and control-plane snapshot, and now exposes bounded operator-facing override flags over deterministic sample data. It is still not persisted, not live, and not autonomous over external data: there is no scheduler control, no live market crawling, no persistent memory store, and no fully autonomous multi-agent runtime over user-supplied or external inputs.
 
 ### Still planned, not yet implemented
 

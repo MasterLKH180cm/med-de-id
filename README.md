@@ -86,7 +86,7 @@ Available docs:
 
 `med-de-id` now includes a local-first moat-loop foundation for deterministic bounded strategy rounds. The shipped slice models market snapshots, competitor profiles, lock-in analysis artifacts, moat strategies, deterministic moat scoring, and a bounded control-plane snapshot for canonical task-state inspection through the CLI.
 
-Run the deterministic sample round with:
+Run the default bounded round with:
 
 ```bash
 cargo run -p mdid-cli -- moat round
@@ -98,6 +98,14 @@ The round command prints a deterministic report containing:
 - `executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_generation,spec_planning,implementation,review,evaluation`
 - `moat_score_before`
 - `moat_score_after`
+- `stop_reason=<none>|...`
+
+Run bounded stop-path scenarios by overriding the deterministic sample budgets, for example:
+
+```bash
+cargo run -p mdid-cli -- moat round --review-loops 0
+cargo run -p mdid-cli -- moat control-plane --strategy-candidates 0
+```
 
 Inspect the bounded control-plane snapshot with:
 
@@ -112,7 +120,7 @@ The control-plane command prints a deterministic snapshot containing:
 - `improvement_delta`
 - `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
 
-This foundation is intentionally bounded. It does not yet perform live market crawling, persistent memory storage, PR automation, or unrestricted autonomous iteration.
+These override flags make the CLI a bounded operator-facing runner over deterministic sample inputs, but the foundation is still intentionally narrow. It does not yet perform live market crawling, persistent memory storage, PR automation, scheduler control, or unrestricted autonomous iteration over external data.
 
 ## Roadmap shape
 
