@@ -208,6 +208,10 @@ fn bounded_round_stops_before_review_when_review_budget_is_zero() {
         Some("review budget exhausted")
     );
     assert_eq!(
+        report.summary.implemented_specs,
+        vec!["moat-spec/workflow-audit".to_string()]
+    );
+    assert_eq!(
         report.control_plane.task_graph.ready_node_ids(),
         vec!["review".to_string()]
     );

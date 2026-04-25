@@ -128,15 +128,11 @@ fn stop_report(
         &input.market,
         &input.competitor,
         &input.lock_in,
-        &[],
+        &selected_strategies,
         usize::from(input.budget.max_spec_generations),
         input.tests_passed,
         MoatImprovementThreshold(input.improvement_threshold),
     );
-    summary.selected_strategies = selected_strategies
-        .iter()
-        .map(|strategy| strategy.strategy_id.clone())
-        .collect();
     summary.continue_decision = ContinueDecision::Stop;
     summary.stop_reason = stop_reason.clone();
 
