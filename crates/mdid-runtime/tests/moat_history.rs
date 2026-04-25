@@ -238,7 +238,30 @@ fn empty_store_summary_is_default() {
 }
 
 #[test]
-fn continuation_gate_allows_next_round_when_latest_round_completed_evaluation_and_cleared_threshold() {
+fn continuation_gate_returns_blocked_outcome_for_empty_history() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    assert_eq!(
+        store.continuation_gate(3),
+        mdid_runtime::moat_history::MoatContinuationGate {
+            latest_round_id: None,
+            latest_continue_decision: None,
+            latest_tests_passed: None,
+            latest_improvement_delta: None,
+            latest_stop_reason: None,
+            evaluation_completed: false,
+            can_continue: false,
+            reason: "no persisted moat rounds to evaluate".to_string(),
+            required_improvement_threshold: 3,
+        }
+    );
+}
+
+#[test]
+fn continuation_gate_allows_next_round_when_latest_round_completed_evaluation_and_cleared_threshold(
+) {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");
     let round_id = Uuid::new_v4();
@@ -370,6 +393,106 @@ fn continuation_gate_blocks_when_latest_round_failed_tests_after_evaluation() {
     assert_eq!(gate.latest_tests_passed, Some(false));
 }
 
+#[test]
+fn continuation_gate_blocks_when_latest_round_improvement_is_below_threshold() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    store
+        .append(
+            recorded_at("2026-04-25T22:00:00Z"),
+            sample_report(
+                round_id,
+                ContinueDecision::Continue,
+                None,
+                "review approved bounded moat round",
+                90,
+                92,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                    "review",
+                    "evaluation",
+                ],
+            ),
+        )
+        .expect("report should persist");
+
+    assert_eq!(
+        store.continuation_gate(3),
+        mdid_runtime::moat_history::MoatContinuationGate {
+            latest_round_id: Some(round_id.to_string()),
+            latest_continue_decision: Some(ContinueDecision::Continue),
+            latest_tests_passed: Some(true),
+            latest_improvement_delta: Some(2),
+            latest_stop_reason: None,
+            evaluation_completed: true,
+            can_continue: false,
+            reason: "latest round improvement below threshold".to_string(),
+            required_improvement_threshold: 3,
+        }
+    );
+}
+
+#[test]
+fn continuation_gate_uses_reloaded_persisted_history() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    store
+        .append(
+            recorded_at("2026-04-25T22:00:00Z"),
+            sample_report(
+                round_id,
+                ContinueDecision::Continue,
+                None,
+                "review approved bounded moat round",
+                90,
+                98,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                    "review",
+                    "evaluation",
+                ],
+            ),
+        )
+        .expect("report should persist");
+    drop(store);
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("reloaded history store should open");
+
+    assert_eq!(
+        reloaded.continuation_gate(3),
+        mdid_runtime::moat_history::MoatContinuationGate {
+            latest_round_id: Some(round_id.to_string()),
+            latest_continue_decision: Some(ContinueDecision::Continue),
+            latest_tests_passed: Some(true),
+            latest_improvement_delta: Some(8),
+            latest_stop_reason: None,
+            evaluation_completed: true,
+            can_continue: true,
+            reason: "latest round cleared continuation gate".to_string(),
+            required_improvement_threshold: 3,
+        }
+    );
+}
+
 fn sample_report(
     round_id: Uuid,
     continue_decision: ContinueDecision,
@@ -410,7 +533,10 @@ fn sample_report(
 
     MoatRoundReport {
         summary,
-        executed_tasks: executed_tasks.iter().map(|task| (*task).to_string()).collect(),
+        executed_tasks: executed_tasks
+            .iter()
+            .map(|task| (*task).to_string())
+            .collect(),
         stop_reason: stop_reason.map(str::to_string),
         control_plane,
     }

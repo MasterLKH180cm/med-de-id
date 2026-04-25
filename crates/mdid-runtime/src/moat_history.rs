@@ -18,6 +18,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
 
+const EVALUATION_TASK_ID: &str = "evaluation";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoatHistoryEntry {
     pub recorded_at: DateTime<Utc>,
@@ -158,7 +160,7 @@ impl LocalMoatHistoryStore {
             .report
             .executed_tasks
             .iter()
-            .any(|task| task == "evaluation");
+            .any(|task| task == EVALUATION_TASK_ID);
 
         let (can_continue, reason) = if !evaluation_completed {
             (false, "latest round did not complete evaluation")
