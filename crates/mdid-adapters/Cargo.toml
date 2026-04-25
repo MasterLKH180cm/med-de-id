@@ -8,5 +8,7 @@ license.workspace = true
 calamine.workspace = true
 csv.workspace = true
 mdid-domain = { path = "../mdid-domain" }
-rust_xlsxwriter.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+rust_xlsxwriter = "0.94"

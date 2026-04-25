@@ -2,7 +2,6 @@ use std::io::Cursor;
 
 use calamine::{open_workbook_from_rs, Data, Reader, Xlsx, XlsxError};
 use mdid_domain::{PhiCandidate, ReviewDecision, TabularCellRef, TabularColumn, TabularFormat};
-use rust_xlsxwriter::Workbook;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -149,23 +148,6 @@ impl XlsxTabularAdapter {
             data_rows,
             &self.policies,
         ))
-    }
-
-    pub fn fixture_bytes(rows: Vec<Vec<&str>>) -> Vec<u8> {
-        let mut workbook = Workbook::new();
-        let worksheet = workbook.add_worksheet();
-
-        for (row_index, row) in rows.iter().enumerate() {
-            for (column_index, value) in row.iter().enumerate() {
-                worksheet
-                    .write_string(row_index as u32, column_index as u16, *value)
-                    .expect("fixture workbook cell write should succeed");
-            }
-        }
-
-        workbook
-            .save_to_buffer()
-            .expect("fixture workbook serialization should succeed")
     }
 }
 

@@ -43,7 +43,7 @@ fn xlsx_adapter_uses_first_non_empty_worksheet_and_matches_csv_semantics() {
 
 #[test]
 fn xlsx_adapter_skips_whitespace_only_cells_when_building_candidates() {
-    let workbook = XlsxTabularAdapter::fixture_bytes(vec![
+    let workbook = workbook_fixture(vec![
         vec!["patient_id", "patient_name", "notes"],
         vec!["   ", "\t  ", "kept"],
     ]);
@@ -60,8 +60,26 @@ fn xlsx_adapter_skips_whitespace_only_cells_when_building_candidates() {
 fn workbook_with_blank_cover_sheet(rows: Vec<Vec<&str>>) -> Vec<u8> {
     let mut workbook = Workbook::new();
     let _ = workbook.add_worksheet();
-    let worksheet = workbook.add_worksheet();
+    write_rows(workbook.add_worksheet(), &rows);
 
+    workbook
+        .save_to_buffer()
+        .expect("fixture workbook serialization should succeed")
+}
+
+fn workbook_fixture(rows: Vec<Vec<&str>>) -> Vec<u8> {
+    let mut workbook = Workbook::new();
+    write_rows(workbook.add_worksheet(), &rows);
+
+    workbook
+        .save_to_buffer()
+        .expect("fixture workbook serialization should succeed")
+}
+
+fn write_rows(
+    worksheet: &mut rust_xlsxwriter::Worksheet,
+    rows: &[Vec<&str>],
+) {
     for (row_index, row) in rows.iter().enumerate() {
         for (column_index, value) in row.iter().enumerate() {
             worksheet
@@ -69,10 +87,6 @@ fn workbook_with_blank_cover_sheet(rows: Vec<Vec<&str>>) -> Vec<u8> {
                 .expect("fixture workbook cell write should succeed");
         }
     }
-
-    workbook
-        .save_to_buffer()
-        .expect("fixture workbook serialization should succeed")
 }
 
 fn candidate_summary(

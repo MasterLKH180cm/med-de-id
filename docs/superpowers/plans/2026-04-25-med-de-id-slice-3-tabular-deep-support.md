@@ -6,7 +6,7 @@
 
 **Architecture:** This slice adds a focused `mdid-adapters` crate with a tabular module that normalizes CSV/XLSX inputs into one shared in-memory representation. The application layer composes that adapter with `mdid-vault` so repeated PHI values reuse the same token while each cell keeps its own scoped mapping record, approved cells are encoded, review-required cells stay explicit, and the run returns batch summaries instead of pretending every row succeeded.
 
-**Tech Stack:** Rust workspace, Cargo, Serde, Chrono, UUID, thiserror, csv, calamine, rust_xlsxwriter, tempfile.
+**Tech Stack:** Rust workspace, Cargo, Serde, Chrono, UUID, thiserror, csv, calamine, rust_xlsxwriter (test-only XLSX fixtures), tempfile.
 
 ---
 
@@ -501,8 +501,6 @@ members = [
 
 [workspace.dependencies]
 csv = "1.3"
-calamine = "0.25"
-rust_xlsxwriter = "0.79"
 ```
 
 Create `crates/mdid-adapters/Cargo.toml`:
@@ -836,7 +834,6 @@ Add the XLSX dependencies and exports first:
 # Cargo.toml
 [workspace.dependencies]
 calamine = "0.34"
-rust_xlsxwriter = "0.94"
 ```
 
 ```toml
@@ -845,8 +842,10 @@ rust_xlsxwriter = "0.94"
 calamine.workspace = true
 csv.workspace = true
 mdid-domain = { path = "../mdid-domain" }
-rust_xlsxwriter.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+rust_xlsxwriter = "0.94"
 ```
 
 ```rust
@@ -875,21 +874,10 @@ impl XlsxTabularAdapter {
         let workbook = calamine::open_workbook_from_rs(std::io::Cursor::new(bytes.to_vec()))?;
         extract_first_non_empty_sheet(workbook, &self.policies)
     }
-
-    pub fn fixture_bytes(rows: Vec<Vec<&str>>) -> Vec<u8> {
-        let mut workbook = rust_xlsxwriter::Workbook::new();
-        let worksheet = workbook.add_worksheet();
-        for (row_index, row) in rows.iter().enumerate() {
-            for (column_index, value) in row.iter().enumerate() {
-                worksheet
-                    .write_string(row_index as u32, column_index as u16, value)
-                    .unwrap();
-            }
-        }
-        workbook.save_to_buffer().unwrap()
-    }
 }
 ```
+
+Keep `rust_xlsxwriter` fixture helpers inside `crates/mdid-adapters/tests/xlsx_tabular_adapter.rs` so production adapter code stays free of XLSX writer dependencies.
 
 Update the status section in `README.md`:
 
