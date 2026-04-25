@@ -44,8 +44,9 @@ The repository currently contains a bounded local foundation for moat-loop execu
 - a bounded operator-facing `mdid-cli moat round` runner over deterministic sample inputs, including override flags for strategy/spec/implementation/review budgets plus `tests_passed`, canonical executed task IDs, honest `stop_reason` reporting, and optional `--history-path PATH` persistence
 - a bounded operator-facing `mdid-cli moat control-plane` runner over the same deterministic sample inputs, including override flags for stop-path inspection through canonical task states, ready-node visibility, and the latest bounded decision-memory summary
 - a bounded operator-facing `mdid-cli moat history --history-path PATH` summary surface for inspecting persisted local history
+- a bounded operator-facing `mdid-cli moat continue --history-path PATH [--improvement-threshold N]` gate that truthfully reports whether the latest persisted round completed evaluation and cleared the configured continuation threshold
 
-This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic local round runner, bounded control-plane inspection, and bounded local history persistence/inspection over deterministic sample data. It is still not live and not fully autonomous over external data: there is no scheduler control, no live market crawling, and no full autonomous multi-agent runtime over user-supplied or external inputs.
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic local round runner, bounded control-plane inspection, bounded local history persistence/inspection, and an inspection-only continuation gate over deterministic sample data. It is still not live and not fully autonomous over external data: the continuation gate does not start new rounds automatically, and there is no scheduler control, no live market crawling, and no full autonomous multi-agent runtime over user-supplied or external inputs.
 
 ### Still planned, not yet implemented
 

@@ -149,7 +149,27 @@ The history command prints a bounded summary containing:
 - `best_moat_score_after`
 - `improvement_deltas`
 
-This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, but it still does not perform live market crawling, scheduler control, PR automation, or a full autonomous multi-agent runtime over external data.
+Inspect whether the latest persisted round is eligible to start another bounded round with:
+
+```bash
+cargo run -p mdid-cli -- moat continue --history-path .mdid/moat-history.json
+```
+
+The continuation command prints a bounded gate summary containing:
+
+- `latest_round_id`
+- `latest_continue_decision`
+- `latest_tests_passed`
+- `latest_improvement_delta`
+- `latest_stop_reason`
+- `evaluation_completed=true|false`
+- `can_continue=true|false`
+- `reason`
+- `required_improvement_threshold`
+
+This is an inspection-only surface. It does not auto-schedule or launch the next round.
+
+This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, plus inspection-only continuation-gate reporting, but it still does not perform live market crawling, scheduler control, PR automation, or a full autonomous multi-agent runtime over external data.
 
 ## Roadmap shape
 

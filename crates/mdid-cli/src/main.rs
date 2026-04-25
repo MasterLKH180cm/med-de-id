@@ -38,6 +38,14 @@ fn main() {
                 exit_with_error(error);
             }
         }
+        Ok(CliCommand::MoatContinue {
+            history_path,
+            improvement_threshold,
+        }) => {
+            if let Err(error) = run_moat_continue(&history_path, improvement_threshold) {
+                exit_with_error(error);
+            }
+        }
         Err(error) => exit_with_usage(error),
     }
 }
@@ -48,6 +56,10 @@ enum CliCommand {
     MoatRound(MoatRoundCommand),
     MoatControlPlane(MoatRoundOverrides),
     MoatHistory(String),
+    MoatContinue {
+        history_path: String,
+        improvement_threshold: i16,
+    },
 }
 
 fn parse_command(args: &[String]) -> Result<CliCommand, String> {
@@ -64,6 +76,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [moat, history, rest @ ..] if moat == "moat" && history == "history" => {
             Ok(CliCommand::MoatHistory(parse_required_history_path(rest)?))
         }
+        [moat, continue_command, rest @ ..] if moat == "moat" && continue_command == "continue" => {
+            parse_moat_continue_command(rest)
+        }
         _ => Err(format!("unknown command: {}", format_command(args))),
     }
 }
@@ -73,6 +88,39 @@ fn parse_moat_round_command(args: &[String]) -> Result<MoatRoundCommand, String>
     Ok(MoatRoundCommand {
         overrides,
         history_path,
+    })
+}
+
+fn parse_moat_continue_command(args: &[String]) -> Result<CliCommand, String> {
+    let mut history_path = None;
+    let mut improvement_threshold = 3;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--history-path" => {
+                let value = required_history_path_value(args, index)?.clone();
+                if history_path.is_some() {
+                    return Err(duplicate_flag_error("--history-path"));
+                }
+                history_path = Some(value);
+            }
+            "--improvement-threshold" => {
+                let value = required_flag_value(args, index, "--improvement-threshold", false)?;
+                improvement_threshold = value
+                    .parse::<i16>()
+                    .map_err(|_| format!("invalid value for --improvement-threshold: {value}"))?;
+            }
+            flag => return Err(format!("unknown flag: {flag}")),
+        }
+
+        index += 2;
+    }
+
+    Ok(CliCommand::MoatContinue {
+        history_path: history_path
+            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        improvement_threshold,
     })
 }
 
@@ -264,6 +312,55 @@ fn run_moat_history(history_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn run_moat_continue(history_path: &str, improvement_threshold: i16) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let gate = store.continuation_gate(improvement_threshold);
+
+    println!("moat continuation gate");
+    println!(
+        "latest_round_id={}",
+        gate.latest_round_id.as_deref().unwrap_or("<none>")
+    );
+    println!(
+        "latest_continue_decision={}",
+        gate.latest_continue_decision
+            .map(format_continue_decision)
+            .unwrap_or("<none>")
+    );
+    println!(
+        "latest_tests_passed={}",
+        format_optional_bool(gate.latest_tests_passed)
+    );
+    println!(
+        "latest_improvement_delta={}",
+        format_optional_i16(gate.latest_improvement_delta)
+    );
+    println!(
+        "latest_stop_reason={}",
+        gate.latest_stop_reason.as_deref().unwrap_or("<none>")
+    );
+    println!(
+        "evaluation_completed={}",
+        if gate.evaluation_completed {
+            "true"
+        } else {
+            "false"
+        }
+    );
+    println!(
+        "can_continue={}",
+        if gate.can_continue { "true" } else { "false" }
+    );
+    println!("reason={}", gate.reason);
+    println!(
+        "required_improvement_threshold={}",
+        gate.required_improvement_threshold
+    );
+
+    Ok(())
+}
+
 fn print_history_summary(summary: &MoatHistorySummary) {
     println!("moat history summary");
     println!("entries={}", summary.entry_count);
@@ -307,6 +404,14 @@ fn format_optional_i16(value: Option<i16>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "<none>".to_string())
+}
+
+fn format_optional_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "<none>",
+    }
 }
 
 fn format_improvement_deltas(values: &[i16]) -> String {
@@ -424,7 +529,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N]]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -475,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_command_maps_round_control_plane_and_history_commands() {
+    fn parse_command_maps_round_control_plane_history_and_continue_commands() {
         assert_eq!(
             parse_command(&[
                 "moat".into(),
@@ -514,6 +619,21 @@ mod tests {
             ])
             .unwrap(),
             CliCommand::MoatHistory("history.json".into())
+        );
+        assert_eq!(
+            parse_command(&[
+                "moat".into(),
+                "continue".into(),
+                "--history-path".into(),
+                "history.json".into(),
+                "--improvement-threshold".into(),
+                "4".into(),
+            ])
+            .unwrap(),
+            CliCommand::MoatContinue {
+                history_path: "history.json".into(),
+                improvement_threshold: 4,
+            }
         );
     }
 }

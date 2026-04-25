@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N]]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -166,6 +166,100 @@ fn cli_reports_history_summary_for_two_persisted_rounds() {
     );
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_continuation_gate_for_latest_successful_round() {
+    let history_path = unique_history_path("continue-success");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "continue", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat continue");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("moat continuation gate\n"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("can_continue=true\n"));
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("reason=latest round cleared continuation gate\n"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("required_improvement_threshold=3\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_continuation_gate_for_pre_evaluation_stop_round() {
+    let history_path = unique_history_path("continue-stop");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed stopped moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "continue", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat continue");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("can_continue=false\n"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("evaluation_completed=false\n"));
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("reason=latest round did not complete evaluation\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_continue_rejects_invalid_improvement_threshold() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "continue",
+            "--history-path",
+            "history.json",
+            "--improvement-threshold",
+            "bogus",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat continue with invalid threshold");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid value for --improvement-threshold: bogus"));
+    assert!(stderr.contains(USAGE));
 }
 
 #[test]
