@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 calamine.workspace = true
 csv.workspace = true
+dicom-core = "0.9.1"
+dicom-object = "0.9.1"
 mdid-domain = { path = "../mdid-domain" }
 thiserror.workspace = true
 
