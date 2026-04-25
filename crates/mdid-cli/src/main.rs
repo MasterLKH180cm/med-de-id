@@ -55,6 +55,14 @@ fn main() {
                 exit_with_error(error);
             }
         }
+        Ok(CliCommand::MoatScheduleNext {
+            history_path,
+            improvement_threshold,
+        }) => {
+            if let Err(error) = run_moat_schedule_next(&history_path, improvement_threshold) {
+                exit_with_error(error);
+            }
+        }
         Err(error) => exit_with_usage(error),
     }
 }
@@ -70,6 +78,10 @@ enum CliCommand {
         output_dir: String,
     },
     MoatContinue {
+        history_path: String,
+        improvement_threshold: i16,
+    },
+    MoatScheduleNext {
         history_path: String,
         improvement_threshold: i16,
     },
@@ -94,6 +106,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [moat, continue_command, rest @ ..] if moat == "moat" && continue_command == "continue" => {
             parse_moat_continue_command(rest)
+        }
+        [moat, schedule_next, rest @ ..] if moat == "moat" && schedule_next == "schedule-next" => {
+            parse_moat_schedule_next_command(rest)
         }
         _ => Err(format!("unknown command: {}", format_command(args))),
     }
@@ -172,6 +187,38 @@ fn parse_moat_continue_command(args: &[String]) -> Result<CliCommand, String> {
     }
 
     Ok(CliCommand::MoatContinue {
+        history_path: history_path
+            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        improvement_threshold,
+    })
+}
+
+fn parse_moat_schedule_next_command(args: &[String]) -> Result<CliCommand, String> {
+    let mut history_path = None;
+    let mut improvement_threshold = 3;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--history-path" => {
+                let value = required_history_path_value(args, index)?.clone();
+                if history_path.is_some() {
+                    return Err(duplicate_flag_error("--history-path"));
+                }
+                history_path = Some(value);
+            }
+            "--improvement-threshold" => {
+                let value = required_flag_value(args, index, "--improvement-threshold", false)?;
+                improvement_threshold =
+                    parse_non_negative_i16_flag("--improvement-threshold", value)?;
+            }
+            flag => return Err(format!("unknown flag: {flag}")),
+        }
+
+        index += 2;
+    }
+
+    Ok(CliCommand::MoatScheduleNext {
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         improvement_threshold,
@@ -431,6 +478,35 @@ fn run_moat_continue(history_path: &str, improvement_threshold: i16) -> Result<(
     Ok(())
 }
 
+fn run_moat_schedule_next(history_path: &str, improvement_threshold: i16) -> Result<(), String> {
+    let mut store = LocalMoatHistoryStore::open_existing(history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let gate = store.continuation_gate(improvement_threshold);
+    let mut scheduled_round_id = None;
+
+    if gate.can_continue {
+        let report = sample_round_report(&MoatRoundOverrides::default());
+        scheduled_round_id = Some(report.summary.round_id.to_string());
+        store
+            .append(std::time::SystemTime::now().into(), report)
+            .map_err(|error| format!("failed to append moat history entry: {error}"))?;
+    }
+
+    println!("moat schedule next");
+    println!(
+        "scheduled={}",
+        if gate.can_continue { "true" } else { "false" }
+    );
+    println!("reason={}", gate.reason);
+    println!(
+        "scheduled_round_id={}",
+        scheduled_round_id.as_deref().unwrap_or("<none>")
+    );
+    println!("history_path={history_path}");
+
+    Ok(())
+}
+
 fn run_moat_export_specs(history_path: &str, output_dir: &str) -> Result<(), String> {
     let store = LocalMoatHistoryStore::open_existing(history_path)
         .map_err(|error| format!("failed to open moat history store: {error}"))?;
@@ -655,7 +731,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -771,6 +847,21 @@ mod tests {
             CliCommand::MoatContinue {
                 history_path: "history.json".into(),
                 improvement_threshold: 4,
+            }
+        );
+        assert_eq!(
+            parse_command(&[
+                "moat".into(),
+                "schedule-next".into(),
+                "--history-path".into(),
+                "history.json".into(),
+                "--improvement-threshold".into(),
+                "5".into(),
+            ])
+            .unwrap(),
+            CliCommand::MoatScheduleNext {
+                history_path: "history.json".into(),
+                improvement_threshold: 5,
             }
         );
     }

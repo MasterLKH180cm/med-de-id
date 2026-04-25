@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -283,6 +283,113 @@ fn cli_continue_applies_custom_improvement_threshold_to_gate_output() {
     assert!(stdout.contains("can_continue=false\n"));
     assert!(stdout.contains("reason=latest round improvement below threshold\n"));
     assert!(stdout.contains("required_improvement_threshold=9\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_schedule_next_appends_one_round_when_gate_allows_continuation() {
+    let history_path = unique_history_path("schedule-next-append");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "schedule-next", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to schedule next moat round");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("moat schedule next\n"));
+    assert!(stdout.contains("scheduled=true\n"));
+    assert!(stdout.contains("reason=latest round cleared continuation gate\n"));
+    assert!(stdout.contains("scheduled_round_id="));
+    assert!(stdout.contains(&format!("history_path={}\n", history_path.display())));
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path).expect("history should exist");
+    assert_eq!(store.summary().entry_count, 2);
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_schedule_next_does_not_append_when_gate_blocks_continuation() {
+    let history_path = unique_history_path("schedule-next-noop");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--history-path",
+            history_path_arg,
+            "--tests-passed",
+            "false",
+        ])
+        .output()
+        .expect("failed to seed stopped moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "schedule-next", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect schedule next gate");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("moat schedule next\n"));
+    assert!(stdout.contains("scheduled=false\n"));
+    assert!(stdout.contains("reason=latest round tests failed\n"));
+    assert!(stdout.contains("scheduled_round_id=<none>\n"));
+    assert!(stdout.contains(&format!("history_path={}\n", history_path.display())));
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path).expect("history should exist");
+    assert_eq!(store.summary().entry_count, 1);
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_schedule_next_rejects_missing_history_file_without_creating_it() {
+    let history_path = unique_history_path("schedule-next-missing");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "schedule-next",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+        ])
+        .output()
+        .expect("failed to run schedule-next with missing history");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to open moat history store"));
+    assert!(stderr.contains("moat history file does not exist"));
+    assert!(!history_path.exists());
 
     cleanup_history_path(&history_path);
 }

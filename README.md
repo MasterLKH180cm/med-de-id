@@ -175,6 +175,14 @@ The continuation command prints a bounded gate summary containing:
 
 This is an inspection surface only. It does not auto-schedule or launch the next round.
 
+Schedule exactly one next bounded round when the continuation gate allows it with:
+
+```bash
+cargo run -p mdid-cli -- moat schedule-next --history-path .mdid/moat-history.json
+```
+
+`moat schedule-next` is a one-shot local scheduler control: it requires an existing history file, checks the same continuation gate as `moat continue`, appends one deterministic bounded round only when `can_continue=true`, and otherwise leaves history unchanged. It does not create a cron job, background daemon, live crawler, or unrestricted autonomous loop.
+
 Export the latest persisted implemented-spec handoffs as markdown with:
 
 ```bash
@@ -189,7 +197,7 @@ The export command prints a deterministic summary containing:
 - `exported_specs=<comma-list>`
 - `written_files=<comma-list>`
 
-This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, and markdown export of latest persisted moat-spec handoffs, but it still does not perform live market crawling, scheduler control, PR automation, or a full autonomous multi-agent runtime over external data.
+This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest persisted moat-spec handoffs, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
 
 ## Roadmap shape
 
