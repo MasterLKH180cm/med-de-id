@@ -697,14 +697,22 @@ fn run_moat_assignments(command: &MoatAssignmentsCommand) -> Result<(), String> 
         println!(
             "assignment={}|{}|{}|{}|{}",
             format_agent_role(assignment.role),
-            assignment.node_id,
-            assignment.title,
+            escape_assignment_output_field(&assignment.node_id),
+            escape_assignment_output_field(&assignment.title),
             format_moat_task_kind(assignment.kind),
-            assignment.spec_ref.as_deref().unwrap_or("<none>")
+            escape_assignment_output_field(assignment.spec_ref.as_deref().unwrap_or("<none>"))
         );
     }
 
     Ok(())
+}
+
+fn escape_assignment_output_field(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 fn run_moat_continue(history_path: &str, improvement_threshold: i16) -> Result<(), String> {

@@ -1,5 +1,6 @@
 use mdid_runtime::moat_history::LocalMoatHistoryStore;
 use std::{
+    fs,
     path::PathBuf,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
@@ -1247,6 +1248,60 @@ fn cli_reports_latest_moat_assignments_from_persisted_history() {
         String::from_utf8_lossy(&history.stderr)
     );
     assert!(String::from_utf8_lossy(&history.stdout).contains("entries=1\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_moat_assignments_escapes_pipe_delimited_fields() {
+    let history_path = unique_history_path("assignments-escaped-fields");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let persisted = fs::read_to_string(&history_path).expect("history should be readable");
+    let persisted = persisted
+        .replace("\"node_id\": \"review\"", "\"node_id\": \"review|node\"")
+        .replace("\"title\": \"Review\"", "\"title\": \"Review\\nTitle\"")
+        .replace(
+            "\"spec_ref\": null",
+            "\"spec_ref\": \"spec|ref\\rpath\\\\tail\"",
+        );
+    fs::write(&history_path, persisted).expect("history should be patchable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "assignments", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat assignments");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat assignments\n",
+            "assignment_entries=1\n",
+            "assignment=reviewer|review\\|node|Review\\nTitle|review|spec\\|ref\\rpath\\\\tail\n",
+        )
+    );
 
     cleanup_history_path(&history_path);
 }

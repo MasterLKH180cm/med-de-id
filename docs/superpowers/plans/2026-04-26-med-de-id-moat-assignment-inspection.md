@@ -379,7 +379,7 @@ Expected: PASS.
 Add this bullet near the existing moat CLI/read-only control-plane commands:
 
 ```markdown
-- `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer]` inspects the latest persisted read-only Planner/Coder/Reviewer assignment projection and prints deterministic `assignment=` rows. It uses existing moat history only, never creates missing history files, never appends rounds, never schedules work, never launches agents, and never creates cron jobs.
+- `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer]` inspects the latest persisted read-only Planner/Coder/Reviewer assignment projection and prints deterministic `assignment=<role>|<node_id>|<title>|<kind>|<spec_ref>` rows. Persisted `node_id`, `title`, and `spec_ref` fields are escaped for pipe-delimited output (`\\` as `\\\\`, `|` as `\\|`, newline as `\\n`, carriage return as `\\r`). It uses existing moat history only, never creates missing history files, never appends rounds, never schedules work, never launches agents, and never creates cron jobs.
 ```
 
 - [ ] **Step 2: Update moat-loop design spec**
@@ -387,7 +387,7 @@ Add this bullet near the existing moat CLI/read-only control-plane commands:
 In `docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md`, add this capability statement near the control-plane/decision-log inspection section:
 
 ```markdown
-- `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer]` is a read-only latest-round inspection surface for persisted `agent_assignments`. It prints bounded assignment rows for operators and future SDD handoff tooling, but it does not mutate history, schedule rounds, launch agents, crawl data, open PRs, or create cron jobs.
+- `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer]` is a read-only latest-round inspection surface for persisted `agent_assignments`. It prints bounded assignment rows for operators and future SDD handoff tooling; persisted `node_id`, `title`, and `spec_ref` fields are escaped in pipe-delimited rows. It does not mutate history, schedule rounds, launch agents, crawl data, open PRs, or create cron jobs.
 ```
 
 - [ ] **Step 3: Run formatting and focused tests**
@@ -420,3 +420,4 @@ Expected: commit succeeds on `feature/moat-loop-autonomy`.
 - Spec coverage: The plan covers a read-only persisted assignment inspection command, role filtering, error handling, non-mutating history behavior, docs/spec updates, and focused verification.
 - Placeholder scan: No TBD/TODO/fill-in-later placeholders remain.
 - Type consistency: The command type, parser, enum variant, runner, and tests consistently use `MoatAssignmentsCommand`, `moat assignments`, `assignment_entries`, and `assignment=` rows.
+- 2026-04-26 quality follow-up: Assignment rows now escape persisted string fields (`node_id`, `title`, `spec_ref`) before pipe-delimited printing, with regression coverage for pipe, newline, carriage return, and backslash values.
