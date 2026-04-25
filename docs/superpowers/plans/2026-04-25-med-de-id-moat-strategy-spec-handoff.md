@@ -585,7 +585,7 @@ git commit -m "feat: carry moat spec handoff ids through runtime history"
 
 - [ ] **Step 1: Write the failing CLI contract tests**
 
-Update the expected `moat round` output in `crates/mdid-cli/tests/moat_cli.rs` to include a new line after `moat_score_after=...`:
+Update the expected `moat round` output in `crates/mdid-cli/tests/moat_cli.rs` to include a new line before `moat_score_before=...`:
 
 ```rust
 "implemented_specs=moat-spec/workflow-audit\n",
@@ -632,7 +632,7 @@ Update `crates/mdid-cli/src/main.rs`:
 println!("implemented_specs={}", format_string_list(&report.summary.implemented_specs));
 ```
 
-Place that line in `run_moat_round` immediately after `moat_score_after=...`.
+Place that line in `run_moat_round` immediately after `executed_tasks=...` and before the score lines.
 
 Add this line to `print_history_summary` after `latest_decision_summary=...`:
 
