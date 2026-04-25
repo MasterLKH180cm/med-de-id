@@ -366,8 +366,8 @@ Add to `crates/mdid-adapters/src/dicom.rs`:
 
 ```rust
 pub struct DicomRewritePlan {
-    pub replacements: Vec<(DicomTagRef, String)>,
-    pub uid_replacements: Vec<(DicomTagRef, String)>,
+    pub tag_replacements: Vec<DicomTagReplacement>,
+    pub uid_replacements: Vec<DicomUidReplacement>,
 }
 
 impl DicomAdapter {
@@ -375,15 +375,26 @@ impl DicomAdapter {
         &self,
         bytes: &[u8],
         plan: &DicomRewritePlan,
-        sanitized_file_name: &str,
     ) -> Result<Vec<u8>, DicomAdapterError> {
-        let mut object = FileDicomObject::from_reader(std::io::Cursor::new(bytes))?;
-        // replace planned tags, remove or retain private tags per policy,
-        // rewrite StudyInstanceUID / SeriesInstanceUID / SOPInstanceUID from plan,
-        // and store sanitized_file_name into a safe output-facing field path helper.
-        let mut out = Vec::new();
-        object.write_all(&mut out)?;
-        Ok(out)
+        let obj = OpenFileOptions::new()
+            .read_preamble(ReadPreamble::Always)
+            .from_reader(std::io::Cursor::new(bytes))?;
+        let meta = obj.meta().clone();
+        let mut dataset = obj.into_inner();
+
+        apply_tag_replacements(&mut dataset, &plan.tag_replacements);
+        apply_uid_replacements(&mut dataset, &plan.uid_replacements);
+
+        let strip_private = self.private_tag_policy == DicomPrivateTagPolicy::Remove;
+        if strip_private {
+            dataset = strip_private_tags(dataset);
+        }
+
+        let keep_private_file_meta = self.private_tag_policy == DicomPrivateTagPolicy::Keep;
+        let file_obj = dataset.with_meta(file_meta_builder(&meta, keep_private_file_meta))?;
+        let mut rewritten = Vec::new();
+        file_obj.write_all(&mut rewritten)?;
+        Ok(rewritten)
     }
 }
 
