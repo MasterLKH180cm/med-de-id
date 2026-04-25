@@ -155,6 +155,8 @@ Inspect whether the latest persisted round is eligible to start another bounded 
 cargo run -p mdid-cli -- moat continue --history-path .mdid/moat-history.json
 ```
 
+`moat continue` requires an already-existing history file created by `moat round --history-path ...` and fails for missing paths instead of creating a new history file during inspection.
+
 The continuation command prints a bounded gate summary containing:
 
 - `latest_round_id`
@@ -167,7 +169,7 @@ The continuation command prints a bounded gate summary containing:
 - `reason`
 - `required_improvement_threshold`
 
-This is an inspection-only surface. It does not auto-schedule or launch the next round.
+This is an inspection surface only. It does not auto-schedule or launch the next round.
 
 This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, plus inspection-only continuation-gate reporting, but it still does not perform live market crawling, scheduler control, PR automation, or a full autonomous multi-agent runtime over external data.
 

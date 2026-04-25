@@ -243,6 +243,47 @@ fn cli_reports_continuation_gate_for_pre_evaluation_stop_round() {
 }
 
 #[test]
+fn cli_continue_applies_custom_improvement_threshold_to_gate_output() {
+    let history_path = unique_history_path("continue-custom-threshold");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "continue",
+            "--history-path",
+            history_path_arg,
+            "--improvement-threshold",
+            "9",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat continue with custom threshold");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("latest_improvement_delta=8\n"));
+    assert!(stdout.contains("can_continue=false\n"));
+    assert!(stdout.contains("reason=latest round improvement below threshold\n"));
+    assert!(stdout.contains("required_improvement_threshold=9\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn cli_continue_rejects_invalid_improvement_threshold() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
@@ -259,6 +300,26 @@ fn cli_continue_rejects_invalid_improvement_threshold() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid value for --improvement-threshold: bogus"));
+    assert!(stderr.contains(USAGE));
+}
+
+#[test]
+fn cli_continue_rejects_negative_improvement_threshold() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "continue",
+            "--history-path",
+            "history.json",
+            "--improvement-threshold",
+            "-1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat continue with negative threshold");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid value for --improvement-threshold: -1"));
     assert!(stderr.contains(USAGE));
 }
 

@@ -107,9 +107,8 @@ fn parse_moat_continue_command(args: &[String]) -> Result<CliCommand, String> {
             }
             "--improvement-threshold" => {
                 let value = required_flag_value(args, index, "--improvement-threshold", false)?;
-                improvement_threshold = value
-                    .parse::<i16>()
-                    .map_err(|_| format!("invalid value for --improvement-threshold: {value}"))?;
+                improvement_threshold =
+                    parse_non_negative_i16_flag("--improvement-threshold", value)?;
             }
             flag => return Err(format!("unknown flag: {flag}")),
         }
@@ -240,6 +239,18 @@ fn parse_u8_flag(flag: &str, value: &str) -> Result<u8, String> {
     value
         .parse::<u8>()
         .map_err(|_| format!("invalid value for {flag}: {value}"))
+}
+
+fn parse_non_negative_i16_flag(flag: &str, value: &str) -> Result<i16, String> {
+    let parsed = value
+        .parse::<i16>()
+        .map_err(|_| format!("invalid value for {flag}: {value}"))?;
+
+    if parsed < 0 {
+        Err(format!("invalid value for {flag}: {value}"))
+    } else {
+        Ok(parsed)
+    }
 }
 
 fn parse_bool_flag(flag: &str, value: &str) -> Result<bool, String> {
