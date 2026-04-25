@@ -113,14 +113,28 @@ impl XlsxTabularAdapter {
 
     pub fn extract(&self, bytes: &[u8]) -> Result<ExtractedTabularData, TabularAdapterError> {
         let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(bytes))?;
-        let range = workbook
-            .worksheet_range_at(0)
-            .ok_or(TabularAdapterError::MissingWorksheet)??;
-        let mut rows = range
-            .rows()
-            .map(|row| row.iter().map(cell_to_string).collect::<Vec<_>>())
-            .collect::<Vec<_>>();
+        let sheet_names = workbook.sheet_names().to_owned();
+        let mut selected_rows = None;
 
+        for (sheet_index, sheet_name) in sheet_names.iter().enumerate() {
+            let rows = worksheet_rows(workbook.worksheet_range(sheet_name)?);
+            let has_non_blank_cells = worksheet_has_non_blank_cells(&rows);
+
+            if sheet_index == 0 {
+                selected_rows = Some(rows);
+                if has_non_blank_cells {
+                    break;
+                }
+                continue;
+            }
+
+            if has_non_blank_cells {
+                selected_rows = Some(rows);
+                break;
+            }
+        }
+
+        let mut rows = selected_rows.ok_or(TabularAdapterError::MissingWorksheet)?;
         let headers = rows.first().cloned().unwrap_or_default();
         let data_rows = if rows.is_empty() {
             Vec::new()
@@ -153,6 +167,17 @@ impl XlsxTabularAdapter {
             .save_to_buffer()
             .expect("fixture workbook serialization should succeed")
     }
+}
+
+fn worksheet_rows(range: calamine::Range<Data>) -> Vec<Vec<String>> {
+    range
+        .rows()
+        .map(|row| row.iter().map(cell_to_string).collect::<Vec<_>>())
+        .collect()
+}
+
+fn worksheet_has_non_blank_cells(rows: &[Vec<String>]) -> bool {
+    rows.iter().flatten().any(|value| !is_blank(value))
 }
 
 fn build_extracted_data(
