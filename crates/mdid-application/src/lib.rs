@@ -9,7 +9,7 @@ use mdid_domain::{
     DecisionLogEntry, DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy,
     LockInReport, MappingScope, MarketMoatSnapshot, MoatMemorySnapshot, MoatRoundSummary,
     MoatStrategy, MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState, PhiCandidate,
-    PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    PipelineDefinition, PipelineRun, PipelineRunState, ResourceBudget, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -673,6 +673,40 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
             },
         ],
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoatAgentAssignment {
+    pub role: AgentRole,
+    pub node_id: String,
+    pub title: String,
+    pub kind: MoatTaskNodeKind,
+    pub spec_ref: Option<String>,
+}
+
+pub fn project_ready_moat_agent_assignments(
+    graph: &MoatTaskGraph,
+    budget: &ResourceBudget,
+) -> Vec<MoatAgentAssignment> {
+    if budget.max_parallel_tasks == 0 {
+        return Vec::new();
+    }
+
+    let ready_node_ids = graph.ready_node_ids().into_iter().collect::<BTreeSet<_>>();
+
+    graph
+        .nodes
+        .iter()
+        .filter(|node| ready_node_ids.contains(&node.node_id))
+        .take(budget.max_parallel_tasks as usize)
+        .map(|node| MoatAgentAssignment {
+            role: node.role,
+            node_id: node.node_id.clone(),
+            title: node.title.clone(),
+            kind: node.kind,
+            spec_ref: node.spec_ref.clone(),
+        })
+        .collect()
 }
 
 pub fn project_task_graph_progress(

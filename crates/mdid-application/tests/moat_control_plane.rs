@@ -1,11 +1,91 @@
 use mdid_application::{
-    build_default_moat_task_graph, project_task_graph_progress, summarize_round_memory,
+    build_default_moat_task_graph, project_ready_moat_agent_assignments,
+    project_task_graph_progress, summarize_round_memory,
 };
 use mdid_domain::{
     AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary, MoatTaskNodeKind,
-    MoatTaskNodeState,
+    MoatTaskNodeState, ResourceBudget,
 };
 use uuid::Uuid;
+
+fn moat_assignment_budget(max_parallel_tasks: u8) -> ResourceBudget {
+    ResourceBudget {
+        max_parallel_tasks,
+        ..ResourceBudget::default()
+    }
+}
+
+#[test]
+fn agent_assignment_projection_returns_initial_default_graph_assignments() {
+    let graph = build_default_moat_task_graph(Uuid::nil());
+
+    let assignments = project_ready_moat_agent_assignments(&graph, &moat_assignment_budget(8));
+
+    assert_eq!(assignments.len(), 3);
+    assert_eq!(assignments[0].role, AgentRole::Planner);
+    assert_eq!(assignments[0].node_id, "market_scan");
+    assert_eq!(assignments[0].title, "Market Scan");
+    assert_eq!(assignments[0].kind, MoatTaskNodeKind::MarketScan);
+    assert_eq!(assignments[0].spec_ref, None);
+    assert_eq!(assignments[1].role, AgentRole::Planner);
+    assert_eq!(assignments[1].node_id, "competitor_analysis");
+    assert_eq!(assignments[1].title, "Competitor Analysis");
+    assert_eq!(assignments[1].kind, MoatTaskNodeKind::CompetitorAnalysis);
+    assert_eq!(assignments[1].spec_ref, None);
+    assert_eq!(assignments[2].role, AgentRole::Planner);
+    assert_eq!(assignments[2].node_id, "lockin_analysis");
+    assert_eq!(assignments[2].title, "Lock-In Analysis");
+    assert_eq!(assignments[2].kind, MoatTaskNodeKind::LockInAnalysis);
+    assert_eq!(assignments[2].spec_ref, None);
+}
+
+#[test]
+fn agent_assignment_projection_returns_coder_after_planning_chain_completes() {
+    let graph = project_task_graph_progress(
+        build_default_moat_task_graph(Uuid::nil()),
+        &[
+            "market_scan".to_string(),
+            "competitor_analysis".to_string(),
+            "lockin_analysis".to_string(),
+            "strategy_generation".to_string(),
+            "spec_planning".to_string(),
+        ],
+    );
+
+    let assignments = project_ready_moat_agent_assignments(&graph, &moat_assignment_budget(8));
+
+    assert_eq!(assignments.len(), 1);
+    assert_eq!(assignments[0].role, AgentRole::Coder);
+    assert_eq!(assignments[0].node_id, "implementation");
+    assert_eq!(assignments[0].title, "Implementation");
+    assert_eq!(assignments[0].kind, MoatTaskNodeKind::Implementation);
+    assert_eq!(assignments[0].spec_ref, None);
+}
+
+#[test]
+fn agent_assignment_projection_limits_by_max_parallel_tasks() {
+    let graph = build_default_moat_task_graph(Uuid::nil());
+
+    let assignments = project_ready_moat_agent_assignments(&graph, &moat_assignment_budget(2));
+
+    let assigned_node_ids = assignments
+        .iter()
+        .map(|assignment| assignment.node_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        assigned_node_ids,
+        vec!["market_scan", "competitor_analysis"]
+    );
+}
+
+#[test]
+fn agent_assignment_projection_returns_empty_when_max_parallel_tasks_is_zero() {
+    let graph = build_default_moat_task_graph(Uuid::nil());
+
+    let assignments = project_ready_moat_agent_assignments(&graph, &moat_assignment_budget(0));
+
+    assert!(assignments.is_empty());
+}
 
 #[test]
 fn default_task_graph_includes_review_and_evaluation_chain() {
