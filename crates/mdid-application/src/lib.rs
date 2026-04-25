@@ -338,9 +338,35 @@ pub fn build_moat_spec_handoff_ids(
 ) -> Vec<String> {
     selected_strategies
         .iter()
+        .filter_map(|strategy| normalize_moat_strategy_handoff_id(&strategy.strategy_id))
         .take(max_spec_generations)
-        .map(|strategy| format!("moat-spec/{}", strategy.strategy_id))
+        .map(|strategy_id| format!("moat-spec/{strategy_id}"))
         .collect()
+}
+
+fn normalize_moat_strategy_handoff_id(strategy_id: &str) -> Option<String> {
+    let mut normalized = String::new();
+    let mut last_was_separator = false;
+
+    for character in strategy_id.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !normalized.is_empty() && !last_was_separator {
+            normalized.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    while normalized.ends_with('-') {
+        normalized.pop();
+    }
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 pub fn evaluate_moat_round(

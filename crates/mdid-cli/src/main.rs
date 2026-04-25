@@ -274,6 +274,10 @@ fn run_moat_round(command: &MoatRoundCommand) -> Result<(), String> {
         format_continue_decision(report.summary.continue_decision)
     );
     println!("executed_tasks={}", report.executed_tasks.join(","));
+    println!(
+        "implemented_specs={}",
+        format_string_list(&report.summary.implemented_specs)
+    );
     println!("moat_score_before={}", report.summary.moat_score_before);
     println!("moat_score_after={}", report.summary.moat_score_after);
     println!(
@@ -398,6 +402,10 @@ fn print_history_summary(summary: &MoatHistorySummary) {
             .unwrap_or("<none>")
     );
     println!(
+        "latest_implemented_specs={}",
+        format_string_list(&summary.latest_implemented_specs)
+    );
+    println!(
         "latest_moat_score_after={}",
         format_optional_i16(summary.latest_moat_score_after)
     );
@@ -434,6 +442,14 @@ fn format_improvement_deltas(values: &[i16]) -> String {
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",")
+    }
+}
+
+fn format_string_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "<none>".to_string()
+    } else {
+        values.join(",")
     }
 }
 
@@ -587,6 +603,18 @@ mod tests {
         assert_eq!(
             format_task_node_state(MoatTaskNodeState::Blocked),
             "blocked"
+        );
+    }
+
+    #[test]
+    fn format_string_list_uses_none_for_empty_and_commas_for_values() {
+        assert_eq!(format_string_list(&[]), "<none>");
+        assert_eq!(
+            format_string_list(&[
+                "moat-spec/workflow-audit".to_string(),
+                "moat-spec/compliance-ledger".to_string(),
+            ]),
+            "moat-spec/workflow-audit,moat-spec/compliance-ledger"
         );
     }
 

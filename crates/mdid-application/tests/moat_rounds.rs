@@ -74,6 +74,39 @@ fn build_moat_spec_handoff_ids_uses_selected_order_and_spec_budget() {
 }
 
 #[test]
+fn build_moat_spec_handoff_ids_normalizes_strategy_ids_and_skips_empty_results() {
+    let spec_ids = build_moat_spec_handoff_ids(
+        &[
+            MoatStrategy {
+                strategy_id: " Workflow Audit / 2026 ".into(),
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "***".into(),
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "Compliance Ledger".into(),
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "   ".into(),
+                ..MoatStrategy::default()
+            },
+        ],
+        4,
+    );
+
+    assert_eq!(
+        spec_ids,
+        vec![
+            "moat-spec/workflow-audit-2026".to_string(),
+            "moat-spec/compliance-ledger".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn evaluate_moat_round_stops_when_improvement_is_below_threshold() {
     let summary = evaluate_moat_round(
         Uuid::nil(),

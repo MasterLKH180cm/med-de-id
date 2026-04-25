@@ -41,12 +41,12 @@ The repository currently contains a bounded local foundation for moat-loop execu
 - deterministic moat evaluation helpers in `mdid-application`
 - bounded round orchestration in `mdid-runtime`
 - a reusable local JSON-backed history store in `mdid-runtime` exposed as `mdid_runtime::moat_history::LocalMoatHistoryStore`, with `open(path)` for persistence paths that may need to create a new file, `open_existing(path)` for honest read-only inspection of an already-persisted history file, `append(recorded_at, report)` for persistence, and `summary()` for bounded inspection over persisted `MoatHistoryEntry` records
-- a bounded operator-facing `mdid-cli moat round` runner over deterministic sample inputs, including override flags for strategy/spec/implementation/review budgets plus `tests_passed`, canonical executed task IDs, honest `stop_reason` reporting, and optional `--history-path PATH` persistence
+- a bounded operator-facing `mdid-cli moat round` runner over deterministic sample inputs, including override flags for strategy/spec/implementation/review budgets plus `tests_passed`, canonical executed task IDs, surfaced `implemented_specs` handoff IDs, honest `stop_reason` reporting, and optional `--history-path PATH` persistence
 - a bounded operator-facing `mdid-cli moat control-plane` runner over the same deterministic sample inputs, including override flags for stop-path inspection through canonical task states, ready-node visibility, and the latest bounded decision-memory summary
-- a bounded operator-facing `mdid-cli moat history --history-path PATH` summary surface for inspecting persisted local history
+- a bounded operator-facing `mdid-cli moat history --history-path PATH` summary surface for inspecting persisted local history, including the latest surfaced `implemented_specs` handoff IDs as `latest_implemented_specs`
 - a bounded operator-facing `mdid-cli moat continue --history-path PATH [--improvement-threshold N]` gate that truthfully reports whether the latest persisted round completed evaluation and cleared the configured continuation threshold, while requiring an already-persisted history file and failing for missing paths instead of creating a new one during inspection
 
-This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic local round runner, bounded control-plane inspection, bounded local history persistence/inspection, and an inspection-only continuation gate over deterministic sample data. It is still not live and not fully autonomous over external data: the continuation gate does not start new rounds automatically, and there is no scheduler control, no live market crawling, and no full autonomous multi-agent runtime over user-supplied or external inputs.
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic local round runner, bounded control-plane inspection, bounded local history persistence/inspection, and an inspection-only continuation gate over deterministic sample data. Its strategy-to-spec surface is currently limited to bounded normalized handoff IDs such as `moat-spec/workflow-audit`: the current repository does not automatically generate markdown spec documents from those IDs, the continuation gate does not start new rounds automatically, and there is no scheduler control, no live market crawling, and no full autonomous multi-agent runtime over user-supplied or external inputs.
 
 ### Still planned, not yet implemented
 
@@ -214,7 +214,7 @@ Every round must produce:
 
 - `round_id`
 - `selected_strategies[]`
-- `implemented_specs[]`
+- `implemented_specs[]` (bounded normalized handoff IDs such as `moat-spec/workflow-audit`)
 - `tests_passed`
 - `moat_score_before`
 - `moat_score_after`

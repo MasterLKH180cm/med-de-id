@@ -96,9 +96,12 @@ The round command prints a deterministic report containing:
 
 - `continue_decision=Continue|Stop|Pivot`
 - `executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_generation,spec_planning,implementation,review,evaluation`
+- `implemented_specs=<none>|moat-spec/<normalized-strategy-id>[,...]`
 - `moat_score_before`
 - `moat_score_after`
 - `stop_reason=<none>|...`
+
+`implemented_specs` is a bounded handoff surface only: it exposes normalized stable IDs derived from selected strategy IDs (for example `moat-spec/workflow-audit`). The current repository does **not** automatically generate markdown spec files from those IDs and does **not** automatically dispatch coding/review agents from the CLI output.
 
 Persist the produced round report locally only when you explicitly provide a history path:
 
@@ -145,6 +148,7 @@ The history command prints a bounded summary containing:
 - `latest_continue_decision`
 - `latest_stop_reason`
 - `latest_decision_summary`
+- `latest_implemented_specs=<none>|moat-spec/<normalized-strategy-id>[,...]`
 - `latest_moat_score_after`
 - `best_moat_score_after`
 - `improvement_deltas`
