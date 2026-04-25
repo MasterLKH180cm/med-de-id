@@ -171,7 +171,13 @@ Inspect the latest persisted round's decision log without running or appending a
 cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json
 ```
 
-`moat decision-log` is read-only: the history file must already exist, and it prints `decision_log_entries=N` followed by each persisted decision as `decision=<role>|<summary>|<rationale>`.
+Filter that read-only inspection to one bounded role with:
+
+```bash
+cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --role reviewer
+```
+
+`moat decision-log` is read-only: the history file must already exist, and it prints `decision_log_entries=N` followed by each persisted decision as `decision=<role>|<summary>|<rationale>`. The optional `--role planner|coder|reviewer` filter narrows the latest persisted round's decisions without running or appending a new round.
 
 Inspect whether the latest persisted round is eligible to start another bounded round with:
 

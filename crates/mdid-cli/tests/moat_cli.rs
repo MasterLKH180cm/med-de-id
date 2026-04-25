@@ -1,11 +1,13 @@
+use assert_cmd::prelude::*;
 use mdid_runtime::moat_history::LocalMoatHistoryStore;
+use predicates::prelude::*;
 use std::{
     path::PathBuf,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -1097,6 +1099,64 @@ fn moat_decision_log_rejects_missing_history_file_without_creating_it() {
 }
 
 #[test]
+fn moat_decision_log_filters_by_role() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let history_path = temp.path().join("moat-history.json");
+
+    Command::cargo_bin("mdid-cli")
+        .expect("binary exists")
+        .args([
+            "moat",
+            "round",
+            "--history-path",
+            history_path.to_str().expect("utf8 path"),
+        ])
+        .assert()
+        .success();
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .expect("binary exists")
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path.to_str().expect("utf8 path"),
+            "--role",
+            "reviewer",
+        ])
+        .assert();
+
+    assert
+        .success()
+        .stdout(predicate::str::contains("decision_log_entries=1"))
+        .stdout(predicate::str::contains("decision=reviewer|"))
+        .stdout(predicate::str::contains("decision=planner|").not())
+        .stdout(predicate::str::contains("decision=coder|").not());
+}
+
+#[test]
+fn moat_decision_log_rejects_unknown_role_filter() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let history_path = temp.path().join("moat-history.json");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .expect("binary exists")
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path.to_str().expect("utf8 path"),
+            "--role",
+            "operator",
+        ])
+        .assert();
+
+    assert.failure().stderr(predicate::str::contains(
+        "unknown moat decision-log role: operator",
+    ));
+}
+
+#[test]
 fn cli_reports_helpful_error_for_unknown_commands() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .arg("bogus")
@@ -1107,6 +1167,145 @@ fn cli_reports_helpful_error_for_unknown_commands() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown command: bogus"));
     assert!(stderr.contains(USAGE));
+}
+
+mod assert_cmd {
+    pub mod prelude {
+        use std::process::{Command, Output};
+
+        pub trait CommandCargoExt {
+            fn cargo_bin(name: &str) -> Result<Command, std::io::Error>;
+        }
+
+        impl CommandCargoExt for Command {
+            fn cargo_bin(name: &str) -> Result<Command, std::io::Error> {
+                let var_name = format!("CARGO_BIN_EXE_{name}").replace('-', "_");
+                std::env::var_os(&var_name)
+                    .or_else(|| std::env::var_os(format!("CARGO_BIN_EXE_{name}")))
+                    .map(Command::new)
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, var_name))
+            }
+        }
+
+        pub trait CommandAssertExt {
+            fn assert(&mut self) -> Assert;
+        }
+
+        impl CommandAssertExt for Command {
+            fn assert(&mut self) -> Assert {
+                Assert {
+                    output: self.output().expect("command should run"),
+                }
+            }
+        }
+
+        pub struct Assert {
+            output: Output,
+        }
+
+        impl Assert {
+            pub fn success(self) -> Self {
+                assert!(
+                    self.output.status.success(),
+                    "expected success, stderr was: {}",
+                    String::from_utf8_lossy(&self.output.stderr)
+                );
+                self
+            }
+
+            pub fn failure(self) -> Self {
+                assert!(!self.output.status.success(), "expected failure");
+                self
+            }
+
+            pub fn stdout(self, predicate: crate::predicate::str::ContainsPredicate) -> Self {
+                let stdout = String::from_utf8_lossy(&self.output.stdout);
+                assert!(predicate.eval(&stdout), "stdout was: {stdout}");
+                self
+            }
+
+            pub fn stderr(self, predicate: crate::predicate::str::ContainsPredicate) -> Self {
+                let stderr = String::from_utf8_lossy(&self.output.stderr);
+                assert!(predicate.eval(&stderr), "stderr was: {stderr}");
+                self
+            }
+        }
+    }
+}
+
+mod predicates {
+    pub mod prelude {
+        pub use crate::predicate::PredicateBooleanExt;
+    }
+}
+
+mod predicate {
+    pub trait PredicateBooleanExt {
+        fn not(self) -> Self;
+    }
+
+    pub mod str {
+        use super::PredicateBooleanExt;
+
+        pub struct ContainsPredicate {
+            needle: String,
+            negated: bool,
+        }
+
+        impl ContainsPredicate {
+            pub fn eval(&self, haystack: &str) -> bool {
+                haystack.contains(&self.needle) != self.negated
+            }
+        }
+
+        impl PredicateBooleanExt for ContainsPredicate {
+            fn not(mut self) -> Self {
+                self.negated = !self.negated;
+                self
+            }
+        }
+
+        pub fn contains(needle: &str) -> ContainsPredicate {
+            ContainsPredicate {
+                needle: needle.to_string(),
+                negated: false,
+            }
+        }
+    }
+}
+
+mod tempfile {
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    pub struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    pub fn tempdir() -> Result<TempDir, std::io::Error> {
+        let path = std::env::temp_dir().join(format!(
+            "mdid-cli-tempdir-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path)?;
+        Ok(TempDir { path })
+    }
 }
 
 fn unique_history_path(label: &str) -> PathBuf {
