@@ -374,11 +374,13 @@ pub fn render_moat_spec_markdown(
         return Err(format!("expected non-empty moat spec slug in {handoff_id}"));
     }
 
-    let selected = if selected_strategies.is_empty() {
+    let selected_strategy_ids = resolve_render_selected_strategies(summary, selected_strategies)?;
+    let selected = if selected_strategy_ids.is_empty() {
         "<none>".to_string()
     } else {
-        selected_strategies.join(",")
+        selected_strategy_ids.join(",")
     };
+    let improvement_delta = summary.improvement();
 
     Ok(format!(
         concat!(
@@ -396,8 +398,8 @@ pub fn render_moat_spec_markdown(
             "- Expose the artifact through a deterministic operator-facing workflow.\n",
             "- Add automated verification for the new {slug} behavior.\n\n",
             "## Acceptance Tests\n\n",
-            "- Operators complete audit export without spreadsheets\n",
-            "- Review evidence survives repeat runs\n"
+            "- `{handoff_id}` stays derivable from the selected strategy set `{selected}`.\n",
+            "- Re-rendering the same round preserves handoff `{handoff_id}` and moat delta `{delta}`.\n"
         ),
         title = title,
         handoff_id = handoff_id,
@@ -405,9 +407,27 @@ pub fn render_moat_spec_markdown(
         selected = selected,
         before = summary.moat_score_before,
         after = summary.moat_score_after,
-        delta = summary.improvement(),
+        delta = improvement_delta,
         slug = slug,
     ))
+}
+
+fn resolve_render_selected_strategies<'a>(
+    summary: &'a MoatRoundSummary,
+    selected_strategies: &'a [String],
+) -> Result<&'a [String], String> {
+    if selected_strategies.is_empty() {
+        return Ok(&summary.selected_strategies);
+    }
+
+    if selected_strategies != summary.selected_strategies.as_slice() {
+        return Err(format!(
+            "selected strategy mismatch: summary={:?}, argument={:?}",
+            summary.selected_strategies, selected_strategies
+        ));
+    }
+
+    Ok(selected_strategies)
 }
 
 fn normalize_moat_strategy_handoff_id(strategy_id: &str) -> Option<String> {
