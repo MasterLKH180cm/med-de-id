@@ -36,6 +36,19 @@ pub struct MoatHistorySummary {
     pub improvement_deltas: Vec<i16>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatContinuationGate {
+    pub latest_round_id: Option<String>,
+    pub latest_continue_decision: Option<ContinueDecision>,
+    pub latest_tests_passed: Option<bool>,
+    pub latest_improvement_delta: Option<i16>,
+    pub latest_stop_reason: Option<String>,
+    pub evaluation_completed: bool,
+    pub can_continue: bool,
+    pub reason: String,
+    pub required_improvement_threshold: i16,
+}
+
 #[derive(Debug)]
 pub struct LocalMoatHistoryStore {
     path: PathBuf,
@@ -122,6 +135,53 @@ impl LocalMoatHistoryStore {
                 .iter()
                 .map(|entry| entry.report.summary.improvement())
                 .collect(),
+        }
+    }
+
+    pub fn continuation_gate(&self, required_improvement_threshold: i16) -> MoatContinuationGate {
+        let Some(latest) = self.entries.last() else {
+            return MoatContinuationGate {
+                latest_round_id: None,
+                latest_continue_decision: None,
+                latest_tests_passed: None,
+                latest_improvement_delta: None,
+                latest_stop_reason: None,
+                evaluation_completed: false,
+                can_continue: false,
+                reason: "no persisted moat rounds to evaluate".to_string(),
+                required_improvement_threshold,
+            };
+        };
+
+        let improvement_delta = latest.report.summary.improvement();
+        let evaluation_completed = latest
+            .report
+            .executed_tasks
+            .iter()
+            .any(|task| task == "evaluation");
+
+        let (can_continue, reason) = if !evaluation_completed {
+            (false, "latest round did not complete evaluation")
+        } else if !latest.report.summary.tests_passed {
+            (false, "latest round tests failed")
+        } else if improvement_delta < required_improvement_threshold {
+            (false, "latest round improvement below threshold")
+        } else if latest.report.summary.continue_decision == ContinueDecision::Continue {
+            (true, "latest round cleared continuation gate")
+        } else {
+            (false, "latest round requested stop")
+        };
+
+        MoatContinuationGate {
+            latest_round_id: Some(latest.report.summary.round_id.to_string()),
+            latest_continue_decision: Some(latest.report.summary.continue_decision),
+            latest_tests_passed: Some(latest.report.summary.tests_passed),
+            latest_improvement_delta: Some(improvement_delta),
+            latest_stop_reason: latest.report.summary.stop_reason.clone(),
+            evaluation_completed,
+            can_continue,
+            reason: reason.to_string(),
+            required_improvement_threshold,
         }
     }
 

@@ -28,6 +28,15 @@ fn append_and_reload_keeps_rounds_sorted_by_recorded_at() {
                 "implementation stopped before review",
                 60,
                 60,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                ],
             ),
         )
         .expect("later report should persist");
@@ -41,6 +50,17 @@ fn append_and_reload_keeps_rounds_sorted_by_recorded_at() {
                 "review approved bounded moat round",
                 90,
                 98,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                    "review",
+                    "evaluation",
+                ],
             ),
         )
         .expect("earlier report should persist");
@@ -75,6 +95,17 @@ fn summary_reports_latest_best_and_improvement_fields() {
                 "review approved bounded moat round",
                 90,
                 98,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                    "review",
+                    "evaluation",
+                ],
             ),
         )
         .expect("continue report should persist");
@@ -88,6 +119,15 @@ fn summary_reports_latest_best_and_improvement_fields() {
                 "implementation stopped before review",
                 60,
                 60,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                ],
             ),
         )
         .expect("stop report should persist");
@@ -128,6 +168,17 @@ fn append_does_not_mutate_in_memory_entries_when_persistence_fails() {
                 "review approved bounded moat round",
                 90,
                 98,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                    "review",
+                    "evaluation",
+                ],
             ),
         )
         .expect_err("append should fail when the history path is a directory");
@@ -186,6 +237,139 @@ fn empty_store_summary_is_default() {
     assert_eq!(store.summary(), MoatHistorySummary::default());
 }
 
+#[test]
+fn continuation_gate_allows_next_round_when_latest_round_completed_evaluation_and_cleared_threshold() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    store
+        .append(
+            recorded_at("2026-04-25T22:00:00Z"),
+            sample_report(
+                round_id,
+                ContinueDecision::Continue,
+                None,
+                "review approved bounded moat round",
+                90,
+                98,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                    "review",
+                    "evaluation",
+                ],
+            ),
+        )
+        .expect("continue report should persist");
+
+    assert_eq!(
+        store.continuation_gate(3),
+        mdid_runtime::moat_history::MoatContinuationGate {
+            latest_round_id: Some(round_id.to_string()),
+            latest_continue_decision: Some(ContinueDecision::Continue),
+            latest_tests_passed: Some(true),
+            latest_improvement_delta: Some(8),
+            latest_stop_reason: None,
+            evaluation_completed: true,
+            can_continue: true,
+            reason: "latest round cleared continuation gate".to_string(),
+            required_improvement_threshold: 3,
+        }
+    );
+}
+
+#[test]
+fn continuation_gate_blocks_when_latest_round_never_reached_evaluation() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    store
+        .append(
+            recorded_at("2026-04-25T22:00:00Z"),
+            sample_report(
+                round_id,
+                ContinueDecision::Stop,
+                Some("review budget exhausted"),
+                "implementation stopped before review",
+                90,
+                90,
+                true,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                ],
+            ),
+        )
+        .expect("stopped report should persist");
+
+    assert_eq!(
+        store.continuation_gate(3),
+        mdid_runtime::moat_history::MoatContinuationGate {
+            latest_round_id: Some(round_id.to_string()),
+            latest_continue_decision: Some(ContinueDecision::Stop),
+            latest_tests_passed: Some(true),
+            latest_improvement_delta: Some(0),
+            latest_stop_reason: Some("review budget exhausted".to_string()),
+            evaluation_completed: false,
+            can_continue: false,
+            reason: "latest round did not complete evaluation".to_string(),
+            required_improvement_threshold: 3,
+        }
+    );
+}
+
+#[test]
+fn continuation_gate_blocks_when_latest_round_failed_tests_after_evaluation() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    store
+        .append(
+            recorded_at("2026-04-25T22:00:00Z"),
+            sample_report(
+                round_id,
+                ContinueDecision::Stop,
+                Some("tests failed"),
+                "review stopped bounded moat round",
+                90,
+                90,
+                false,
+                &[
+                    "market_scan",
+                    "competitor_analysis",
+                    "lockin_analysis",
+                    "strategy_generation",
+                    "spec_planning",
+                    "implementation",
+                    "review",
+                    "evaluation",
+                ],
+            ),
+        )
+        .expect("failed test report should persist");
+
+    let gate = store.continuation_gate(3);
+    assert!(!gate.can_continue);
+    assert!(gate.evaluation_completed);
+    assert_eq!(gate.reason, "latest round tests failed");
+    assert_eq!(gate.latest_tests_passed, Some(false));
+}
+
 fn sample_report(
     round_id: Uuid,
     continue_decision: ContinueDecision,
@@ -193,12 +377,14 @@ fn sample_report(
     decision_summary: &str,
     moat_score_before: i16,
     moat_score_after: i16,
+    tests_passed: bool,
+    executed_tasks: &[&str],
 ) -> MoatRoundReport {
     let summary = MoatRoundSummary {
         round_id,
         selected_strategies: vec!["workflow-audit".to_string()],
         implemented_specs: Vec::new(),
-        tests_passed: true,
+        tests_passed,
         moat_score_before,
         moat_score_after,
         continue_decision,
@@ -224,7 +410,7 @@ fn sample_report(
 
     MoatRoundReport {
         summary,
-        executed_tasks: vec!["implementation".to_string()],
+        executed_tasks: executed_tasks.iter().map(|task| (*task).to_string()).collect(),
         stop_reason: stop_reason.map(str::to_string),
         control_plane,
     }
