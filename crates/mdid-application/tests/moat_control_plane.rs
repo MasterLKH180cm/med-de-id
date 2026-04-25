@@ -9,14 +9,85 @@ fn default_task_graph_assigns_expected_roles_and_dependencies() {
     let graph = build_default_moat_task_graph(Uuid::nil());
 
     assert_eq!(graph.nodes.len(), 7);
-    assert_eq!(graph.nodes[0].role, AgentRole::Planner);
-    assert_eq!(graph.nodes[0].kind, MoatTaskNodeKind::MarketScan);
-    assert_eq!(graph.nodes[4].kind, MoatTaskNodeKind::SpecPlanning);
-    assert_eq!(graph.nodes[5].role, AgentRole::Coder);
-    assert_eq!(graph.nodes[6].role, AgentRole::Reviewer);
+
+    let spec_planning = graph
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "spec_planning")
+        .expect("spec_planning node should exist");
+    assert_eq!(spec_planning.role, AgentRole::Planner);
+    assert_eq!(spec_planning.kind, MoatTaskNodeKind::SpecPlanning);
     assert_eq!(
-        graph.nodes[6].depends_on,
-        vec!["implementation".to_string()]
+        spec_planning.depends_on,
+        vec!["strategy_generation".to_string()]
+    );
+    assert_eq!(
+        spec_planning.spec_ref.as_deref(),
+        Some("docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md")
+    );
+
+    let actual_shape = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.node_id.as_str(),
+                node.role,
+                node.kind,
+                node.depends_on
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        actual_shape,
+        vec![
+            (
+                "market_scan",
+                AgentRole::Planner,
+                MoatTaskNodeKind::MarketScan,
+                vec![],
+            ),
+            (
+                "competitor_analysis",
+                AgentRole::Planner,
+                MoatTaskNodeKind::CompetitorAnalysis,
+                vec![],
+            ),
+            (
+                "lockin_analysis",
+                AgentRole::Planner,
+                MoatTaskNodeKind::LockInAnalysis,
+                vec![],
+            ),
+            (
+                "strategy_generation",
+                AgentRole::Planner,
+                MoatTaskNodeKind::StrategyGeneration,
+                vec!["market_scan", "competitor_analysis", "lockin_analysis"],
+            ),
+            (
+                "spec_planning",
+                AgentRole::Planner,
+                MoatTaskNodeKind::SpecPlanning,
+                vec!["strategy_generation"],
+            ),
+            (
+                "implementation",
+                AgentRole::Coder,
+                MoatTaskNodeKind::Implementation,
+                vec!["spec_planning"],
+            ),
+            (
+                "review",
+                AgentRole::Reviewer,
+                MoatTaskNodeKind::Review,
+                vec!["implementation"],
+            ),
+        ]
     );
 }
 
