@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N]]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -520,6 +520,117 @@ fn cli_history_rejects_duplicate_history_path_flags() {
 
     cleanup_history_path(&first_history_path);
     cleanup_history_path(&second_history_path);
+}
+
+#[test]
+fn cli_exports_latest_handoff_specs_to_output_directory() {
+    let history_path = unique_history_path("export-specs-success");
+    let output_dir = unique_history_directory_path("exported-specs");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let output_dir_arg = output_dir.to_str().expect("output dir should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed history for export");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let latest_round_id = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("history should exist")
+        .entries()
+        .last()
+        .expect("latest entry should exist")
+        .report
+        .summary
+        .round_id
+        .to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "export-specs",
+            "--history-path",
+            history_path_arg,
+            "--output-dir",
+            output_dir_arg,
+        ])
+        .output()
+        .expect("failed to run export-specs");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat spec export complete\n",
+            "round_id={latest_round_id}\n",
+            "exported_specs=moat-spec/workflow-audit\n",
+            "written_files=workflow-audit.md\n",
+        )
+        .replace("{latest_round_id}", &latest_round_id)
+    );
+
+    let exported = std::fs::read_to_string(output_dir.join("workflow-audit.md"))
+        .expect("exported spec should exist");
+    assert!(exported.contains("# Workflow Audit Moat Spec\n"));
+    assert!(exported.contains("- handoff_id: `moat-spec/workflow-audit`\n"));
+
+    cleanup_history_path(&history_path);
+    cleanup_history_directory_path(&output_dir);
+}
+
+#[test]
+fn cli_export_specs_rejects_latest_round_without_handoffs() {
+    let history_path = unique_history_path("export-specs-empty");
+    let output_dir = unique_history_directory_path("exported-specs-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let output_dir_arg = output_dir.to_str().expect("output dir should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--spec-generations",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed no-handoff history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "export-specs",
+            "--history-path",
+            history_path_arg,
+            "--output-dir",
+            output_dir_arg,
+        ])
+        .output()
+        .expect("failed to run export-specs without handoffs");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("latest moat round does not contain implemented_specs handoffs")
+    );
+    assert!(!output_dir.join("workflow-audit.md").exists());
+
+    cleanup_history_path(&history_path);
+    cleanup_history_directory_path(&output_dir);
 }
 
 #[test]
