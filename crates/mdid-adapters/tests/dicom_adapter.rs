@@ -367,21 +367,25 @@ fn rewrite_drops_private_file_meta_information_when_policy_is_remove(
 }
 
 #[test]
-fn sanitize_filename_replaces_phi_like_names_with_safe_slug() {
-    assert_eq!(
-        sanitize_output_name("Alice Smith\\MRN-001/scan (1).dcm"),
-        "Alice_Smith_MRN-001_scan__1_.dcm"
-    );
+fn sanitize_filename_replaces_phi_bearing_source_names_with_a_safe_neutral_output_name() {
+    let sanitized = sanitize_output_name("Alice Smith\\MRN-001/scan (1).dcm");
+
+    assert_eq!(sanitized, "dicom-output.dcm");
+    assert!(!sanitized.contains("Alice"));
+    assert!(!sanitized.contains("MRN"));
+    assert!(!sanitized.contains("scan"));
 }
 
 #[test]
 fn sanitize_filename_hardens_windows_reserved_and_dot_only_names() {
-    assert_eq!(sanitize_output_name("."), "_");
-    assert_eq!(sanitize_output_name(".."), "_");
-    assert_eq!(sanitize_output_name("report."), "report");
-    assert_eq!(sanitize_output_name("CON"), "_CON");
-    assert_eq!(sanitize_output_name("con.txt"), "_con.txt");
-    assert_eq!(sanitize_output_name("LPT1."), "_LPT1");
+    assert_eq!(sanitize_output_name("."), "dicom-output");
+    assert_eq!(sanitize_output_name(".."), "dicom-output");
+    assert_eq!(sanitize_output_name("report."), "dicom-output");
+    assert_eq!(sanitize_output_name("CON"), "dicom-output");
+    assert_eq!(sanitize_output_name("con.txt"), "dicom-output.txt");
+    assert_eq!(sanitize_output_name("LPT1."), "dicom-output");
+    assert_eq!(sanitize_output_name("scan.$$$"), "dicom-output");
+    assert_eq!(sanitize_output_name("weird name..DCM"), "dicom-output.dcm");
 }
 
 fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec<u8> {

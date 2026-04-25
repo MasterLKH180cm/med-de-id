@@ -192,25 +192,20 @@ impl std::fmt::Debug for ExtractedDicomData {
 }
 
 pub fn sanitize_output_name(source_name: &str) -> String {
-    let sanitized = source_name
-        .chars()
-        .map(|ch| match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => ch,
-            _ => '_',
+    let extension = std::path::Path::new(source_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            ext.chars()
+                .filter(|ch| ch.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase()
         })
-        .collect::<String>();
+        .filter(|ext| !ext.is_empty());
 
-    let sanitized = sanitized.trim_end_matches(['.', ' ']);
-    let sanitized = if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
-        "_".to_string()
-    } else {
-        sanitized.to_string()
-    };
-
-    if is_windows_reserved_name(&sanitized) {
-        format!("_{sanitized}")
-    } else {
-        sanitized
+    match extension {
+        Some(ext) => format!("dicom-output.{ext}"),
+        None => "dicom-output".into(),
     }
 }
 
@@ -325,43 +320,6 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
 
 fn trimmed_value(value: &str) -> &str {
     value.trim_end_matches(|ch: char| ch.is_whitespace() || ch == '\0')
-}
-
-fn is_windows_reserved_name(name: &str) -> bool {
-    let Some(base_name) = name
-        .split('.')
-        .next()
-        .map(|value| value.trim_end_matches(['.', ' ']))
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
-    };
-
-    matches!(
-        base_name.to_ascii_uppercase().as_str(),
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    )
 }
 
 fn common_phi_candidates(
