@@ -22,9 +22,21 @@ pub enum DicomAdapterError {
     #[error("failed to convert DICOM value: {0}")]
     Value(#[from] ConvertValueError),
     #[error("failed to rebuild DICOM file metadata: {0}")]
-    Meta(#[from] WithMetaError),
+    Meta(Box<WithMetaError>),
     #[error("failed to serialize DICOM output: {0}")]
-    Write(#[from] WriteError),
+    Write(Box<WriteError>),
+}
+
+impl From<WithMetaError> for DicomAdapterError {
+    fn from(error: WithMetaError) -> Self {
+        Self::Meta(Box::new(error))
+    }
+}
+
+impl From<WriteError> for DicomAdapterError {
+    fn from(error: WriteError) -> Self {
+        Self::Write(Box::new(error))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -404,7 +416,7 @@ fn is_common_phi_tag(tag: Tag) -> bool {
 }
 
 fn is_uid_family_tag(tag: Tag) -> bool {
-    UID_FAMILY_TAGS.iter().any(|uid_tag| *uid_tag == tag)
+    UID_FAMILY_TAGS.contains(&tag)
 }
 
 struct CommonPhiTagSpec {
