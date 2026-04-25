@@ -19,6 +19,8 @@ const REVIEW: &str = "review";
 const EVALUATION: &str = "evaluation";
 const REVIEW_APPROVED_SUMMARY: &str = "review approved bounded moat round";
 const REVIEW_STOPPED_SUMMARY: &str = "review stopped bounded moat round";
+const PLANNING_STOPPED_SUMMARY: &str = "planning stopped before implementation";
+const IMPLEMENTATION_STOPPED_SUMMARY: &str = "implementation stopped before review";
 const REVIEW_RECORDED_AT: &str = "1970-01-01T00:00:00Z";
 
 #[derive(Debug, Clone)]
@@ -161,31 +163,58 @@ fn build_control_plane_report(
         build_default_moat_task_graph(summary.round_id),
         executed_tasks,
     );
-    let memory = summarize_round_memory(summary, vec![review_decision(summary)]);
+    let memory = summarize_round_memory(summary, vec![latest_decision(summary, executed_tasks)]);
 
     MoatControlPlaneReport { task_graph, memory }
 }
 
-fn review_decision(summary: &MoatRoundSummary) -> DecisionLogEntry {
-    let (decision_summary, rationale) = if summary.continue_decision == ContinueDecision::Continue {
+fn latest_decision(summary: &MoatRoundSummary, executed_tasks: &[String]) -> DecisionLogEntry {
+    let (author_role, decision_summary, rationale) = if executed_tasks
+        .iter()
+        .any(|task| task == REVIEW || task == EVALUATION)
+    {
+        let (decision_summary, rationale) = if summary.continue_decision
+            == ContinueDecision::Continue
+        {
+            (
+                REVIEW_APPROVED_SUMMARY,
+                "review approved bounded moat round after evaluation cleared the improvement threshold",
+            )
+        } else {
+            (
+                REVIEW_STOPPED_SUMMARY,
+                summary
+                    .stop_reason
+                    .as_deref()
+                    .unwrap_or("review stopped bounded moat round"),
+            )
+        };
+
+        (AgentRole::Reviewer, decision_summary, rationale)
+    } else if executed_tasks.iter().any(|task| task == IMPLEMENTATION) {
         (
-            REVIEW_APPROVED_SUMMARY,
-            "review approved bounded moat round after evaluation cleared the improvement threshold",
-        )
-    } else {
-        (
-            REVIEW_STOPPED_SUMMARY,
+            AgentRole::Coder,
+            IMPLEMENTATION_STOPPED_SUMMARY,
             summary
                 .stop_reason
                 .as_deref()
-                .unwrap_or("review stopped bounded moat round"),
+                .unwrap_or(IMPLEMENTATION_STOPPED_SUMMARY),
+        )
+    } else {
+        (
+            AgentRole::Planner,
+            PLANNING_STOPPED_SUMMARY,
+            summary
+                .stop_reason
+                .as_deref()
+                .unwrap_or(PLANNING_STOPPED_SUMMARY),
         )
     };
 
     DecisionLogEntry {
         entry_id: Uuid::nil(),
         round_id: summary.round_id,
-        author_role: AgentRole::Reviewer,
+        author_role,
         summary: decision_summary.to_string(),
         rationale: rationale.to_string(),
         recorded_at: REVIEW_RECORDED_AT

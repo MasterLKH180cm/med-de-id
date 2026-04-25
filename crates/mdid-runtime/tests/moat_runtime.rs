@@ -1,6 +1,6 @@
 use mdid_domain::{
-    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType,
-    ResourceBudget,
+    AgentRole, CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
+    MoatType, ResourceBudget,
 };
 use mdid_runtime::moat::{run_bounded_round, MoatRoundInput};
 
@@ -67,6 +67,10 @@ fn bounded_round_returns_control_plane_snapshot_for_successful_rounds() {
             .as_deref(),
         Some("review approved bounded moat round")
     );
+    assert_eq!(
+        report.control_plane.memory.decisions[0].author_role,
+        AgentRole::Reviewer
+    );
 }
 
 #[test]
@@ -118,7 +122,11 @@ fn bounded_round_exposes_ready_strategy_generation_when_budget_stops_early() {
             .memory
             .latest_decision_summary()
             .as_deref(),
-        Some("review stopped bounded moat round")
+        Some("planning stopped before implementation")
+    );
+    assert_eq!(
+        report.control_plane.memory.decisions[0].author_role,
+        AgentRole::Planner
     );
 }
 
@@ -184,7 +192,11 @@ fn bounded_round_stops_before_review_when_review_budget_is_zero() {
             .memory
             .latest_decision_summary()
             .as_deref(),
-        Some("review stopped bounded moat round")
+        Some("implementation stopped before review")
+    );
+    assert_eq!(
+        report.control_plane.memory.decisions[0].author_role,
+        AgentRole::Coder
     );
 }
 
