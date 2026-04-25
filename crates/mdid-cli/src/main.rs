@@ -53,24 +53,36 @@ fn parse_moat_round_overrides(args: &[String]) -> Result<MoatRoundOverrides, Str
 
     while index < args.len() {
         let flag = &args[index];
-        let value = args
-            .get(index + 1)
-            .ok_or_else(|| format!("missing value for {flag}"))?;
 
         match flag.as_str() {
             "--strategy-candidates" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.strategy_candidates = Some(parse_u8_flag(flag, value)?);
             }
             "--spec-generations" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.spec_generations = Some(parse_u8_flag(flag, value)?);
             }
             "--implementation-tasks" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.implementation_tasks = Some(parse_u8_flag(flag, value)?);
             }
             "--review-loops" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.review_loops = Some(parse_u8_flag(flag, value)?);
             }
             "--tests-passed" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.tests_passed = Some(parse_bool_flag(flag, value)?);
             }
             _ => return Err(format!("unknown flag: {flag}")),
