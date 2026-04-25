@@ -16,7 +16,7 @@ fn cli_runs_moat_round_and_prints_deterministic_report() {
         String::from_utf8_lossy(&output.stdout),
         concat!(
             "moat round complete\n",
-            "continue_decision=continue\n",
+            "continue_decision=Continue\n",
             "executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_selection,spec_plan_handoff,implementation_gate,evaluation\n",
             "moat_score_before=90\n",
             "moat_score_after=98\n",

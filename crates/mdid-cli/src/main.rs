@@ -1,6 +1,5 @@
 use mdid_domain::{
-    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType,
-    ResourceBudget,
+    CompetitorProfile, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType, ResourceBudget,
 };
 use mdid_runtime::moat::{run_bounded_round, MoatRoundInput};
 
@@ -19,10 +18,7 @@ fn run_moat_round() {
     let report = run_bounded_round(sample_round_input());
 
     println!("moat round complete");
-    println!(
-        "continue_decision={}",
-        continue_decision_label(report.summary.continue_decision)
-    );
+    println!("continue_decision={:?}", report.summary.continue_decision);
     println!("executed_tasks={}", report.executed_tasks.join(","));
     println!("moat_score_before={}", report.summary.moat_score_before);
     println!("moat_score_after={}", report.summary.moat_score_after);
@@ -63,14 +59,6 @@ fn sample_round_input() -> MoatRoundInput {
         },
         improvement_threshold: 3,
         tests_passed: true,
-    }
-}
-
-fn continue_decision_label(decision: ContinueDecision) -> &'static str {
-    match decision {
-        ContinueDecision::Continue => "continue",
-        ContinueDecision::Stop => "stop",
-        ContinueDecision::Pivot => "pivot",
     }
 }
 
