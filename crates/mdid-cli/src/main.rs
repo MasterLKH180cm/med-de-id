@@ -811,16 +811,15 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
         println!(
             "node={}|{}|{}|{}|{}|{}|{}",
             format_agent_role(node.role),
-            escape_assignment_output_field(&moat_task_graph_node_id_label(&node.node_id)),
-            escape_assignment_output_field(moat_task_graph_title_label(&node.node_id, &node.title)),
+            escape_assignment_output_field(&node.node_id),
+            escape_assignment_output_field(&node.title),
             format_moat_task_kind(node.kind),
             format_task_node_state(node.state),
             format_task_graph_dependencies(&node.depends_on),
-            escape_assignment_output_field(&moat_task_graph_spec_ref_label(
-                &node.node_id,
-                node.spec_ref.as_deref(),
-                &latest.report.summary.implemented_specs,
-            ))
+            node.spec_ref
+                .as_deref()
+                .map(escape_assignment_output_field)
+                .unwrap_or_else(|| "<none>".to_string())
         );
     }
 
@@ -833,42 +832,10 @@ fn format_task_graph_dependencies(depends_on: &[String]) -> String {
     } else {
         depends_on
             .iter()
-            .map(|dependency| {
-                escape_assignment_output_field(&moat_task_graph_node_id_label(dependency))
-            })
+            .map(|dependency| escape_assignment_output_field(dependency))
             .collect::<Vec<_>>()
             .join(",")
     }
-}
-
-fn moat_task_graph_node_id_label(node_id: &str) -> String {
-    node_id.replace('_', "-")
-}
-
-fn moat_task_graph_title_label<'a>(node_id: &str, title: &'a str) -> &'a str {
-    match node_id {
-        "market_scan" => "Market scan",
-        "implementation" => "Implement selected moat spec",
-        "review" => "Review implementation and moat impact",
-        _ => title,
-    }
-}
-
-fn moat_task_graph_spec_ref_label(
-    node_id: &str,
-    spec_ref: Option<&str>,
-    implemented_specs: &[String],
-) -> String {
-    spec_ref
-        .or_else(|| {
-            if matches!(node_id, "implementation" | "review") {
-                implemented_specs.first().map(String::as_str)
-            } else {
-                None
-            }
-        })
-        .unwrap_or("<none>")
-        .to_string()
 }
 
 fn escape_assignment_output_field(value: &str) -> String {

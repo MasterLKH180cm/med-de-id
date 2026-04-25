@@ -866,9 +866,14 @@ fn task_graph_prints_latest_persisted_graph() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("moat task graph\n"));
     assert!(stdout
-        .contains("node=planner|market-scan|Market scan|market_scan|completed|<none>|<none>\n"));
-    assert!(stdout.contains("node=coder|implementation|Implement selected moat spec|implementation|completed|spec-planning|moat-spec/workflow-audit\n"));
-    assert!(stdout.contains("node=reviewer|review|Review implementation and moat impact|review|completed|implementation|moat-spec/workflow-audit\n"));
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout.contains(
+        "node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"
+    ));
+    assert!(stdout.contains(
+        "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n"
+    ));
+    assert!(stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -917,7 +922,7 @@ fn task_graph_filters_latest_graph_by_role_and_state() {
         String::from_utf8_lossy(&output.stdout),
         concat!(
             "moat task graph\n",
-            "node=reviewer|review|Review implementation and moat impact|review|ready|implementation|moat-spec/workflow-audit\n",
+            "node=reviewer|review|Review|review|ready|implementation|<none>\n",
         )
     );
 
