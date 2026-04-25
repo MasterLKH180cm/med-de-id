@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use mdid_domain::{
-    AgentRole, DecisionLogEntry, MoatMemorySnapshot, MoatTaskGraph, MoatTaskNode,
-    MoatTaskNodeKind, MoatTaskNodeState,
+    AgentRole, DecisionLogEntry, MoatMemorySnapshot, MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind,
+    MoatTaskNodeState,
 };
 use uuid::Uuid;
 
@@ -13,9 +13,18 @@ fn timestamp(value: &str) -> DateTime<Utc> {
 
 #[test]
 fn agent_role_wire_values_are_stable() {
-    assert_eq!(serde_json::to_string(&AgentRole::Planner).unwrap(), "\"planner\"");
-    assert_eq!(serde_json::to_string(&AgentRole::Coder).unwrap(), "\"coder\"");
-    assert_eq!(serde_json::to_string(&AgentRole::Reviewer).unwrap(), "\"reviewer\"");
+    assert_eq!(
+        serde_json::to_string(&AgentRole::Planner).unwrap(),
+        "\"planner\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AgentRole::Coder).unwrap(),
+        "\"coder\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AgentRole::Reviewer).unwrap(),
+        "\"reviewer\""
+    );
 }
 
 #[test]
