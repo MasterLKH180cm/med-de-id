@@ -867,6 +867,8 @@ fn task_graph_prints_latest_persisted_graph() {
     assert!(stdout.starts_with("moat task graph\n"));
     assert!(stdout
         .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout
+        .contains("node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|"));
     assert!(stdout.contains(
         "node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"
     ));

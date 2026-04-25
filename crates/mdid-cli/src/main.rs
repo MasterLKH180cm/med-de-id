@@ -1155,7 +1155,7 @@ fn format_moat_task_kind(kind: MoatTaskNodeKind) -> &'static str {
     match kind {
         MoatTaskNodeKind::MarketScan => "market_scan",
         MoatTaskNodeKind::CompetitorAnalysis => "competitor_analysis",
-        MoatTaskNodeKind::LockInAnalysis => "lockin_analysis",
+        MoatTaskNodeKind::LockInAnalysis => "lock_in_analysis",
         MoatTaskNodeKind::StrategyGeneration => "strategy_generation",
         MoatTaskNodeKind::SpecPlanning => "spec_planning",
         MoatTaskNodeKind::Implementation => "implementation",
