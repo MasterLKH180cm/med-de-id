@@ -5,7 +5,7 @@ use mdid_domain::{
 use mdid_runtime::moat::{run_bounded_round, MoatRoundInput};
 
 #[test]
-fn bounded_round_returns_continue_when_gain_exceeds_threshold() {
+fn bounded_round_returns_control_plane_snapshot_for_successful_rounds() {
     let report = run_bounded_round(MoatRoundInput {
         market: MarketMoatSnapshot {
             market_id: "healthcare-deid".into(),
@@ -49,17 +49,28 @@ fn bounded_round_returns_continue_when_gain_exceeds_threshold() {
             "market_scan".to_string(),
             "competitor_analysis".to_string(),
             "lockin_analysis".to_string(),
-            "strategy_selection".to_string(),
-            "spec_plan_handoff".to_string(),
-            "implementation_gate".to_string(),
+            "strategy_generation".to_string(),
+            "spec_planning".to_string(),
+            "implementation".to_string(),
+            "review".to_string(),
             "evaluation".to_string(),
         ]
     );
     assert!(report.stop_reason.is_none());
+    assert!(report.control_plane.task_graph.ready_node_ids().is_empty());
+    assert_eq!(report.control_plane.memory.improvement_delta, 8);
+    assert_eq!(
+        report
+            .control_plane
+            .memory
+            .latest_decision_summary()
+            .as_deref(),
+        Some("review approved bounded moat round")
+    );
 }
 
 #[test]
-fn bounded_round_stops_when_budget_disallows_strategy_work() {
+fn bounded_round_exposes_ready_strategy_generation_when_budget_stops_early() {
     let report = run_bounded_round(MoatRoundInput {
         market: MarketMoatSnapshot::default(),
         competitor: CompetitorProfile::default(),
@@ -96,6 +107,18 @@ fn bounded_round_stops_when_budget_disallows_strategy_work() {
     assert_eq!(
         report.stop_reason.as_deref(),
         Some("strategy budget exhausted")
+    );
+    assert_eq!(
+        report.control_plane.task_graph.ready_node_ids(),
+        vec!["strategy_generation".to_string()]
+    );
+    assert_eq!(
+        report
+            .control_plane
+            .memory
+            .latest_decision_summary()
+            .as_deref(),
+        Some("review stopped bounded moat round")
     );
 }
 
@@ -141,7 +164,7 @@ fn bounded_round_stops_when_spec_or_implementation_budget_is_zero() {
             "market_scan".to_string(),
             "competitor_analysis".to_string(),
             "lockin_analysis".to_string(),
-            "strategy_selection".to_string(),
+            "strategy_generation".to_string(),
         ]
     );
     assert_eq!(
