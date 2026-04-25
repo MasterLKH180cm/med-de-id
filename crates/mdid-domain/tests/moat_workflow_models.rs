@@ -1,12 +1,18 @@
 use mdid_domain::{
-    ContinueDecision, CompetitorProfile, LockInReport, MarketMoatSnapshot, MoatRoundSummary,
+    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatRoundSummary,
     MoatStrategy, MoatType, ResourceBudget,
 };
 
 #[test]
 fn moat_type_wire_values_are_stable() {
-    assert_eq!(serde_json::to_string(&MoatType::ComplianceMoat).unwrap(), "\"compliance_moat\"");
-    assert_eq!(serde_json::to_string(&MoatType::WorkflowLockIn).unwrap(), "\"workflow_lockin\"");
+    assert_eq!(
+        serde_json::to_string(&MoatType::ComplianceMoat).unwrap(),
+        "\"compliance_moat\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MoatType::WorkflowLockIn).unwrap(),
+        "\"workflow_lockin\""
+    );
 }
 
 #[test]
