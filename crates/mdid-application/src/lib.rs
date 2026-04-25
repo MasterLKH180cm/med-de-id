@@ -365,9 +365,11 @@ pub fn project_task_graph_progress(
     let executed_tasks = executed_tasks.iter().cloned().collect::<BTreeSet<_>>();
 
     for node in &mut graph.nodes {
-        if executed_tasks.contains(&node.node_id) {
-            node.state = MoatTaskNodeState::Completed;
-        }
+        node.state = if executed_tasks.contains(&node.node_id) {
+            MoatTaskNodeState::Completed
+        } else {
+            MoatTaskNodeState::Pending
+        };
     }
 
     let completed_nodes = graph

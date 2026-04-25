@@ -94,6 +94,44 @@ fn project_task_graph_progress_marks_completed_and_ready_nodes() {
     );
     assert_eq!(states.get("review"), Some(&MoatTaskNodeState::Ready));
     assert_eq!(states.get("evaluation"), Some(&MoatTaskNodeState::Pending));
+    assert_eq!(projected.ready_node_ids(), vec!["review".to_string()]);
+}
+
+#[test]
+fn project_task_graph_progress_normalizes_stale_incoming_states() {
+    let mut graph = build_default_moat_task_graph(Uuid::nil());
+    let executed_tasks = vec![
+        "market_scan".to_string(),
+        "competitor_analysis".to_string(),
+        "lockin_analysis".to_string(),
+        "strategy_generation".to_string(),
+        "spec_planning".to_string(),
+        "implementation".to_string(),
+    ];
+
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.node_id == "review")
+        .expect("review node should exist")
+        .state = MoatTaskNodeState::Blocked;
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.node_id == "evaluation")
+        .expect("evaluation node should exist")
+        .state = MoatTaskNodeState::Ready;
+
+    let projected = project_task_graph_progress(graph, &executed_tasks);
+
+    let states = projected
+        .nodes
+        .iter()
+        .map(|node| (node.node_id.as_str(), node.state))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    assert_eq!(states.get("review"), Some(&MoatTaskNodeState::Ready));
+    assert_eq!(states.get("evaluation"), Some(&MoatTaskNodeState::Pending));
 }
 
 #[test]
