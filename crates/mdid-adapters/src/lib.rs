@@ -1,4 +1,4 @@
-mod dicom;
+pub mod dicom;
 mod tabular;
 
 pub use dicom::{DicomAdapter, DicomAdapterError, ExtractedDicomData};
