@@ -342,6 +342,7 @@ fn render_moat_spec_markdown_uses_summary_selected_strategies_when_argument_is_e
     let summary = mdid_domain::MoatRoundSummary {
         round_id: Uuid::nil(),
         selected_strategies: vec!["workflow-audit".into()],
+        implemented_specs: vec!["moat-spec/workflow-audit".into()],
         moat_score_before: 10,
         moat_score_after: 14,
         ..mdid_domain::MoatRoundSummary::default()
@@ -357,6 +358,7 @@ fn render_moat_spec_markdown_uses_summary_selected_strategies_when_argument_is_e
 fn render_moat_spec_markdown_rejects_mismatched_selected_strategies() {
     let summary = mdid_domain::MoatRoundSummary {
         selected_strategies: vec!["workflow-audit".into()],
+        implemented_specs: vec!["moat-spec/workflow-audit".into()],
         ..mdid_domain::MoatRoundSummary::default()
     };
 
@@ -368,6 +370,19 @@ fn render_moat_spec_markdown_rejects_mismatched_selected_strategies() {
     .expect_err("mismatched selected strategies should fail");
 
     assert!(error.contains("selected strategy mismatch"));
+}
+
+#[test]
+fn render_moat_spec_markdown_rejects_handoff_ids_not_implemented_in_summary() {
+    let summary = mdid_domain::MoatRoundSummary {
+        implemented_specs: vec!["moat-spec/workflow-audit".into()],
+        ..mdid_domain::MoatRoundSummary::default()
+    };
+
+    let error = render_moat_spec_markdown("moat-spec/compliance-ledger", &summary, &[])
+        .expect_err("handoff id outside implemented specs should fail");
+
+    assert!(error.contains("implemented_specs"));
 }
 
 #[test]

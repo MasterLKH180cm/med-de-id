@@ -374,6 +374,13 @@ pub fn render_moat_spec_markdown(
         return Err(format!("expected non-empty moat spec slug in {handoff_id}"));
     }
 
+    if !summary.implemented_specs.iter().any(|spec| spec == handoff_id) {
+        return Err(format!(
+            "handoff id {handoff_id} not present in summary.implemented_specs: {:?}",
+            summary.implemented_specs
+        ));
+    }
+
     let selected_strategy_ids = resolve_render_selected_strategies(summary, selected_strategies)?;
     let selected = if selected_strategy_ids.is_empty() {
         "<none>".to_string()
