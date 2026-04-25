@@ -40,17 +40,19 @@ The repository currently contains a bounded local foundation for moat-loop execu
 - domain models in `mdid-domain` for market structure, competitor intelligence, lock-in analysis, moat strategies, round summaries, task-graph nodes, and decision-memory snapshots
 - deterministic moat evaluation helpers in `mdid-application`
 - bounded round orchestration in `mdid-runtime`
-- a bounded operator-facing `mdid-cli moat round` runner over deterministic sample inputs, including override flags for strategy/spec/implementation/review budgets plus `tests_passed`, canonical executed task IDs, and honest `stop_reason` reporting
+- a reusable local JSON-backed history store in `mdid-runtime` exposed as `mdid_runtime::moat_history::LocalMoatHistoryStore`, with `open(path)` for persistence paths that may need to create a new file, `open_existing(path)` for honest read-only inspection of an already-persisted history file, `append(recorded_at, report)` for persistence, and `summary()` for bounded inspection over persisted `MoatHistoryEntry` records
+- a bounded operator-facing `mdid-cli moat round` runner over deterministic sample inputs, including override flags for strategy/spec/implementation/review budgets plus `tests_passed`, canonical executed task IDs, honest `stop_reason` reporting, and optional `--history-path PATH` persistence
 - a bounded operator-facing `mdid-cli moat control-plane` runner over the same deterministic sample inputs, including override flags for stop-path inspection through canonical task states, ready-node visibility, and the latest bounded decision-memory summary
+- a bounded operator-facing `mdid-cli moat history --history-path PATH` summary surface for inspecting persisted local history
 
-This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally through both the round report and control-plane snapshot, and now exposes bounded operator-facing override flags over deterministic sample data. It is still not persisted, not live, and not autonomous over external data: there is no scheduler control, no live market crawling, no persistent memory store, and no fully autonomous multi-agent runtime over user-supplied or external inputs.
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic local round runner, bounded control-plane inspection, and bounded local history persistence/inspection over deterministic sample data. It is still not live and not fully autonomous over external data: there is no scheduler control, no live market crawling, and no full autonomous multi-agent runtime over user-supplied or external inputs.
 
 ### Still planned, not yet implemented
 
 The broader Autonomous Multi-Agent System target described by this spec remains future work. This spec still includes, but the current repository does not yet implement:
 
 - Planner / Coder / Reviewer role orchestration
-- persistent memory store and decision log
+- full persistent memory store and decision-log workflow beyond bounded local round-history snapshots
 - non-linear task graph persistence and scheduler control
 - GitFlow PR / release automation
 - live market / competitor / lock-in data collection

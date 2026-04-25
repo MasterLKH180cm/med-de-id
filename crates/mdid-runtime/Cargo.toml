@@ -6,12 +6,18 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+chrono.workspace = true
 mdid-application = { path = "../mdid-application" }
 mdid-domain = { path = "../mdid-domain" }
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tower.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }

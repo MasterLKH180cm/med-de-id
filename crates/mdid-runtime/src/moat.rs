@@ -7,6 +7,7 @@ use mdid_domain::{
     MarketMoatSnapshot, MoatMemorySnapshot, MoatRoundSummary, MoatStrategy, MoatTaskGraph,
     ResourceBudget,
 };
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const MARKET_SCAN: &str = "market_scan";
@@ -34,13 +35,13 @@ pub struct MoatRoundInput {
     pub tests_passed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoatControlPlaneReport {
     pub task_graph: MoatTaskGraph,
     pub memory: MoatMemorySnapshot,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoatRoundReport {
     pub summary: MoatRoundSummary,
     pub executed_tasks: Vec<String>,
@@ -49,7 +50,7 @@ pub struct MoatRoundReport {
 }
 
 pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
-    let round_id = Uuid::nil();
+    let round_id = Uuid::new_v4();
     let mut executed_tasks = vec![
         MARKET_SCAN.to_string(),
         COMPETITOR_ANALYSIS.to_string(),
@@ -212,7 +213,7 @@ fn latest_decision(summary: &MoatRoundSummary, executed_tasks: &[String]) -> Dec
     };
 
     DecisionLogEntry {
-        entry_id: Uuid::nil(),
+        entry_id: Uuid::new_v4(),
         round_id: summary.round_id,
         author_role,
         summary: decision_summary.to_string(),
