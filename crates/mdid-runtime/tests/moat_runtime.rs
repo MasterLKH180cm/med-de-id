@@ -63,6 +63,10 @@ fn bounded_round_returns_control_plane_snapshot_for_successful_rounds() {
     assert_report_ids_are_aligned(&report);
     assert_eq!(report.summary.continue_decision, ContinueDecision::Continue);
     assert_eq!(
+        report.summary.implemented_specs,
+        vec!["moat-spec/workflow-audit".to_string()]
+    );
+    assert_eq!(
         report.executed_tasks,
         vec![
             "market_scan".to_string(),
@@ -218,6 +222,66 @@ fn bounded_round_stops_before_review_when_review_budget_is_zero() {
     assert_eq!(
         report.control_plane.memory.decisions[0].author_role,
         AgentRole::Coder
+    );
+}
+
+#[test]
+fn bounded_round_limits_implemented_specs_to_max_spec_generations() {
+    let report = run_bounded_round(MoatRoundInput {
+        market: MarketMoatSnapshot {
+            moat_score: 45,
+            ..MarketMoatSnapshot::default()
+        },
+        competitor: CompetitorProfile {
+            threat_score: 30,
+            ..CompetitorProfile::default()
+        },
+        lock_in: LockInReport {
+            lockin_score: 60,
+            workflow_dependency_strength: 72,
+            ..LockInReport::default()
+        },
+        strategies: vec![
+            MoatStrategy {
+                strategy_id: "workflow-audit".into(),
+                title: "Workflow audit moat".into(),
+                target_moat_type: MoatType::WorkflowLockIn,
+                implementation_cost: 2,
+                expected_moat_gain: 8,
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "compliance-playbook".into(),
+                title: "Compliance playbook moat".into(),
+                target_moat_type: MoatType::ComplianceMoat,
+                implementation_cost: 2,
+                expected_moat_gain: 6,
+                ..MoatStrategy::default()
+            },
+        ],
+        budget: ResourceBudget {
+            max_round_minutes: 20,
+            max_parallel_tasks: 2,
+            max_strategy_candidates: 2,
+            max_spec_generations: 1,
+            max_implementation_tasks: 1,
+            max_review_loops: 1,
+        },
+        improvement_threshold: 3,
+        tests_passed: true,
+    });
+
+    assert_report_ids_are_aligned(&report);
+    assert_eq!(
+        report.summary.selected_strategies,
+        vec![
+            "workflow-audit".to_string(),
+            "compliance-playbook".to_string(),
+        ]
+    );
+    assert_eq!(
+        report.summary.implemented_specs,
+        vec!["moat-spec/workflow-audit".to_string()]
     );
 }
 

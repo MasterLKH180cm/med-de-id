@@ -140,10 +140,48 @@ fn summary_reports_latest_best_and_improvement_fields() {
             latest_continue_decision: Some(ContinueDecision::Stop),
             latest_stop_reason: Some("review budget exhausted".to_string()),
             latest_decision_summary: Some("implementation stopped before review".to_string()),
+            latest_implemented_specs: vec!["moat-spec/workflow-audit".to_string()],
             latest_moat_score_after: Some(60),
             best_moat_score_after: Some(98),
             improvement_deltas: vec![8, 0],
         }
+    );
+}
+
+#[test]
+fn summary_exposes_latest_implemented_specs() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "review approved bounded moat round",
+        90,
+        98,
+        true,
+        &[
+            "market_scan",
+            "competitor_analysis",
+            "lockin_analysis",
+            "strategy_generation",
+            "spec_planning",
+            "implementation",
+            "review",
+            "evaluation",
+        ],
+    );
+    report.summary.implemented_specs = vec!["moat-spec/workflow-audit".to_string()];
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T22:00:00Z"), report)
+        .expect("report should persist");
+
+    assert_eq!(
+        store.summary().latest_implemented_specs,
+        vec!["moat-spec/workflow-audit".to_string()]
     );
 }
 
@@ -506,7 +544,7 @@ fn sample_report(
     let summary = MoatRoundSummary {
         round_id,
         selected_strategies: vec!["workflow-audit".to_string()],
-        implemented_specs: Vec::new(),
+        implemented_specs: vec!["moat-spec/workflow-audit".to_string()],
         tests_passed,
         moat_score_before,
         moat_score_after,

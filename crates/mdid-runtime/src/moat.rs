@@ -106,6 +106,7 @@ pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
         &input.competitor,
         &input.lock_in,
         &selected_strategies,
+        usize::from(input.budget.max_spec_generations),
         input.tests_passed,
         MoatImprovementThreshold(input.improvement_threshold),
     );
@@ -128,6 +129,7 @@ fn stop_report(
         &input.competitor,
         &input.lock_in,
         &[],
+        usize::from(input.budget.max_spec_generations),
         input.tests_passed,
         MoatImprovementThreshold(input.improvement_threshold),
     );

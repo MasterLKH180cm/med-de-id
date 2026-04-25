@@ -33,6 +33,7 @@ pub struct MoatHistorySummary {
     pub latest_continue_decision: Option<ContinueDecision>,
     pub latest_stop_reason: Option<String>,
     pub latest_decision_summary: Option<String>,
+    pub latest_implemented_specs: Vec<String>,
     pub latest_moat_score_after: Option<i16>,
     pub best_moat_score_after: Option<i16>,
     pub improvement_deltas: Vec<i16>,
@@ -126,6 +127,7 @@ impl LocalMoatHistoryStore {
             latest_continue_decision: Some(latest.report.summary.continue_decision),
             latest_stop_reason: latest.report.summary.stop_reason.clone(),
             latest_decision_summary: latest.report.control_plane.memory.latest_decision_summary(),
+            latest_implemented_specs: latest.report.summary.implemented_specs.clone(),
             latest_moat_score_after: Some(latest.report.summary.moat_score_after),
             best_moat_score_after: self
                 .entries
