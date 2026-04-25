@@ -4,22 +4,100 @@ use mdid_domain::{
 };
 use mdid_runtime::moat::{run_bounded_round, MoatRoundInput, MoatRoundReport};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MoatRoundOverrides {
+    strategy_candidates: Option<u8>,
+    spec_generations: Option<u8>,
+    implementation_tasks: Option<u8>,
+    review_loops: Option<u8>,
+    tests_passed: Option<bool>,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    match args.as_slice() {
-        [] => println!("med-de-id CLI ready"),
-        [status] if status == "status" => println!("med-de-id CLI ready"),
-        [moat, round] if moat == "moat" && round == "round" => run_moat_round(),
-        [moat, control_plane] if moat == "moat" && control_plane == "control-plane" => {
-            run_moat_control_plane()
-        }
-        _ => exit_unknown_command(&args),
+    match parse_command(&args) {
+        Ok(CliCommand::Status) => println!("med-de-id CLI ready"),
+        Ok(CliCommand::MoatRound(overrides)) => run_moat_round(&overrides),
+        Ok(CliCommand::MoatControlPlane(overrides)) => run_moat_control_plane(&overrides),
+        Err(error) => exit_with_usage(error),
     }
 }
 
-fn run_moat_round() {
-    let report = sample_round_report();
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CliCommand {
+    Status,
+    MoatRound(MoatRoundOverrides),
+    MoatControlPlane(MoatRoundOverrides),
+}
+
+fn parse_command(args: &[String]) -> Result<CliCommand, String> {
+    match args {
+        [] => Ok(CliCommand::Status),
+        [status] if status == "status" => Ok(CliCommand::Status),
+        [moat, round, rest @ ..] if moat == "moat" && round == "round" => {
+            Ok(CliCommand::MoatRound(parse_moat_round_overrides(rest)?))
+        }
+        [moat, control_plane, rest @ ..] if moat == "moat" && control_plane == "control-plane" => {
+            Ok(CliCommand::MoatControlPlane(parse_moat_round_overrides(
+                rest,
+            )?))
+        }
+        _ => Err(format!("unknown command: {}", format_command(args))),
+    }
+}
+
+fn parse_moat_round_overrides(args: &[String]) -> Result<MoatRoundOverrides, String> {
+    let mut overrides = MoatRoundOverrides::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        let flag = &args[index];
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+
+        match flag.as_str() {
+            "--strategy-candidates" => {
+                overrides.strategy_candidates = Some(parse_u8_flag(flag, value)?);
+            }
+            "--spec-generations" => {
+                overrides.spec_generations = Some(parse_u8_flag(flag, value)?);
+            }
+            "--implementation-tasks" => {
+                overrides.implementation_tasks = Some(parse_u8_flag(flag, value)?);
+            }
+            "--review-loops" => {
+                overrides.review_loops = Some(parse_u8_flag(flag, value)?);
+            }
+            "--tests-passed" => {
+                overrides.tests_passed = Some(parse_bool_flag(flag, value)?);
+            }
+            _ => return Err(format!("unknown flag: {flag}")),
+        }
+
+        index += 2;
+    }
+
+    Ok(overrides)
+}
+
+fn parse_u8_flag(flag: &str, value: &str) -> Result<u8, String> {
+    value
+        .parse::<u8>()
+        .map_err(|_| format!("invalid value for {flag}: {value}"))
+}
+
+fn parse_bool_flag(flag: &str, value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("invalid value for {flag}: {value}")),
+    }
+}
+
+fn run_moat_round(overrides: &MoatRoundOverrides) {
+    let report = sample_round_report(overrides);
 
     println!("moat round complete");
     println!(
@@ -29,10 +107,14 @@ fn run_moat_round() {
     println!("executed_tasks={}", report.executed_tasks.join(","));
     println!("moat_score_before={}", report.summary.moat_score_before);
     println!("moat_score_after={}", report.summary.moat_score_after);
+    println!(
+        "stop_reason={}",
+        report.stop_reason.as_deref().unwrap_or("<none>")
+    );
 }
 
-fn run_moat_control_plane() {
-    let report = sample_round_report();
+fn run_moat_control_plane(overrides: &MoatRoundOverrides) {
+    let report = sample_round_report(overrides);
     let control_plane = report.control_plane;
     let ready_nodes = format_ready_nodes(&control_plane.task_graph.ready_node_ids());
     let latest_decision_summary = control_plane
@@ -51,8 +133,8 @@ fn run_moat_control_plane() {
     println!("task_states={task_states}");
 }
 
-fn sample_round_report() -> MoatRoundReport {
-    run_bounded_round(sample_round_input())
+fn sample_round_report(overrides: &MoatRoundOverrides) -> MoatRoundReport {
+    run_bounded_round(sample_round_input(overrides))
 }
 
 fn format_continue_decision(continue_decision: ContinueDecision) -> &'static str {
@@ -89,8 +171,8 @@ fn format_task_node_state(state: MoatTaskNodeState) -> &'static str {
     }
 }
 
-fn sample_round_input() -> MoatRoundInput {
-    MoatRoundInput {
+fn sample_round_input(overrides: &MoatRoundOverrides) -> MoatRoundInput {
+    let mut input = MoatRoundInput {
         market: MarketMoatSnapshot {
             market_id: "healthcare-deid".into(),
             moat_score: 45,
@@ -124,18 +206,42 @@ fn sample_round_input() -> MoatRoundInput {
         },
         improvement_threshold: 3,
         tests_passed: true,
+    };
+
+    if let Some(value) = overrides.strategy_candidates {
+        input.budget.max_strategy_candidates = value;
     }
+    if let Some(value) = overrides.spec_generations {
+        input.budget.max_spec_generations = value;
+    }
+    if let Some(value) = overrides.implementation_tasks {
+        input.budget.max_implementation_tasks = value;
+    }
+    if let Some(value) = overrides.review_loops {
+        input.budget.max_review_loops = value;
+    }
+    if let Some(value) = overrides.tests_passed {
+        input.tests_passed = value;
+    }
+
+    input
 }
 
-fn exit_unknown_command(args: &[String]) -> ! {
-    let command = if args.is_empty() {
+fn format_command(args: &[String]) -> String {
+    if args.is_empty() {
         "<none>".to_string()
     } else {
         args.join(" ")
-    };
+    }
+}
 
-    eprintln!("unknown command: {command}");
-    eprintln!("usage: mdid-cli [status | moat round | moat control-plane]");
+fn usage() -> &'static str {
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false]]"
+}
+
+fn exit_with_usage(message: String) -> ! {
+    eprintln!("{message}");
+    eprintln!("{}", usage());
     std::process::exit(1);
 }
 
@@ -172,6 +278,36 @@ mod tests {
         assert_eq!(
             format_task_node_state(MoatTaskNodeState::Blocked),
             "blocked"
+        );
+    }
+
+    #[test]
+    fn parse_command_maps_round_and_control_plane_overrides() {
+        assert_eq!(
+            parse_command(&[
+                "moat".into(),
+                "round".into(),
+                "--review-loops".into(),
+                "0".into(),
+            ])
+            .unwrap(),
+            CliCommand::MoatRound(MoatRoundOverrides {
+                review_loops: Some(0),
+                ..MoatRoundOverrides::default()
+            })
+        );
+        assert_eq!(
+            parse_command(&[
+                "moat".into(),
+                "control-plane".into(),
+                "--strategy-candidates".into(),
+                "0".into(),
+            ])
+            .unwrap(),
+            CliCommand::MoatControlPlane(MoatRoundOverrides {
+                strategy_candidates: Some(0),
+                ..MoatRoundOverrides::default()
+            })
         );
     }
 }
