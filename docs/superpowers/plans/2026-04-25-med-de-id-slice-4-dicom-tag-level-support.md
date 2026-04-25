@@ -34,6 +34,7 @@ This plan covers **Slice 4 — DICOM tag-level support** only. It does not imple
 - `crates/mdid-domain/src/lib.rs`
 - `crates/mdid-adapters/Cargo.toml`
 - `crates/mdid-adapters/src/lib.rs`
+- `crates/mdid-adapters/src/dicom.rs`
 - `crates/mdid-application/Cargo.toml`
 - `crates/mdid-application/src/lib.rs`
 
@@ -434,6 +435,9 @@ git commit -m "feat: add dicom rewrite and uid remap"
 ### Task 4: Add application orchestration for reversible DICOM de-identification
 
 **Files:**
+- Modify: `crates/mdid-adapters/src/lib.rs`
+- Modify: `crates/mdid-adapters/src/dicom.rs`
+- Modify: `crates/mdid-adapters/tests/dicom_adapter.rs`
 - Modify: `crates/mdid-application/Cargo.toml`
 - Modify: `crates/mdid-application/src/lib.rs`
 - Create: `crates/mdid-application/tests/dicom_deidentification.rs`
@@ -443,7 +447,9 @@ git commit -m "feat: add dicom rewrite and uid remap"
 Create tests named:
 - `dicom_deidentification_reuses_vault_tokens_for_repeated_phi_values`
 - `dicom_deidentification_routes_private_tags_and_burned_in_suspicion_to_review`
-- `dicom_deidentification_debug_redacts_output_bytes`
+- `dicom_deidentification_counts_nested_uid_remaps_honestly`
+- `dicom_deidentification_counts_nested_private_tag_review_and_removal_honestly`
+- `dicom_deidentification_output_debug_redacts_phi`
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -485,10 +491,10 @@ pub struct DicomDeidentificationService;
 ```
 
 Implement `deidentify_bytes(...)` so it:
-- extracts candidates through `DicomAdapter`
+- extracts candidates and UID-family values through `DicomAdapter`, including nested sequence/reference items that rewrite can remap
 - uses `LocalVaultStore::ensure_mapping(...)` for approved tags and remapped UIDs
-- sends private-tag review items and burned-in suspicion to `review_queue`
-- returns honest `DicomDeidentificationSummary`
+- sends private-tag review items to `review_queue`, including nested private tags discovered inside sequences, and routes burned-in suspicion through honest review-required summary state
+- returns honest `DicomDeidentificationSummary`, including truthful `removed_private_tags` counts when nested private tags are stripped under `Remove`
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -496,6 +502,7 @@ Run:
 
 ```bash
 source "$HOME/.cargo/env"
+cargo test -p mdid-adapters --test dicom_adapter
 cargo test -p mdid-application --test dicom_deidentification
 cargo test -p mdid-application
 ```
@@ -505,7 +512,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/mdid-application/Cargo.toml crates/mdid-application/src/lib.rs crates/mdid-application/tests/dicom_deidentification.rs
+git add crates/mdid-adapters/src/lib.rs crates/mdid-adapters/src/dicom.rs crates/mdid-adapters/tests/dicom_adapter.rs crates/mdid-application/Cargo.toml crates/mdid-application/src/lib.rs crates/mdid-application/tests/dicom_deidentification.rs
 git commit -m "feat: add dicom deidentification service"
 ```
 

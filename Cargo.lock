@@ -2927,6 +2927,8 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "csv",
+ "dicom-core",
+ "dicom-object",
  "mdid-adapters",
  "mdid-domain",
  "mdid-vault",
