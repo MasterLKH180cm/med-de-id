@@ -3,7 +3,7 @@ use std::io::Cursor;
 use dicom_core::{
     header::Header,
     value::{ConvertValueError, DataSetSequence, Value as DicomValue},
-    DataElement, Length, Tag,
+    DataElement, Length, PrimitiveValue, Tag,
 };
 use dicom_object::{
     file::ReadPreamble,
@@ -221,18 +221,61 @@ fn apply_tag_replacements(obj: &mut InMemDicomObject, replacements: &[DicomTagRe
 }
 
 fn apply_uid_replacements(obj: &mut InMemDicomObject, replacements: &[DicomUidReplacement]) {
-    for replacement in replacements {
-        let tag = tag_from_ref(&replacement.tag);
-        if !is_uid_family_tag(tag) {
-            continue;
-        }
+    let original = std::mem::replace(obj, InMemDicomObject::new_empty());
+    *obj = rewrite_uid_replacements(original, replacements);
+}
 
-        let Some(vr) = obj.get(tag).map(|element| element.vr()) else {
-            continue;
-        };
+fn rewrite_uid_replacements(
+    obj: InMemDicomObject,
+    replacements: &[DicomUidReplacement],
+) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter(
+        obj.into_iter()
+            .map(|element| rewrite_uid_element(element, replacements)),
+    )
+}
 
-        obj.put_str(tag, vr, replacement.value.clone());
+fn rewrite_uid_element(
+    element: dicom_object::mem::InMemElement,
+    replacements: &[DicomUidReplacement],
+) -> dicom_object::mem::InMemElement {
+    let tag = element.tag();
+    let vr = element.vr();
+
+    if let Some(value) = uid_replacement_value(tag, replacements) {
+        return DataElement::new(tag, vr, PrimitiveValue::from(value.to_owned()));
     }
+
+    let value = rewrite_uid_value(element.into_value(), replacements);
+    DataElement::new_with_len(tag, vr, value_length(&value), value)
+}
+
+fn rewrite_uid_value(
+    value: DicomValue<InMemDicomObject, Vec<u8>>,
+    replacements: &[DicomUidReplacement],
+) -> DicomValue<InMemDicomObject, Vec<u8>> {
+    match value {
+        DicomValue::Sequence(sequence) => DicomValue::Sequence(DataSetSequence::new(
+            sequence
+                .into_items()
+                .into_iter()
+                .map(|item| rewrite_uid_replacements(item, replacements))
+                .collect::<Vec<_>>(),
+            Length::UNDEFINED,
+        )),
+        other => other,
+    }
+}
+
+fn uid_replacement_value(tag: Tag, replacements: &[DicomUidReplacement]) -> Option<&str> {
+    if !is_uid_family_tag(tag) {
+        return None;
+    }
+
+    replacements
+        .iter()
+        .find(|replacement| tag_from_ref(&replacement.tag) == tag)
+        .map(|replacement| replacement.value.as_str())
 }
 
 fn strip_private_tags(obj: InMemDicomObject) -> InMemDicomObject {

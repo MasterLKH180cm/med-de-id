@@ -296,6 +296,43 @@ fn rewrite_replaces_encoded_phi_tags_and_remaps_uid_family() -> Result<(), Dicom
 }
 
 #[test]
+fn rewrite_remaps_nested_uid_family_tags_inside_sequence_items() -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Keep);
+    let plan = DicomRewritePlan {
+        tag_replacements: vec![],
+        uid_replacements: vec![DicomUidReplacement::new(
+            DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+            "2.25.100000000000000000000000000000000042".into(),
+        )],
+    };
+
+    let rewritten = adapter.rewrite(
+        &build_dicom_fixture_with_nested_private_sequence("NO"),
+        &plan,
+    )?;
+    let rewritten_obj = parse_dicom(&rewritten);
+    let sequence_items = rewritten_obj
+        .get(Tag(0x0008, 0x1115))
+        .expect("expected referenced series sequence")
+        .items()
+        .expect("expected sequence items");
+    let nested_item = sequence_items
+        .first()
+        .expect("expected one nested sequence item");
+
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0020, 0x000E)),
+        "2.25.100000000000000000000000000000000042"
+    );
+    assert_eq!(
+        tag_value_in_item(nested_item, Tag(0x0020, 0x000E)),
+        "2.25.100000000000000000000000000000000042"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn rewrite_removes_private_tags_when_policy_is_remove() -> Result<(), DicomAdapterError> {
     let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Remove);
 
