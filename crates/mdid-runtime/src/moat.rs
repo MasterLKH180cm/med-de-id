@@ -1,7 +1,7 @@
 use mdid_application::{
     build_default_moat_task_graph, build_moat_spec_handoff_ids, evaluate_moat_round,
-    project_task_graph_progress, select_top_strategies, summarize_round_memory,
-    MoatImprovementThreshold,
+    project_ready_moat_agent_assignments, project_task_graph_progress, select_top_strategies,
+    summarize_round_memory, MoatAgentAssignment, MoatImprovementThreshold,
 };
 use mdid_domain::{
     AgentRole, CompetitorProfile, ContinueDecision, DecisionLogEntry, LockInReport,
@@ -40,6 +40,7 @@ pub struct MoatRoundInput {
 pub struct MoatControlPlaneReport {
     pub task_graph: MoatTaskGraph,
     pub memory: MoatMemorySnapshot,
+    pub agent_assignments: Vec<MoatAgentAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,7 +114,7 @@ pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
     );
     let stop_reason = summary.stop_reason.clone();
 
-    build_report(summary, executed_tasks, stop_reason)
+    build_report(summary, executed_tasks, stop_reason, &input.budget)
 }
 
 fn stop_report(
@@ -150,15 +151,16 @@ fn stop_report(
     summary.continue_decision = ContinueDecision::Stop;
     summary.stop_reason = stop_reason.clone();
 
-    build_report(summary, executed_tasks, stop_reason)
+    build_report(summary, executed_tasks, stop_reason, &input.budget)
 }
 
 fn build_report(
     summary: MoatRoundSummary,
     executed_tasks: Vec<String>,
     stop_reason: Option<String>,
+    budget: &ResourceBudget,
 ) -> MoatRoundReport {
-    let control_plane = build_control_plane_report(&summary, &executed_tasks);
+    let control_plane = build_control_plane_report(&summary, &executed_tasks, budget);
 
     MoatRoundReport {
         summary,
@@ -171,14 +173,20 @@ fn build_report(
 fn build_control_plane_report(
     summary: &MoatRoundSummary,
     executed_tasks: &[String],
+    budget: &ResourceBudget,
 ) -> MoatControlPlaneReport {
     let task_graph = project_task_graph_progress(
         build_default_moat_task_graph(summary.round_id),
         executed_tasks,
     );
     let memory = summarize_round_memory(summary, vec![latest_decision(summary, executed_tasks)]);
+    let agent_assignments = project_ready_moat_agent_assignments(&task_graph, budget);
 
-    MoatControlPlaneReport { task_graph, memory }
+    MoatControlPlaneReport {
+        task_graph,
+        memory,
+        agent_assignments,
+    }
 }
 
 fn latest_decision(summary: &MoatRoundSummary, executed_tasks: &[String]) -> DecisionLogEntry {

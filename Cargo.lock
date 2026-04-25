@@ -2932,6 +2932,7 @@ dependencies = [
  "mdid-adapters",
  "mdid-domain",
  "mdid-vault",
+ "serde",
  "tempfile",
  "thiserror 1.0.69",
  "uuid",

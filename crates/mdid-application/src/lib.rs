@@ -12,6 +12,7 @@ use mdid_domain::{
     PipelineDefinition, PipelineRun, PipelineRunState, ResourceBudget, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -675,7 +676,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoatAgentAssignment {
     pub role: AgentRole,
     pub node_id: String,

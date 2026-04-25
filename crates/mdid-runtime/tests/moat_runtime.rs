@@ -1,6 +1,6 @@
 use mdid_domain::{
     AgentRole, CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
-    MoatType, ResourceBudget,
+    MoatTaskNodeKind, MoatType, ResourceBudget,
 };
 use mdid_runtime::moat::{run_bounded_round, MoatRoundInput, MoatRoundReport};
 
@@ -94,6 +94,114 @@ fn bounded_round_returns_control_plane_snapshot_for_successful_rounds() {
         report.control_plane.memory.decisions[0].author_role,
         AgentRole::Reviewer
     );
+}
+
+#[test]
+fn successful_round_has_no_pending_agent_assignments() {
+    let report = run_bounded_round(MoatRoundInput {
+        market: MarketMoatSnapshot {
+            moat_score: 45,
+            ..MarketMoatSnapshot::default()
+        },
+        competitor: CompetitorProfile {
+            threat_score: 30,
+            ..CompetitorProfile::default()
+        },
+        lock_in: LockInReport {
+            lockin_score: 60,
+            workflow_dependency_strength: 72,
+            ..LockInReport::default()
+        },
+        strategies: vec![MoatStrategy {
+            strategy_id: "workflow-audit".into(),
+            title: "Workflow audit moat".into(),
+            target_moat_type: MoatType::WorkflowLockIn,
+            implementation_cost: 2,
+            expected_moat_gain: 8,
+            ..MoatStrategy::default()
+        }],
+        budget: ResourceBudget {
+            max_round_minutes: 30,
+            max_parallel_tasks: 3,
+            max_strategy_candidates: 2,
+            max_spec_generations: 1,
+            max_implementation_tasks: 1,
+            max_review_loops: 1,
+        },
+        improvement_threshold: 3,
+        tests_passed: true,
+    });
+
+    assert!(report.control_plane.agent_assignments.is_empty());
+}
+
+#[test]
+fn strategy_budget_stop_exposes_planner_agent_assignments() {
+    let report = run_bounded_round(MoatRoundInput {
+        market: MarketMoatSnapshot::default(),
+        competitor: CompetitorProfile::default(),
+        lock_in: LockInReport::default(),
+        strategies: vec![MoatStrategy::default()],
+        budget: ResourceBudget {
+            max_round_minutes: 10,
+            max_parallel_tasks: 1,
+            max_strategy_candidates: 0,
+            max_spec_generations: 0,
+            max_implementation_tasks: 0,
+            max_review_loops: 0,
+        },
+        improvement_threshold: 2,
+        tests_passed: true,
+    });
+
+    assert_eq!(report.control_plane.agent_assignments.len(), 1);
+    let assignment = &report.control_plane.agent_assignments[0];
+    assert_eq!(assignment.role, AgentRole::Planner);
+    assert_eq!(assignment.node_id, "strategy_generation");
+    assert_eq!(assignment.kind, MoatTaskNodeKind::StrategyGeneration);
+}
+
+#[test]
+fn review_budget_stop_exposes_reviewer_agent_assignments() {
+    let report = run_bounded_round(MoatRoundInput {
+        market: MarketMoatSnapshot {
+            moat_score: 45,
+            ..MarketMoatSnapshot::default()
+        },
+        competitor: CompetitorProfile {
+            threat_score: 30,
+            ..CompetitorProfile::default()
+        },
+        lock_in: LockInReport {
+            lockin_score: 60,
+            workflow_dependency_strength: 72,
+            ..LockInReport::default()
+        },
+        strategies: vec![MoatStrategy {
+            strategy_id: "workflow-audit".into(),
+            title: "Workflow audit moat".into(),
+            target_moat_type: MoatType::WorkflowLockIn,
+            implementation_cost: 2,
+            expected_moat_gain: 8,
+            ..MoatStrategy::default()
+        }],
+        budget: ResourceBudget {
+            max_round_minutes: 30,
+            max_parallel_tasks: 3,
+            max_strategy_candidates: 2,
+            max_spec_generations: 1,
+            max_implementation_tasks: 1,
+            max_review_loops: 0,
+        },
+        improvement_threshold: 3,
+        tests_passed: true,
+    });
+
+    assert_eq!(report.control_plane.agent_assignments.len(), 1);
+    let assignment = &report.control_plane.agent_assignments[0];
+    assert_eq!(assignment.role, AgentRole::Reviewer);
+    assert_eq!(assignment.node_id, "review");
+    assert_eq!(assignment.kind, MoatTaskNodeKind::Review);
 }
 
 #[test]

@@ -567,6 +567,7 @@ fn sample_report(
     let control_plane = MoatControlPlaneReport {
         task_graph: build_default_moat_task_graph(round_id),
         memory: summarize_round_memory(&summary, vec![decision]),
+        agent_assignments: Vec::new(),
     };
 
     MoatRoundReport {
