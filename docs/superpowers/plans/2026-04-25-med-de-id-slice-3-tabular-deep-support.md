@@ -6,7 +6,7 @@
 
 **Architecture:** This slice adds a focused `mdid-adapters` crate with a tabular module that normalizes CSV/XLSX inputs into one shared in-memory representation. The application layer composes that adapter with `mdid-vault` so repeated PHI values reuse the same token while each cell keeps its own scoped mapping record, approved cells are encoded, review-required cells stay explicit, and the run returns batch summaries instead of pretending every row succeeded.
 
-**Tech Stack:** Rust workspace, Cargo, Serde, Chrono, UUID, thiserror, csv, calamine, rust_xlsxwriter, tempfile.
+**Tech Stack:** Rust workspace, Cargo, Serde, Chrono, UUID, thiserror, csv, calamine, rust_xlsxwriter (test-only XLSX fixtures), tempfile.
 
 ---
 
@@ -501,8 +501,6 @@ members = [
 
 [workspace.dependencies]
 csv = "1.3"
-calamine = "0.25"
-rust_xlsxwriter = "0.79"
 ```
 
 Create `crates/mdid-adapters/Cargo.toml`:
@@ -755,30 +753,65 @@ git commit -m "feat: orchestrate csv deidentification through the vault"
 ### Task 5: Add XLSX parity on the same tabular engine and refresh docs
 
 **Files:**
+- Modify: `Cargo.toml`
+- Modify: `Cargo.lock`
+- Modify: `crates/mdid-adapters/Cargo.toml`
+- Modify: `crates/mdid-adapters/src/lib.rs`
 - Modify: `crates/mdid-adapters/src/tabular.rs`
 - Create: `crates/mdid-adapters/tests/xlsx_tabular_adapter.rs`
 - Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md`
 
 - [ ] **Step 1: Write the failing XLSX tests**
 
 Create `crates/mdid-adapters/tests/xlsx_tabular_adapter.rs`:
 
 ```rust
-use mdid_adapters::{FieldPolicy, XlsxTabularAdapter};
+use mdid_adapters::{CsvTabularAdapter, FieldPolicy, XlsxTabularAdapter};
+use mdid_domain::ReviewDecision;
+use rust_xlsxwriter::Workbook;
 
 #[test]
-fn xlsx_adapter_reads_headers_and_preserves_row_count() {
-    let workbook = XlsxTabularAdapter::fixture_bytes(vec![
-        vec!["patient_id", "patient_name"],
-        vec!["MRN-001", "Alice Smith"],
-        vec!["MRN-002", "Bob Jones"],
+fn xlsx_adapter_uses_first_non_empty_worksheet_and_matches_csv_semantics() {
+    let workbook = workbook_with_blank_cover_sheet(vec![
+        vec!["patient_id", "patient_name", "age"],
+        vec!["MRN-001", "Alice Smith", "42"],
+        vec!["MRN-002", "Bob Jones", "37"],
     ]);
-    let adapter = XlsxTabularAdapter::new(vec![FieldPolicy::encode("patient_id", "patient_id")]);
+    let csv_input = "patient_id,patient_name,age\nMRN-001,Alice Smith,42\nMRN-002,Bob Jones,37\n";
+    let xlsx_adapter = XlsxTabularAdapter::new(vec![
+        FieldPolicy::encode("patient_id", "patient_id"),
+        FieldPolicy::review("patient_name", "patient_name"),
+    ]);
+    let csv_adapter = CsvTabularAdapter::new(vec![
+        FieldPolicy::encode("patient_id", "patient_id"),
+        FieldPolicy::review("patient_name", "patient_name"),
+    ]);
 
-    let extracted = adapter.extract(&workbook).unwrap();
+    let extracted = xlsx_adapter.extract(&workbook).unwrap();
+    let csv_extracted = csv_adapter.extract(csv_input.as_bytes()).unwrap();
 
-    assert_eq!(extracted.columns.len(), 2);
-    assert_eq!(extracted.rows.len(), 2);
+    assert_eq!(extracted.columns, csv_extracted.columns);
+    assert_eq!(extracted.rows, csv_extracted.rows);
+    assert_eq!(extracted.candidates.len(), 4);
+    assert_eq!(extracted.candidates[0].decision, ReviewDecision::Approved);
+    assert_eq!(extracted.candidates[1].decision, ReviewDecision::NeedsReview);
+}
+
+fn workbook_with_blank_cover_sheet(rows: Vec<Vec<&str>>) -> Vec<u8> {
+    let mut workbook = Workbook::new();
+    let _ = workbook.add_worksheet();
+    let worksheet = workbook.add_worksheet();
+
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, value) in row.iter().enumerate() {
+            worksheet
+                .write_string(row_index as u32, column_index as u16, *value)
+                .unwrap();
+        }
+    }
+
+    workbook.save_to_buffer().unwrap()
 }
 ```
 
@@ -791,11 +824,41 @@ source "$HOME/.cargo/env"
 cargo test -p mdid-adapters --test xlsx_tabular_adapter
 ```
 
-Expected: FAIL because the XLSX adapter does not exist yet.
+Expected: FAIL because `XlsxTabularAdapter` and its XLSX dependencies/exports do not exist yet.
 
 - [ ] **Step 3: Write the minimal XLSX implementation and docs**
 
-Add `XlsxTabularAdapter` beside the CSV adapter in `crates/mdid-adapters/src/tabular.rs`:
+Add the XLSX dependencies and exports first:
+
+```toml
+# Cargo.toml
+[workspace.dependencies]
+calamine = "0.34"
+```
+
+```toml
+# crates/mdid-adapters/Cargo.toml
+[dependencies]
+calamine.workspace = true
+csv.workspace = true
+mdid-domain = { path = "../mdid-domain" }
+thiserror.workspace = true
+
+[dev-dependencies]
+rust_xlsxwriter = "0.94"
+```
+
+```rust
+// crates/mdid-adapters/src/lib.rs
+mod tabular;
+
+pub use tabular::{
+    CsvTabularAdapter, ExtractedTabularData, FieldPolicy, FieldPolicyAction, TabularAdapterError,
+    XlsxTabularAdapter,
+};
+```
+
+Then add `XlsxTabularAdapter` beside the CSV adapter in `crates/mdid-adapters/src/tabular.rs`:
 
 ```rust
 pub struct XlsxTabularAdapter {
@@ -809,23 +872,12 @@ impl XlsxTabularAdapter {
 
     pub fn extract(&self, bytes: &[u8]) -> Result<ExtractedTabularData, TabularAdapterError> {
         let workbook = calamine::open_workbook_from_rs(std::io::Cursor::new(bytes.to_vec()))?;
-        extract_first_sheet(workbook, &self.policies)
-    }
-
-    pub fn fixture_bytes(rows: Vec<Vec<&str>>) -> Vec<u8> {
-        let mut workbook = rust_xlsxwriter::Workbook::new();
-        let worksheet = workbook.add_worksheet();
-        for (row_index, row) in rows.iter().enumerate() {
-            for (column_index, value) in row.iter().enumerate() {
-                worksheet
-                    .write_string(row_index as u32, column_index as u16, value)
-                    .unwrap();
-            }
-        }
-        workbook.save_to_buffer().unwrap()
+        extract_first_non_empty_sheet(workbook, &self.policies)
     }
 }
 ```
+
+Keep `rust_xlsxwriter` fixture helpers inside `crates/mdid-adapters/tests/xlsx_tabular_adapter.rs` so production adapter code stays free of XLSX writer dependencies.
 
 Update the status section in `README.md`:
 
@@ -856,7 +908,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/mdid-adapters/src/tabular.rs crates/mdid-adapters/tests/xlsx_tabular_adapter.rs README.md
+git add Cargo.toml Cargo.lock crates/mdid-adapters/Cargo.toml crates/mdid-adapters/src/lib.rs crates/mdid-adapters/src/tabular.rs crates/mdid-adapters/tests/xlsx_tabular_adapter.rs README.md docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md
 git commit -m "feat: add xlsx tabular adapter parity"
 ```
 

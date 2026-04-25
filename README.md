@@ -45,6 +45,7 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 shared Rust workspace today
 ├─ mdid-domain
 ├─ mdid-vault
+├─ mdid-adapters
 ├─ mdid-application
 ├─ mdid-runtime
 ├─ mdid-cli
@@ -56,21 +57,22 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 - `mdid-policy`
 - `mdid-detection`
-- `mdid-adapters`
 
 ## Current repository status
 
-This repository currently contains the Slice 1 workspace foundation plus the Slice 2 vault MVP work implemented so far.
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, and the first Slice 3 tabular workflow and adapter work.
 
 Implemented so far:
 
-- Shared domain models for pipeline, review, vault mapping, decode requests, and audit events
-- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, and portable subset export
-- Initial `mdid-application`, `mdid-runtime`, `mdid-cli`, `mdid-browser`, and `mdid-desktop` scaffolding from the foundation slice
+- Shared domain models for pipeline, review, vault mapping, decode requests, audit events, and tabular workflow state
+- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, and repeated-value token reuse
+- An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
+- Tabular application orchestration that composes the adapters with vault-backed reversible encoding and honest batch summaries
+- Initial `mdid-runtime`, `mdid-cli`, `mdid-browser`, and `mdid-desktop` scaffolding from the foundation slice
 
 Planned next from the design:
 
-- Additional policy, detection, and adapter crates
+- Additional policy and detection crates
 - Deeper application orchestration and surface behavior beyond the current scaffolds
 
 Available docs:
@@ -78,6 +80,7 @@ Available docs:
 - Design spec: `docs/superpowers/specs/2026-04-25-med-de-id-design.md`
 - Initial implementation plan: `docs/superpowers/plans/2026-04-25-med-de-id-foundation-implementation-plan.md`
 - Slice 2 vault/decode MVP plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-2-vault-encode-decode-mvp.md`
+- Slice 3 tabular deep-support plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md`
 
 ## Roadmap shape
 

@@ -1,3 +1,6 @@
+use std::io::Cursor;
+
+use calamine::{open_workbook_from_rs, Data, Reader, Xlsx, XlsxError};
 use mdid_domain::{PhiCandidate, ReviewDecision, TabularCellRef, TabularColumn, TabularFormat};
 use thiserror::Error;
 
@@ -5,6 +8,10 @@ use thiserror::Error;
 pub enum TabularAdapterError {
     #[error("failed to parse CSV input: {0}")]
     Csv(#[from] csv::Error),
+    #[error("failed to parse XLSX input: {0}")]
+    Xlsx(#[from] XlsxError),
+    #[error("xlsx workbook did not contain any worksheets")]
+    MissingWorksheet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,57 +91,136 @@ impl CsvTabularAdapter {
             rows.push(record.iter().map(str::to_owned).collect::<Vec<_>>());
         }
 
-        let columns = headers
-            .iter()
-            .enumerate()
-            .map(|(index, header)| {
-                TabularColumn::new(index, header.clone(), infer_kind(&rows, index).into())
-            })
-            .collect::<Vec<_>>();
+        Ok(build_extracted_data(
+            TabularFormat::Csv,
+            headers,
+            rows,
+            &self.policies,
+        ))
+    }
+}
 
-        let mut candidates = Vec::new();
-        for (row_index, row) in rows.iter().enumerate() {
-            for (column_index, value) in row.iter().enumerate() {
-                if is_blank(value) {
-                    continue;
+#[derive(Debug, Clone)]
+pub struct XlsxTabularAdapter {
+    policies: Vec<FieldPolicy>,
+}
+
+impl XlsxTabularAdapter {
+    pub fn new(policies: Vec<FieldPolicy>) -> Self {
+        Self { policies }
+    }
+
+    pub fn extract(&self, bytes: &[u8]) -> Result<ExtractedTabularData, TabularAdapterError> {
+        let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(bytes))?;
+        let sheet_names = workbook.sheet_names().to_owned();
+        let mut selected_rows = None;
+
+        for (sheet_index, sheet_name) in sheet_names.iter().enumerate() {
+            let rows = worksheet_rows(workbook.worksheet_range(sheet_name)?);
+            let has_non_blank_cells = worksheet_has_non_blank_cells(&rows);
+
+            if sheet_index == 0 {
+                selected_rows = Some(rows);
+                if has_non_blank_cells {
+                    break;
                 }
+                continue;
+            }
 
-                let Some(policy) = self
-                    .policies
-                    .iter()
-                    .find(|policy| policy.header == headers[column_index])
-                else {
-                    continue;
-                };
-
-                let decision = match policy.action {
-                    FieldPolicyAction::Encode => ReviewDecision::Approved,
-                    FieldPolicyAction::Review => ReviewDecision::NeedsReview,
-                    FieldPolicyAction::Ignore => continue,
-                };
-
-                candidates.push(PhiCandidate {
-                    format: TabularFormat::Csv,
-                    column: columns[column_index].clone(),
-                    cell: TabularCellRef::new(
-                        row_index,
-                        column_index,
-                        headers[column_index].clone(),
-                    ),
-                    phi_type: policy.phi_type.clone(),
-                    value: value.clone(),
-                    confidence: 100,
-                    decision,
-                });
+            if has_non_blank_cells {
+                selected_rows = Some(rows);
+                break;
             }
         }
 
-        Ok(ExtractedTabularData {
-            format: TabularFormat::Csv,
-            columns,
-            rows,
-            candidates,
+        let mut rows = selected_rows.ok_or(TabularAdapterError::MissingWorksheet)?;
+        let headers = rows.first().cloned().unwrap_or_default();
+        let data_rows = if rows.is_empty() {
+            Vec::new()
+        } else {
+            rows.remove(0);
+            rows
+        };
+
+        Ok(build_extracted_data(
+            TabularFormat::Xlsx,
+            headers,
+            data_rows,
+            &self.policies,
+        ))
+    }
+}
+
+fn worksheet_rows(range: calamine::Range<Data>) -> Vec<Vec<String>> {
+    range
+        .rows()
+        .map(|row| row.iter().map(cell_to_string).collect::<Vec<_>>())
+        .collect()
+}
+
+fn worksheet_has_non_blank_cells(rows: &[Vec<String>]) -> bool {
+    rows.iter().flatten().any(|value| !is_blank(value))
+}
+
+fn build_extracted_data(
+    format: TabularFormat,
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+    policies: &[FieldPolicy],
+) -> ExtractedTabularData {
+    let columns = headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            TabularColumn::new(index, header.clone(), infer_kind(&rows, index).into())
         })
+        .collect::<Vec<_>>();
+
+    let mut candidates = Vec::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, value) in row.iter().enumerate() {
+            if is_blank(value) {
+                continue;
+            }
+
+            let Some(header) = headers.get(column_index) else {
+                continue;
+            };
+
+            let Some(policy) = policies.iter().find(|policy| policy.header == *header) else {
+                continue;
+            };
+
+            let decision = match policy.action {
+                FieldPolicyAction::Encode => ReviewDecision::Approved,
+                FieldPolicyAction::Review => ReviewDecision::NeedsReview,
+                FieldPolicyAction::Ignore => continue,
+            };
+
+            candidates.push(PhiCandidate {
+                format,
+                column: columns[column_index].clone(),
+                cell: TabularCellRef::new(row_index, column_index, header.clone()),
+                phi_type: policy.phi_type.clone(),
+                value: value.clone(),
+                confidence: 100,
+                decision,
+            });
+        }
+    }
+
+    ExtractedTabularData {
+        format,
+        columns,
+        rows,
+        candidates,
+    }
+}
+
+fn cell_to_string(cell: &Data) -> String {
+    match cell {
+        Data::Empty => String::new(),
+        _ => cell.to_string(),
     }
 }
 
