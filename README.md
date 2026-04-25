@@ -197,7 +197,15 @@ The export command prints a deterministic summary containing:
 - `exported_specs=<comma-list>`
 - `written_files=<comma-list>`
 
-This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest persisted moat-spec handoffs, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
+Export deterministic implementation-plan markdown for the latest persisted handoffs with:
+
+```bash
+cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.json --output-dir docs/superpowers/plans/generated
+```
+
+`moat export-plans --history-path PATH --output-dir DIR` is also one-shot and local: it requires an already-existing history file, fails when the history is empty or the latest round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one `*-implementation-plan.md` file per latest handoff. It does not start background agents, create cron jobs, open PRs, or run an unrestricted autonomous loop.
+
+This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
 
 ## Roadmap shape
 
