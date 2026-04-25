@@ -76,10 +76,7 @@ fn workbook_fixture(rows: Vec<Vec<&str>>) -> Vec<u8> {
         .expect("fixture workbook serialization should succeed")
 }
 
-fn write_rows(
-    worksheet: &mut rust_xlsxwriter::Worksheet,
-    rows: &[Vec<&str>],
-) {
+fn write_rows(worksheet: &mut rust_xlsxwriter::Worksheet, rows: &[Vec<&str>]) {
     for (row_index, row) in rows.iter().enumerate() {
         for (column_index, value) in row.iter().enumerate() {
             worksheet
