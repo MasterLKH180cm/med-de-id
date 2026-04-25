@@ -1,7 +1,15 @@
 use std::io::Cursor;
 
-use dicom_core::{header::Header, value::ConvertValueError, Tag};
-use dicom_object::{file::ReadPreamble, DefaultDicomObject, OpenFileOptions, ReadError};
+use dicom_core::{
+    header::Header,
+    value::{ConvertValueError, DataSetSequence, Value as DicomValue},
+    DataElement, Length, PrimitiveValue, Tag,
+};
+use dicom_object::{
+    file::ReadPreamble,
+    meta::{FileMetaTable, FileMetaTableBuilder},
+    DefaultDicomObject, InMemDicomObject, OpenFileOptions, ReadError, WithMetaError, WriteError,
+};
 use mdid_domain::{
     BurnedInAnnotationStatus, DicomPhiCandidate, DicomPrivateTagPolicy, DicomTagRef, ReviewDecision,
 };
@@ -13,6 +21,22 @@ pub enum DicomAdapterError {
     Parse(#[from] ReadError),
     #[error("failed to convert DICOM value: {0}")]
     Value(#[from] ConvertValueError),
+    #[error("failed to rebuild DICOM file metadata: {0}")]
+    Meta(Box<WithMetaError>),
+    #[error("failed to serialize DICOM output: {0}")]
+    Write(Box<WriteError>),
+}
+
+impl From<WithMetaError> for DicomAdapterError {
+    fn from(error: WithMetaError) -> Self {
+        Self::Meta(Box::new(error))
+    }
+}
+
+impl From<WriteError> for DicomAdapterError {
+    fn from(error: WriteError) -> Self {
+        Self::Write(Box::new(error))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +88,89 @@ impl DicomAdapter {
             burned_in_annotation: burned_in_annotation_status(&obj)?,
         })
     }
+
+    pub fn rewrite(
+        &self,
+        bytes: &[u8],
+        plan: &DicomRewritePlan,
+    ) -> Result<Vec<u8>, DicomAdapterError> {
+        let obj = OpenFileOptions::new()
+            .read_preamble(ReadPreamble::Always)
+            .from_reader(Cursor::new(bytes))?;
+        let meta = obj.meta().clone();
+        let mut dataset = obj.into_inner();
+
+        apply_tag_replacements(&mut dataset, &plan.tag_replacements);
+        apply_uid_replacements(&mut dataset, &plan.uid_replacements);
+
+        let strip_private = self.private_tag_policy == DicomPrivateTagPolicy::Remove;
+        if strip_private {
+            dataset = strip_private_tags(dataset);
+        }
+
+        let keep_private_file_meta = self.private_tag_policy == DicomPrivateTagPolicy::Keep;
+        let file_obj = dataset.with_meta(file_meta_builder(&meta, keep_private_file_meta))?;
+        let mut rewritten = Vec::new();
+        file_obj.write_all(&mut rewritten)?;
+        Ok(rewritten)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct DicomRewritePlan {
+    pub tag_replacements: Vec<DicomTagReplacement>,
+    pub uid_replacements: Vec<DicomUidReplacement>,
+}
+
+impl std::fmt::Debug for DicomRewritePlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DicomRewritePlan")
+            .field("tag_replacements", &self.tag_replacements)
+            .field("uid_replacements", &self.uid_replacements)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DicomTagReplacement {
+    pub tag: DicomTagRef,
+    value: String,
+}
+
+impl DicomTagReplacement {
+    pub fn new(tag: DicomTagRef, value: String) -> Self {
+        Self { tag, value }
+    }
+}
+
+impl std::fmt::Debug for DicomTagReplacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DicomTagReplacement")
+            .field("tag", &self.tag)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DicomUidReplacement {
+    pub tag: DicomTagRef,
+    value: String,
+}
+
+impl DicomUidReplacement {
+    pub fn new(tag: DicomTagRef, value: String) -> Self {
+        Self { tag, value }
+    }
+}
+
+impl std::fmt::Debug for DicomUidReplacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DicomUidReplacement")
+            .field("tag", &self.tag)
+            .field("value", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -83,6 +190,175 @@ impl std::fmt::Debug for ExtractedDicomData {
             .field("burned_in_annotation", &self.burned_in_annotation)
             .finish()
     }
+}
+
+pub fn sanitize_output_name(source_name: &str) -> String {
+    let extension = std::path::Path::new(source_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|ext| ext == "dcm");
+
+    match extension {
+        Some(ext) => format!("dicom-output.{ext}"),
+        None => "dicom-output".into(),
+    }
+}
+
+fn apply_tag_replacements(obj: &mut InMemDicomObject, replacements: &[DicomTagReplacement]) {
+    for replacement in replacements {
+        let tag = tag_from_ref(&replacement.tag);
+        if !is_common_phi_tag(tag) {
+            continue;
+        }
+
+        let Some(vr) = obj.get(tag).map(|element| element.vr()) else {
+            continue;
+        };
+
+        obj.put_str(tag, vr, replacement.value.clone());
+    }
+}
+
+fn apply_uid_replacements(obj: &mut InMemDicomObject, replacements: &[DicomUidReplacement]) {
+    let original = std::mem::replace(obj, InMemDicomObject::new_empty());
+    *obj = rewrite_uid_replacements(original, replacements);
+}
+
+fn rewrite_uid_replacements(
+    obj: InMemDicomObject,
+    replacements: &[DicomUidReplacement],
+) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter(
+        obj.into_iter()
+            .map(|element| rewrite_uid_element(element, replacements)),
+    )
+}
+
+fn rewrite_uid_element(
+    element: dicom_object::mem::InMemElement,
+    replacements: &[DicomUidReplacement],
+) -> dicom_object::mem::InMemElement {
+    let tag = element.tag();
+    let vr = element.vr();
+
+    if let Some(value) = uid_replacement_value(tag, replacements) {
+        return DataElement::new(tag, vr, PrimitiveValue::from(value.to_owned()));
+    }
+
+    let value = rewrite_uid_value(element.into_value(), replacements);
+    DataElement::new_with_len(tag, vr, value_length(&value), value)
+}
+
+fn rewrite_uid_value(
+    value: DicomValue<InMemDicomObject, Vec<u8>>,
+    replacements: &[DicomUidReplacement],
+) -> DicomValue<InMemDicomObject, Vec<u8>> {
+    match value {
+        DicomValue::Sequence(sequence) => DicomValue::Sequence(DataSetSequence::new(
+            sequence
+                .into_items()
+                .into_iter()
+                .map(|item| rewrite_uid_replacements(item, replacements))
+                .collect::<Vec<_>>(),
+            Length::UNDEFINED,
+        )),
+        other => other,
+    }
+}
+
+fn uid_replacement_value(tag: Tag, replacements: &[DicomUidReplacement]) -> Option<&str> {
+    if !is_uid_family_tag(tag) {
+        return None;
+    }
+
+    replacements
+        .iter()
+        .find(|replacement| tag_from_ref(&replacement.tag) == tag)
+        .map(|replacement| replacement.value.as_str())
+}
+
+fn strip_private_tags(obj: InMemDicomObject) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter(obj.into_iter().filter_map(strip_private_element))
+}
+
+fn strip_private_element(
+    element: dicom_object::mem::InMemElement,
+) -> Option<dicom_object::mem::InMemElement> {
+    if element.tag().0 % 2 == 1 {
+        return None;
+    }
+
+    let tag = element.tag();
+    let vr = element.vr();
+    let value = strip_private_value(element.into_value());
+    Some(DataElement::new_with_len(
+        tag,
+        vr,
+        value_length(&value),
+        value,
+    ))
+}
+
+fn strip_private_value(
+    value: DicomValue<InMemDicomObject, Vec<u8>>,
+) -> DicomValue<InMemDicomObject, Vec<u8>> {
+    match value {
+        DicomValue::Sequence(sequence) => DicomValue::Sequence(DataSetSequence::new(
+            sequence
+                .into_items()
+                .into_iter()
+                .map(strip_private_tags)
+                .collect::<Vec<_>>(),
+            Length::UNDEFINED,
+        )),
+        other => other,
+    }
+}
+
+fn value_length(value: &DicomValue<InMemDicomObject, Vec<u8>>) -> Length {
+    match value {
+        DicomValue::Sequence(_) | DicomValue::PixelSequence(_) => Length::UNDEFINED,
+        DicomValue::Primitive(value) => Length(value.calculate_byte_len() as u32),
+    }
+}
+
+fn file_meta_builder(meta: &FileMetaTable, keep_private: bool) -> FileMetaTableBuilder {
+    let mut builder = FileMetaTableBuilder::new()
+        .information_version(meta.information_version)
+        .transfer_syntax(meta.transfer_syntax())
+        .implementation_class_uid(meta.implementation_class_uid());
+
+    if let Some(value) = trimmed_optional(meta.implementation_version_name.as_deref()) {
+        builder = builder.implementation_version_name(value);
+    }
+    if let Some(value) = trimmed_optional(meta.source_application_entity_title.as_deref()) {
+        builder = builder.source_application_entity_title(value);
+    }
+    if let Some(value) = trimmed_optional(meta.sending_application_entity_title.as_deref()) {
+        builder = builder.sending_application_entity_title(value);
+    }
+    if let Some(value) = trimmed_optional(meta.receiving_application_entity_title.as_deref()) {
+        builder = builder.receiving_application_entity_title(value);
+    }
+    if keep_private {
+        if let Some(value) = meta.private_information_creator_uid() {
+            builder = builder.private_information_creator_uid(value);
+        }
+        if let Some(value) = meta.private_information.clone() {
+            builder = builder.private_information(value);
+        }
+    }
+
+    builder
+}
+
+fn trimmed_optional(value: Option<&str>) -> Option<&str> {
+    value.map(trimmed_value).filter(|value| !value.is_empty())
+}
+
+fn trimmed_value(value: &str) -> &str {
+    value.trim_end_matches(|ch: char| ch.is_whitespace() || ch == '\0')
 }
 
 fn common_phi_candidates(
@@ -128,6 +404,18 @@ fn dicom_tag_ref(tag: Tag, keyword: &str) -> DicomTagRef {
     DicomTagRef::new(tag.0, tag.1, keyword.into())
 }
 
+fn tag_from_ref(tag: &DicomTagRef) -> Tag {
+    Tag(tag.group, tag.element)
+}
+
+fn is_common_phi_tag(tag: Tag) -> bool {
+    COMMON_PHI_TAGS.iter().any(|spec| spec.tag == tag)
+}
+
+fn is_uid_family_tag(tag: Tag) -> bool {
+    UID_FAMILY_TAGS.contains(&tag)
+}
+
 struct CommonPhiTagSpec {
     tag: Tag,
     keyword: &'static str,
@@ -155,4 +443,10 @@ const COMMON_PHI_TAGS: [CommonPhiTagSpec; 4] = [
         keyword: "StudyDescription",
         phi_type: "study_description",
     },
+];
+
+const UID_FAMILY_TAGS: [Tag; 3] = [
+    Tag(0x0020, 0x000D),
+    Tag(0x0020, 0x000E),
+    Tag(0x0008, 0x0018),
 ];
