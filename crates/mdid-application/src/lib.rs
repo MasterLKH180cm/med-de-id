@@ -1,9 +1,10 @@
 use chrono::Utc;
 use mdid_adapters::{CsvTabularAdapter, ExtractedTabularData, FieldPolicy, TabularAdapterError};
 use mdid_domain::{
-    BatchSummary, CompetitorProfile, ContinueDecision, LockInReport, MappingScope,
-    MarketMoatSnapshot, MoatRoundSummary, MoatStrategy, PhiCandidate, PipelineDefinition,
-    PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    AgentRole, BatchSummary, CompetitorProfile, ContinueDecision, DecisionLogEntry, LockInReport,
+    MappingScope, MarketMoatSnapshot, MoatMemorySnapshot, MoatRoundSummary, MoatStrategy,
+    MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState, PhiCandidate,
+    PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -268,5 +269,94 @@ pub fn evaluate_moat_round(
             None
         },
         pivot_reason: None,
+    }
+}
+
+pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
+    MoatTaskGraph {
+        round_id,
+        nodes: vec![
+            MoatTaskNode {
+                node_id: "market_scan".into(),
+                title: "Market Scan".into(),
+                role: AgentRole::Planner,
+                kind: MoatTaskNodeKind::MarketScan,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec![],
+                spec_ref: None,
+            },
+            MoatTaskNode {
+                node_id: "competitor_analysis".into(),
+                title: "Competitor Analysis".into(),
+                role: AgentRole::Planner,
+                kind: MoatTaskNodeKind::CompetitorAnalysis,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec![],
+                spec_ref: None,
+            },
+            MoatTaskNode {
+                node_id: "lockin_analysis".into(),
+                title: "Lock-In Analysis".into(),
+                role: AgentRole::Planner,
+                kind: MoatTaskNodeKind::LockInAnalysis,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec![],
+                spec_ref: None,
+            },
+            MoatTaskNode {
+                node_id: "strategy_generation".into(),
+                title: "Strategy Generation".into(),
+                role: AgentRole::Planner,
+                kind: MoatTaskNodeKind::StrategyGeneration,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec![
+                    "market_scan".into(),
+                    "competitor_analysis".into(),
+                    "lockin_analysis".into(),
+                ],
+                spec_ref: None,
+            },
+            MoatTaskNode {
+                node_id: "spec_planning".into(),
+                title: "Spec Planning".into(),
+                role: AgentRole::Planner,
+                kind: MoatTaskNodeKind::SpecPlanning,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec!["strategy_generation".into()],
+                spec_ref: Some(
+                    "docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md".into(),
+                ),
+            },
+            MoatTaskNode {
+                node_id: "implementation".into(),
+                title: "Implementation".into(),
+                role: AgentRole::Coder,
+                kind: MoatTaskNodeKind::Implementation,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec!["spec_planning".into()],
+                spec_ref: None,
+            },
+            MoatTaskNode {
+                node_id: "review".into(),
+                title: "Review".into(),
+                role: AgentRole::Reviewer,
+                kind: MoatTaskNodeKind::Review,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec!["implementation".into()],
+                spec_ref: None,
+            },
+        ],
+    }
+}
+
+pub fn summarize_round_memory(
+    summary: &MoatRoundSummary,
+    decisions: Vec<DecisionLogEntry>,
+) -> MoatMemorySnapshot {
+    MoatMemorySnapshot {
+        round_id: summary.round_id,
+        latest_score: summary.moat_score_after,
+        improvement_delta: summary.improvement(),
+        decisions,
     }
 }
