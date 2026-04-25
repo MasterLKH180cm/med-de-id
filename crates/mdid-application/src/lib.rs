@@ -1,8 +1,9 @@
 use chrono::Utc;
 use mdid_adapters::{CsvTabularAdapter, ExtractedTabularData, FieldPolicy, TabularAdapterError};
 use mdid_domain::{
-    BatchSummary, MappingScope, PhiCandidate, PipelineDefinition, PipelineRun, PipelineRunState,
-    SurfaceKind, TabularColumn,
+    BatchSummary, CompetitorProfile, ContinueDecision, LockInReport, MappingScope,
+    MarketMoatSnapshot, MoatRoundSummary, MoatStrategy, PhiCandidate, PipelineDefinition,
+    PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -196,4 +197,76 @@ fn write_csv(columns: &[TabularColumn], rows: &[Vec<String>]) -> Result<String, 
 
     let bytes = writer.into_inner().map_err(|err| err.into_error())?;
     Ok(String::from_utf8(bytes)?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoatImprovementThreshold(pub i16);
+
+pub fn select_top_strategies(
+    mut strategies: Vec<MoatStrategy>,
+    max_strategy_candidates: usize,
+) -> Vec<MoatStrategy> {
+    strategies.sort_by(|left, right| {
+        right
+            .expected_moat_gain
+            .cmp(&left.expected_moat_gain)
+            .then_with(|| left.implementation_cost.cmp(&right.implementation_cost))
+    });
+    strategies.truncate(max_strategy_candidates);
+    strategies
+}
+
+pub fn evaluate_moat_round(
+    round_id: Uuid,
+    market: &MarketMoatSnapshot,
+    competitor: &CompetitorProfile,
+    lock_in: &LockInReport,
+    selected_strategies: &[MoatStrategy],
+    tests_passed: bool,
+    threshold: MoatImprovementThreshold,
+) -> MoatRoundSummary {
+    let moat_score_before = ((market.moat_score as i16 + lock_in.lockin_score as i16)
+        - (competitor.threat_score as i16 / 2))
+        .max(0);
+    let strategy_gain: i16 = selected_strategies
+        .iter()
+        .map(|strategy| strategy.expected_moat_gain)
+        .sum();
+    let moat_score_after = if tests_passed {
+        moat_score_before + strategy_gain
+    } else {
+        moat_score_before
+    };
+    let continue_decision = if tests_passed && (moat_score_after - moat_score_before) >= threshold.0
+    {
+        ContinueDecision::Continue
+    } else {
+        ContinueDecision::Stop
+    };
+
+    MoatRoundSummary {
+        round_id,
+        selected_strategies: selected_strategies
+            .iter()
+            .map(|strategy| strategy.strategy_id.clone())
+            .collect(),
+        implemented_specs: Vec::new(),
+        tests_passed,
+        moat_score_before,
+        moat_score_after,
+        continue_decision,
+        stop_reason: if continue_decision == ContinueDecision::Stop {
+            Some(
+                if tests_passed {
+                    "moat improvement below threshold"
+                } else {
+                    "tests failed"
+                }
+                .into(),
+            )
+        } else {
+            None
+        },
+        pivot_reason: None,
+    }
 }
