@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -730,11 +730,91 @@ fn cli_export_specs_rejects_latest_round_without_handoffs() {
         .expect("failed to run export-specs without handoffs");
 
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("latest moat round does not contain implemented_specs handoffs")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("latest moat round does not contain implemented_specs handoffs"));
     assert!(!output_dir.join("workflow-audit.md").exists());
+
+    cleanup_history_path(&history_path);
+    cleanup_history_directory_path(&output_dir);
+}
+
+#[test]
+fn moat_export_plans_writes_latest_handoff_plan_markdown() {
+    let history_path = unique_history_path("export-plans");
+    let output_dir = unique_history_path("export-plans-output");
+    if output_dir.exists() {
+        std::fs::remove_file(&output_dir).expect("remove placeholder path");
+    }
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let output_dir_arg = output_dir.to_str().expect("output dir should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "export-plans",
+            "--history-path",
+            history_path_arg,
+            "--output-dir",
+            output_dir_arg,
+        ])
+        .output()
+        .expect("failed to export moat plans");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("moat plan export\n"));
+    assert!(stdout.contains("exported_plans=moat-spec/workflow-audit\n"));
+    assert!(stdout.contains("written_files=workflow-audit-implementation-plan.md\n"));
+
+    let markdown =
+        std::fs::read_to_string(output_dir.join("workflow-audit-implementation-plan.md"))
+            .expect("plan markdown should be written");
+    assert!(markdown.contains("# Workflow Audit Implementation Plan"));
+    assert!(markdown.contains("REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development"));
+
+    cleanup_history_path(&history_path);
+    cleanup_history_directory_path(&output_dir);
+}
+
+#[test]
+fn moat_export_plans_requires_existing_history_file() {
+    let history_path = unique_history_path("missing-export-plans");
+    let output_dir = unique_history_path("missing-export-plans-output");
+    if output_dir.exists() {
+        std::fs::remove_file(&output_dir).expect("remove placeholder path");
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "export-plans",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--output-dir",
+            output_dir.to_str().expect("output dir should be utf-8"),
+        ])
+        .output()
+        .expect("failed to run export-plans");
+
+    assert!(
+        !output.status.success(),
+        "export-plans should fail for missing history"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to open moat history"));
 
     cleanup_history_path(&history_path);
     cleanup_history_directory_path(&output_dir);

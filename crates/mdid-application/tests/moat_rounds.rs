@@ -399,8 +399,58 @@ fn render_moat_spec_markdown_rejects_non_handoff_ids() {
 
 #[test]
 fn render_moat_spec_markdown_rejects_empty_handoff_slug() {
-    let error = render_moat_spec_markdown("moat-spec/", &mdid_domain::MoatRoundSummary::default(), &[])
-        .expect_err("empty moat spec slug should fail");
+    let error =
+        render_moat_spec_markdown("moat-spec/", &mdid_domain::MoatRoundSummary::default(), &[])
+            .expect_err("empty moat spec slug should fail");
 
     assert!(error.contains("expected non-empty moat spec slug"));
+}
+
+#[test]
+fn render_moat_plan_markdown_creates_sdd_tdd_plan_for_handoff() {
+    let round_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000123").unwrap();
+    let mut summary = sample_summary(round_id);
+    summary.implemented_specs = vec!["moat-spec/workflow-audit".to_string()];
+    summary.selected_strategies = vec!["workflow-audit".to_string()];
+
+    let markdown = mdid_application::render_moat_plan_markdown(
+        "moat-spec/workflow-audit",
+        &summary,
+        &summary.selected_strategies,
+    )
+    .expect("plan markdown should render");
+
+    assert!(markdown.starts_with("# Workflow Audit Implementation Plan\n"));
+    assert!(markdown.contains("REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development"));
+    assert!(markdown.contains("**Goal:** Ship the workflow-audit moat slice"));
+    assert!(markdown.contains("### Task 1: Persist workflow-audit artifact"));
+    assert!(markdown.contains("cargo test -p mdid-application moat_rounds::"));
+    assert!(markdown.contains("git commit -m \"feat: add workflow-audit moat plan\""));
+}
+
+#[test]
+fn render_moat_plan_markdown_rejects_unknown_handoff() {
+    let round_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000124").unwrap();
+    let summary = sample_summary(round_id);
+
+    let error = mdid_application::render_moat_plan_markdown(
+        "moat-spec/missing",
+        &summary,
+        &summary.selected_strategies,
+    )
+    .expect_err("unknown handoff should fail");
+
+    assert!(error.contains("handoff id moat-spec/missing not present"));
+}
+
+fn sample_summary(round_id: uuid::Uuid) -> mdid_domain::MoatRoundSummary {
+    mdid_domain::MoatRoundSummary {
+        round_id,
+        selected_strategies: vec!["workflow-audit".to_string()],
+        implemented_specs: vec!["moat-spec/workflow-audit".to_string()],
+        moat_score_before: 90,
+        moat_score_after: 98,
+        tests_passed: true,
+        ..mdid_domain::MoatRoundSummary::default()
+    }
 }

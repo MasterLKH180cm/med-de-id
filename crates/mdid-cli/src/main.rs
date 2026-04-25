@@ -1,4 +1,4 @@
-use mdid_application::render_moat_spec_markdown;
+use mdid_application::{render_moat_plan_markdown, render_moat_spec_markdown};
 use mdid_domain::{
     CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
     MoatTaskNodeState, MoatType, ResourceBudget,
@@ -47,6 +47,14 @@ fn main() {
                 exit_with_error(error);
             }
         }
+        Ok(CliCommand::MoatExportPlans {
+            history_path,
+            output_dir,
+        }) => {
+            if let Err(error) = run_moat_export_plans(&history_path, &output_dir) {
+                exit_with_error(error);
+            }
+        }
         Ok(CliCommand::MoatContinue {
             history_path,
             improvement_threshold,
@@ -77,6 +85,10 @@ enum CliCommand {
         history_path: String,
         output_dir: String,
     },
+    MoatExportPlans {
+        history_path: String,
+        output_dir: String,
+    },
     MoatContinue {
         history_path: String,
         improvement_threshold: i16,
@@ -103,6 +115,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [moat, export_specs, rest @ ..] if moat == "moat" && export_specs == "export-specs" => {
             parse_moat_export_specs_command(rest)
+        }
+        [moat, export_plans, rest @ ..] if moat == "moat" && export_plans == "export-plans" => {
+            parse_moat_export_plans_command(rest)
         }
         [moat, continue_command, rest @ ..] if moat == "moat" && continue_command == "continue" => {
             parse_moat_continue_command(rest)
@@ -158,6 +173,20 @@ fn parse_moat_export_specs_command(args: &[String]) -> Result<CliCommand, String
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         output_dir: output_dir.ok_or_else(|| "missing required flag: --output-dir".to_string())?,
+    })
+}
+
+fn parse_moat_export_plans_command(args: &[String]) -> Result<CliCommand, String> {
+    let CliCommand::MoatExportSpecs {
+        history_path,
+        output_dir,
+    } = parse_moat_export_specs_command(args)?
+    else {
+        unreachable!("export specs parser returns export specs command")
+    };
+    Ok(CliCommand::MoatExportPlans {
+        history_path,
+        output_dir,
     })
 }
 
@@ -551,6 +580,48 @@ fn run_moat_export_specs(history_path: &str, output_dir: &str) -> Result<(), Str
     Ok(())
 }
 
+fn run_moat_export_plans(history_path: &str, output_dir: &str) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let latest = store.entries().last().ok_or_else(|| {
+        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
+    })?;
+
+    if latest.report.summary.implemented_specs.is_empty() {
+        return Err("latest moat round does not contain implemented_specs handoffs".to_string());
+    }
+
+    std::fs::create_dir_all(output_dir)
+        .map_err(|error| format!("failed to create export directory: {error}"))?;
+
+    let mut written_files = Vec::new();
+    for handoff_id in &latest.report.summary.implemented_specs {
+        let markdown = render_moat_plan_markdown(
+            handoff_id,
+            &latest.report.summary,
+            &latest.report.summary.selected_strategies,
+        )?;
+        let slug = handoff_id
+            .strip_prefix("moat-spec/")
+            .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
+        let file_name = format!("{slug}-implementation-plan.md");
+        let output_path = std::path::Path::new(output_dir).join(&file_name);
+        std::fs::write(&output_path, markdown)
+            .map_err(|error| format!("failed to write exported plan markdown: {error}"))?;
+        written_files.push(file_name);
+    }
+
+    println!("moat plan export");
+    println!(
+        "exported_plans={}",
+        latest.report.summary.implemented_specs.join(",")
+    );
+    println!("written_files={}", written_files.join(","));
+    println!("output_dir={output_dir}");
+
+    Ok(())
+}
+
 fn print_history_summary(summary: &MoatHistorySummary) {
     println!("moat history summary");
     println!("entries={}", summary.entry_count);
@@ -731,7 +802,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
