@@ -49,6 +49,11 @@ fn main() {
                 exit_with_error(error);
             }
         }
+        Ok(CliCommand::MoatDecisionLog(history_path)) => {
+            if let Err(error) = run_moat_decision_log(&history_path) {
+                exit_with_error(error);
+            }
+        }
         Ok(CliCommand::MoatExportSpecs {
             history_path,
             output_dir,
@@ -91,6 +96,7 @@ enum CliCommand {
     MoatRound(MoatRoundCommand),
     MoatControlPlane(MoatControlPlaneCommand),
     MoatHistory(String),
+    MoatDecisionLog(String),
     MoatExportSpecs {
         history_path: String,
         output_dir: String,
@@ -124,6 +130,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [moat, history, rest @ ..] if moat == "moat" && history == "history" => {
             Ok(CliCommand::MoatHistory(parse_required_history_path(rest)?))
         }
+        [moat, decision_log, rest @ ..] if moat == "moat" && decision_log == "decision-log" => Ok(
+            CliCommand::MoatDecisionLog(parse_required_history_path(rest)?),
+        ),
         [moat, export_specs, rest @ ..] if moat == "moat" && export_specs == "export-specs" => {
             parse_moat_export_specs_command(rest)
         }
@@ -522,6 +531,27 @@ fn run_moat_history(history_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn run_moat_decision_log(history_path: &str) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let latest = store.entries().last().ok_or_else(|| {
+        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
+    })?;
+    let decisions = &latest.report.control_plane.memory.decisions;
+
+    println!("decision_log_entries={}", decisions.len());
+    for decision in decisions {
+        println!(
+            "decision={}|{}|{}",
+            format_agent_role(decision.author_role),
+            decision.summary,
+            decision.rationale
+        );
+    }
+
+    Ok(())
+}
+
 fn run_moat_continue(history_path: &str, improvement_threshold: i16) -> Result<(), String> {
     let store = LocalMoatHistoryStore::open_existing(history_path)
         .map_err(|error| format!("failed to open moat history store: {error}"))?;
@@ -892,7 +922,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
