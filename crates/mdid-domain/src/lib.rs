@@ -446,3 +446,251 @@ impl BatchSummary {
         self.failed_rows > 0
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoatType {
+    ComplianceMoat,
+    DataMoat,
+    #[serde(rename = "workflow_lockin")]
+    WorkflowLockIn,
+    EcosystemMoat,
+    DistributionMoat,
+    NetworkEffectAdjacent,
+    BrandTrustMoat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    Planner,
+    Coder,
+    Reviewer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoatTaskNodeKind {
+    MarketScan,
+    CompetitorAnalysis,
+    LockInAnalysis,
+    StrategyGeneration,
+    SpecPlanning,
+    Implementation,
+    Review,
+    Evaluation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoatTaskNodeState {
+    Pending,
+    Ready,
+    InProgress,
+    Completed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatTaskNode {
+    pub node_id: String,
+    pub title: String,
+    pub role: AgentRole,
+    pub kind: MoatTaskNodeKind,
+    pub state: MoatTaskNodeState,
+    pub depends_on: Vec<String>,
+    pub spec_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatTaskGraph {
+    pub round_id: Uuid,
+    pub nodes: Vec<MoatTaskNode>,
+}
+
+impl MoatTaskGraph {
+    pub fn ready_node_ids(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.state,
+                    MoatTaskNodeState::Pending | MoatTaskNodeState::Ready
+                )
+            })
+            .filter(|node| {
+                node.depends_on.iter().all(|dependency| {
+                    self.nodes.iter().any(|candidate| {
+                        candidate.node_id == *dependency
+                            && candidate.state == MoatTaskNodeState::Completed
+                    })
+                })
+            })
+            .map(|node| node.node_id.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionLogEntry {
+    pub entry_id: Uuid,
+    pub round_id: Uuid,
+    pub author_role: AgentRole,
+    pub summary: String,
+    pub rationale: String,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatMemorySnapshot {
+    pub round_id: Uuid,
+    pub latest_score: i16,
+    pub improvement_delta: i16,
+    pub decisions: Vec<DecisionLogEntry>,
+}
+
+impl MoatMemorySnapshot {
+    pub fn latest_decision_summary(&self) -> Option<String> {
+        self.decisions
+            .iter()
+            .max_by(|left, right| left.recorded_at.cmp(&right.recorded_at))
+            .map(|entry| entry.summary.clone())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinueDecision {
+    Continue,
+    Stop,
+    Pivot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ResourceBudget {
+    pub max_round_minutes: u32,
+    pub max_parallel_tasks: u8,
+    pub max_strategy_candidates: u8,
+    pub max_spec_generations: u8,
+    pub max_implementation_tasks: u8,
+    pub max_review_loops: u8,
+}
+
+impl ResourceBudget {
+    pub fn supports_parallelism(&self) -> bool {
+        self.max_parallel_tasks > 1
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.max_round_minutes == 0
+            && self.max_parallel_tasks == 0
+            && self.max_strategy_candidates == 0
+            && self.max_spec_generations == 0
+            && self.max_implementation_tasks == 0
+            && self.max_review_loops == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MarketMoatSnapshot {
+    pub market_id: String,
+    pub industry_segment: String,
+    pub market_snapshot_at: Option<DateTime<Utc>>,
+    pub moat_score: u8,
+    pub moat_type: Vec<MoatType>,
+    pub confidence: f32,
+    pub evidence: Vec<String>,
+    pub assumptions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CompetitorProfile {
+    pub competitor_id: String,
+    pub name: String,
+    pub category: String,
+    pub pricing_summary: String,
+    pub feature_summary: String,
+    pub talent_signal_summary: String,
+    pub suspected_moat_types: Vec<MoatType>,
+    pub threat_score: u8,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LockInReport {
+    pub lockin_score: u8,
+    pub lockin_vectors: Vec<String>,
+    pub switching_cost_strength: u8,
+    pub data_gravity_strength: u8,
+    pub workflow_dependency_strength: u8,
+    pub portability_risk: u8,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MoatStrategy {
+    pub strategy_id: String,
+    pub title: String,
+    pub rationale: String,
+    pub target_moat_type: MoatType,
+    pub implementation_cost: u8,
+    pub expected_moat_gain: i16,
+    pub risk_level: u8,
+    pub dependencies: Vec<String>,
+    pub testable_hypotheses: Vec<String>,
+}
+
+impl Default for MoatStrategy {
+    fn default() -> Self {
+        Self {
+            strategy_id: String::new(),
+            title: String::new(),
+            rationale: String::new(),
+            target_moat_type: MoatType::ComplianceMoat,
+            implementation_cost: 0,
+            expected_moat_gain: 0,
+            risk_level: 0,
+            dependencies: Vec::new(),
+            testable_hypotheses: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MoatRoundSummary {
+    pub round_id: Uuid,
+    pub selected_strategies: Vec<String>,
+    pub implemented_specs: Vec<String>,
+    pub tests_passed: bool,
+    pub moat_score_before: i16,
+    pub moat_score_after: i16,
+    pub continue_decision: ContinueDecision,
+    pub stop_reason: Option<String>,
+    pub pivot_reason: Option<String>,
+}
+
+impl Default for MoatRoundSummary {
+    fn default() -> Self {
+        Self {
+            round_id: Uuid::new_v4(),
+            selected_strategies: Vec::new(),
+            implemented_specs: Vec::new(),
+            tests_passed: false,
+            moat_score_before: 0,
+            moat_score_after: 0,
+            continue_decision: ContinueDecision::Stop,
+            stop_reason: None,
+            pivot_reason: None,
+        }
+    }
+}
+
+impl MoatRoundSummary {
+    pub fn improvement(&self) -> i16 {
+        self.moat_score_after - self.moat_score_before
+    }
+
+    pub fn improved(&self) -> bool {
+        self.improvement() > 0
+    }
+}

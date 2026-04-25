@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 axum.workspace = true
 mdid-application = { path = "../mdid-application" }
+mdid-domain = { path = "../mdid-domain" }
 serde.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

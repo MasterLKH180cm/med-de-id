@@ -15,8 +15,14 @@ fn dicom_tag_ref_builds_a_stable_field_path_and_detects_private_groups() {
 
 #[test]
 fn dicom_policy_wire_values_are_stable() {
-    assert_eq!(serde_json::to_string(&DicomPrivateTagPolicy::ReviewRequired).unwrap(), "\"review_required\"");
-    assert_eq!(serde_json::to_string(&BurnedInAnnotationStatus::Suspicious).unwrap(), "\"suspicious\"");
+    assert_eq!(
+        serde_json::to_string(&DicomPrivateTagPolicy::ReviewRequired).unwrap(),
+        "\"review_required\""
+    );
+    assert_eq!(
+        serde_json::to_string(&BurnedInAnnotationStatus::Suspicious).unwrap(),
+        "\"suspicious\""
+    );
 }
 
 #[test]
