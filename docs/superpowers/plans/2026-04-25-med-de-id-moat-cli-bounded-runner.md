@@ -149,7 +149,7 @@ fn cli_reports_helpful_error_for_unknown_commands() {
 }
 ```
 
-Keep the landed default control-plane, unknown-override-flag, and missing-override-value coverage as well; the shipped CLI contract includes both successful stop-path inspection and helpful usage errors.
+Keep the landed default control-plane, unknown-override-flag, and missing-override-value coverage as well; the shipped CLI contract includes both successful stop-path inspection and helpful usage errors. Truth-sync the parser expectations too: unknown override tokens must fail as `unknown flag: {flag}` before any missing-value lookup, while recognized flags fetch their values inside the corresponding `match` arm.
 
 - [ ] **Step 2: Run the focused CLI test target to verify RED**
 
@@ -220,24 +220,36 @@ fn parse_moat_round_overrides(args: &[String]) -> Result<MoatRoundOverrides, Str
 
     while index < args.len() {
         let flag = &args[index];
-        let value = args
-            .get(index + 1)
-            .ok_or_else(|| format!("missing value for {flag}"))?;
 
         match flag.as_str() {
             "--strategy-candidates" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.strategy_candidates = Some(parse_u8_flag(flag, value)?);
             }
             "--spec-generations" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.spec_generations = Some(parse_u8_flag(flag, value)?);
             }
             "--implementation-tasks" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.implementation_tasks = Some(parse_u8_flag(flag, value)?);
             }
             "--review-loops" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.review_loops = Some(parse_u8_flag(flag, value)?);
             }
             "--tests-passed" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("missing value for {flag}"))?;
                 overrides.tests_passed = Some(parse_bool_flag(flag, value)?);
             }
             _ => return Err(format!("unknown flag: {flag}")),
