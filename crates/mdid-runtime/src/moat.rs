@@ -83,6 +83,17 @@ pub fn run_bounded_round(input: MoatRoundInput) -> MoatRoundReport {
 
     executed_tasks.push(SPEC_PLANNING.to_string());
     executed_tasks.push(IMPLEMENTATION.to_string());
+
+    if input.budget.max_review_loops == 0 {
+        return stop_report(
+            round_id,
+            executed_tasks,
+            selected_strategies,
+            &input,
+            "review budget exhausted",
+        );
+    }
+
     executed_tasks.push(REVIEW.to_string());
     executed_tasks.push(EVALUATION.to_string());
 
