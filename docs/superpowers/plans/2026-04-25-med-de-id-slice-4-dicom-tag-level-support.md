@@ -338,7 +338,8 @@ git commit -m "feat: add dicom adapter extraction"
 Add tests named:
 - `rewrite_replaces_encoded_phi_tags_and_remaps_uid_family`
 - `rewrite_removes_private_tags_when_policy_is_remove`
-- `sanitize_filename_replaces_phi_like_names_with_safe_slug`
+- `sanitize_filename_replaces_phi_bearing_source_names_with_a_safe_neutral_output_name`
+- `sanitize_filename_hardens_windows_reserved_and_dot_only_names`
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -379,10 +380,16 @@ impl DicomAdapter {
 }
 
 pub fn sanitize_output_name(source_name: &str) -> String {
-    source_name
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' { ch } else { '_' })
-        .collect()
+    let extension = std::path::Path::new(source_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty());
+
+    match extension {
+        Some(ext) => format!("dicom-output.{ext}"),
+        None => "dicom-output".into(),
+    }
 }
 ```
 
