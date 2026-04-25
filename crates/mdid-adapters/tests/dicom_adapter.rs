@@ -1,6 +1,14 @@
+use std::io::Cursor;
+
 use dicom_core::{PrimitiveValue, Tag, VR};
-use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
-use mdid_adapters::{DicomAdapter, DicomAdapterError};
+use dicom_object::{
+    file::ReadPreamble, meta::FileMetaTableBuilder, DefaultDicomObject, InMemDicomObject,
+    OpenFileOptions,
+};
+use mdid_adapters::{
+    sanitize_output_name, DicomAdapter, DicomAdapterError, DicomRewritePlan, DicomTagReplacement,
+    DicomUidReplacement,
+};
 use mdid_domain::{BurnedInAnnotationStatus, DicomPrivateTagPolicy, DicomTagRef, ReviewDecision};
 
 #[test]
@@ -220,6 +228,102 @@ fn extract_flags_burned_in_annotation_as_suspicious() -> Result<(), DicomAdapter
     Ok(())
 }
 
+#[test]
+fn rewrite_replaces_encoded_phi_tags_and_remaps_uid_family() -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Keep);
+    let plan = DicomRewritePlan {
+        tag_replacements: vec![
+            DicomTagReplacement::new(
+                DicomTagRef::new(0x0010, 0x0010, "PatientName".into()),
+                "PATIENT_001".into(),
+            ),
+            DicomTagReplacement::new(
+                DicomTagRef::new(0x0010, 0x0020, "PatientID".into()),
+                "ID_001".into(),
+            ),
+            DicomTagReplacement::new(
+                DicomTagRef::new(0x0008, 0x1030, "StudyDescription".into()),
+                "REDACTED_STUDY".into(),
+            ),
+        ],
+        uid_replacements: vec![
+            DicomUidReplacement::new(
+                DicomTagRef::new(0x0020, 0x000D, "StudyInstanceUID".into()),
+                "2.25.100000000000000000000000000000000001".into(),
+            ),
+            DicomUidReplacement::new(
+                DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+                "2.25.100000000000000000000000000000000002".into(),
+            ),
+            DicomUidReplacement::new(
+                DicomTagRef::new(0x0008, 0x0018, "SOPInstanceUID".into()),
+                "2.25.100000000000000000000000000000000003".into(),
+            ),
+        ],
+    };
+
+    let rewritten = adapter.rewrite(&build_dicom_fixture("NO", false), &plan)?;
+    let rewritten_obj = parse_dicom(&rewritten);
+
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0010, 0x0010)),
+        "PATIENT_001"
+    );
+    assert_eq!(tag_value(&rewritten_obj, Tag(0x0010, 0x0020)), "ID_001");
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0008, 0x1030)),
+        "REDACTED_STUDY"
+    );
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0020, 0x000D)),
+        "2.25.100000000000000000000000000000000001"
+    );
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0020, 0x000E)),
+        "2.25.100000000000000000000000000000000002"
+    );
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0008, 0x0018)),
+        "2.25.100000000000000000000000000000000003"
+    );
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0008, 0x0050)),
+        "ACC-4242",
+        "unplanned tags should remain unchanged"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rewrite_removes_private_tags_when_policy_is_remove() -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Remove);
+
+    let rewritten = adapter.rewrite(
+        &build_dicom_fixture_with_non_text_private_tag("NO"),
+        &DicomRewritePlan::default(),
+    )?;
+    let rewritten_obj = parse_dicom(&rewritten);
+
+    assert!(rewritten_obj.get(Tag(0x0011, 0x0010)).is_none());
+    assert!(rewritten_obj.get(Tag(0x0011, 0x1010)).is_none());
+    assert_eq!(
+        tag_value(&rewritten_obj, Tag(0x0010, 0x0010)),
+        "Alice^Smith",
+        "non-private tags should remain intact"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn sanitize_filename_replaces_phi_like_names_with_safe_slug() {
+    assert_eq!(
+        sanitize_output_name("Alice Smith\\MRN-001/scan (1).dcm"),
+        "Alice_Smith_MRN-001_scan__1_.dcm"
+    );
+}
+
 fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec<u8> {
     let mut obj = InMemDicomObject::new_empty();
     obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.7");
@@ -227,6 +331,16 @@ fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec
         Tag(0x0008, 0x0018),
         VR::UI,
         "2.25.123456789012345678901234567890123456",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000D),
+        VR::UI,
+        "2.25.123456789012345678901234567890123457",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123458",
     );
     obj.put_str(Tag(0x0008, 0x0050), VR::SH, "ACC-4242");
     obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Cardiac MRI");
@@ -261,6 +375,16 @@ fn build_dicom_fixture_with_common_phi_values(patient_name: &str, patient_id: &s
         VR::UI,
         "2.25.123456789012345678901234567890123456",
     );
+    obj.put_str(
+        Tag(0x0020, 0x000D),
+        VR::UI,
+        "2.25.123456789012345678901234567890123457",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123458",
+    );
     obj.put_str(Tag(0x0008, 0x0050), VR::SH, "ACC-4242");
     obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Cardiac MRI");
     obj.put_str(Tag(0x0010, 0x0010), VR::PN, patient_name);
@@ -284,6 +408,16 @@ fn build_dicom_fixture_with_non_text_private_tag(burned_in_annotation: &str) -> 
         Tag(0x0008, 0x0018),
         VR::UI,
         "2.25.123456789012345678901234567890123456",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000D),
+        VR::UI,
+        "2.25.123456789012345678901234567890123457",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123458",
     );
     obj.put_str(Tag(0x0008, 0x0050), VR::SH, "ACC-4242");
     obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Cardiac MRI");
@@ -320,4 +454,19 @@ fn candidate_summary(
         .collect::<Vec<_>>();
     summary.sort_by_key(|(tag, _, _, _)| (tag.group, tag.element));
     summary
+}
+
+fn parse_dicom(bytes: &[u8]) -> DefaultDicomObject {
+    OpenFileOptions::new()
+        .read_preamble(ReadPreamble::Always)
+        .from_reader(Cursor::new(bytes))
+        .expect("rewritten fixture should parse as DICOM")
+}
+
+fn tag_value(obj: &DefaultDicomObject, tag: Tag) -> String {
+    obj.get(tag)
+        .expect("expected DICOM tag to be present")
+        .to_str()
+        .expect("expected DICOM tag to be textual")
+        .into_owned()
 }
