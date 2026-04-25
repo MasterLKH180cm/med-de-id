@@ -58,6 +58,34 @@ fn extract_identifies_common_phi_tags_and_redacts_debug_output() -> Result<(), D
 }
 
 #[test]
+fn extract_skips_blank_or_whitespace_only_common_phi_tags() -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::ReviewRequired);
+    let bytes = build_dicom_fixture_with_common_phi_values("   ", "\t  ");
+
+    let extracted = adapter.extract(&bytes, "fixture.dcm")?;
+
+    assert_eq!(
+        candidate_summary(&extracted),
+        vec![
+            (
+                DicomTagRef::new(0x0008, 0x0050, "AccessionNumber".into()),
+                "accession_number".to_string(),
+                ReviewDecision::Approved,
+                "ACC-4242".to_string(),
+            ),
+            (
+                DicomTagRef::new(0x0008, 0x1030, "StudyDescription".into()),
+                "study_description".to_string(),
+                ReviewDecision::Approved,
+                "Cardiac MRI".to_string(),
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn extract_marks_private_tags_for_review_or_removal_per_policy() -> Result<(), DicomAdapterError> {
     let bytes = build_dicom_fixture("NO", true);
 
@@ -214,6 +242,30 @@ fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec
             PrimitiveValue::from("secret-annotation"),
         ));
     }
+
+    let file_obj = obj
+        .with_meta(FileMetaTableBuilder::new().transfer_syntax("1.2.840.10008.1.2.1"))
+        .expect("fixture should create file object");
+    let mut bytes = Vec::new();
+    file_obj
+        .write_all(&mut bytes)
+        .expect("fixture should serialize to bytes");
+    bytes
+}
+
+fn build_dicom_fixture_with_common_phi_values(patient_name: &str, patient_id: &str) -> Vec<u8> {
+    let mut obj = InMemDicomObject::new_empty();
+    obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    obj.put_str(
+        Tag(0x0008, 0x0018),
+        VR::UI,
+        "2.25.123456789012345678901234567890123456",
+    );
+    obj.put_str(Tag(0x0008, 0x0050), VR::SH, "ACC-4242");
+    obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Cardiac MRI");
+    obj.put_str(Tag(0x0010, 0x0010), VR::PN, patient_name);
+    obj.put_str(Tag(0x0010, 0x0020), VR::LO, patient_id);
+    obj.put_str(Tag(0x0028, 0x0301), VR::CS, "NO");
 
     let file_obj = obj
         .with_meta(FileMetaTableBuilder::new().transfer_syntax("1.2.840.10008.1.2.1"))

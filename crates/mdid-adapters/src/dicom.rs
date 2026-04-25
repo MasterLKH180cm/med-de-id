@@ -92,10 +92,15 @@ fn common_phi_candidates(
 
     for spec in COMMON_PHI_TAGS {
         if let Some(element) = obj.get(spec.tag) {
+            let value = element.to_str()?;
+            if value.trim().is_empty() {
+                continue;
+            }
+
             candidates.push(DicomPhiCandidate {
                 tag: dicom_tag_ref(spec.tag, spec.keyword),
                 phi_type: spec.phi_type.into(),
-                value: element.to_str()?.into_owned(),
+                value: value.into_owned(),
                 decision: ReviewDecision::Approved,
             });
         }
