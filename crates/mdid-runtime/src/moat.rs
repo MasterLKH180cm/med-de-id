@@ -40,6 +40,7 @@ pub struct MoatRoundInput {
 pub struct MoatControlPlaneReport {
     pub task_graph: MoatTaskGraph,
     pub memory: MoatMemorySnapshot,
+    #[serde(default)]
     pub agent_assignments: Vec<MoatAgentAssignment>,
 }
 

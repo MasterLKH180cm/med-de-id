@@ -5,8 +5,58 @@ use mdid_runtime::{
     moat::{MoatControlPlaneReport, MoatRoundReport},
     moat_history::{LocalMoatHistoryStore, MoatHistorySummary},
 };
+use std::fs;
 use tempfile::tempdir;
 use uuid::Uuid;
+
+#[test]
+fn legacy_history_without_agent_assignments_opens_with_empty_assignments() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let recorded_at = recorded_at("2026-04-25T20:00:00Z");
+    let report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "legacy review approved bounded moat round",
+        90,
+        98,
+        true,
+        &[
+            "market_scan",
+            "competitor_analysis",
+            "lockin_analysis",
+            "strategy_generation",
+            "spec_planning",
+            "implementation",
+            "review",
+            "evaluation",
+        ],
+    );
+    let mut legacy_entry = serde_json::json!({
+        "recorded_at": recorded_at,
+        "report": report,
+    });
+    legacy_entry["report"]["control_plane"]
+        .as_object_mut()
+        .expect("control plane should serialize as an object")
+        .remove("agent_assignments");
+    fs::write(
+        &history_path,
+        serde_json::to_vec_pretty(&vec![legacy_entry]).expect("legacy history should serialize"),
+    )
+    .expect("legacy history should be written");
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("legacy history without agent assignments should open");
+    let entries = store.entries();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].recorded_at, recorded_at);
+    assert_eq!(entries[0].report.summary.round_id, round_id);
+    assert!(entries[0].report.control_plane.agent_assignments.is_empty());
+}
 
 #[test]
 fn append_and_reload_keeps_rounds_sorted_by_recorded_at() {
