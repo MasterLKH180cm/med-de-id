@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -1020,6 +1020,77 @@ fn cli_history_rejects_missing_history_file_without_creating_it() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("failed to open moat history store"));
     assert!(stderr.contains("moat history file does not exist"));
+    assert!(!history_path.exists());
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_decision_log_requires_history_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "decision-log"])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log without history path");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing required flag: --history-path"));
+    assert!(stderr.contains(USAGE));
+}
+
+#[test]
+fn moat_decision_log_inspects_latest_persisted_round_without_appending() {
+    let history_path = unique_history_path("decision-log");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "decision-log", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("decision_log_entries=1\n"));
+    assert!(stdout.contains("decision=reviewer|review approved bounded moat round|review approved bounded moat round after evaluation cleared the improvement threshold\n"));
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path).expect("history should exist");
+    assert_eq!(store.summary().entry_count, 1);
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_decision_log_rejects_missing_history_file_without_creating_it() {
+    let history_path = unique_history_path("missing-decision-log");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+        ])
+        .output()
+        .expect("failed to run decision-log with missing history");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to open moat history"));
     assert!(!history_path.exists());
 
     cleanup_history_path(&history_path);
