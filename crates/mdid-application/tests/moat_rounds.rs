@@ -1,4 +1,7 @@
-use mdid_application::{evaluate_moat_round, select_top_strategies, MoatImprovementThreshold};
+use mdid_application::{
+    build_moat_spec_handoff_ids, evaluate_moat_round, select_top_strategies,
+    MoatImprovementThreshold,
+};
 use mdid_domain::{
     CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType,
 };
@@ -42,6 +45,35 @@ fn select_top_strategies_chooses_the_highest_expected_gain_within_budget() {
 }
 
 #[test]
+fn build_moat_spec_handoff_ids_uses_selected_order_and_spec_budget() {
+    let spec_ids = build_moat_spec_handoff_ids(
+        &[
+            MoatStrategy {
+                strategy_id: "workflow-audit".into(),
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "compliance-ledger".into(),
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "vault-portability".into(),
+                ..MoatStrategy::default()
+            },
+        ],
+        2,
+    );
+
+    assert_eq!(
+        spec_ids,
+        vec![
+            "moat-spec/workflow-audit".to_string(),
+            "moat-spec/compliance-ledger".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn evaluate_moat_round_stops_when_improvement_is_below_threshold() {
     let summary = evaluate_moat_round(
         Uuid::nil(),
@@ -59,6 +91,7 @@ fn evaluate_moat_round_stops_when_improvement_is_below_threshold() {
             ..LockInReport::default()
         },
         &[],
+        0,
         true,
         MoatImprovementThreshold(3),
     );
@@ -97,6 +130,7 @@ fn evaluate_moat_round_continues_when_tests_pass_and_score_improves() {
             target_moat_type: MoatType::WorkflowLockIn,
             ..MoatStrategy::default()
         }],
+        1,
         true,
         MoatImprovementThreshold(3),
     );
@@ -105,6 +139,52 @@ fn evaluate_moat_round_continues_when_tests_pass_and_score_improves() {
     assert_eq!(summary.moat_score_before, 83);
     assert_eq!(summary.moat_score_after, 90);
     assert_eq!(summary.stop_reason, None);
+}
+
+#[test]
+fn evaluate_moat_round_populates_implemented_specs_from_selected_strategies() {
+    let summary = evaluate_moat_round(
+        Uuid::nil(),
+        &MarketMoatSnapshot {
+            moat_score: 40,
+            ..MarketMoatSnapshot::default()
+        },
+        &CompetitorProfile {
+            threat_score: 35,
+            ..CompetitorProfile::default()
+        },
+        &LockInReport {
+            lockin_score: 60,
+            workflow_dependency_strength: 70,
+            ..LockInReport::default()
+        },
+        &[
+            MoatStrategy {
+                strategy_id: "workflow-audit".into(),
+                title: "Workflow audit moat".into(),
+                expected_moat_gain: 7,
+                implementation_cost: 2,
+                target_moat_type: MoatType::WorkflowLockIn,
+                ..MoatStrategy::default()
+            },
+            MoatStrategy {
+                strategy_id: "compliance-ledger".into(),
+                title: "Compliance ledger moat".into(),
+                expected_moat_gain: 5,
+                implementation_cost: 1,
+                target_moat_type: MoatType::ComplianceMoat,
+                ..MoatStrategy::default()
+            },
+        ],
+        1,
+        true,
+        MoatImprovementThreshold(3),
+    );
+
+    assert_eq!(
+        summary.implemented_specs,
+        vec!["moat-spec/workflow-audit".to_string()]
+    );
 }
 
 #[test]
@@ -132,6 +212,7 @@ fn evaluate_moat_round_stops_for_test_failures_with_test_failure_reason() {
             target_moat_type: MoatType::WorkflowLockIn,
             ..MoatStrategy::default()
         }],
+        1,
         false,
         MoatImprovementThreshold(3),
     );

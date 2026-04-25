@@ -8,8 +8,8 @@ use mdid_domain::{
     AgentRole, BatchSummary, BurnedInAnnotationStatus, CompetitorProfile, ContinueDecision,
     DecisionLogEntry, DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy,
     LockInReport, MappingScope, MarketMoatSnapshot, MoatMemorySnapshot, MoatRoundSummary,
-    MoatStrategy, MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState,
-    PhiCandidate, PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    MoatStrategy, MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState, PhiCandidate,
+    PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -332,12 +332,24 @@ pub fn select_top_strategies(
     strategies
 }
 
+pub fn build_moat_spec_handoff_ids(
+    selected_strategies: &[MoatStrategy],
+    max_spec_generations: usize,
+) -> Vec<String> {
+    selected_strategies
+        .iter()
+        .take(max_spec_generations)
+        .map(|strategy| format!("moat-spec/{}", strategy.strategy_id))
+        .collect()
+}
+
 pub fn evaluate_moat_round(
     round_id: Uuid,
     market: &MarketMoatSnapshot,
     competitor: &CompetitorProfile,
     lock_in: &LockInReport,
     selected_strategies: &[MoatStrategy],
+    max_spec_generations: usize,
     tests_passed: bool,
     threshold: MoatImprovementThreshold,
 ) -> MoatRoundSummary {
@@ -366,7 +378,7 @@ pub fn evaluate_moat_round(
             .iter()
             .map(|strategy| strategy.strategy_id.clone())
             .collect(),
-        implemented_specs: Vec::new(),
+        implemented_specs: build_moat_spec_handoff_ids(selected_strategies, max_spec_generations),
         tests_passed,
         moat_score_before,
         moat_score_after,
