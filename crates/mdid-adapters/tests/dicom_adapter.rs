@@ -387,6 +387,26 @@ fn rewrite_drops_private_file_meta_information_when_policy_is_review_required(
 }
 
 #[test]
+fn rewrite_keeps_private_file_meta_information_when_policy_is_keep() -> Result<(), DicomAdapterError>
+{
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Keep);
+
+    let rewritten = adapter.rewrite(
+        &build_dicom_fixture_with_private_file_meta("NO"),
+        &DicomRewritePlan::default(),
+    )?;
+    let rewritten_obj = parse_dicom(&rewritten);
+
+    assert!(rewritten_obj
+        .meta()
+        .private_information_creator_uid()
+        .is_some());
+    assert!(rewritten_obj.meta().private_information.is_some());
+
+    Ok(())
+}
+
+#[test]
 fn sanitize_filename_replaces_phi_bearing_source_names_with_a_safe_neutral_output_name() {
     let sanitized = sanitize_output_name("Alice Smith\\MRN-001/scan (1).dcm");
 
