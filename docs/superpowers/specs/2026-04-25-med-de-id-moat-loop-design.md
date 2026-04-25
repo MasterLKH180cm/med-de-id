@@ -33,20 +33,20 @@ Build a **local-first strategic intelligence and moat-evolution loop** for `med-
 
 ## Implementation Status
 
-### Shipped foundation slice on `feature/moat-loop-autonomy`
+### Shipped foundation slice in the repository
 
-The current branch has already landed a bounded local foundation for moat-loop execution:
+The repository currently contains a bounded local foundation for moat-loop execution:
 
 - domain models in `mdid-domain` for market structure, competitor intelligence, lock-in analysis, moat strategies, and round summaries
 - deterministic moat evaluation helpers in `mdid-application`
 - bounded round orchestration in `mdid-runtime`
-- `mdid-cli moat round` for local execution and inspection
+- a deterministic sample `mdid-cli moat round` path for local execution and inspection of one bounded round contract
 
-This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally, but it does not yet deliver the complete multi-agent autonomy requested by the user.
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally, but the CLI is still a canned sample round rather than a general operator-facing runner over user-supplied or persisted data.
 
 ### Still planned, not yet implemented
 
-The broader target from the user's Autonomous Multi-Agent System request remains future work. This spec still includes, but the current branch does not yet implement:
+The broader Autonomous Multi-Agent System target described by this spec remains future work. This spec still includes, but the current repository does not yet implement:
 
 - Planner / Coder / Reviewer role orchestration
 - persistent memory store and decision log
