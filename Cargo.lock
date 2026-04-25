@@ -2945,6 +2945,10 @@ dependencies = [
 [[package]]
 name = "mdid-cli"
 version = "0.1.0"
+dependencies = [
+ "mdid-domain",
+ "mdid-runtime",
+]
 
 [[package]]
 name = "mdid-desktop"
@@ -2971,10 +2975,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "mdid-application",
+ "mdid-domain",
  "serde",
  "serde_json",
  "tokio",
  "tower",
+ "uuid",
 ]
 
 [[package]]
