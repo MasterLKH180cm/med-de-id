@@ -148,6 +148,55 @@ fn extract_marks_private_tags_for_review_or_removal_per_policy() -> Result<(), D
 }
 
 #[test]
+fn extract_review_required_discovers_nested_private_tags_inside_sequence_items(
+) -> Result<(), DicomAdapterError> {
+    let extracted = DicomAdapter::new(DicomPrivateTagPolicy::ReviewRequired).extract(
+        &build_dicom_fixture_with_nested_private_sequence("NO"),
+        "fixture.dcm",
+    )?;
+
+    assert_eq!(
+        extracted.private_tags,
+        vec![
+            DicomTagRef::new(0x0011, 0x0010, "PrivateTag".into()),
+            DicomTagRef::new(0x0011, 0x1010, "PrivateTag".into()),
+        ]
+    );
+    let private_review_candidates = extracted
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.tag.is_private())
+        .map(|candidate| {
+            (
+                candidate.tag.clone(),
+                candidate.phi_type.clone(),
+                candidate.decision,
+                candidate.value.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        private_review_candidates,
+        vec![
+            (
+                DicomTagRef::new(0x0011, 0x0010, "PrivateTag".into()),
+                "private_tag".to_string(),
+                ReviewDecision::NeedsReview,
+                "ACME_CREATOR".to_string(),
+            ),
+            (
+                DicomTagRef::new(0x0011, 0x1010, "PrivateTag".into()),
+                "private_tag".to_string(),
+                ReviewDecision::NeedsReview,
+                "nested-secret".to_string(),
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn extract_review_required_handles_non_text_private_tags_without_failing(
 ) -> Result<(), DicomAdapterError> {
     let bytes = build_dicom_fixture_with_non_text_private_tag("NO");
@@ -229,6 +278,76 @@ fn extract_flags_burned_in_annotation_as_suspicious() -> Result<(), DicomAdapter
 }
 
 #[test]
+fn extract_uid_family_returns_current_study_series_and_sop_instance_uids(
+) -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Remove);
+
+    let extracted = adapter.extract_uid_family(&build_dicom_fixture("NO", false))?;
+    let mut summary = extracted
+        .iter()
+        .map(|uid| (uid.tag.clone(), uid.value.clone()))
+        .collect::<Vec<_>>();
+    summary.sort_by_key(|(tag, _)| (tag.group, tag.element));
+
+    assert_eq!(
+        summary,
+        vec![
+            (
+                DicomTagRef::new(0x0008, 0x0018, "SOPInstanceUID".into()),
+                "2.25.123456789012345678901234567890123456".to_string(),
+            ),
+            (
+                DicomTagRef::new(0x0020, 0x000D, "StudyInstanceUID".into()),
+                "2.25.123456789012345678901234567890123457".to_string(),
+            ),
+            (
+                DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+                "2.25.123456789012345678901234567890123458".to_string(),
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn extract_uid_family_recurses_into_nested_sequence_items() -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Remove);
+
+    let extracted =
+        adapter.extract_uid_family(&build_dicom_fixture_with_nested_private_sequence("NO"))?;
+    let mut summary = extracted
+        .iter()
+        .map(|uid| (uid.tag.clone(), uid.value.clone()))
+        .collect::<Vec<_>>();
+    summary.sort_by_key(|(tag, value)| (tag.group, tag.element, value.clone()));
+
+    assert_eq!(
+        summary,
+        vec![
+            (
+                DicomTagRef::new(0x0008, 0x0018, "SOPInstanceUID".into()),
+                "2.25.123456789012345678901234567890123456".to_string(),
+            ),
+            (
+                DicomTagRef::new(0x0020, 0x000D, "StudyInstanceUID".into()),
+                "2.25.123456789012345678901234567890123457".to_string(),
+            ),
+            (
+                DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+                "2.25.123456789012345678901234567890123458".to_string(),
+            ),
+            (
+                DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+                "2.25.123456789012345678901234567890123499".to_string(),
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn rewrite_replaces_encoded_phi_tags_and_remaps_uid_family() -> Result<(), DicomAdapterError> {
     let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Keep);
     let plan = DicomRewritePlan {
@@ -249,14 +368,17 @@ fn rewrite_replaces_encoded_phi_tags_and_remaps_uid_family() -> Result<(), Dicom
         uid_replacements: vec![
             DicomUidReplacement::new(
                 DicomTagRef::new(0x0020, 0x000D, "StudyInstanceUID".into()),
+                "2.25.123456789012345678901234567890123457".into(),
                 "2.25.100000000000000000000000000000000001".into(),
             ),
             DicomUidReplacement::new(
                 DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+                "2.25.123456789012345678901234567890123458".into(),
                 "2.25.100000000000000000000000000000000002".into(),
             ),
             DicomUidReplacement::new(
                 DicomTagRef::new(0x0008, 0x0018, "SOPInstanceUID".into()),
+                "2.25.123456789012345678901234567890123456".into(),
                 "2.25.100000000000000000000000000000000003".into(),
             ),
         ],
@@ -300,10 +422,18 @@ fn rewrite_remaps_nested_uid_family_tags_inside_sequence_items() -> Result<(), D
     let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Keep);
     let plan = DicomRewritePlan {
         tag_replacements: vec![],
-        uid_replacements: vec![DicomUidReplacement::new(
-            DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
-            "2.25.100000000000000000000000000000000042".into(),
-        )],
+        uid_replacements: vec![
+            DicomUidReplacement::new(
+                DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+                "2.25.123456789012345678901234567890123458".into(),
+                "2.25.100000000000000000000000000000000041".into(),
+            ),
+            DicomUidReplacement::new(
+                DicomTagRef::new(0x0020, 0x000E, "SeriesInstanceUID".into()),
+                "2.25.123456789012345678901234567890123499".into(),
+                "2.25.100000000000000000000000000000000042".into(),
+            ),
+        ],
     };
 
     let rewritten = adapter.rewrite(
@@ -322,7 +452,7 @@ fn rewrite_remaps_nested_uid_family_tags_inside_sequence_items() -> Result<(), D
 
     assert_eq!(
         tag_value(&rewritten_obj, Tag(0x0020, 0x000E)),
-        "2.25.100000000000000000000000000000000042"
+        "2.25.100000000000000000000000000000000041"
     );
     assert_eq!(
         tag_value_in_item(nested_item, Tag(0x0020, 0x000E)),

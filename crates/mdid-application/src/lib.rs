@@ -1,10 +1,15 @@
 use chrono::Utc;
-use mdid_adapters::{CsvTabularAdapter, ExtractedTabularData, FieldPolicy, TabularAdapterError};
+use mdid_adapters::{
+    sanitize_output_name, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
+    DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy,
+    TabularAdapterError,
+};
 use mdid_domain::{
-    AgentRole, BatchSummary, CompetitorProfile, ContinueDecision, DecisionLogEntry, LockInReport,
-    MappingScope, MarketMoatSnapshot, MoatMemorySnapshot, MoatRoundSummary, MoatStrategy,
-    MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState, PhiCandidate,
-    PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    AgentRole, BatchSummary, BurnedInAnnotationStatus, CompetitorProfile, ContinueDecision,
+    DecisionLogEntry, DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy,
+    LockInReport, MappingScope, MarketMoatSnapshot, MoatMemorySnapshot, MoatRoundSummary,
+    MoatStrategy, MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState,
+    PhiCandidate, PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -17,6 +22,8 @@ use uuid::Uuid;
 pub enum ApplicationError {
     #[error("pipeline not found: {0}")]
     PipelineNotFound(Uuid),
+    #[error(transparent)]
+    DicomAdapter(#[from] DicomAdapterError),
     #[error(transparent)]
     TabularAdapter(#[from] TabularAdapterError),
     #[error(transparent)]
@@ -90,8 +97,113 @@ impl fmt::Debug for TabularDeidentificationOutput {
     }
 }
 
+#[derive(Clone)]
+pub struct DicomDeidentificationOutput {
+    pub bytes: Vec<u8>,
+    pub summary: DicomDeidentificationSummary,
+    pub review_queue: Vec<DicomPhiCandidate>,
+    pub sanitized_file_name: String,
+}
+
+impl fmt::Debug for DicomDeidentificationOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DicomDeidentificationOutput")
+            .field("bytes", &"[REDACTED]")
+            .field("summary", &self.summary)
+            .field("review_queue_len", &self.review_queue.len())
+            .field("sanitized_file_name", &self.sanitized_file_name)
+            .finish()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TabularDeidentificationService;
+
+#[derive(Clone, Default)]
+pub struct DicomDeidentificationService;
+
+impl DicomDeidentificationService {
+    pub fn deidentify_bytes(
+        &self,
+        bytes: &[u8],
+        source_name: &str,
+        private_tag_policy: DicomPrivateTagPolicy,
+        vault: &mut LocalVaultStore,
+        actor: SurfaceKind,
+    ) -> Result<DicomDeidentificationOutput, ApplicationError> {
+        let adapter = DicomAdapter::new(private_tag_policy);
+        let extracted = adapter.extract(bytes, source_name)?;
+        let job_id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let mut summary = DicomDeidentificationSummary {
+            total_tags: extracted.candidates.len(),
+            removed_private_tags: if private_tag_policy == DicomPrivateTagPolicy::Remove {
+                extracted.private_tags.len()
+            } else {
+                0
+            },
+            burned_in_suspicions: match extracted.burned_in_annotation {
+                BurnedInAnnotationStatus::Suspicious => 1,
+                BurnedInAnnotationStatus::Clean => 0,
+            },
+            ..DicomDeidentificationSummary::default()
+        };
+        let mut review_queue = Vec::new();
+        let mut tag_replacements = Vec::new();
+
+        for candidate in extracted.candidates {
+            if candidate.decision.requires_human_review() {
+                summary.review_required_tags += 1;
+                review_queue.push(candidate);
+                continue;
+            }
+
+            if !candidate.decision.allows_encode() {
+                continue;
+            }
+
+            let mapping = vault.ensure_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(job_id, artifact_id, candidate.tag.field_path()),
+                    phi_type: DICOM_COMMON_PHI_MAPPING_TYPE.into(),
+                    original_value: candidate.value.clone(),
+                },
+                actor,
+            )?;
+
+            tag_replacements.push(DicomTagReplacement::new(candidate.tag, mapping.token));
+            summary.encoded_tags += 1;
+        }
+
+        let mut uid_replacements = Vec::new();
+        for uid in adapter.extract_uid_family(bytes)? {
+            let mapping = vault.ensure_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(job_id, artifact_id, uid.field_path().to_string()),
+                    phi_type: DICOM_UID_MAPPING_TYPE.into(),
+                    original_value: uid.value.clone(),
+                },
+                actor,
+            )?;
+
+            uid_replacements.push(DicomUidReplacement::new(uid.tag, uid.value, mapping.token));
+        }
+        summary.remapped_uids = uid_replacements.len();
+
+        Ok(DicomDeidentificationOutput {
+            bytes: adapter.rewrite(
+                bytes,
+                &DicomRewritePlan {
+                    tag_replacements,
+                    uid_replacements,
+                },
+            )?,
+            summary,
+            review_queue,
+            sanitized_file_name: sanitize_output_name(source_name),
+        })
+    }
+}
 
 impl TabularDeidentificationService {
     pub fn deidentify_csv(
@@ -199,6 +311,9 @@ fn write_csv(columns: &[TabularColumn], rows: &[Vec<String>]) -> Result<String, 
     let bytes = writer.into_inner().map_err(|err| err.into_error())?;
     Ok(String::from_utf8(bytes)?)
 }
+
+const DICOM_COMMON_PHI_MAPPING_TYPE: &str = "dicom_common_phi";
+const DICOM_UID_MAPPING_TYPE: &str = "dicom_uid";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MoatImprovementThreshold(pub i16);
