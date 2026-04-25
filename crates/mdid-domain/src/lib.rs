@@ -512,7 +512,12 @@ impl MoatTaskGraph {
     pub fn ready_node_ids(&self) -> Vec<String> {
         self.nodes
             .iter()
-            .filter(|node| node.state == MoatTaskNodeState::Pending)
+            .filter(|node| {
+                matches!(
+                    node.state,
+                    MoatTaskNodeState::Pending | MoatTaskNodeState::Ready
+                )
+            })
             .filter(|node| {
                 node.depends_on.iter().all(|dependency| {
                     self.nodes.iter().any(|candidate| {
@@ -546,7 +551,10 @@ pub struct MoatMemorySnapshot {
 
 impl MoatMemorySnapshot {
     pub fn latest_decision_summary(&self) -> Option<String> {
-        self.decisions.last().map(|entry| entry.summary.clone())
+        self.decisions
+            .iter()
+            .max_by(|left, right| left.recorded_at.cmp(&right.recorded_at))
+            .map(|entry| entry.summary.clone())
     }
 }
 
