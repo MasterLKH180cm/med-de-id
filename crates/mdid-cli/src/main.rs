@@ -1,5 +1,6 @@
 use mdid_domain::{
-    CompetitorProfile, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType, ResourceBudget,
+    CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType,
+    ResourceBudget,
 };
 use mdid_runtime::moat::{run_bounded_round, MoatRoundInput};
 
@@ -18,10 +19,21 @@ fn run_moat_round() {
     let report = run_bounded_round(sample_round_input());
 
     println!("moat round complete");
-    println!("continue_decision={:?}", report.summary.continue_decision);
+    println!(
+        "continue_decision={}",
+        format_continue_decision(report.summary.continue_decision)
+    );
     println!("executed_tasks={}", report.executed_tasks.join(","));
     println!("moat_score_before={}", report.summary.moat_score_before);
     println!("moat_score_after={}", report.summary.moat_score_after);
+}
+
+fn format_continue_decision(continue_decision: ContinueDecision) -> &'static str {
+    match continue_decision {
+        ContinueDecision::Continue => "Continue",
+        ContinueDecision::Stop => "Stop",
+        ContinueDecision::Pivot => "Pivot",
+    }
 }
 
 fn sample_round_input() -> MoatRoundInput {
@@ -72,4 +84,20 @@ fn exit_unknown_command(args: &[String]) -> ! {
     eprintln!("unknown command: {command}");
     eprintln!("usage: mdid-cli [status | moat round]");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mdid_domain::ContinueDecision;
+
+    #[test]
+    fn continue_decision_formatter_uses_stable_contract_strings() {
+        assert_eq!(
+            format_continue_decision(ContinueDecision::Continue),
+            "Continue"
+        );
+        assert_eq!(format_continue_decision(ContinueDecision::Stop), "Stop");
+        assert_eq!(format_continue_decision(ContinueDecision::Pivot), "Pivot");
+    }
 }
