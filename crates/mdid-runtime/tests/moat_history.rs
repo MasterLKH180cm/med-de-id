@@ -1,0 +1,235 @@
+use chrono::{DateTime, Utc};
+use mdid_application::{build_default_moat_task_graph, summarize_round_memory};
+use mdid_domain::{AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary};
+use mdid_runtime::{
+    moat::{MoatControlPlaneReport, MoatRoundReport},
+    moat_history::{LocalMoatHistoryStore, MoatHistorySummary},
+};
+use tempfile::tempdir;
+use uuid::Uuid;
+
+#[test]
+fn append_and_reload_keeps_rounds_sorted_by_recorded_at() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let earlier_round_id = Uuid::new_v4();
+    let later_round_id = Uuid::new_v4();
+    let earlier_recorded_at = recorded_at("2026-04-25T20:00:00Z");
+    let later_recorded_at = recorded_at("2026-04-25T21:00:00Z");
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(
+            later_recorded_at,
+            sample_report(
+                later_round_id,
+                ContinueDecision::Stop,
+                Some("review budget exhausted"),
+                "implementation stopped before review",
+                60,
+                60,
+            ),
+        )
+        .expect("later report should persist");
+    store
+        .append(
+            earlier_recorded_at,
+            sample_report(
+                earlier_round_id,
+                ContinueDecision::Continue,
+                None,
+                "review approved bounded moat round",
+                90,
+                98,
+            ),
+        )
+        .expect("earlier report should persist");
+    drop(store);
+
+    let reloaded =
+        LocalMoatHistoryStore::open(&history_path).expect("reloaded history store should open");
+    let entries = reloaded.entries();
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].recorded_at, earlier_recorded_at);
+    assert_eq!(entries[0].report.summary.round_id, earlier_round_id);
+    assert_eq!(entries[1].recorded_at, later_recorded_at);
+    assert_eq!(entries[1].report.summary.round_id, later_round_id);
+}
+
+#[test]
+fn summary_reports_latest_best_and_improvement_fields() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let continue_round_id = Uuid::new_v4();
+    let stop_round_id = Uuid::new_v4();
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(
+            recorded_at("2026-04-25T20:00:00Z"),
+            sample_report(
+                continue_round_id,
+                ContinueDecision::Continue,
+                None,
+                "review approved bounded moat round",
+                90,
+                98,
+            ),
+        )
+        .expect("continue report should persist");
+    store
+        .append(
+            recorded_at("2026-04-25T21:00:00Z"),
+            sample_report(
+                stop_round_id,
+                ContinueDecision::Stop,
+                Some("review budget exhausted"),
+                "implementation stopped before review",
+                60,
+                60,
+            ),
+        )
+        .expect("stop report should persist");
+
+    assert_eq!(
+        store.summary(),
+        MoatHistorySummary {
+            entry_count: 2,
+            latest_round_id: Some(stop_round_id.to_string()),
+            latest_continue_decision: Some(ContinueDecision::Stop),
+            latest_stop_reason: Some("review budget exhausted".to_string()),
+            latest_decision_summary: Some("implementation stopped before review".to_string()),
+            latest_moat_score_after: Some(60),
+            best_moat_score_after: Some(98),
+            improvement_deltas: vec![8, 0],
+        }
+    );
+}
+
+#[test]
+fn append_does_not_mutate_in_memory_entries_when_persistence_fails() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let recorded_at = recorded_at("2026-04-25T20:00:00Z");
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    std::fs::remove_file(&history_path).expect("history file should be removable");
+    std::fs::create_dir(&history_path).expect("history path should become a directory");
+
+    let error = store
+        .append(
+            recorded_at,
+            sample_report(
+                round_id,
+                ContinueDecision::Continue,
+                None,
+                "review approved bounded moat round",
+                90,
+                98,
+            ),
+        )
+        .expect_err("append should fail when the history path is a directory");
+
+    assert!(
+        error
+            .to_string()
+            .contains("failed to access moat history file"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        store.entries().is_empty(),
+        "failed append must not update memory"
+    );
+    assert_eq!(store.summary(), MoatHistorySummary::default());
+}
+
+#[test]
+fn open_creates_missing_history_file_for_round_persistence() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+
+    assert!(!history_path.exists());
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    assert!(history_path.exists());
+    assert!(store.entries().is_empty());
+    assert_eq!(store.summary(), MoatHistorySummary::default());
+}
+
+#[test]
+fn open_existing_fails_for_missing_history_file_without_creating_it() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("missing-moat-history.json");
+
+    let error = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect_err("opening a missing history file for inspection should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("moat history file does not exist"),
+        "unexpected error: {error}"
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn empty_store_summary_is_default() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+
+    assert_eq!(store.summary(), MoatHistorySummary::default());
+}
+
+fn sample_report(
+    round_id: Uuid,
+    continue_decision: ContinueDecision,
+    stop_reason: Option<&str>,
+    decision_summary: &str,
+    moat_score_before: i16,
+    moat_score_after: i16,
+) -> MoatRoundReport {
+    let summary = MoatRoundSummary {
+        round_id,
+        selected_strategies: vec!["workflow-audit".to_string()],
+        implemented_specs: Vec::new(),
+        tests_passed: true,
+        moat_score_before,
+        moat_score_after,
+        continue_decision,
+        stop_reason: stop_reason.map(str::to_string),
+        pivot_reason: None,
+    };
+    let decision = DecisionLogEntry {
+        entry_id: Uuid::new_v4(),
+        round_id,
+        author_role: if continue_decision == ContinueDecision::Continue {
+            AgentRole::Reviewer
+        } else {
+            AgentRole::Coder
+        },
+        summary: decision_summary.to_string(),
+        rationale: stop_reason.unwrap_or("approved").to_string(),
+        recorded_at: recorded_at("2026-04-25T19:59:00Z"),
+    };
+    let control_plane = MoatControlPlaneReport {
+        task_graph: build_default_moat_task_graph(round_id),
+        memory: summarize_round_memory(&summary, vec![decision]),
+    };
+
+    MoatRoundReport {
+        summary,
+        executed_tasks: vec!["implementation".to_string()],
+        stop_reason: stop_reason.map(str::to_string),
+        control_plane,
+    }
+}
+
+fn recorded_at(value: &str) -> DateTime<Utc> {
+    value.parse().expect("timestamp should parse")
+}

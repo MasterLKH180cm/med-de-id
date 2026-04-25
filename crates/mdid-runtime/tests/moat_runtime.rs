@@ -2,7 +2,25 @@ use mdid_domain::{
     AgentRole, CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
     MoatType, ResourceBudget,
 };
-use mdid_runtime::moat::{run_bounded_round, MoatRoundInput};
+use mdid_runtime::moat::{run_bounded_round, MoatRoundInput, MoatRoundReport};
+
+fn assert_report_ids_are_aligned(report: &MoatRoundReport) {
+    assert!(!report.summary.round_id.is_nil());
+    assert_eq!(
+        report.control_plane.task_graph.round_id,
+        report.summary.round_id
+    );
+    assert_eq!(
+        report.control_plane.memory.round_id,
+        report.summary.round_id
+    );
+    assert!(!report.control_plane.memory.decisions.is_empty());
+
+    for decision in &report.control_plane.memory.decisions {
+        assert!(!decision.entry_id.is_nil());
+        assert_eq!(decision.round_id, report.summary.round_id);
+    }
+}
 
 #[test]
 fn bounded_round_returns_control_plane_snapshot_for_successful_rounds() {
@@ -42,6 +60,7 @@ fn bounded_round_returns_control_plane_snapshot_for_successful_rounds() {
         tests_passed: true,
     });
 
+    assert_report_ids_are_aligned(&report);
     assert_eq!(report.summary.continue_decision, ContinueDecision::Continue);
     assert_eq!(
         report.executed_tasks,
@@ -99,6 +118,7 @@ fn bounded_round_exposes_ready_strategy_generation_when_budget_stops_early() {
         tests_passed: true,
     });
 
+    assert_report_ids_are_aligned(&report);
     assert_eq!(report.summary.continue_decision, ContinueDecision::Stop);
     assert_eq!(
         report.executed_tasks,
@@ -166,6 +186,7 @@ fn bounded_round_stops_before_review_when_review_budget_is_zero() {
         tests_passed: true,
     });
 
+    assert_report_ids_are_aligned(&report);
     assert_eq!(report.summary.continue_decision, ContinueDecision::Stop);
     assert_eq!(
         report.executed_tasks,
@@ -235,6 +256,7 @@ fn bounded_round_stops_when_spec_or_implementation_budget_is_zero() {
         tests_passed: true,
     });
 
+    assert_report_ids_are_aligned(&report);
     assert_eq!(report.summary.continue_decision, ContinueDecision::Stop);
     assert_eq!(
         report.executed_tasks,

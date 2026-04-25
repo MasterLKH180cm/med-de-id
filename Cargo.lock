@@ -2974,13 +2974,17 @@ name = "mdid-runtime"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "mdid-application",
  "mdid-domain",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tower",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -2,7 +2,10 @@ use mdid_domain::{
     CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
     MoatTaskNodeState, MoatType, ResourceBudget,
 };
-use mdid_runtime::moat::{run_bounded_round, MoatRoundInput, MoatRoundReport};
+use mdid_runtime::{
+    moat::{run_bounded_round, MoatRoundInput, MoatRoundReport},
+    moat_history::{LocalMoatHistoryStore, MoatHistorySummary},
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MoatRoundOverrides {
@@ -13,13 +16,28 @@ struct MoatRoundOverrides {
     tests_passed: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MoatRoundCommand {
+    overrides: MoatRoundOverrides,
+    history_path: Option<String>,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match parse_command(&args) {
         Ok(CliCommand::Status) => println!("med-de-id CLI ready"),
-        Ok(CliCommand::MoatRound(overrides)) => run_moat_round(&overrides),
+        Ok(CliCommand::MoatRound(command)) => {
+            if let Err(error) = run_moat_round(&command) {
+                exit_with_error(error);
+            }
+        }
         Ok(CliCommand::MoatControlPlane(overrides)) => run_moat_control_plane(&overrides),
+        Ok(CliCommand::MoatHistory(history_path)) => {
+            if let Err(error) = run_moat_history(&history_path) {
+                exit_with_error(error);
+            }
+        }
         Err(error) => exit_with_usage(error),
     }
 }
@@ -27,8 +45,9 @@ fn main() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliCommand {
     Status,
-    MoatRound(MoatRoundOverrides),
+    MoatRound(MoatRoundCommand),
     MoatControlPlane(MoatRoundOverrides),
+    MoatHistory(String),
 }
 
 fn parse_command(args: &[String]) -> Result<CliCommand, String> {
@@ -36,19 +55,33 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [] => Ok(CliCommand::Status),
         [status] if status == "status" => Ok(CliCommand::Status),
         [moat, round, rest @ ..] if moat == "moat" && round == "round" => {
-            Ok(CliCommand::MoatRound(parse_moat_round_overrides(rest)?))
+            Ok(CliCommand::MoatRound(parse_moat_round_command(rest)?))
         }
         [moat, control_plane, rest @ ..] if moat == "moat" && control_plane == "control-plane" => {
-            Ok(CliCommand::MoatControlPlane(parse_moat_round_overrides(
-                rest,
-            )?))
+            let (overrides, _) = parse_moat_round_overrides(rest, false)?;
+            Ok(CliCommand::MoatControlPlane(overrides))
+        }
+        [moat, history, rest @ ..] if moat == "moat" && history == "history" => {
+            Ok(CliCommand::MoatHistory(parse_required_history_path(rest)?))
         }
         _ => Err(format!("unknown command: {}", format_command(args))),
     }
 }
 
-fn parse_moat_round_overrides(args: &[String]) -> Result<MoatRoundOverrides, String> {
+fn parse_moat_round_command(args: &[String]) -> Result<MoatRoundCommand, String> {
+    let (overrides, history_path) = parse_moat_round_overrides(args, true)?;
+    Ok(MoatRoundCommand {
+        overrides,
+        history_path,
+    })
+}
+
+fn parse_moat_round_overrides(
+    args: &[String],
+    allow_history_path: bool,
+) -> Result<(MoatRoundOverrides, Option<String>), String> {
     let mut overrides = MoatRoundOverrides::default();
+    let mut history_path = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -56,34 +89,31 @@ fn parse_moat_round_overrides(args: &[String]) -> Result<MoatRoundOverrides, Str
 
         match flag.as_str() {
             "--strategy-candidates" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| format!("missing value for {flag}"))?;
+                let value = required_flag_value(args, index, flag, allow_history_path)?;
                 overrides.strategy_candidates = Some(parse_u8_flag(flag, value)?);
             }
             "--spec-generations" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| format!("missing value for {flag}"))?;
+                let value = required_flag_value(args, index, flag, allow_history_path)?;
                 overrides.spec_generations = Some(parse_u8_flag(flag, value)?);
             }
             "--implementation-tasks" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| format!("missing value for {flag}"))?;
+                let value = required_flag_value(args, index, flag, allow_history_path)?;
                 overrides.implementation_tasks = Some(parse_u8_flag(flag, value)?);
             }
             "--review-loops" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| format!("missing value for {flag}"))?;
+                let value = required_flag_value(args, index, flag, allow_history_path)?;
                 overrides.review_loops = Some(parse_u8_flag(flag, value)?);
             }
             "--tests-passed" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| format!("missing value for {flag}"))?;
+                let value = required_flag_value(args, index, flag, allow_history_path)?;
                 overrides.tests_passed = Some(parse_bool_flag(flag, value)?);
+            }
+            "--history-path" if allow_history_path => {
+                let value = required_flag_value(args, index, flag, allow_history_path)?;
+                if history_path.is_some() {
+                    return Err(duplicate_flag_error(flag));
+                }
+                history_path = Some(value.clone());
             }
             _ => return Err(format!("unknown flag: {flag}")),
         }
@@ -91,7 +121,71 @@ fn parse_moat_round_overrides(args: &[String]) -> Result<MoatRoundOverrides, Str
         index += 2;
     }
 
-    Ok(overrides)
+    Ok((overrides, history_path))
+}
+
+fn required_flag_value<'a>(
+    args: &'a [String],
+    index: usize,
+    flag: &str,
+    allow_history_path: bool,
+) -> Result<&'a String, String> {
+    if allow_history_path && flag == "--history-path" {
+        return required_history_path_value(args, index);
+    }
+
+    args.get(index + 1)
+        .ok_or_else(|| missing_value_error(flag, allow_history_path))
+}
+
+fn parse_required_history_path(args: &[String]) -> Result<String, String> {
+    let Some(flag) = args.first() else {
+        return Err("missing required flag: --history-path".to_string());
+    };
+
+    if flag != "--history-path" {
+        return Err(format!("unknown flag: {flag}"));
+    }
+
+    let history_path = required_history_path_value(args, 0)?.clone();
+
+    if let Some(extra) = args.get(2) {
+        if extra == "--history-path" {
+            Err(duplicate_flag_error(extra))
+        } else {
+            Err(format!("unknown flag: {extra}"))
+        }
+    } else {
+        Ok(history_path)
+    }
+}
+
+fn required_history_path_value<'a>(args: &'a [String], index: usize) -> Result<&'a String, String> {
+    let value = args
+        .get(index + 1)
+        .ok_or_else(|| "missing value for --history-path".to_string())?;
+
+    if history_path_value_is_missing(value) {
+        Err("missing value for --history-path".to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+fn history_path_value_is_missing(value: &str) -> bool {
+    value.starts_with("--")
+}
+
+fn missing_value_error(flag: &str, allow_history_path: bool) -> String {
+    if allow_history_path && flag == "--history-path" {
+        "missing value for --history-path".to_string()
+    } else {
+        format!("missing value for {flag}")
+    }
+}
+
+fn duplicate_flag_error(flag: &str) -> String {
+    format!("duplicate flag: {flag}")
 }
 
 fn parse_u8_flag(flag: &str, value: &str) -> Result<u8, String> {
@@ -108,8 +202,12 @@ fn parse_bool_flag(flag: &str, value: &str) -> Result<bool, String> {
     }
 }
 
-fn run_moat_round(overrides: &MoatRoundOverrides) {
-    let report = sample_round_report(overrides);
+fn run_moat_round(command: &MoatRoundCommand) -> Result<(), String> {
+    let report = sample_round_report(&command.overrides);
+
+    if let Some(history_path) = &command.history_path {
+        append_report_to_history(history_path, &report)?;
+    }
 
     println!("moat round complete");
     println!(
@@ -123,6 +221,20 @@ fn run_moat_round(overrides: &MoatRoundOverrides) {
         "stop_reason={}",
         report.stop_reason.as_deref().unwrap_or("<none>")
     );
+
+    if let Some(history_path) = &command.history_path {
+        println!("history_saved_to={history_path}");
+    }
+
+    Ok(())
+}
+
+fn append_report_to_history(history_path: &str, report: &MoatRoundReport) -> Result<(), String> {
+    let mut store = LocalMoatHistoryStore::open(history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    store
+        .append(std::time::SystemTime::now().into(), report.clone())
+        .map_err(|error| format!("failed to append moat history entry: {error}"))
 }
 
 fn run_moat_control_plane(overrides: &MoatRoundOverrides) {
@@ -143,6 +255,70 @@ fn run_moat_control_plane(overrides: &MoatRoundOverrides) {
         control_plane.memory.improvement_delta
     );
     println!("task_states={task_states}");
+}
+
+fn run_moat_history(history_path: &str) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    print_history_summary(&store.summary());
+    Ok(())
+}
+
+fn print_history_summary(summary: &MoatHistorySummary) {
+    println!("moat history summary");
+    println!("entries={}", summary.entry_count);
+    println!(
+        "latest_round_id={}",
+        summary.latest_round_id.as_deref().unwrap_or("<none>")
+    );
+    println!(
+        "latest_continue_decision={}",
+        summary
+            .latest_continue_decision
+            .map(format_continue_decision)
+            .unwrap_or("<none>")
+    );
+    println!(
+        "latest_stop_reason={}",
+        summary.latest_stop_reason.as_deref().unwrap_or("<none>")
+    );
+    println!(
+        "latest_decision_summary={}",
+        summary
+            .latest_decision_summary
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+    println!(
+        "latest_moat_score_after={}",
+        format_optional_i16(summary.latest_moat_score_after)
+    );
+    println!(
+        "best_moat_score_after={}",
+        format_optional_i16(summary.best_moat_score_after)
+    );
+    println!(
+        "improvement_deltas={}",
+        format_improvement_deltas(&summary.improvement_deltas)
+    );
+}
+
+fn format_optional_i16(value: Option<i16>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<none>".to_string())
+}
+
+fn format_improvement_deltas(values: &[i16]) -> String {
+    if values.is_empty() {
+        "<none>".to_string()
+    } else {
+        values
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 fn sample_round_report(overrides: &MoatRoundOverrides) -> MoatRoundReport {
@@ -248,12 +424,17 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false]]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH]"
 }
 
 fn exit_with_usage(message: String) -> ! {
     eprintln!("{message}");
     eprintln!("{}", usage());
+    std::process::exit(1);
+}
+
+fn exit_with_error(message: String) -> ! {
+    eprintln!("{message}");
     std::process::exit(1);
 }
 
@@ -294,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_command_maps_round_and_control_plane_overrides() {
+    fn parse_command_maps_round_control_plane_and_history_commands() {
         assert_eq!(
             parse_command(&[
                 "moat".into(),
@@ -303,9 +484,12 @@ mod tests {
                 "0".into(),
             ])
             .unwrap(),
-            CliCommand::MoatRound(MoatRoundOverrides {
-                review_loops: Some(0),
-                ..MoatRoundOverrides::default()
+            CliCommand::MoatRound(MoatRoundCommand {
+                overrides: MoatRoundOverrides {
+                    review_loops: Some(0),
+                    ..MoatRoundOverrides::default()
+                },
+                history_path: None,
             })
         );
         assert_eq!(
@@ -320,6 +504,16 @@ mod tests {
                 strategy_candidates: Some(0),
                 ..MoatRoundOverrides::default()
             })
+        );
+        assert_eq!(
+            parse_command(&[
+                "moat".into(),
+                "history".into(),
+                "--history-path".into(),
+                "history.json".into(),
+            ])
+            .unwrap(),
+            CliCommand::MoatHistory("history.json".into())
         );
     }
 }

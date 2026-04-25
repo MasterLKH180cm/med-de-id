@@ -84,7 +84,7 @@ Available docs:
 
 ## Moat Loop Foundation
 
-`med-de-id` now includes a local-first moat-loop foundation for deterministic bounded strategy rounds. The shipped slice models market snapshots, competitor profiles, lock-in analysis artifacts, moat strategies, deterministic moat scoring, and a bounded control-plane snapshot for canonical task-state inspection through the CLI.
+`med-de-id` now includes a local-first moat-loop foundation for deterministic bounded strategy rounds. The shipped slice models market snapshots, competitor profiles, lock-in analysis artifacts, moat strategies, deterministic moat scoring, a bounded control-plane snapshot for canonical task-state inspection, and bounded local round-history persistence/inspection through the CLI.
 
 Run the default bounded round with:
 
@@ -99,6 +99,16 @@ The round command prints a deterministic report containing:
 - `moat_score_before`
 - `moat_score_after`
 - `stop_reason=<none>|...`
+
+Persist the produced round report locally only when you explicitly provide a history path:
+
+```bash
+cargo run -p mdid-cli -- moat round --history-path .mdid/moat-history.json
+```
+
+When `--history-path PATH` is used, the round output stays the same and adds one extra line:
+
+- `history_saved_to=PATH`
 
 Run bounded stop-path scenarios by overriding the deterministic sample budgets, for example:
 
@@ -120,7 +130,26 @@ The control-plane command prints a deterministic snapshot containing:
 - `improvement_delta`
 - `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
 
-These override flags make the CLI a bounded operator-facing runner over deterministic sample inputs, but the foundation is still intentionally narrow. It does not yet perform live market crawling, persistent memory storage, PR automation, scheduler control, or unrestricted autonomous iteration over external data.
+Inspect persisted local history with:
+
+```bash
+cargo run -p mdid-cli -- moat history --history-path .mdid/moat-history.json
+```
+
+`moat history` is a read-only inspection path: the history file must already exist, and a missing or typoed path fails instead of creating a brand-new empty file.
+
+The history command prints a bounded summary containing:
+
+- `entries`
+- `latest_round_id`
+- `latest_continue_decision`
+- `latest_stop_reason`
+- `latest_decision_summary`
+- `latest_moat_score_after`
+- `best_moat_score_after`
+- `improvement_deltas`
+
+This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, but it still does not perform live market crawling, scheduler control, PR automation, or a full autonomous multi-agent runtime over external data.
 
 ## Roadmap shape
 
