@@ -755,6 +755,10 @@ git commit -m "feat: orchestrate csv deidentification through the vault"
 ### Task 5: Add XLSX parity on the same tabular engine and refresh docs
 
 **Files:**
+- Modify: `Cargo.toml`
+- Modify: `Cargo.lock`
+- Modify: `crates/mdid-adapters/Cargo.toml`
+- Modify: `crates/mdid-adapters/src/lib.rs`
 - Modify: `crates/mdid-adapters/src/tabular.rs`
 - Create: `crates/mdid-adapters/tests/xlsx_tabular_adapter.rs`
 - Modify: `README.md`
@@ -822,11 +826,40 @@ source "$HOME/.cargo/env"
 cargo test -p mdid-adapters --test xlsx_tabular_adapter
 ```
 
-Expected: FAIL because the current XLSX adapter still reads the blank first worksheet instead of the first non-empty worksheet.
+Expected: FAIL because `XlsxTabularAdapter` and its XLSX dependencies/exports do not exist yet.
 
 - [ ] **Step 3: Write the minimal XLSX implementation and docs**
 
-Add `XlsxTabularAdapter` beside the CSV adapter in `crates/mdid-adapters/src/tabular.rs`:
+Add the XLSX dependencies and exports first:
+
+```toml
+# Cargo.toml
+[workspace.dependencies]
+calamine = "0.34"
+rust_xlsxwriter = "0.94"
+```
+
+```toml
+# crates/mdid-adapters/Cargo.toml
+[dependencies]
+calamine.workspace = true
+csv.workspace = true
+mdid-domain = { path = "../mdid-domain" }
+rust_xlsxwriter.workspace = true
+thiserror.workspace = true
+```
+
+```rust
+// crates/mdid-adapters/src/lib.rs
+mod tabular;
+
+pub use tabular::{
+    CsvTabularAdapter, ExtractedTabularData, FieldPolicy, FieldPolicyAction, TabularAdapterError,
+    XlsxTabularAdapter,
+};
+```
+
+Then add `XlsxTabularAdapter` beside the CSV adapter in `crates/mdid-adapters/src/tabular.rs`:
 
 ```rust
 pub struct XlsxTabularAdapter {
@@ -887,7 +920,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/mdid-adapters/src/tabular.rs crates/mdid-adapters/tests/xlsx_tabular_adapter.rs README.md
+git add Cargo.toml Cargo.lock crates/mdid-adapters/Cargo.toml crates/mdid-adapters/src/lib.rs crates/mdid-adapters/src/tabular.rs crates/mdid-adapters/tests/xlsx_tabular_adapter.rs README.md docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md
 git commit -m "feat: add xlsx tabular adapter parity"
 ```
 
