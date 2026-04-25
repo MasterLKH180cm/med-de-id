@@ -181,6 +181,8 @@ cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.jso
 
 - `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer]` inspects the latest persisted read-only Planner/Coder/Reviewer assignment projection and prints deterministic `assignment=<role>|<node_id>|<title>|<kind>|<spec_ref>` rows. Persisted `node_id`, `title`, and `spec_ref` fields are escaped for pipe-delimited output (`\\` as `\\\\`, `|` as `\\|`, newline as `\\n`, carriage return as `\\r`); bounded enum fields are not escaped. It uses existing moat history only, never creates missing history files, never appends rounds, never schedules work, never launches agents, and never creates cron jobs.
 
+- `mdid-cli moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked]` inspects the latest persisted task graph read-only and prints `moat task graph` followed by deterministic `node=<role>|<node_id>|<title>|<kind>|<state>|<dependencies>|<spec_ref>` rows. Missing dependency/spec fields print `<none>`, dependency lists are comma-joined, and pipe-delimited string fields are escaped. It opens only existing history, so missing paths fail without creating files, appending rounds, scheduling work, crawling data, launching agents, or creating cron jobs.
+
 Inspect whether the latest persisted round is eligible to start another bounded round with:
 
 ```bash
