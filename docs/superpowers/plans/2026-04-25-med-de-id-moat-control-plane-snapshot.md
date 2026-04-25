@@ -268,7 +268,7 @@ git commit -m "feat: add moat control plane graph projection"
 - Test: `crates/mdid-runtime/tests/moat_runtime.rs`
 
 **Task truth-sync note:**
-This batch also enforces `max_review_loops` honestly. When review budget is zero, the runtime must stop after `implementation`, report `review budget exhausted`, and expose `review` as the next ready control-plane node instead of pretending `review` and `evaluation` already ran.
+This batch also enforces `max_review_loops` honestly and keeps the memory summary consistent with the highest executed stage. When review budget is zero, the runtime must stop after `implementation`, report `review budget exhausted`, expose `review` as the next ready control-plane node, and emit a non-review memory summary such as `implementation stopped before review` instead of pretending `review` already ran. Earlier planner-stage stops must likewise avoid reviewer-authored summaries.
 
 - [ ] **Step 1: Write the failing runtime tests**
 
@@ -374,7 +374,7 @@ fn bounded_round_exposes_ready_strategy_generation_when_budget_stops_early() {
             .memory
             .latest_decision_summary()
             .as_deref(),
-        Some("review stopped bounded moat round")
+        Some("planning stopped before implementation")
     );
 }
 
@@ -436,7 +436,7 @@ fn bounded_round_stops_before_review_when_review_budget_is_zero() {
             .memory
             .latest_decision_summary()
             .as_deref(),
-        Some("review stopped bounded moat round")
+        Some("implementation stopped before review")
     );
 }
 ```
@@ -476,7 +476,7 @@ const EVALUATION: &str = "evaluation";
 #[derive(Debug, Clone)]
 pub struct MoatControlPlaneReport {
     pub task_graph: MoatTaskGraph,
-    pub memory_snapshot: MoatMemorySnapshot,
+    pub memory: MoatMemorySnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -492,25 +492,51 @@ fn build_control_plane(
     executed_tasks: &[String],
 ) -> MoatControlPlaneReport {
     let task_graph = project_task_graph_progress(build_default_moat_task_graph(summary.round_id), executed_tasks);
-    let decisions = vec![DecisionLogEntry {
-        entry_id: Uuid::new_v4(),
-        round_id: summary.round_id,
-        author_role: AgentRole::Reviewer,
-        summary: if summary.continue_decision == ContinueDecision::Continue {
-            "review approved bounded moat round".into()
-        } else {
-            "review stopped bounded moat round".into()
-        },
-        rationale: summary
-            .stop_reason
-            .clone()
-            .unwrap_or_else(|| "tests passed and moat improved".into()),
-        recorded_at: Utc::now(),
-    }];
+    let decisions = vec![latest_decision(summary, executed_tasks)];
 
     MoatControlPlaneReport {
         task_graph,
-        memory_snapshot: summarize_round_memory(summary, decisions),
+        memory: summarize_round_memory(summary, decisions),
+    }
+}
+
+fn latest_decision(
+    summary: &mdid_domain::MoatRoundSummary,
+    executed_tasks: &[String],
+) -> DecisionLogEntry {
+    let (author_role, decision_summary, rationale) = if executed_tasks
+        .iter()
+        .any(|task| task == REVIEW || task == EVALUATION)
+    {
+        (
+            AgentRole::Reviewer,
+            "review approved bounded moat round",
+            "review approved bounded moat round after evaluation cleared the improvement threshold",
+        )
+    } else if executed_tasks.iter().any(|task| task == IMPLEMENTATION) {
+        (
+            AgentRole::Coder,
+            "implementation stopped before review",
+            summary.stop_reason.as_deref().unwrap_or("review budget exhausted"),
+        )
+    } else {
+        (
+            AgentRole::Planner,
+            "planning stopped before implementation",
+            summary
+                .stop_reason
+                .as_deref()
+                .unwrap_or("strategy budget exhausted"),
+        )
+    };
+
+    DecisionLogEntry {
+        entry_id: Uuid::new_v4(),
+        round_id: summary.round_id,
+        author_role,
+        summary: decision_summary.into(),
+        rationale: rationale.into(),
+        recorded_at: Utc::now(),
     }
 }
 ```
@@ -646,13 +672,13 @@ fn run_moat_control_plane() {
         "latest_decision_summary={}",
         report
             .control_plane
-            .memory_snapshot
+            .memory
             .latest_decision_summary()
             .unwrap_or_else(|| "<none>".into())
     );
     println!(
         "improvement_delta={}",
-        report.control_plane.memory_snapshot.improvement_delta
+        report.control_plane.memory.improvement_delta
     );
     println!("task_states={task_states}");
 }
