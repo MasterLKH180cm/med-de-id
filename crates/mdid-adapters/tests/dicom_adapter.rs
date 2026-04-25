@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use dicom_core::{PrimitiveValue, Tag, VR};
+use dicom_core::{DicomValue, Length, PrimitiveValue, Tag, VR};
 use dicom_object::{
     file::ReadPreamble, meta::FileMetaTableBuilder, DefaultDicomObject, InMemDicomObject,
     OpenFileOptions,
@@ -317,11 +317,71 @@ fn rewrite_removes_private_tags_when_policy_is_remove() -> Result<(), DicomAdapt
 }
 
 #[test]
+fn rewrite_removes_nested_private_tags_inside_sequence_items_when_policy_is_remove(
+) -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Remove);
+
+    let rewritten = adapter.rewrite(
+        &build_dicom_fixture_with_nested_private_sequence("NO"),
+        &DicomRewritePlan::default(),
+    )?;
+    let rewritten_obj = parse_dicom(&rewritten);
+    let sequence_items = rewritten_obj
+        .get(Tag(0x0008, 0x1115))
+        .expect("expected referenced series sequence")
+        .items()
+        .expect("expected sequence items");
+    let nested_item = sequence_items
+        .first()
+        .expect("expected one nested sequence item");
+
+    assert!(nested_item.get(Tag(0x0011, 0x0010)).is_none());
+    assert!(nested_item.get(Tag(0x0011, 0x1010)).is_none());
+    assert_eq!(
+        tag_value_in_item(nested_item, Tag(0x0020, 0x000E)),
+        "2.25.123456789012345678901234567890123499",
+        "non-private nested tags should remain intact"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rewrite_drops_private_file_meta_information_when_policy_is_remove(
+) -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::Remove);
+
+    let rewritten = adapter.rewrite(
+        &build_dicom_fixture_with_private_file_meta("NO"),
+        &DicomRewritePlan::default(),
+    )?;
+    let rewritten_obj = parse_dicom(&rewritten);
+
+    assert!(rewritten_obj
+        .meta()
+        .private_information_creator_uid()
+        .is_none());
+    assert!(rewritten_obj.meta().private_information.is_none());
+
+    Ok(())
+}
+
+#[test]
 fn sanitize_filename_replaces_phi_like_names_with_safe_slug() {
     assert_eq!(
         sanitize_output_name("Alice Smith\\MRN-001/scan (1).dcm"),
         "Alice_Smith_MRN-001_scan__1_.dcm"
     );
+}
+
+#[test]
+fn sanitize_filename_hardens_windows_reserved_and_dot_only_names() {
+    assert_eq!(sanitize_output_name("."), "_");
+    assert_eq!(sanitize_output_name(".."), "_");
+    assert_eq!(sanitize_output_name("report."), "report");
+    assert_eq!(sanitize_output_name("CON"), "_CON");
+    assert_eq!(sanitize_output_name("con.txt"), "_con.txt");
+    assert_eq!(sanitize_output_name("LPT1."), "_LPT1");
 }
 
 fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec<u8> {
@@ -437,6 +497,93 @@ fn build_dicom_fixture_with_non_text_private_tag(burned_in_annotation: &str) -> 
     bytes
 }
 
+fn build_dicom_fixture_with_nested_private_sequence(burned_in_annotation: &str) -> Vec<u8> {
+    let mut obj = InMemDicomObject::new_empty();
+    obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    obj.put_str(
+        Tag(0x0008, 0x0018),
+        VR::UI,
+        "2.25.123456789012345678901234567890123456",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000D),
+        VR::UI,
+        "2.25.123456789012345678901234567890123457",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123458",
+    );
+    obj.put_str(Tag(0x0008, 0x0050), VR::SH, "ACC-4242");
+    obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Cardiac MRI");
+    obj.put_str(Tag(0x0010, 0x0010), VR::PN, "Alice^Smith");
+    obj.put_str(Tag(0x0010, 0x0020), VR::LO, "MRN-001");
+    obj.put_str(Tag(0x0028, 0x0301), VR::CS, burned_in_annotation);
+
+    let mut nested_item = InMemDicomObject::new_empty();
+    nested_item.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123499",
+    );
+    nested_item.put_str(Tag(0x0011, 0x0010), VR::LO, "ACME_CREATOR");
+    nested_item.put_str(Tag(0x0011, 0x1010), VR::LO, "nested-secret");
+    obj.put(dicom_core::DataElement::new(
+        Tag(0x0008, 0x1115),
+        VR::SQ,
+        DicomValue::new_sequence(vec![nested_item], Length::UNDEFINED),
+    ));
+
+    let file_obj = obj
+        .with_meta(FileMetaTableBuilder::new().transfer_syntax("1.2.840.10008.1.2.1"))
+        .expect("fixture should create file object");
+    let mut bytes = Vec::new();
+    file_obj
+        .write_all(&mut bytes)
+        .expect("fixture should serialize to bytes");
+    bytes
+}
+
+fn build_dicom_fixture_with_private_file_meta(burned_in_annotation: &str) -> Vec<u8> {
+    let mut obj = InMemDicomObject::new_empty();
+    obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    obj.put_str(
+        Tag(0x0008, 0x0018),
+        VR::UI,
+        "2.25.123456789012345678901234567890123456",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000D),
+        VR::UI,
+        "2.25.123456789012345678901234567890123457",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123458",
+    );
+    obj.put_str(Tag(0x0008, 0x0050), VR::SH, "ACC-4242");
+    obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Cardiac MRI");
+    obj.put_str(Tag(0x0010, 0x0010), VR::PN, "Alice^Smith");
+    obj.put_str(Tag(0x0010, 0x0020), VR::LO, "MRN-001");
+    obj.put_str(Tag(0x0028, 0x0301), VR::CS, burned_in_annotation);
+
+    let file_obj = obj
+        .with_meta(
+            FileMetaTableBuilder::new()
+                .transfer_syntax("1.2.840.10008.1.2.1")
+                .private_information_creator_uid("1.2.826.0.1.3680043.10.54321")
+                .private_information(vec![0x13, 0x37, 0x42]),
+        )
+        .expect("fixture should create file object");
+    let mut bytes = Vec::new();
+    file_obj
+        .write_all(&mut bytes)
+        .expect("fixture should serialize to bytes");
+    bytes
+}
+
 fn candidate_summary(
     extracted: &mdid_adapters::ExtractedDicomData,
 ) -> Vec<(DicomTagRef, String, ReviewDecision, String)> {
@@ -464,6 +611,14 @@ fn parse_dicom(bytes: &[u8]) -> DefaultDicomObject {
 }
 
 fn tag_value(obj: &DefaultDicomObject, tag: Tag) -> String {
+    obj.get(tag)
+        .expect("expected DICOM tag to be present")
+        .to_str()
+        .expect("expected DICOM tag to be textual")
+        .into_owned()
+}
+
+fn tag_value_in_item(obj: &InMemDicomObject, tag: Tag) -> String {
     obj.get(tag)
         .expect("expected DICOM tag to be present")
         .to_str()

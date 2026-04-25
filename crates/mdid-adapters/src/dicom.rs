@@ -1,6 +1,10 @@
 use std::io::Cursor;
 
-use dicom_core::{header::Header, value::ConvertValueError, Tag};
+use dicom_core::{
+    header::Header,
+    value::{ConvertValueError, DataSetSequence, Value as DicomValue},
+    DataElement, Length, Tag,
+};
 use dicom_object::{
     file::ReadPreamble,
     meta::{FileMetaTable, FileMetaTableBuilder},
@@ -87,11 +91,12 @@ impl DicomAdapter {
         apply_tag_replacements(&mut dataset, &plan.tag_replacements);
         apply_uid_replacements(&mut dataset, &plan.uid_replacements);
 
-        if self.private_tag_policy == DicomPrivateTagPolicy::Remove {
-            dataset.retain(|element| element.tag().0 % 2 == 0);
+        let strip_private = self.private_tag_policy == DicomPrivateTagPolicy::Remove;
+        if strip_private {
+            dataset = strip_private_tags(dataset);
         }
 
-        let file_obj = dataset.with_meta(file_meta_builder(&meta))?;
+        let file_obj = dataset.with_meta(file_meta_builder(&meta, strip_private))?;
         let mut rewritten = Vec::new();
         file_obj.write_all(&mut rewritten)?;
         Ok(rewritten)
@@ -183,8 +188,15 @@ pub fn sanitize_output_name(source_name: &str) -> String {
         })
         .collect::<String>();
 
-    if sanitized.is_empty() {
-        "_".into()
+    let sanitized = sanitized.trim_end_matches(['.', ' ']);
+    let sanitized = if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        "_".to_string()
+    } else {
+        sanitized.to_string()
+    };
+
+    if is_windows_reserved_name(&sanitized) {
+        format!("_{sanitized}")
     } else {
         sanitized
     }
@@ -220,7 +232,52 @@ fn apply_uid_replacements(obj: &mut InMemDicomObject, replacements: &[DicomUidRe
     }
 }
 
-fn file_meta_builder(meta: &FileMetaTable) -> FileMetaTableBuilder {
+fn strip_private_tags(obj: InMemDicomObject) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter(obj.into_iter().filter_map(strip_private_element))
+}
+
+fn strip_private_element(
+    element: dicom_object::mem::InMemElement,
+) -> Option<dicom_object::mem::InMemElement> {
+    if element.tag().0 % 2 == 1 {
+        return None;
+    }
+
+    let tag = element.tag();
+    let vr = element.vr();
+    let value = strip_private_value(element.into_value());
+    Some(DataElement::new_with_len(
+        tag,
+        vr,
+        value_length(&value),
+        value,
+    ))
+}
+
+fn strip_private_value(
+    value: DicomValue<InMemDicomObject, Vec<u8>>,
+) -> DicomValue<InMemDicomObject, Vec<u8>> {
+    match value {
+        DicomValue::Sequence(sequence) => DicomValue::Sequence(DataSetSequence::new(
+            sequence
+                .into_items()
+                .into_iter()
+                .map(strip_private_tags)
+                .collect::<Vec<_>>(),
+            Length::UNDEFINED,
+        )),
+        other => other,
+    }
+}
+
+fn value_length(value: &DicomValue<InMemDicomObject, Vec<u8>>) -> Length {
+    match value {
+        DicomValue::Sequence(_) | DicomValue::PixelSequence(_) => Length::UNDEFINED,
+        DicomValue::Primitive(value) => Length(value.calculate_byte_len() as u32),
+    }
+}
+
+fn file_meta_builder(meta: &FileMetaTable, strip_private: bool) -> FileMetaTableBuilder {
     let mut builder = FileMetaTableBuilder::new()
         .information_version(meta.information_version)
         .transfer_syntax(meta.transfer_syntax())
@@ -238,11 +295,13 @@ fn file_meta_builder(meta: &FileMetaTable) -> FileMetaTableBuilder {
     if let Some(value) = trimmed_optional(meta.receiving_application_entity_title.as_deref()) {
         builder = builder.receiving_application_entity_title(value);
     }
-    if let Some(value) = meta.private_information_creator_uid() {
-        builder = builder.private_information_creator_uid(value);
-    }
-    if let Some(value) = meta.private_information.clone() {
-        builder = builder.private_information(value);
+    if !strip_private {
+        if let Some(value) = meta.private_information_creator_uid() {
+            builder = builder.private_information_creator_uid(value);
+        }
+        if let Some(value) = meta.private_information.clone() {
+            builder = builder.private_information(value);
+        }
     }
 
     builder
@@ -254,6 +313,43 @@ fn trimmed_optional(value: Option<&str>) -> Option<&str> {
 
 fn trimmed_value(value: &str) -> &str {
     value.trim_end_matches(|ch: char| ch.is_whitespace() || ch == '\0')
+}
+
+fn is_windows_reserved_name(name: &str) -> bool {
+    let Some(base_name) = name
+        .split('.')
+        .next()
+        .map(|value| value.trim_end_matches(['.', ' ']))
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    matches!(
+        base_name.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 fn common_phi_candidates(
