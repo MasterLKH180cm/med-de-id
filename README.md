@@ -128,10 +128,21 @@ cargo run -p mdid-cli -- moat control-plane
 
 The control-plane command prints a deterministic snapshot containing:
 
+- `source=sample|history`
+- `latest_round_id` when inspecting persisted history
+- `history_path` when inspecting persisted history
 - `ready_nodes`
 - `latest_decision_summary`
 - `improvement_delta`
 - `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
+
+Inspect the latest persisted moat control-plane snapshot with:
+
+```bash
+cargo run -p mdid-cli -- moat control-plane --history-path .mdid/moat-history.json
+```
+
+This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, and improvement delta. It does not schedule work, append rounds, start a daemon, crawl the web, or automate code changes.
 
 Inspect persisted local history with:
 
