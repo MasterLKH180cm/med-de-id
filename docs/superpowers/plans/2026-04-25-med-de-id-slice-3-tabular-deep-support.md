@@ -758,27 +758,58 @@ git commit -m "feat: orchestrate csv deidentification through the vault"
 - Modify: `crates/mdid-adapters/src/tabular.rs`
 - Create: `crates/mdid-adapters/tests/xlsx_tabular_adapter.rs`
 - Modify: `README.md`
+- Modify: `docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md`
 
 - [ ] **Step 1: Write the failing XLSX tests**
 
 Create `crates/mdid-adapters/tests/xlsx_tabular_adapter.rs`:
 
 ```rust
-use mdid_adapters::{FieldPolicy, XlsxTabularAdapter};
+use mdid_adapters::{CsvTabularAdapter, FieldPolicy, XlsxTabularAdapter};
+use mdid_domain::ReviewDecision;
+use rust_xlsxwriter::Workbook;
 
 #[test]
-fn xlsx_adapter_reads_headers_and_preserves_row_count() {
-    let workbook = XlsxTabularAdapter::fixture_bytes(vec![
-        vec!["patient_id", "patient_name"],
-        vec!["MRN-001", "Alice Smith"],
-        vec!["MRN-002", "Bob Jones"],
+fn xlsx_adapter_uses_first_non_empty_worksheet_and_matches_csv_semantics() {
+    let workbook = workbook_with_blank_cover_sheet(vec![
+        vec!["patient_id", "patient_name", "age"],
+        vec!["MRN-001", "Alice Smith", "42"],
+        vec!["MRN-002", "Bob Jones", "37"],
     ]);
-    let adapter = XlsxTabularAdapter::new(vec![FieldPolicy::encode("patient_id", "patient_id")]);
+    let csv_input = "patient_id,patient_name,age\nMRN-001,Alice Smith,42\nMRN-002,Bob Jones,37\n";
+    let xlsx_adapter = XlsxTabularAdapter::new(vec![
+        FieldPolicy::encode("patient_id", "patient_id"),
+        FieldPolicy::review("patient_name", "patient_name"),
+    ]);
+    let csv_adapter = CsvTabularAdapter::new(vec![
+        FieldPolicy::encode("patient_id", "patient_id"),
+        FieldPolicy::review("patient_name", "patient_name"),
+    ]);
 
-    let extracted = adapter.extract(&workbook).unwrap();
+    let extracted = xlsx_adapter.extract(&workbook).unwrap();
+    let csv_extracted = csv_adapter.extract(csv_input.as_bytes()).unwrap();
 
-    assert_eq!(extracted.columns.len(), 2);
-    assert_eq!(extracted.rows.len(), 2);
+    assert_eq!(extracted.columns, csv_extracted.columns);
+    assert_eq!(extracted.rows, csv_extracted.rows);
+    assert_eq!(extracted.candidates.len(), 4);
+    assert_eq!(extracted.candidates[0].decision, ReviewDecision::Approved);
+    assert_eq!(extracted.candidates[1].decision, ReviewDecision::NeedsReview);
+}
+
+fn workbook_with_blank_cover_sheet(rows: Vec<Vec<&str>>) -> Vec<u8> {
+    let mut workbook = Workbook::new();
+    let _ = workbook.add_worksheet();
+    let worksheet = workbook.add_worksheet();
+
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, value) in row.iter().enumerate() {
+            worksheet
+                .write_string(row_index as u32, column_index as u16, *value)
+                .unwrap();
+        }
+    }
+
+    workbook.save_to_buffer().unwrap()
 }
 ```
 
@@ -791,7 +822,7 @@ source "$HOME/.cargo/env"
 cargo test -p mdid-adapters --test xlsx_tabular_adapter
 ```
 
-Expected: FAIL because the XLSX adapter does not exist yet.
+Expected: FAIL because the current XLSX adapter still reads the blank first worksheet instead of the first non-empty worksheet.
 
 - [ ] **Step 3: Write the minimal XLSX implementation and docs**
 
@@ -809,7 +840,7 @@ impl XlsxTabularAdapter {
 
     pub fn extract(&self, bytes: &[u8]) -> Result<ExtractedTabularData, TabularAdapterError> {
         let workbook = calamine::open_workbook_from_rs(std::io::Cursor::new(bytes.to_vec()))?;
-        extract_first_sheet(workbook, &self.policies)
+        extract_first_non_empty_sheet(workbook, &self.policies)
     }
 
     pub fn fixture_bytes(rows: Vec<Vec<&str>>) -> Vec<u8> {
