@@ -367,6 +367,26 @@ fn rewrite_drops_private_file_meta_information_when_policy_is_remove(
 }
 
 #[test]
+fn rewrite_drops_private_file_meta_information_when_policy_is_review_required(
+) -> Result<(), DicomAdapterError> {
+    let adapter = DicomAdapter::new(DicomPrivateTagPolicy::ReviewRequired);
+
+    let rewritten = adapter.rewrite(
+        &build_dicom_fixture_with_private_file_meta("NO"),
+        &DicomRewritePlan::default(),
+    )?;
+    let rewritten_obj = parse_dicom(&rewritten);
+
+    assert!(rewritten_obj
+        .meta()
+        .private_information_creator_uid()
+        .is_none());
+    assert!(rewritten_obj.meta().private_information.is_none());
+
+    Ok(())
+}
+
+#[test]
 fn sanitize_filename_replaces_phi_bearing_source_names_with_a_safe_neutral_output_name() {
     let sanitized = sanitize_output_name("Alice Smith\\MRN-001/scan (1).dcm");
 
@@ -382,10 +402,21 @@ fn sanitize_filename_hardens_windows_reserved_and_dot_only_names() {
     assert_eq!(sanitize_output_name(".."), "dicom-output");
     assert_eq!(sanitize_output_name("report."), "dicom-output");
     assert_eq!(sanitize_output_name("CON"), "dicom-output");
-    assert_eq!(sanitize_output_name("con.txt"), "dicom-output.txt");
+    assert_eq!(sanitize_output_name("con.txt"), "dicom-output");
     assert_eq!(sanitize_output_name("LPT1."), "dicom-output");
     assert_eq!(sanitize_output_name("scan.$$$"), "dicom-output");
     assert_eq!(sanitize_output_name("weird name..DCM"), "dicom-output.dcm");
+}
+
+#[test]
+fn sanitize_filename_whitelists_only_dicom_safe_extensions() {
+    assert_eq!(sanitize_output_name("study.MRN12345"), "dicom-output");
+    assert_eq!(sanitize_output_name("scan.123-45-6789"), "dicom-output");
+    assert_eq!(sanitize_output_name("scan.dcm.exe"), "dicom-output");
+    assert_eq!(
+        sanitize_output_name("scan.real.dicom"),
+        "dicom-output.dicom"
+    );
 }
 
 fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec<u8> {

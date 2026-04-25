@@ -201,7 +201,7 @@ pub fn sanitize_output_name(source_name: &str) -> String {
                 .collect::<String>()
                 .to_ascii_lowercase()
         })
-        .filter(|ext| !ext.is_empty());
+        .filter(|ext| matches!(ext.as_str(), "dcm" | "dicom"));
 
     match extension {
         Some(ext) => format!("dicom-output.{ext}"),
