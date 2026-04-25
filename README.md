@@ -84,20 +84,33 @@ Available docs:
 
 ## Moat Loop Foundation
 
-`med-de-id` now includes a local-first moat-loop foundation for deterministic bounded strategy rounds. The shipped slice models market snapshots, competitor profiles, lock-in analysis artifacts, moat strategies, and deterministic moat scoring, then runs a bounded runtime round through the CLI.
+`med-de-id` now includes a local-first moat-loop foundation for deterministic bounded strategy rounds. The shipped slice models market snapshots, competitor profiles, lock-in analysis artifacts, moat strategies, deterministic moat scoring, and a bounded control-plane snapshot for canonical task-state inspection through the CLI.
 
-Run a sample round with:
+Run the deterministic sample round with:
 
 ```bash
 cargo run -p mdid-cli -- moat round
 ```
 
-The command prints a deterministic report containing:
+The round command prints a deterministic report containing:
 
 - `continue_decision=Continue|Stop|Pivot`
-- `executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_selection,spec_plan_handoff,implementation_gate,evaluation`
+- `executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_generation,spec_planning,implementation,review,evaluation`
 - `moat_score_before`
 - `moat_score_after`
+
+Inspect the bounded control-plane snapshot with:
+
+```bash
+cargo run -p mdid-cli -- moat control-plane
+```
+
+The control-plane command prints a deterministic snapshot containing:
+
+- `ready_nodes`
+- `latest_decision_summary`
+- `improvement_delta`
+- `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
 
 This foundation is intentionally bounded. It does not yet perform live market crawling, persistent memory storage, PR automation, or unrestricted autonomous iteration.
 

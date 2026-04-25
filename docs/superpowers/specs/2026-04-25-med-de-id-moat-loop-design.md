@@ -37,12 +37,13 @@ Build a **local-first strategic intelligence and moat-evolution loop** for `med-
 
 The repository currently contains a bounded local foundation for moat-loop execution:
 
-- domain models in `mdid-domain` for market structure, competitor intelligence, lock-in analysis, moat strategies, and round summaries
+- domain models in `mdid-domain` for market structure, competitor intelligence, lock-in analysis, moat strategies, round summaries, task-graph nodes, and decision-memory snapshots
 - deterministic moat evaluation helpers in `mdid-application`
 - bounded round orchestration in `mdid-runtime`
-- a deterministic sample `mdid-cli moat round` path for local execution and inspection of one bounded round contract
+- a deterministic sample `mdid-cli moat round` path for inspecting one bounded round contract with canonical executed task IDs: planner-owned `market_scan`, `competitor_analysis`, `lockin_analysis`, `strategy_generation`, and `spec_planning`; coder-owned `implementation`; reviewer/evaluation `review` and `evaluation`
+- a deterministic sample `mdid-cli moat control-plane` path for inspecting the bounded control-plane snapshot with canonical task states, ready-node visibility, and the latest bounded decision-memory summary
 
-This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally, but the CLI is still a canned sample round rather than a general operator-facing runner over user-supplied or persisted data.
+This shipped slice is intentionally narrower than the full autonomous moat-loop vision. It provides a deterministic single-round foundation for evaluating and inspecting moat work locally through both the round report and control-plane snapshot, but the CLI is still a canned sample round rather than a general operator-facing runner over user-supplied or persisted data.
 
 ### Still planned, not yet implemented
 
