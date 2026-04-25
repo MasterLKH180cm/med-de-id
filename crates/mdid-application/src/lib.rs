@@ -345,8 +345,50 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 depends_on: vec!["implementation".into()],
                 spec_ref: None,
             },
+            MoatTaskNode {
+                node_id: "evaluation".into(),
+                title: "Evaluation".into(),
+                role: AgentRole::Reviewer,
+                kind: MoatTaskNodeKind::Evaluation,
+                state: MoatTaskNodeState::Pending,
+                depends_on: vec!["review".into()],
+                spec_ref: None,
+            },
         ],
     }
+}
+
+pub fn project_task_graph_progress(
+    mut graph: MoatTaskGraph,
+    executed_tasks: &[String],
+) -> MoatTaskGraph {
+    let executed_tasks = executed_tasks.iter().cloned().collect::<BTreeSet<_>>();
+
+    for node in &mut graph.nodes {
+        if executed_tasks.contains(&node.node_id) {
+            node.state = MoatTaskNodeState::Completed;
+        }
+    }
+
+    let completed_nodes = graph
+        .nodes
+        .iter()
+        .filter(|node| node.state == MoatTaskNodeState::Completed)
+        .map(|node| node.node_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    for node in &mut graph.nodes {
+        if node.state == MoatTaskNodeState::Pending
+            && node
+                .depends_on
+                .iter()
+                .all(|dependency| completed_nodes.contains(dependency))
+        {
+            node.state = MoatTaskNodeState::Ready;
+        }
+    }
+
+    graph
 }
 
 pub fn summarize_round_memory(
