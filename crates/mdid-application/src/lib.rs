@@ -349,30 +349,8 @@ pub fn render_moat_spec_markdown(
     summary: &MoatRoundSummary,
     selected_strategies: &[String],
 ) -> Result<String, String> {
-    let slug = handoff_id
-        .strip_prefix("moat-spec/")
-        .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
-
-    let title = slug
-        .split('-')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let mut chars = segment.chars();
-            match chars.next() {
-                Some(first) => {
-                    let mut word = first.to_ascii_uppercase().to_string();
-                    word.push_str(chars.as_str());
-                    word
-                }
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if title.is_empty() {
-        return Err(format!("expected non-empty moat spec slug in {handoff_id}"));
-    }
+    let slug = parse_safe_moat_spec_handoff_slug(handoff_id)?;
+    let title = title_from_moat_spec_slug(slug);
 
     if !summary
         .implemented_specs
@@ -428,30 +406,8 @@ pub fn render_moat_plan_markdown(
     summary: &MoatRoundSummary,
     selected_strategies: &[String],
 ) -> Result<String, String> {
-    let slug = handoff_id
-        .strip_prefix("moat-spec/")
-        .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
-
-    let title = slug
-        .split('-')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let mut chars = segment.chars();
-            match chars.next() {
-                Some(first) => {
-                    let mut word = first.to_ascii_uppercase().to_string();
-                    word.push_str(chars.as_str());
-                    word
-                }
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if title.is_empty() {
-        return Err(format!("expected non-empty moat spec slug in {handoff_id}"));
-    }
+    let slug = parse_safe_moat_spec_handoff_slug(handoff_id)?;
+    let title = title_from_moat_spec_slug(slug);
 
     if !summary
         .implemented_specs
@@ -491,6 +447,47 @@ pub fn render_moat_plan_markdown(
         round_id = summary.round_id,
         selected = selected,
     ))
+}
+
+fn parse_safe_moat_spec_handoff_slug(handoff_id: &str) -> Result<&str, String> {
+    let slug = handoff_id
+        .strip_prefix("moat-spec/")
+        .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
+
+    if slug.is_empty() {
+        return Err(format!("invalid moat spec handoff slug in {handoff_id}"));
+    }
+
+    let mut previous_was_hyphen = false;
+    for byte in slug.bytes() {
+        match byte {
+            b'a'..=b'z' | b'0'..=b'9' => previous_was_hyphen = false,
+            b'-' if !previous_was_hyphen => previous_was_hyphen = true,
+            _ => return Err(format!("invalid moat spec handoff slug in {handoff_id}")),
+        }
+    }
+
+    if slug.starts_with('-') || slug.ends_with('-') {
+        return Err(format!("invalid moat spec handoff slug in {handoff_id}"));
+    }
+
+    Ok(slug)
+}
+
+fn title_from_moat_spec_slug(slug: &str) -> String {
+    slug.split('-')
+        .map(|segment| {
+            let mut chars = segment.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+
+            let mut word = first.to_ascii_uppercase().to_string();
+            word.push_str(chars.as_str());
+            word
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn resolve_render_selected_strategies<'a>(

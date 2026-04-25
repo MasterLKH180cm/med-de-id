@@ -403,7 +403,7 @@ fn render_moat_spec_markdown_rejects_empty_handoff_slug() {
         render_moat_spec_markdown("moat-spec/", &mdid_domain::MoatRoundSummary::default(), &[])
             .expect_err("empty moat spec slug should fail");
 
-    assert!(error.contains("expected non-empty moat spec slug"));
+    assert!(error.contains("invalid moat spec handoff slug"));
 }
 
 #[test]
@@ -441,6 +441,38 @@ fn render_moat_plan_markdown_rejects_unknown_handoff() {
     .expect_err("unknown handoff should fail");
 
     assert!(error.contains("handoff id moat-spec/missing not present"));
+}
+
+#[test]
+fn render_moat_plan_markdown_rejects_unsafe_handoff_slugs() {
+    for unsafe_handoff in [
+        "moat-spec/../outside",
+        "moat-spec/nested/path",
+        "moat-spec/workflow.audit",
+        "moat-spec/",
+        "moat-spec/-workflow-audit",
+        "moat-spec/workflow-audit-",
+        "moat-spec/workflow--audit",
+        "moat-spec/Workflow-Audit",
+        "moat-spec/workflow_audit",
+        r"moat-spec/workflow\audit",
+    ] {
+        let mut summary =
+            sample_summary(uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000125").unwrap());
+        summary.implemented_specs = vec![unsafe_handoff.to_string()];
+
+        let error = mdid_application::render_moat_plan_markdown(
+            unsafe_handoff,
+            &summary,
+            &summary.selected_strategies,
+        )
+        .expect_err("unsafe handoff slug should fail before export path construction");
+
+        assert!(
+            error.contains("invalid moat spec handoff slug"),
+            "unexpected error for {unsafe_handoff}: {error}"
+        );
+    }
 }
 
 fn sample_summary(round_id: uuid::Uuid) -> mdid_domain::MoatRoundSummary {
