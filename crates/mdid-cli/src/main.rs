@@ -29,6 +29,12 @@ struct MoatControlPlaneCommand {
     history_path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoatDecisionLogCommand {
+    history_path: String,
+    role: Option<AgentRole>,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -49,8 +55,8 @@ fn main() {
                 exit_with_error(error);
             }
         }
-        Ok(CliCommand::MoatDecisionLog(history_path)) => {
-            if let Err(error) = run_moat_decision_log(&history_path) {
+        Ok(CliCommand::MoatDecisionLog(command)) => {
+            if let Err(error) = run_moat_decision_log(&command) {
                 exit_with_error(error);
             }
         }
@@ -96,7 +102,7 @@ enum CliCommand {
     MoatRound(MoatRoundCommand),
     MoatControlPlane(MoatControlPlaneCommand),
     MoatHistory(String),
-    MoatDecisionLog(String),
+    MoatDecisionLog(MoatDecisionLogCommand),
     MoatExportSpecs {
         history_path: String,
         output_dir: String,
@@ -131,7 +137,7 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
             Ok(CliCommand::MoatHistory(parse_required_history_path(rest)?))
         }
         [moat, decision_log, rest @ ..] if moat == "moat" && decision_log == "decision-log" => Ok(
-            CliCommand::MoatDecisionLog(parse_required_history_path(rest)?),
+            CliCommand::MoatDecisionLog(parse_moat_decision_log_command(rest)?),
         ),
         [moat, export_specs, rest @ ..] if moat == "moat" && export_specs == "export-specs" => {
             parse_moat_export_specs_command(rest)
@@ -166,6 +172,49 @@ fn parse_moat_control_plane_command(args: &[String]) -> Result<MoatControlPlaneC
         overrides,
         history_path,
     })
+}
+
+fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCommand, String> {
+    let mut history_path = None;
+    let mut role = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--history-path" => {
+                let value = required_history_path_value(args, index)?.clone();
+                if history_path.is_some() {
+                    return Err(duplicate_flag_error("--history-path"));
+                }
+                history_path = Some(value);
+            }
+            "--role" => {
+                let value = required_flag_value(args, index, "--role", false)?;
+                if role.is_some() {
+                    return Err(duplicate_flag_error("--role"));
+                }
+                role = Some(parse_agent_role_filter(value)?);
+            }
+            flag => return Err(format!("unknown flag: {flag}")),
+        }
+
+        index += 2;
+    }
+
+    Ok(MoatDecisionLogCommand {
+        history_path: history_path
+            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        role,
+    })
+}
+
+fn parse_agent_role_filter(value: &str) -> Result<AgentRole, String> {
+    match value {
+        "planner" => Ok(AgentRole::Planner),
+        "coder" => Ok(AgentRole::Coder),
+        "reviewer" => Ok(AgentRole::Reviewer),
+        other => Err(format!("unknown moat decision-log role: {other}")),
+    }
 }
 
 fn parse_moat_export_specs_command(args: &[String]) -> Result<CliCommand, String> {
@@ -531,13 +580,25 @@ fn run_moat_history(history_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn run_moat_decision_log(history_path: &str) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(history_path)
+fn run_moat_decision_log(command: &MoatDecisionLogCommand) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
         .map_err(|error| format!("failed to open moat history store: {error}"))?;
     let latest = store.entries().last().ok_or_else(|| {
         "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
     })?;
-    let decisions = &latest.report.control_plane.memory.decisions;
+    let decisions = latest
+        .report
+        .control_plane
+        .memory
+        .decisions
+        .iter()
+        .filter(|decision| {
+            command
+                .role
+                .map(|role| decision.author_role == role)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
 
     println!("decision_log_entries={}", decisions.len());
     for decision in decisions {
@@ -922,7 +983,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {

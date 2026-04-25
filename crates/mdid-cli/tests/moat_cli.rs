@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -1092,6 +1092,91 @@ fn moat_decision_log_rejects_missing_history_file_without_creating_it() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("failed to open moat history"));
     assert!(!history_path.exists());
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_decision_log_filters_by_role() {
+    let history_path = unique_history_path("decision-log-role-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let reviewer_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "reviewer",
+        ])
+        .output()
+        .expect("failed to run reviewer-filtered decision log");
+
+    assert!(
+        reviewer_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reviewer_output.stderr)
+    );
+    let reviewer_stdout = String::from_utf8_lossy(&reviewer_output.stdout);
+    assert!(reviewer_stdout.contains("decision_log_entries=1\n"));
+    assert!(reviewer_stdout.contains("decision=reviewer|"));
+    assert!(!reviewer_stdout.contains("decision=planner|"));
+    assert!(!reviewer_stdout.contains("decision=coder|"));
+
+    let planner_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "planner",
+        ])
+        .output()
+        .expect("failed to run planner-filtered decision log");
+
+    assert!(
+        planner_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&planner_output.stderr)
+    );
+    let planner_stdout = String::from_utf8_lossy(&planner_output.stdout);
+    assert!(planner_stdout.contains("decision_log_entries=0\n"));
+    assert!(!planner_stdout.contains("decision="));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_decision_log_rejects_unknown_role_filter() {
+    let history_path = unique_history_path("decision-log-unknown-role");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path.to_str().expect("utf8 path"),
+            "--role",
+            "operator",
+        ])
+        .output()
+        .expect("failed to run decision-log with unknown role");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown moat decision-log role: operator"));
 
     cleanup_history_path(&history_path);
 }
