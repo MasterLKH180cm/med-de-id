@@ -37,6 +37,7 @@ struct MoatHistoryCommand {
     contains: Option<String>,
     stop_reason_contains: Option<String>,
     min_score: Option<u32>,
+    tests_passed: Option<bool>,
     limit: Option<usize>,
 }
 
@@ -244,6 +245,7 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
     let mut contains = None;
     let mut stop_reason_contains = None;
     let mut min_score = None;
+    let mut tests_passed = None;
     let mut limit = None;
     let mut index = 0;
 
@@ -311,6 +313,14 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
                 min_score = Some(parse_min_score_value(value)?);
                 index += 2;
             }
+            "--tests-passed" => {
+                let value = required_flag_value(args, index, "--tests-passed", false)?;
+                if tests_passed.is_some() {
+                    return Err(duplicate_flag_error("--tests-passed"));
+                }
+                tests_passed = Some(parse_bool_flag("--tests-passed", value)?);
+                index += 2;
+            }
             flag => return Err(format!("unknown moat history flag: {flag}")),
         }
     }
@@ -323,6 +333,7 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
         contains,
         stop_reason_contains,
         min_score,
+        tests_passed,
         limit,
     })
 }
@@ -1142,11 +1153,18 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
                 })
                 .unwrap_or(true)
         })
+        .filter(|entry| {
+            command
+                .tests_passed
+                .map(|tests_passed| entry.report.summary.tests_passed == tests_passed)
+                .unwrap_or(true)
+        })
         .collect::<Vec<_>>();
 
     if command.contains.is_some()
         || command.stop_reason_contains.is_some()
         || command.min_score.is_some()
+        || command.tests_passed.is_some()
     {
         if filtered_entries.is_empty() {
             print_empty_filtered_history_summary();
@@ -1157,7 +1175,7 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
         print_history_summary(&store.summary());
     }
 
-    if command.limit.is_some() || command.round_id.is_some() {
+    if command.limit.is_some() || command.round_id.is_some() || command.tests_passed.is_some() {
         if let Some(limit) = command.limit {
             let excess = filtered_entries.len().saturating_sub(limit);
             if excess > 0 {
@@ -1955,7 +1973,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -2065,6 +2083,7 @@ mod tests {
                 decision: None,
                 contains: None,
                 stop_reason_contains: None,
+                tests_passed: None,
                 min_score: None,
                 limit: None,
             })
@@ -2085,6 +2104,7 @@ mod tests {
                 decision: None,
                 contains: None,
                 stop_reason_contains: Some("budget".into()),
+                tests_passed: None,
                 min_score: None,
                 limit: None,
             })
@@ -2139,6 +2159,7 @@ mod tests {
                 decision: None,
                 contains: None,
                 stop_reason_contains: Some("budget".into()),
+                tests_passed: None,
                 min_score: None,
                 limit: Some(5),
             }
@@ -2161,6 +2182,7 @@ mod tests {
                 decision: None,
                 contains: None,
                 stop_reason_contains: None,
+                tests_passed: None,
                 min_score: None,
                 limit: None,
             }

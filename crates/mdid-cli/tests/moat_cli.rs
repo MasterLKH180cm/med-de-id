@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -755,6 +755,150 @@ fn cli_reports_empty_moat_history_summary_when_min_score_matches_no_rounds() {
     );
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_recent_moat_history_rounds_by_tests_passed() {
+    let history_path = unique_history_path("history-tests-passed-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed_success = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed successful history round");
+    assert!(
+        seed_success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed_success.stderr)
+    );
+    let seed_failed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--history-path",
+            history_path_arg,
+            "--tests-passed",
+            "false",
+        ])
+        .output()
+        .expect("failed to seed failed history round");
+    assert!(
+        seed_failed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed_failed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--tests-passed",
+            "false",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to inspect history by tests-passed filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("moat history summary\n"));
+    assert!(stdout.contains("entries=1\n"));
+    assert!(stdout.contains("latest_continue_decision=Stop\n"));
+    assert!(stdout.contains("latest_stop_reason=tests failed\n"));
+    assert!(stdout.contains("latest_moat_score_after=90\n"));
+    assert!(stdout.contains("history_rounds=1\n"));
+    assert!(stdout.contains("|Stop|90|tests failed\n"));
+    assert!(!stdout.contains("|Continue|98|<none>\n"));
+
+    let verify = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to verify history was not mutated");
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    assert!(String::from_utf8_lossy(&verify.stdout).contains("history_rounds=2\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_empty_moat_history_summary_when_tests_passed_filter_matches_no_rounds() {
+    let history_path = unique_history_path("history-tests-passed-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed successful history round");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--tests-passed",
+            "false",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to inspect history by unmatched tests-passed filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat history summary\nentries=0\nlatest_round_id=none\nlatest_decision=none\nhistory_rounds=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_history_rejects_duplicate_tests_passed_filter() {
+    let history_path = unique_history_path("history-tests-passed-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--tests-passed",
+            "true",
+            "--tests-passed",
+            "false",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with duplicate tests-passed filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --tests-passed"));
+    assert!(!history_path.exists());
 }
 
 #[test]
