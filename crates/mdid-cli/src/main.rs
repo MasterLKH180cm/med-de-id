@@ -34,6 +34,7 @@ struct MoatHistoryCommand {
     history_path: String,
     decision: Option<ContinueDecision>,
     contains: Option<String>,
+    stop_reason_contains: Option<String>,
     min_score: Option<u32>,
     limit: Option<usize>,
 }
@@ -236,6 +237,7 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
     let mut history_path = None;
     let mut decision = None;
     let mut contains = None;
+    let mut stop_reason_contains = None;
     let mut min_score = None;
     let mut limit = None;
     let mut index = 0;
@@ -269,6 +271,17 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
                 contains = Some(value.clone());
                 index += 2;
             }
+            "--stop-reason-contains" => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--stop-reason-contains requires a value".to_string())?;
+                if stop_reason_contains.is_some() {
+                    return Err(duplicate_flag_error("--stop-reason-contains"));
+                }
+                stop_reason_contains = Some(value.clone());
+                index += 2;
+            }
             "--limit" => {
                 let value = required_flag_value(args, index, "--limit", false)?;
                 if limit.is_some() {
@@ -294,6 +307,7 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         decision,
         contains,
+        stop_reason_contains,
         min_score,
         limit,
     })
@@ -1054,6 +1068,20 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
         })
         .filter(|entry| {
             command
+                .stop_reason_contains
+                .as_ref()
+                .map(|needle| {
+                    entry
+                        .report
+                        .stop_reason
+                        .as_deref()
+                        .map(|stop_reason| stop_reason.contains(needle))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|entry| {
+            command
                 .min_score
                 .map(|min_score| {
                     u32::try_from(entry.report.summary.moat_score_after)
@@ -1064,7 +1092,10 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
         })
         .collect::<Vec<_>>();
 
-    if command.contains.is_some() || command.min_score.is_some() {
+    if command.contains.is_some()
+        || command.stop_reason_contains.is_some()
+        || command.min_score.is_some()
+    {
         if filtered_entries.is_empty() {
             print_empty_filtered_history_summary();
         } else {
@@ -1827,7 +1858,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -1935,6 +1966,26 @@ mod tests {
                 history_path: "history.json".into(),
                 decision: None,
                 contains: None,
+                stop_reason_contains: None,
+                min_score: None,
+                limit: None,
+            })
+        );
+        assert_eq!(
+            parse_command(&[
+                "moat".into(),
+                "history".into(),
+                "--history-path".into(),
+                "history.json".into(),
+                "--stop-reason-contains".into(),
+                "budget".into(),
+            ])
+            .unwrap(),
+            CliCommand::MoatHistory(MoatHistoryCommand {
+                history_path: "history.json".into(),
+                decision: None,
+                contains: None,
+                stop_reason_contains: Some("budget".into()),
                 min_score: None,
                 limit: None,
             })
@@ -1967,6 +2018,29 @@ mod tests {
             CliCommand::MoatScheduleNext {
                 history_path: "history.json".into(),
                 improvement_threshold: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_moat_history_command_parses_stop_reason_contains() {
+        assert_eq!(
+            parse_moat_history_command(&[
+                "--history-path".into(),
+                "history.json".into(),
+                "--stop-reason-contains".into(),
+                "budget".into(),
+                "--limit".into(),
+                "5".into(),
+            ])
+            .unwrap(),
+            MoatHistoryCommand {
+                history_path: "history.json".into(),
+                decision: None,
+                contains: None,
+                stop_reason_contains: Some("budget".into()),
+                min_score: None,
+                limit: Some(5),
             }
         );
     }
