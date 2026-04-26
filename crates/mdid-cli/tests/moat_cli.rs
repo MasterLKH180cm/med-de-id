@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -2397,6 +2397,124 @@ fn decision_log_filters_latest_decisions_by_text() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("decision_log_entries=1\n"));
     assert!(stdout.contains("decision=reviewer|review approved bounded moat round|review approved bounded moat round after evaluation cleared the improvement threshold\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_decision_log_limits_filtered_rows_to_requested_count() {
+    let history_path = unique_history_path("decision-log-limit");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let mut latest_report = store
+        .entries()
+        .last()
+        .expect("seeded history should have latest entry")
+        .report
+        .clone();
+    let mut second_decision = latest_report.control_plane.memory.decisions[0].clone();
+    second_decision.summary = "follow-up bounded moat decision".to_string();
+    second_decision.rationale =
+        "second bounded decision should be truncated by --limit 1".to_string();
+    latest_report
+        .control_plane
+        .memory
+        .decisions
+        .push(second_decision);
+    assert_eq!(
+        latest_report
+            .control_plane
+            .memory
+            .decisions
+            .iter()
+            .filter(|decision| {
+                decision.summary.contains("bounded") || decision.rationale.contains("bounded")
+            })
+            .count(),
+        2,
+        "latest seeded history entry should contain multiple matching decisions"
+    );
+    store
+        .append(SystemTime::now().into(), latest_report)
+        .expect("multi-decision history entry should append");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--contains",
+            "bounded",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with limit");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).lines().count(),
+        2,
+        "expected entry count plus one limited decision row"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("decision_log_entries=1\n"));
+    assert!(
+        stdout.contains("decision=reviewer|follow-up bounded moat decision|"),
+        "--limit 1 should keep the newest matching decision, stdout was: {stdout}"
+    );
+    assert!(
+        !stdout.contains("decision=reviewer|review approved bounded moat round|"),
+        "--limit 1 should exclude the older matching decision, stdout was: {stdout}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_rejects_zero_decision_log_limit() {
+    let history_path = unique_history_path("decision-log-zero-limit");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--limit",
+            "0",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with zero limit");
+
+    assert!(!output.status.success(), "expected command to fail");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--limit must be greater than 0"));
 
     cleanup_history_path(&history_path);
 }
