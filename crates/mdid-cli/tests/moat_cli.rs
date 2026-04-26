@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID] [--title-contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -2562,6 +2562,185 @@ fn assignments_node_id_filter_combines_with_role_filter() {
 }
 
 #[test]
+fn assignments_title_filter_matches_latest_assignment_titles() {
+    let history_path = unique_history_path("assignments-title-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_successful_moat_history(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--title-contains",
+            "Strategy",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with title filter");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat assignments\n",
+            "assignment_entries=1\n",
+            "assignment=planner|strategy_generation|Strategy Generation|strategy_generation|<none>\n",
+        )
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn assignments_title_filter_returns_zero_entries_when_no_title_matches() {
+    let history_path = unique_history_path("assignments-title-filter-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_successful_moat_history(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--title-contains",
+            "No Such Assignment Title",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with unmatched title filter");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat assignments\nassignment_entries=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn assignments_title_filter_combines_with_role_filter() {
+    let history_path = unique_history_path("assignments-title-role-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_successful_moat_history(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+            "--title-contains",
+            "Strategy",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with role and title filters");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat assignments\nassignment_entries=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn assignments_title_filter_requires_a_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--title-contains",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with missing title filter value");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("missing value for --title-contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn assignments_title_filter_rejects_duplicate_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--title-contains",
+            "Strategy",
+            "--title-contains",
+            "Review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with duplicate title filter");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --title-contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn assignments_title_filter_does_not_append_history() {
+    let history_path = unique_history_path("assignments-title-filter-read-only");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_successful_moat_history(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--title-contains",
+            "Strategy",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with title filter read-only check");
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let history = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "history", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect moat history after assignments title filter");
+    assert!(
+        history.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    assert!(String::from_utf8_lossy(&history.stdout).contains("entries=1\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn assignments_rejects_missing_node_id_value() {
     let history_path = unique_history_path("assignments-node-id-missing-value");
 
@@ -2749,6 +2928,25 @@ fn unique_history_path(label: &str) -> PathBuf {
 
 fn cleanup_history_path(path: &PathBuf) {
     let _ = std::fs::remove_file(path);
+}
+
+fn seed_successful_moat_history(history_path: &PathBuf) {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--strategy-candidates",
+            "0",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+        ])
+        .output()
+        .expect("failed to seed successful moat history");
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn unique_history_directory_path(label: &str) -> PathBuf {
