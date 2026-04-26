@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -1681,6 +1681,92 @@ fn moat_task_graph_filters_nodes_by_dependency() {
 }
 
 #[test]
+fn moat_task_graph_filters_nodes_with_no_dependencies() {
+    let history_path = unique_history_path("task-graph-no-dependencies");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed task graph history for no-dependencies filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let history = fs::read_to_string(&history_path)
+        .expect("seeded history should be readable for no-dependencies regression setup");
+    let mutated_history = history.replace(
+        concat!(
+            "            {\n",
+            "              \"node_id\": \"market_scan\",\n",
+            "              \"title\": \"Market Scan\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"market_scan\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n"
+        ),
+        concat!(
+            "            {\n",
+            "              \"node_id\": \"market_scan\",\n",
+            "              \"title\": \"Market Scan\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"market_scan\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n",
+            "            {\n",
+            "              \"node_id\": \"independent_spec_planning\",\n",
+            "              \"title\": \"Independent Spec Planning\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"spec_planning\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n"
+        ),
+    );
+    assert_ne!(
+        history, mutated_history,
+        "regression setup should add a second root node"
+    );
+    fs::write(&history_path, mutated_history)
+        .expect("mutated no-dependencies regression history should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to inspect task graph by no-dependencies filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout.contains(
+        "node=planner|independent_spec_planning|Independent Spec Planning|spec_planning|completed|<none>|<none>\n"
+    ));
+    assert!(stdout.contains(
+        "node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"
+    ));
+    assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn moat_task_graph_rejects_duplicate_depends_on_filter() {
     let history_path = unique_history_path("task-graph-depends-on-duplicate");
 
@@ -1700,6 +1786,27 @@ fn moat_task_graph_rejects_duplicate_depends_on_filter() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --depends-on"));
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn moat_task_graph_rejects_duplicate_no_dependencies_filter() {
+    let history_path = unique_history_path("task-graph-no-dependencies-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--no-dependencies",
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with duplicate no-dependencies filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --no-dependencies"));
     assert!(!history_path.exists());
 }
 
@@ -4744,6 +4851,93 @@ fn cli_filters_moat_assignments_by_task_dependency() {
 }
 
 #[test]
+fn moat_assignments_filters_entries_with_no_dependencies() {
+    let history_path = unique_history_path("assignments-no-dependencies");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed assignments history for no-dependencies filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    let persisted = fs::read_to_string(&history_path).expect("history should be readable");
+    let original = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"reviewer\",\n",
+        "            \"node_id\": \"review\",\n",
+        "            \"title\": \"Review\",\n",
+        "            \"kind\": \"review\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let replacement = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"market_scan\",\n",
+        "            \"title\": \"Market Scan\",\n",
+        "            \"kind\": \"market_scan\",\n",
+        "            \"spec_ref\": null\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"competitor_analysis\",\n",
+        "            \"title\": \"Competitor Analysis\",\n",
+        "            \"kind\": \"competitor_analysis\",\n",
+        "            \"spec_ref\": null\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"coder\",\n",
+        "            \"node_id\": \"implementation\",\n",
+        "            \"title\": \"Implementation\",\n",
+        "            \"kind\": \"implementation\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let patched = persisted.replacen(original, replacement, 1);
+    assert_ne!(patched, persisted, "seed history assignment block changed");
+    fs::write(&history_path, patched).expect("history should be patchable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to inspect assignments by no-dependencies filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("assignment=planner|market_scan|Market Scan|market_scan|<none>\n"));
+    assert!(stdout.contains(
+        "assignment=planner|competitor_analysis|Competitor Analysis|competitor_analysis|<none>\n"
+    ));
+    assert!(!stdout.contains("assignment=coder|implementation|Implementation|implementation"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn cli_combines_moat_assignments_depends_on_with_role_filter() {
     let history_path = unique_history_path("assignments-depends-on-role-filter");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -4837,6 +5031,27 @@ fn cli_rejects_duplicate_moat_assignments_depends_on_filter() {
         "stderr should explain duplicate depends-on filter, stderr was: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn moat_assignments_rejects_duplicate_no_dependencies_filter() {
+    let history_path = unique_history_path("assignments-no-dependencies-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--no-dependencies",
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with duplicate no-dependencies filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --no-dependencies"));
+    assert!(!history_path.exists());
 }
 
 #[test]
