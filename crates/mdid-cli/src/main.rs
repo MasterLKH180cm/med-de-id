@@ -1397,7 +1397,7 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
         })
         .filter(|node| {
             if command.no_dependencies {
-                node.depends_on.is_empty() && node.node_id == "market_scan"
+                node.depends_on.is_empty()
             } else {
                 true
             }

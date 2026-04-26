@@ -1694,6 +1694,48 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
         String::from_utf8_lossy(&seed.stderr)
     );
 
+    let history = fs::read_to_string(&history_path)
+        .expect("seeded history should be readable for no-dependencies regression setup");
+    let mutated_history = history.replace(
+        concat!(
+            "            {\n",
+            "              \"node_id\": \"market_scan\",\n",
+            "              \"title\": \"Market Scan\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"market_scan\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n"
+        ),
+        concat!(
+            "            {\n",
+            "              \"node_id\": \"market_scan\",\n",
+            "              \"title\": \"Market Scan\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"market_scan\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n",
+            "            {\n",
+            "              \"node_id\": \"independent_spec_planning\",\n",
+            "              \"title\": \"Independent Spec Planning\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"spec_planning\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n"
+        ),
+    );
+    assert_ne!(
+        history, mutated_history,
+        "regression setup should add a second root node"
+    );
+    fs::write(&history_path, mutated_history)
+        .expect("mutated no-dependencies regression history should be writable");
+
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
             "moat",
@@ -1713,8 +1755,12 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout
         .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
-    assert!(!stdout
-        .contains("node=planner|competitor_analysis|Competitor Analysis|competitor_analysis"));
+    assert!(stdout.contains(
+        "node=planner|independent_spec_planning|Independent Spec Planning|spec_planning|completed|<none>|<none>\n"
+    ));
+    assert!(stdout.contains(
+        "node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"
+    ));
     assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
 
     cleanup_history_path(&history_path);
