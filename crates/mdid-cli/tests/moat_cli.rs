@@ -3998,6 +3998,32 @@ fn moat_decision_log_rejects_missing_history_file_without_creating_it() {
 }
 
 #[test]
+fn moat_decision_log_rejects_flag_like_missing_round_id_value() {
+    let history_path = unique_history_path("decision-log-missing-round-id-value");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--round-id",
+            "--role",
+            "planner",
+        ])
+        .output()
+        .expect("failed to run decision-log with missing round-id value");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing value for --round-id"));
+    assert!(!history_path.exists());
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn moat_decision_log_filters_by_role() {
     let history_path = unique_history_path("decision-log-role-filter");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");

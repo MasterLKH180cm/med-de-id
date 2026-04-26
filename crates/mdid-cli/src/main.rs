@@ -376,7 +376,7 @@ fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCom
                 history_path = Some(value);
             }
             "--round-id" => {
-                let value = required_flag_value(args, index, "--round-id", false)?;
+                let value = required_flag_value(args, index, "--round-id", true)?;
                 if round_id.is_some() {
                     return Err(duplicate_flag_error("--round-id"));
                 }
@@ -2257,6 +2257,20 @@ mod tests {
                 min_score: None,
                 limit: None,
             }
+        );
+    }
+
+    #[test]
+    fn parse_moat_decision_log_rejects_flag_like_round_id_value() {
+        assert_eq!(
+            parse_moat_decision_log_command(&[
+                "--history-path".into(),
+                "history.json".into(),
+                "--round-id".into(),
+                "--role".into(),
+                "planner".into(),
+            ]),
+            Err("missing value for --round-id".into())
         );
     }
 }
