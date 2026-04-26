@@ -36,6 +36,7 @@ struct MoatDecisionLogCommand {
     contains: Option<String>,
     summary_contains: Option<String>,
     rationale_contains: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +225,7 @@ fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCom
     let mut contains = None;
     let mut summary_contains = None;
     let mut rationale_contains = None;
+    let mut limit = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -263,6 +265,13 @@ fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCom
                 }
                 rationale_contains = Some(value.clone());
             }
+            "--limit" => {
+                let value = required_flag_value(args, index, "--limit", false)?;
+                if limit.is_some() {
+                    return Err(duplicate_flag_error("--limit"));
+                }
+                limit = Some(parse_positive_usize_flag("--limit", value)?);
+            }
             flag => return Err(format!("unknown flag: {flag}")),
         }
 
@@ -276,6 +285,7 @@ fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCom
         contains,
         summary_contains,
         rationale_contains,
+        limit,
     })
 }
 
@@ -768,6 +778,18 @@ fn parse_non_negative_i16_flag(flag: &str, value: &str) -> Result<i16, String> {
     }
 }
 
+fn parse_positive_usize_flag(flag: &str, value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid value for {flag}: {value}"))?;
+
+    if parsed == 0 {
+        Err(format!("{flag} must be greater than 0"))
+    } else {
+        Ok(parsed)
+    }
+}
+
 fn parse_bool_flag(flag: &str, value: &str) -> Result<bool, String> {
     match value {
         "true" => Ok(true),
@@ -890,7 +912,7 @@ fn run_moat_decision_log(command: &MoatDecisionLogCommand) -> Result<(), String>
     let latest = store.entries().last().ok_or_else(|| {
         "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
     })?;
-    let decisions = latest
+    let mut decisions = latest
         .report
         .control_plane
         .memory
@@ -926,6 +948,12 @@ fn run_moat_decision_log(command: &MoatDecisionLogCommand) -> Result<(), String>
                 .unwrap_or(true)
         })
         .collect::<Vec<_>>();
+    if let Some(limit) = command.limit {
+        let excess = decisions.len().saturating_sub(limit);
+        if excess > 0 {
+            decisions.drain(..excess);
+        }
+    }
 
     println!("decision_log_entries={}", decisions.len());
     for decision in decisions {
@@ -1499,7 +1527,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
