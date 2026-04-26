@@ -153,7 +153,7 @@ cargo run -p mdid-cli -- moat history --history-path .mdid/moat-history.json
 
 `moat history` is a read-only inspection path: the history file must already exist, and a missing or typoed path fails instead of creating a brand-new empty file.
 
-Use `mdid-cli moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--min-score N] [--limit N]` to inspect only persisted history. The optional `--min-score N` filter accepts a non-negative integer and keeps entries whose persisted `entry.report.summary.moat_score_after >= N`; it is conjunctive with `--decision` and `--contains`, applies before `--limit`, and never runs rounds, appends history, schedules work, launches agents, opens PRs, or creates cron jobs.
+Use `mdid-cli moat history --history-path PATH [--decision Continue|Stop|Pivot] [--contains TEXT] [--min-score N] [--limit N]` to inspect only persisted history. `--decision Continue|Stop|Pivot` filters detailed history rows by persisted continuation decision. The optional `--min-score N` filter accepts a non-negative integer and keeps entries whose persisted `entry.report.summary.moat_score_after >= N`; it is conjunctive with `--decision` and `--contains`, applies before `--limit`, and never runs rounds, appends history, schedules work, launches agents, opens PRs, or creates cron jobs.
 
 The history command prints a bounded summary containing:
 
