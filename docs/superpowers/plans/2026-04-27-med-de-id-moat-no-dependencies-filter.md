@@ -166,7 +166,7 @@ git commit -m "feat: filter moat task graph roots"
 - Modify: `crates/mdid-cli/src/main.rs`
 - Test: `crates/mdid-cli/tests/moat_cli.rs`
 
-- [ ] **Step 1: Write the failing assignments filter test**
+- [x] **Step 1: Write the failing assignments filter test**
 
 Add this test near the other moat assignment filter tests in `crates/mdid-cli/tests/moat_cli.rs`:
 
@@ -210,7 +210,7 @@ fn moat_assignments_filters_entries_with_no_dependencies() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test to verify RED**
+- [x] **Step 2: Run the focused test to verify RED**
 
 Run:
 
@@ -220,7 +220,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_assignments_filt
 
 Expected: FAIL because `--no-dependencies` is currently reported as an unknown moat assignments flag.
 
-- [ ] **Step 3: Implement minimal assignments support**
+- [x] **Step 3: Implement minimal assignments support**
 
 In `crates/mdid-cli/src/main.rs`, add `no_dependencies: bool` to `MoatAssignmentsCommand`, initialize it to `false` in `parse_moat_assignments_command`, parse `--no-dependencies` as a duplicate-rejected presence flag, include it in the returned struct, and add this filter after the existing `--depends-on` assignments filter:
 
@@ -248,7 +248,7 @@ Also update both `USAGE` strings to show:
 moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N]
 ```
 
-- [ ] **Step 4: Run the focused test to verify GREEN**
+- [x] **Step 4: Run the focused test to verify GREEN**
 
 Run:
 
@@ -258,7 +258,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_assignments_filt
 
 Expected: PASS.
 
-- [ ] **Step 5: Add duplicate flag rejection test**
+- [x] **Step 5: Add duplicate flag rejection test**
 
 Add this test near the assignments duplicate flag tests:
 
@@ -285,7 +285,7 @@ fn moat_assignments_rejects_duplicate_no_dependencies_filter() {
 }
 ```
 
-- [ ] **Step 6: Run the duplicate test**
+- [x] **Step 6: Run the duplicate test**
 
 Run:
 
@@ -295,7 +295,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_assignments_reje
 
 Expected: PASS.
 
-- [ ] **Step 7: Run relevant broader validation**
+- [x] **Step 7: Run relevant broader validation**
 
 Run:
 
@@ -306,7 +306,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_task_graph_filte
 
 Expected: PASS for all no-dependencies tests. If the second command does not accept two filters on this Cargo version, run each named test separately.
 
-- [ ] **Step 8: Commit assignments slice**
+- [x] **Step 8: Commit assignments slice**
 
 Run:
 
