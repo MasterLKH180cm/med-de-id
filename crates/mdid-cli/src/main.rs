@@ -40,6 +40,7 @@ struct MoatDecisionLogCommand {
 struct MoatAssignmentsCommand {
     history_path: String,
     role: Option<AgentRole>,
+    kind: Option<MoatTaskNodeKind>,
     node_id: Option<String>,
     title_contains: Option<String>,
 }
@@ -266,6 +267,7 @@ fn parse_agent_role_filter(value: &str) -> Result<AgentRole, String> {
 fn parse_moat_assignments_command(args: &[String]) -> Result<MoatAssignmentsCommand, String> {
     let mut history_path = None;
     let mut role = None;
+    let mut kind = None;
     let mut node_id = None;
     let mut title_contains = None;
     let mut index = 0;
@@ -285,6 +287,13 @@ fn parse_moat_assignments_command(args: &[String]) -> Result<MoatAssignmentsComm
                     return Err(duplicate_flag_error("--role"));
                 }
                 role = Some(parse_moat_assignments_role_filter(value)?);
+            }
+            "--kind" => {
+                let value = required_flag_value(args, index, "--kind", true)?;
+                if kind.is_some() {
+                    return Err(duplicate_flag_error("--kind"));
+                }
+                kind = Some(parse_moat_assignments_kind_filter(value)?);
             }
             "--node-id" => {
                 let value = required_flag_value(args, index, "--node-id", false)?;
@@ -310,6 +319,7 @@ fn parse_moat_assignments_command(args: &[String]) -> Result<MoatAssignmentsComm
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         role,
+        kind,
         node_id,
         title_contains,
     })
@@ -322,6 +332,11 @@ fn parse_moat_assignments_role_filter(value: &str) -> Result<AgentRole, String> 
         "reviewer" => Ok(AgentRole::Reviewer),
         other => Err(format!("unknown moat assignments role: {other}")),
     }
+}
+
+fn parse_moat_assignments_kind_filter(value: &str) -> Result<MoatTaskNodeKind, String> {
+    parse_moat_task_graph_kind_filter(value)
+        .map_err(|_| format!("unknown moat assignments kind: {value}"))
 }
 
 fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand, String> {
@@ -860,6 +875,12 @@ fn run_moat_assignments(command: &MoatAssignmentsCommand) -> Result<(), String> 
         })
         .filter(|assignment| {
             command
+                .kind
+                .map(|kind| assignment.kind == kind)
+                .unwrap_or(true)
+        })
+        .filter(|assignment| {
+            command
                 .node_id
                 .as_ref()
                 .map(|node_id| assignment.node_id == *node_id)
@@ -1348,7 +1369,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID] [--title-contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
