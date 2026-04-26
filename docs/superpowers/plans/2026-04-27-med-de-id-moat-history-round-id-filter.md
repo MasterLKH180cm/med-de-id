@@ -165,7 +165,7 @@ In `crates/mdid-cli/src/main.rs`:
 
 ```rust
 if let Some(round_id) = command.round_id.as_deref() {
-    rows.retain(|entry| entry.report.round_id == round_id);
+    rows.retain(|entry| entry.report.summary.round_id == round_id);
 }
 ```
 
@@ -194,7 +194,7 @@ Expected: all `moat_history` integration tests pass. If Cargo's name filter does
 
 - [x] **Step 6: Update spec and plan**
 
-Update line 46 of `docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md` so the shipped `moat history` bullet includes `--round-id ROUND_ID` and says it exact-matches persisted `entry.report.round_id`, combines conjunctively with other filters, applies before `--limit`, and remains read-only.
+Update line 46 of `docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md` so the shipped `moat history` bullet includes `--round-id ROUND_ID` and says it exact-matches persisted `entry.report.summary.round_id`, combines conjunctively with other filters, applies before `--limit`, and remains read-only.
 
 Append this completion note to this plan:
 
