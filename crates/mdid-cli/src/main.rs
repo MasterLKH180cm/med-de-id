@@ -67,6 +67,7 @@ struct MoatTaskGraphCommand {
     node_id: Option<String>,
     title_contains: Option<String>,
     spec_ref: Option<String>,
+    contains: Option<String>,
     limit: Option<usize>,
 }
 
@@ -470,6 +471,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
     let mut node_id = None;
     let mut title_contains = None;
     let mut spec_ref = None;
+    let mut contains = None;
     let mut limit = None;
     let mut index = 0;
 
@@ -524,6 +526,13 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
                 }
                 spec_ref = Some(value.to_string());
             }
+            "--contains" => {
+                let value = required_flag_value(args, index, "--contains", true)?;
+                if contains.is_some() {
+                    return Err(duplicate_flag_error("--contains"));
+                }
+                contains = Some(value.to_string());
+            }
             "--limit" => {
                 let value = required_flag_value(args, index, "--limit", true)?;
                 if limit.is_some() {
@@ -546,6 +555,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
         node_id,
         title_contains,
         spec_ref,
+        contains,
         limit,
     })
 }
@@ -1202,6 +1212,13 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
                 .map(|expected_spec_ref| node.spec_ref.as_deref() == Some(expected_spec_ref))
                 .unwrap_or(true)
         })
+        .filter(|node| {
+            command
+                .contains
+                .as_deref()
+                .map(|needle| task_graph_node_contains(node, needle))
+                .unwrap_or(true)
+        })
         .take(limit)
     {
         println!(
@@ -1220,6 +1237,22 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn task_graph_node_contains(node: &mdid_domain::MoatTaskNode, needle: &str) -> bool {
+    node.node_id.contains(needle)
+        || node.title.contains(needle)
+        || format_moat_task_kind(node.kind).contains(needle)
+        || format_task_node_state(node.state).contains(needle)
+        || node
+            .depends_on
+            .iter()
+            .any(|dependency| dependency.contains(needle))
+        || node
+            .spec_ref
+            .as_deref()
+            .map(|spec_ref| spec_ref.contains(needle))
+            .unwrap_or(false)
 }
 
 fn format_task_graph_dependencies(depends_on: &[String]) -> String {
@@ -1625,7 +1658,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
