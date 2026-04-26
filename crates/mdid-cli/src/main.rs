@@ -33,6 +33,7 @@ struct MoatControlPlaneCommand {
 struct MoatDecisionLogCommand {
     history_path: String,
     role: Option<AgentRole>,
+    contains: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +211,7 @@ fn parse_moat_control_plane_command(args: &[String]) -> Result<MoatControlPlaneC
 fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCommand, String> {
     let mut history_path = None;
     let mut role = None;
+    let mut contains = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -228,6 +230,13 @@ fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCom
                 }
                 role = Some(parse_agent_role_filter(value)?);
             }
+            "--contains" => {
+                let value = required_flag_value(args, index, "--contains", true)?;
+                if contains.is_some() {
+                    return Err(duplicate_flag_error("--contains"));
+                }
+                contains = Some(value.clone());
+            }
             flag => return Err(format!("unknown flag: {flag}")),
         }
 
@@ -238,6 +247,7 @@ fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCom
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         role,
+        contains,
     })
 }
 
@@ -549,8 +559,15 @@ fn required_flag_value<'a>(
         return required_history_path_value(args, index);
     }
 
-    args.get(index + 1)
-        .ok_or_else(|| missing_value_error(flag, allow_history_path))
+    let value = args
+        .get(index + 1)
+        .ok_or_else(|| missing_value_error(flag, allow_history_path))?;
+
+    if allow_history_path && value.starts_with("--") {
+        Err(missing_value_error(flag, allow_history_path))
+    } else {
+        Ok(value)
+    }
 }
 
 fn parse_required_history_path(args: &[String]) -> Result<String, String> {
@@ -753,6 +770,15 @@ fn run_moat_decision_log(command: &MoatDecisionLogCommand) -> Result<(), String>
             command
                 .role
                 .map(|role| decision.author_role == role)
+                .unwrap_or(true)
+        })
+        .filter(|decision| {
+            command
+                .contains
+                .as_ref()
+                .map(|needle| {
+                    decision.summary.contains(needle) || decision.rationale.contains(needle)
+                })
                 .unwrap_or(true)
         })
         .collect::<Vec<_>>();
@@ -1263,7 +1289,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--node-id NODE_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--node-id NODE_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {

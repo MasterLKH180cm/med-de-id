@@ -171,13 +171,14 @@ Inspect the latest persisted round's decision log without running or appending a
 cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json
 ```
 
-Filter that read-only inspection to one bounded role with:
+Filter that read-only inspection to one bounded role and/or a decision text substring with:
 
 ```bash
 cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --role reviewer
+cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --contains "approved bounded"
 ```
 
-`moat decision-log` is read-only: the history file must already exist, and it prints `decision_log_entries=N` followed by each persisted decision as `decision=<role>|<summary>|<rationale>`. The optional `--role planner|coder|reviewer` filter narrows the latest persisted round's decisions without running or appending a new round.
+`moat decision-log` is read-only: the history file must already exist, and it prints `decision_log_entries=N` followed by each persisted decision as `decision=<role>|<summary>|<rationale>`. Use `mdid-cli moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT]` to inspect the latest persisted round. The optional `--contains TEXT` filter performs a case-sensitive substring match over each decision summary or rationale; when combined with `--role`, both filters must match. Inspection never runs or appends a new round.
 
 - `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID]` inspects the latest persisted read-only Planner/Coder/Reviewer assignment projection and prints deterministic `assignment=<role>|<node_id>|<title>|<kind>|<spec_ref>` rows. Persisted `node_id`, `title`, and `spec_ref` fields are escaped for pipe-delimited output (`\\` as `\\\\`, `|` as `\\|`, newline as `\\n`, carriage return as `\\r`); bounded enum fields are not escaped. `moat assignments` is read-only and latest-round scoped. `--role` filters by bounded agent role, and `--node-id` performs an exact match against the persisted assignment node ID. Filters are conjunctive; if no assignment matches, the command prints `assignment_entries=0` and does not mutate history. It uses existing moat history only, never creates missing history files, never appends rounds, never schedules work, never launches agents, and never creates cron jobs.
 
