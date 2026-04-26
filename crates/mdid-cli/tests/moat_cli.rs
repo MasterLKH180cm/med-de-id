@@ -966,6 +966,56 @@ fn cli_history_rejects_duplicate_history_path_flags() {
 }
 
 #[test]
+fn cli_history_rejects_duplicate_decision_flags() {
+    let history_path = unique_history_path("duplicate-history-decision");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--decision",
+            "Continue",
+            "--decision",
+            "Stop",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with duplicate decisions");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --decision\n{USAGE}\n")
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_history_rejects_unknown_decision_value() {
+    let history_path = unique_history_path("unknown-history-decision");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--decision",
+            "Pause",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with unknown decision");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("unknown moat history decision: Pause\n{USAGE}\n")
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
 fn task_graph_requires_history_path() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "task-graph"])
