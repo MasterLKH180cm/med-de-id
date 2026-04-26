@@ -243,6 +243,55 @@ impl LocalMoatHistoryStore {
         Ok(())
     }
 
+    pub fn complete_in_progress_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<(), CompleteInProgressTaskError> {
+        if !self.path.exists() {
+            return Err(CompleteInProgressTaskError::Store(
+                LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
+            ));
+        }
+
+        let _claim_lock = ClaimReadyTaskLock::acquire(&self.path)?;
+        let mut next_entries = load_entries(&self.path)?;
+        let entry = match round_id {
+            Some(round_id) => next_entries
+                .iter_mut()
+                .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+                .ok_or_else(|| CompleteInProgressTaskError::RoundNotFound(round_id.to_string()))?,
+            None => next_entries
+                .last_mut()
+                .ok_or(CompleteInProgressTaskError::NoHistoryEntries)?,
+        };
+
+        let node = entry
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| CompleteInProgressTaskError::NodeNotFound {
+                round_id: entry.report.summary.round_id.to_string(),
+                node_id: node_id.to_string(),
+            })?;
+
+        if node.state != MoatTaskNodeState::InProgress {
+            return Err(CompleteInProgressTaskError::NodeNotInProgress {
+                round_id: entry.report.summary.round_id.to_string(),
+                node_id: node_id.to_string(),
+                state: node.state,
+            });
+        }
+
+        node.state = MoatTaskNodeState::Completed;
+        self.persist(&next_entries)?;
+        self.entries = next_entries;
+        Ok(())
+    }
+
     fn persist(&self, entries: &[MoatHistoryEntry]) -> Result<(), LocalMoatHistoryStoreError> {
         let contents = serde_json::to_vec_pretty(entries)?;
         atomic_write(&self.path, &contents)?;
@@ -415,6 +464,24 @@ pub enum ClaimReadyTaskError {
     NodeNotFound { round_id: String, node_id: String },
     #[error("moat task node is not ready in round {round_id}: {node_id} is {state:?}")]
     NodeNotReady {
+        round_id: String,
+        node_id: String,
+        state: MoatTaskNodeState,
+    },
+}
+
+#[derive(Debug, Error)]
+pub enum CompleteInProgressTaskError {
+    #[error(transparent)]
+    Store(#[from] LocalMoatHistoryStoreError),
+    #[error("no moat history entries exist")]
+    NoHistoryEntries,
+    #[error("moat round not found: {0}")]
+    RoundNotFound(String),
+    #[error("moat task node not found in round {round_id}: {node_id}")]
+    NodeNotFound { round_id: String, node_id: String },
+    #[error("moat task node is not in progress in round {round_id}: {node_id} is {state:?}")]
+    NodeNotInProgress {
         round_id: String,
         node_id: String,
         state: MoatTaskNodeState,
