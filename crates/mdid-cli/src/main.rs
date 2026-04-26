@@ -5,7 +5,7 @@ use mdid_domain::{
 };
 use mdid_runtime::{
     moat::{run_bounded_round, MoatRoundInput, MoatRoundReport},
-    moat_history::{LocalMoatHistoryStore, MoatHistorySummary},
+    moat_history::{LocalMoatHistoryStore, MoatHistoryEntry, MoatHistorySummary},
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,6 +33,7 @@ struct MoatControlPlaneCommand {
 struct MoatHistoryCommand {
     history_path: String,
     decision: Option<ContinueDecision>,
+    contains: Option<String>,
     limit: Option<usize>,
 }
 
@@ -232,6 +233,7 @@ fn parse_moat_control_plane_command(args: &[String]) -> Result<MoatControlPlaneC
 fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, String> {
     let mut history_path = None;
     let mut decision = None;
+    let mut contains = None;
     let mut limit = None;
     let mut index = 0;
 
@@ -253,6 +255,17 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
                 decision = Some(parse_continue_decision_filter(value)?);
                 index += 2;
             }
+            "--contains" => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--contains requires a value".to_string())?;
+                if contains.is_some() {
+                    return Err(duplicate_flag_error("--contains"));
+                }
+                contains = Some(value.clone());
+                index += 2;
+            }
             "--limit" => {
                 let value = required_flag_value(args, index, "--limit", false)?;
                 if limit.is_some() {
@@ -269,6 +282,7 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         decision,
+        contains,
         limit,
     })
 }
@@ -996,18 +1010,34 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
     let store = LocalMoatHistoryStore::open_existing(&command.history_path)
         .map_err(|error| format!("failed to open moat history store: {error}"))?;
     let entries = store.entries();
-    print_history_summary(&store.summary());
+    let mut filtered_entries = entries
+        .iter()
+        .filter(|entry| {
+            command
+                .decision
+                .map(|decision| entry.report.summary.continue_decision == decision)
+                .unwrap_or(true)
+        })
+        .filter(|entry| {
+            command
+                .contains
+                .as_ref()
+                .map(|needle| moat_history_entry_search_text(entry).contains(needle))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+
+    if command.contains.is_some() {
+        if filtered_entries.is_empty() {
+            print_empty_filtered_history_summary();
+        } else {
+            print_filtered_history_summary(&filtered_entries);
+        }
+    } else {
+        print_history_summary(&store.summary());
+    }
 
     if let Some(limit) = command.limit {
-        let mut filtered_entries = entries
-            .iter()
-            .filter(|entry| {
-                command
-                    .decision
-                    .map(|decision| entry.report.summary.continue_decision == decision)
-                    .unwrap_or(true)
-            })
-            .collect::<Vec<_>>();
         let excess = filtered_entries.len().saturating_sub(limit);
         if excess > 0 {
             filtered_entries.drain(0..excess);
@@ -1463,6 +1493,73 @@ fn run_moat_export_plans(history_path: &str, output_dir: &str) -> Result<(), Str
     Ok(())
 }
 
+fn print_empty_filtered_history_summary() {
+    println!("moat history summary");
+    println!("entries=0");
+    println!("latest_round_id=none");
+    println!("latest_decision=none");
+}
+
+fn print_filtered_history_summary(entries: &[&MoatHistoryEntry]) {
+    let latest = entries
+        .last()
+        .expect("filtered history summary should have at least one entry");
+    let summary = MoatHistorySummary {
+        entry_count: entries.len(),
+        latest_round_id: Some(latest.report.summary.round_id.to_string()),
+        latest_continue_decision: Some(latest.report.summary.continue_decision),
+        latest_stop_reason: latest.report.summary.stop_reason.clone(),
+        latest_decision_summary: latest.report.control_plane.memory.latest_decision_summary(),
+        latest_implemented_specs: latest.report.summary.implemented_specs.clone(),
+        latest_moat_score_after: Some(latest.report.summary.moat_score_after),
+        best_moat_score_after: entries
+            .iter()
+            .map(|entry| entry.report.summary.moat_score_after)
+            .max(),
+        improvement_deltas: entries
+            .iter()
+            .map(|entry| entry.report.summary.improvement())
+            .collect(),
+    };
+    print_history_summary(&summary);
+}
+
+fn moat_history_entry_search_text(entry: &MoatHistoryEntry) -> String {
+    let summary = &entry.report.summary;
+    let mut text = format!(
+        "round id {} selected strategies {} implemented specs {} tests_passed={} moat score before {} moat score after {} continue decision {}",
+        summary.round_id,
+        summary.selected_strategies.join(" "),
+        summary.implemented_specs.join(" "),
+        summary.tests_passed,
+        summary.moat_score_before,
+        summary.moat_score_after,
+        format_continue_decision(summary.continue_decision)
+    );
+
+    if let Some(reason) = &summary.stop_reason {
+        text.push(' ');
+        text.push_str(reason);
+    }
+    if let Some(reason) = &summary.pivot_reason {
+        text.push(' ');
+        text.push_str(reason);
+    }
+    if let Some(decision_summary) = entry.report.control_plane.memory.latest_decision_summary() {
+        text.push(' ');
+        text.push_str(&decision_summary);
+    }
+    for decision in &entry.report.control_plane.memory.decisions {
+        text.push(' ');
+        text.push_str(&decision.summary);
+        text.push(' ');
+        text.push_str(&decision.rationale);
+    }
+    text.push(' ');
+    text.push_str(&format!("{:?}", entry.report));
+    text
+}
+
 fn print_history_summary(summary: &MoatHistorySummary) {
     println!("moat history summary");
     println!("entries={}", summary.entry_count);
@@ -1682,7 +1779,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -1789,6 +1886,7 @@ mod tests {
             CliCommand::MoatHistory(MoatHistoryCommand {
                 history_path: "history.json".into(),
                 decision: None,
+                contains: None,
                 limit: None,
             })
         );

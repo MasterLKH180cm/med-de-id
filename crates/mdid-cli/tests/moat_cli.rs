@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -329,6 +329,127 @@ fn cli_filters_recent_moat_history_rounds_by_continue_decision() {
     );
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_history_filters_rounds_by_text_fragment() {
+    let history_path = unique_history_path("history-contains-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let continue_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run continuing mdid-cli moat round");
+    assert!(
+        continue_output.status.success(),
+        "expected continuing round success, stderr was: {}",
+        String::from_utf8_lossy(&continue_output.stderr)
+    );
+
+    let stop_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--tests-passed",
+            "false",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run stopping mdid-cli moat round");
+    assert!(
+        stop_output.status.success(),
+        "expected stopping round success, stderr was: {}",
+        String::from_utf8_lossy(&stop_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--contains",
+            "Continue",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with contains filter");
+
+    assert!(
+        output.status.success(),
+        "expected history contains filter success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("entries=1\n"), "stdout was: {stdout}");
+    assert!(stdout.contains("Continue"), "stdout was: {stdout}");
+    assert!(!stdout.contains("decision=Stop"), "stdout was: {stdout}");
+    assert!(!stdout.contains("|Stop|"), "stdout was: {stdout}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_history_contains_filter_can_return_empty_summary() {
+    let history_path = unique_history_path("history-contains-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--contains",
+            "text that is absent from every moat round",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with absent contains filter");
+
+    assert!(
+        output.status.success(),
+        "expected history contains filter success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat history summary\nentries=0\nlatest_round_id=none\nlatest_decision=none\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_history_contains_requires_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            "history.jsonl",
+            "--contains",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with missing contains value");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--contains requires a value"),
+        "stderr was: {stderr}"
+    );
 }
 
 #[test]
