@@ -69,6 +69,7 @@ struct MoatAssignmentsCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MoatTaskGraphCommand {
     history_path: String,
+    round_id: Option<String>,
     role: Option<AgentRole>,
     state: Option<MoatTaskNodeState>,
     kind: Option<MoatTaskNodeKind>,
@@ -576,6 +577,7 @@ fn parse_moat_assignments_state_filter(value: &str) -> Result<MoatTaskNodeState,
 
 fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand, String> {
     let mut history_path = None;
+    let mut round_id = None;
     let mut role = None;
     let mut state = None;
     let mut kind = None;
@@ -596,6 +598,13 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
                     return Err(duplicate_flag_error("--history-path"));
                 }
                 history_path = Some(value);
+            }
+            "--round-id" => {
+                let value = required_flag_value(args, index, "--round-id", true)?;
+                if round_id.is_some() {
+                    return Err(duplicate_flag_error("--round-id"));
+                }
+                round_id = Some(value.to_string());
             }
             "--role" => {
                 let value = required_flag_value(args, index, "--role", false)?;
@@ -677,6 +686,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
     Ok(MoatTaskGraphCommand {
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        round_id,
         role,
         state,
         kind,
@@ -1401,9 +1411,27 @@ fn run_moat_assignments(command: &MoatAssignmentsCommand) -> Result<(), String> 
 fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
     let store = LocalMoatHistoryStore::open_existing(&command.history_path)
         .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let latest = store.entries().last().ok_or_else(|| {
-        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
-    })?;
+    if store.entries().is_empty() {
+        return Err(
+            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
+                .to_string(),
+        );
+    }
+    let selected = if let Some(round_id) = command.round_id.as_deref() {
+        store
+            .entries()
+            .iter()
+            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+    } else {
+        Some(store.entries().last().ok_or_else(|| {
+            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
+                .to_string()
+        })?)
+    };
+    let Some(latest) = selected else {
+        println!("moat task graph");
+        return Ok(());
+    };
 
     println!("moat task graph");
     let limit = command.limit.unwrap_or(usize::MAX);
@@ -1973,7 +2001,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
