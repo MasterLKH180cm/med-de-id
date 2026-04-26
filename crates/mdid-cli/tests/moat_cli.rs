@@ -1987,6 +1987,75 @@ fn claim_task_rejects_non_ready_node() {
 }
 
 #[test]
+fn cli_complete_task_reports_newly_ready_downstream_tasks() {
+    let history_path = unique_history_path("complete-task-next-ready");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--strategy-candidates",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed complete-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "strategy_generation",
+        ])
+        .output()
+        .expect("failed to claim strategy_generation before completion");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "strategy_generation",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat complete-task");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("next_ready_task_entries=1\n"),
+        "expected one newly ready downstream task, stdout was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("next_ready_task=planner|spec_planning|Spec Planning|spec_planning|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"),
+        "expected spec_planning to become ready, stdout was:\n{stdout}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn cli_completes_claimed_moat_task() {
     let history_path = unique_history_path("complete-task-claimed");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -2033,7 +2102,7 @@ fn cli_completes_claimed_moat_task() {
         .round_id
         .to_string();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+    let complete_review = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
             "moat",
             "complete-task",
@@ -2043,17 +2112,17 @@ fn cli_completes_claimed_moat_task() {
             "review",
         ])
         .output()
-        .expect("failed to run mdid-cli moat complete-task");
-
+        .expect("failed to complete review task");
     assert!(
-        output.status.success(),
+        complete_review.status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&complete_review.stderr)
     );
+
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&complete_review.stdout),
         format!(
-            "moat task completed\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=completed\nhistory_path={history_path_arg}\n"
+            "moat task completed\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=completed\nhistory_path={history_path_arg}\nnext_ready_task_entries=1\nnext_ready_task=reviewer|evaluation|Evaluation|evaluation|<none>\n"
         )
     );
 
