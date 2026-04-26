@@ -458,4 +458,4 @@ Expected: merge succeeds only after tests are green and worktree is clean.
 - Verified runtime persistence coverage with `CARGO_INCREMENTAL=0 cargo test -p mdid-runtime --test moat_history -- --nocapture`.
 - Verified complete-task CLI happy/rejection paths with `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli cli_completes_claimed_moat_task -- --nocapture` and `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli cli_complete_task_rejects_unclaimed_ready_task -- --nocapture`.
 - Verified CLI smoke coverage with `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test cli_smoke -- --nocapture`.
-- Broader filtered moat CLI run `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat -- --nocapture` currently reports four pre-existing expected-usage assertion mismatches because the CLI usage string includes the newly shipped `complete-task` command while several tests still expect the older usage text.
+- Verified broader filtered moat CLI coverage with `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat -- --nocapture` after syncing the shared `moat_cli` usage fixture for `complete-task`.
