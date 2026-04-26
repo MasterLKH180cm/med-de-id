@@ -49,6 +49,7 @@ struct MoatTaskGraphCommand {
     role: Option<AgentRole>,
     state: Option<MoatTaskNodeState>,
     node_id: Option<String>,
+    title_contains: Option<String>,
 }
 
 fn main() {
@@ -317,6 +318,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
     let mut role = None;
     let mut state = None;
     let mut node_id = None;
+    let mut title_contains = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -349,6 +351,13 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
                 }
                 node_id = Some(value.clone());
             }
+            "--title-contains" => {
+                let value = required_flag_value(args, index, "--title-contains", true)?;
+                if title_contains.is_some() {
+                    return Err(duplicate_flag_error("--title-contains"));
+                }
+                title_contains = Some(value.to_string());
+            }
             flag => return Err(format!("unknown flag: {flag}")),
         }
 
@@ -361,6 +370,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
         role,
         state,
         node_id,
+        title_contains,
     })
 }
 
@@ -867,6 +877,13 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
                 .map(|node_id| node.node_id == *node_id)
                 .unwrap_or(true)
         })
+        .filter(|node| {
+            command
+                .title_contains
+                .as_deref()
+                .map(|expected_title| node.title.contains(expected_title))
+                .unwrap_or(true)
+        })
     {
         println!(
             "node={}|{}|{}|{}|{}|{}|{}",
@@ -1289,7 +1306,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--node-id NODE_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--node-id NODE_ID] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--node-id NODE_ID] [--title-contains TEXT] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
