@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -429,6 +429,157 @@ fn moat_history_contains_filter_can_return_empty_summary() {
     );
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_recent_moat_history_rounds_by_min_score() {
+    let history_path = unique_history_path("history-min-score");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run stop round");
+    Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run continue round");
+
+    let before = fs::read_to_string(&history_path).expect("history should exist before inspection");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--min-score",
+            "95",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with min score");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("moat history summary\nentries=1\n"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("history_rounds=1\n"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("|Continue|98|<none>\n"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        !stdout.contains("|Stop|90|review budget exhausted\n"),
+        "stdout was: {stdout}"
+    );
+    assert_eq!(fs::read_to_string(&history_path).unwrap(), before);
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_empty_moat_history_summary_when_min_score_matches_no_rounds() {
+    let history_path = unique_history_path("history-min-score-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run round");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--min-score",
+            "101",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with impossible min score");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat history summary\nentries=0\nlatest_round_id=none\nlatest_decision=none\nhistory_rounds=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_history_rejects_duplicate_min_score() {
+    let missing_path = unique_history_path("history-duplicate-min-score");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            missing_path.to_str().expect("history path should be utf-8"),
+            "--min-score",
+            "90",
+            "--min-score",
+            "95",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with duplicate min score");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --min-score\n{}\n", USAGE)
+    );
+    assert!(!missing_path.exists());
+}
+
+#[test]
+fn cli_history_rejects_invalid_min_score() {
+    let missing_path = unique_history_path("history-invalid-min-score");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            missing_path.to_str().expect("history path should be utf-8"),
+            "--min-score",
+            "not-a-number",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with invalid min score");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "invalid value for --min-score: expected non-negative integer, got not-a-number\n{}\n",
+            USAGE
+        )
+    );
+    assert!(!missing_path.exists());
 }
 
 #[test]
