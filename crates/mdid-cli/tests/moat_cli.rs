@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -1818,6 +1818,167 @@ fn task_graph_prints_latest_persisted_graph() {
         "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n"
     ));
     assert!(stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_ready_moat_tasks_for_latest_round() {
+    let history_path = unique_history_path("ready-tasks-latest");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        output.status.success(),
+        "expected setup round success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "ready-tasks", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat ready tasks\n",
+            "ready_task_entries=1\n",
+            "ready_task=reviewer|review|review|Review|<none>\n",
+        )
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_ready_tasks_by_role_kind_and_limit() {
+    let history_path = unique_history_path("ready-tasks-filters");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        output.status.success(),
+        "expected setup round success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "reviewer",
+            "--kind",
+            "review",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with filters");
+
+    assert!(
+        output.status.success(),
+        "expected filtered ready tasks success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat ready tasks\n",
+            "ready_task_entries=1\n",
+            "ready_task=reviewer|review|review|Review|<none>\n",
+        )
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with non-matching role filter");
+
+    assert!(
+        output.status.success(),
+        "expected non-matching filtered ready tasks success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!("moat ready tasks\n", "ready_task_entries=0\n")
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_zero_ready_tasks_for_unknown_round_id() {
+    let history_path = unique_history_path("ready-tasks-unknown-round");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        output.status.success(),
+        "expected setup round success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            "00000000-0000-0000-0000-000000000000",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with unknown round id");
+
+    assert!(
+        output.status.success(),
+        "expected unknown round ready tasks success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!("moat ready tasks\n", "ready_task_entries=0\n")
+    );
 
     cleanup_history_path(&history_path);
 }
