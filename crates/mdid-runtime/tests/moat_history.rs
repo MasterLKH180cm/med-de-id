@@ -839,6 +839,79 @@ fn claim_ready_task_rejects_non_ready_nodes() {
 }
 
 #[test]
+fn claim_then_complete_task_persists_completed_state() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "claimed node can be completed",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("report should persist");
+    store
+        .claim_ready_task(None, "implementation")
+        .expect("ready task should be claimed");
+    store
+        .complete_in_progress_task(None, "implementation")
+        .expect("in-progress task should be completed");
+    drop(store);
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path).expect("reload should open");
+    assert_eq!(
+        node_state(&reloaded.entries()[0].report, "implementation"),
+        MoatTaskNodeState::Completed
+    );
+}
+
+#[test]
+fn complete_task_rejects_non_in_progress_node() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "ready node cannot be completed before claim",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("report should persist");
+
+    let error = store
+        .complete_in_progress_task(None, "implementation")
+        .expect_err("non-in-progress node should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("moat task node is not in progress"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        node_state(&store.entries()[0].report, "implementation"),
+        MoatTaskNodeState::Ready
+    );
+}
+
+#[test]
 fn continuation_gate_uses_reloaded_persisted_history() {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");

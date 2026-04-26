@@ -1987,6 +1987,147 @@ fn claim_task_rejects_non_ready_node() {
 }
 
 #[test]
+fn cli_completes_claimed_moat_task() {
+    let history_path = unique_history_path("complete-task-claimed");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed complete-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to claim task before completion");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let round_id = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("history should reload")
+        .entries()[0]
+        .report
+        .summary
+        .round_id
+        .to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat complete-task");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!(
+            "moat task completed\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=completed\nhistory_path={history_path_arg}\n"
+        )
+    );
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to inspect task graph after completion");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(String::from_utf8_lossy(&graph.stdout)
+        .contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_complete_task_rejects_unclaimed_ready_task() {
+    let history_path = unique_history_path("complete-task-unclaimed");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed complete-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat complete-task for ready node");
+
+    assert!(
+        !output.status.success(),
+        "completing ready node should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("moat task node is not in progress"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("review"), "{stderr}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn cli_filters_ready_tasks_by_role_kind_and_limit() {
     let history_path = unique_history_path("ready-tasks-filters");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
