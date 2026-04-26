@@ -67,6 +67,7 @@ struct MoatTaskGraphCommand {
     state: Option<MoatTaskNodeState>,
     kind: Option<MoatTaskNodeKind>,
     node_id: Option<String>,
+    depends_on: Option<String>,
     title_contains: Option<String>,
     spec_ref: Option<String>,
     contains: Option<String>,
@@ -502,6 +503,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
     let mut state = None;
     let mut kind = None;
     let mut node_id = None;
+    let mut depends_on = None;
     let mut title_contains = None;
     let mut spec_ref = None;
     let mut contains = None;
@@ -545,6 +547,13 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
                 }
                 node_id = Some(value.clone());
             }
+            "--depends-on" => {
+                let value = required_flag_value(args, index, "--depends-on", false)?;
+                if depends_on.is_some() {
+                    return Err(duplicate_flag_error("--depends-on"));
+                }
+                depends_on = Some(value.clone());
+            }
             "--title-contains" => {
                 let value = required_flag_value(args, index, "--title-contains", true)?;
                 if title_contains.is_some() {
@@ -586,6 +595,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
         state,
         kind,
         node_id,
+        depends_on,
         title_contains,
         spec_ref,
         contains,
@@ -1254,6 +1264,17 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
         })
         .filter(|node| {
             command
+                .depends_on
+                .as_ref()
+                .map(|dependency| {
+                    node.depends_on
+                        .iter()
+                        .any(|candidate| candidate == dependency)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|node| {
+            command
                 .title_contains
                 .as_deref()
                 .map(|expected_title| node.title.contains(expected_title))
@@ -1779,7 +1800,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
