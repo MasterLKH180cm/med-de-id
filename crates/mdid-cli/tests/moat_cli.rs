@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -3350,6 +3350,158 @@ fn cli_rejects_unknown_moat_assignments_state() {
 }
 
 #[test]
+fn cli_assignments_limit_bounds_filtered_rows_and_does_not_append_history() {
+    let history_path = unique_history_path("assignments-limit-bounds");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_moat_history_with_assignment_rows(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with limit");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("assignment_entries=1\n"));
+    assert_eq!(stdout.matches("assignment=").count(), 1);
+    assert!(stdout.contains("assignment=planner|strategy_generation|"));
+
+    let history = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "history", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect moat history after limited assignments");
+    assert!(
+        history.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    assert!(String::from_utf8_lossy(&history.stdout).contains("entries=1\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_assignments_limit_applies_after_role_filter() {
+    let history_path = unique_history_path("assignments-limit-role");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_moat_history_with_assignment_rows(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "planner",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with role and limit");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("assignment_entries=1\n"));
+    assert_eq!(stdout.matches("assignment=planner|").count(), 1);
+    assert!(stdout.contains("assignment=planner|strategy_generation|"));
+    assert!(!stdout.contains("assignment=coder|"));
+    assert!(!stdout.contains("assignment=reviewer|"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_rejects_zero_assignments_limit_before_touching_missing_history() {
+    let history_path = unique_history_path("assignments-limit-zero");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--limit",
+            "0",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with zero limit");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--limit must be greater than 0"),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_rejects_duplicate_assignments_limit_before_touching_missing_history() {
+    let history_path = unique_history_path("assignments-limit-duplicate");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--limit",
+            "1",
+            "--limit",
+            "2",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with duplicate limit");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --limit"),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_rejects_missing_assignments_limit_before_touching_missing_history() {
+    let history_path = unique_history_path("assignments-limit-missing");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--limit",
+            "--role",
+            "planner",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with missing limit");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing value for --limit"),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
 fn cli_reports_latest_moat_assignments_from_persisted_history() {
     let history_path = unique_history_path("assignments-success");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -4688,6 +4840,74 @@ fn cli_reports_helpful_error_for_unknown_commands() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown command: bogus"));
     assert!(stderr.contains(USAGE));
+}
+
+fn seed_moat_history_with_assignment_rows(history_path: &PathBuf) {
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let persisted = fs::read_to_string(history_path).expect("history should be readable");
+    let original = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"reviewer\",\n",
+        "            \"node_id\": \"review\",\n",
+        "            \"title\": \"Review\",\n",
+        "            \"kind\": \"review\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let replacement = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"strategy_generation\",\n",
+        "            \"title\": \"Strategy generation\",\n",
+        "            \"kind\": \"strategy_generation\",\n",
+        "            \"spec_ref\": null\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"spec_planning\",\n",
+        "            \"title\": \"Spec planning\",\n",
+        "            \"kind\": \"spec_planning\",\n",
+        "            \"spec_ref\": \"docs/superpowers/specs/example.md\"\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"coder\",\n",
+        "            \"node_id\": \"implementation\",\n",
+        "            \"title\": \"Implementation\",\n",
+        "            \"kind\": \"implementation\",\n",
+        "            \"spec_ref\": \"docs/superpowers/specs/example.md\"\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"reviewer\",\n",
+        "            \"node_id\": \"review\",\n",
+        "            \"title\": \"Review\",\n",
+        "            \"kind\": \"review\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let patched = persisted.replacen(original, replacement, 1);
+    assert_ne!(patched, persisted, "seed history assignment block changed");
+    fs::write(history_path, patched).expect("history should be patchable");
 }
 
 fn unique_history_path(label: &str) -> PathBuf {
