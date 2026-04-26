@@ -1,20 +1,23 @@
 [package]
-name = "mdid-application"
+name = "mdid-vault"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+argon2.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
 chrono.workspace = true
-csv.workspace = true
-mdid-adapters = { path = "../mdid-adapters" }
 mdid-domain = { path = "../mdid-domain" }
-mdid-vault = { path = "../mdid-vault" }
+rand_core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-dicom-core = "0.9.1"
-dicom-object = "0.9.1"
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }

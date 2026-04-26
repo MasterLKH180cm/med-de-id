@@ -42,10 +42,8 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 ## Architecture overview
 
 ```text
-shared Rust core
+shared Rust workspace today
 ├─ mdid-domain
-├─ mdid-policy
-├─ mdid-detection
 ├─ mdid-vault
 ├─ mdid-adapters
 ├─ mdid-application
@@ -55,14 +53,191 @@ shared Rust core
 └─ mdid-desktop
 ```
 
+Planned follow-on core crates from the design, not yet implemented in this repository:
+
+- `mdid-policy`
+- `mdid-detection`
+
 ## Current repository status
 
-This repository is currently in planning/foundation mode.
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, and the first Slice 3 tabular workflow and adapter work.
+
+Implemented so far:
+
+- Shared domain models for pipeline, review, vault mapping, decode requests, audit events, and tabular workflow state
+- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, and repeated-value token reuse
+- An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
+- Tabular application orchestration that composes the adapters with vault-backed reversible encoding and honest batch summaries
+- Initial `mdid-runtime`, `mdid-cli`, `mdid-browser`, and `mdid-desktop` scaffolding from the foundation slice
+
+Planned next from the design:
+
+- Additional policy and detection crates
+- Deeper application orchestration and surface behavior beyond the current scaffolds
 
 Available docs:
 
 - Design spec: `docs/superpowers/specs/2026-04-25-med-de-id-design.md`
 - Initial implementation plan: `docs/superpowers/plans/2026-04-25-med-de-id-foundation-implementation-plan.md`
+- Slice 2 vault/decode MVP plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-2-vault-encode-decode-mvp.md`
+- Slice 3 tabular deep-support plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md`
+
+## Moat Loop Foundation
+
+`med-de-id` now includes a local-first moat-loop foundation for deterministic bounded strategy rounds. The shipped slice models market snapshots, competitor profiles, lock-in analysis artifacts, moat strategies, deterministic moat scoring, a bounded control-plane snapshot for canonical task-state inspection, and bounded local round-history persistence/inspection through the CLI.
+
+Run the default bounded round with:
+
+```bash
+cargo run -p mdid-cli -- moat round
+```
+
+The round command prints a deterministic report containing:
+
+- `continue_decision=Continue|Stop|Pivot`
+- `executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_generation,spec_planning,implementation,review,evaluation`
+- `implemented_specs=<none>|moat-spec/<normalized-strategy-id>[,...]`
+- `moat_score_before`
+- `moat_score_after`
+- `stop_reason=<none>|...`
+
+`implemented_specs` is a bounded handoff surface: it exposes normalized stable IDs derived from selected strategy IDs (for example `moat-spec/workflow-audit`). The CLI can now export markdown spec files for the latest persisted round, but it still does **not** automatically dispatch coding/review agents from the CLI output.
+
+Persist the produced round report locally only when you explicitly provide a history path:
+
+```bash
+cargo run -p mdid-cli -- moat round --history-path .mdid/moat-history.json
+```
+
+When `--history-path PATH` is used, the round output stays the same and adds one extra line:
+
+- `history_saved_to=PATH`
+
+Run bounded stop-path scenarios by overriding the deterministic sample budgets, for example:
+
+```bash
+cargo run -p mdid-cli -- moat round --review-loops 0
+cargo run -p mdid-cli -- moat control-plane --strategy-candidates 0
+```
+
+Inspect the bounded control-plane snapshot with:
+
+```bash
+cargo run -p mdid-cli -- moat control-plane
+```
+
+The control-plane command prints a deterministic snapshot containing:
+
+- `source=sample|history`
+- `latest_round_id` when inspecting persisted history
+- `history_path` when inspecting persisted history
+- `ready_nodes`
+- `latest_decision_summary`
+- `improvement_delta`
+- `agent_assignments=<none>|planner:<node_id>|coder:<node_id>|reviewer:<node_id>[,...]`
+- `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
+
+Inspect the latest persisted moat control-plane snapshot with:
+
+```bash
+cargo run -p mdid-cli -- moat control-plane --history-path .mdid/moat-history.json
+```
+
+This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, improvement delta, and inspection-only agent assignment projection for ready nodes. `agent_assignments` is a projection only: it does not launch agents, start a daemon, dispatch Planner/Coder/Reviewer work, write code, schedule work, append rounds, crawl the web, or automate code changes.
+
+Inspect persisted local history with:
+
+```bash
+cargo run -p mdid-cli -- moat history --history-path .mdid/moat-history.json
+```
+
+`moat history` is a read-only inspection path: the history file must already exist, and a missing or typoed path fails instead of creating a brand-new empty file.
+
+The history command prints a bounded summary containing:
+
+- `entries`
+- `latest_round_id`
+- `latest_continue_decision`
+- `latest_stop_reason`
+- `latest_decision_summary`
+- `latest_implemented_specs=<none>|moat-spec/<normalized-strategy-id>[,...]`
+- `latest_moat_score_after`
+- `best_moat_score_after`
+- `improvement_deltas`
+
+Inspect the latest persisted round's decision log without running or appending a new round with:
+
+```bash
+cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json
+```
+
+Filter that read-only inspection to one bounded role and/or a decision text substring with:
+
+```bash
+cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --role reviewer
+cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --contains "approved bounded"
+cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --summary-contains "review approved"
+```
+
+`moat decision-log` is read-only: the history file must already exist, and it prints `decision_log_entries=N` followed by each persisted decision as `decision=<role>|<summary>|<rationale>`. The `<summary>` and `<rationale>` output fields are escaped for pipe-delimited output (`\\` as `\\\\`, `|` as `\\|`, newline as `\\n`, carriage return as `\\r`). Use `mdid-cli moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT]` to inspect the latest persisted round. The optional `--contains TEXT` filter performs a case-sensitive substring match over each persisted, unescaped decision summary or rationale before rendering; the optional `--summary-contains TEXT` and `--rationale-contains TEXT` filters match persisted, unescaped summary or rationale text only. When combined with `--role`, filters are conjunctive and must all match. Inspection never runs or appends a new round.
+
+- `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT]` inspects the latest persisted read-only Planner/Coder/Reviewer assignment projection and prints deterministic `assignment=<role>|<node_id>|<title>|<kind>|<spec_ref>` rows. The optional filters are conjunctive; `--state` accepts only the exact persisted task-node state wire values shown in usage and does not normalize input, `--kind` accepts only the exact persisted task-node kind wire values listed in the usage, and `--spec-ref SPEC_REF` performs an exact match against persisted `assignment.spec_ref`. The optional `--contains TEXT` filter performs a case-sensitive substring match over raw persisted assignment `node_id`, `title`, or `spec_ref` before escaping; it is conjunctive with `--role`, `--state`, `--kind`, `--node-id`, `--title-contains`, and `--spec-ref`. Inspection opens an existing history file only and never appends or runs a new round. Persisted `node_id`, `title`, and `spec_ref` fields are escaped for pipe-delimited output (`\\` as `\\\\`, `|` as `\\|`, newline as `\\n`, carriage return as `\\r`); bounded enum fields are not escaped. `moat assignments` is read-only and latest-round scoped. `--role` filters by bounded agent role, `--node-id` performs an exact match against the persisted assignment node ID, and `--title-contains TEXT` performs a case-sensitive substring match over persisted assignment titles. Filters are conjunctive; `--title-contains`, `--spec-ref`, and `--contains` combine with `--role`, `--state`, `--kind`, and `--node-id`, and if no assignment matches, the command prints `assignment_entries=0` and does not error or mutate history. It uses existing moat history only, never creates missing history files, never appends rounds, never schedules work, never launches agents, and never creates cron jobs.
+
+- `mdid-cli moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF]` inspects the latest persisted task graph read-only and prints `moat task graph` followed by deterministic `node=<role>|<node_id>|<title>|<kind>|<state>|<dependencies>|<spec_ref>` rows. Missing dependency/spec fields print `<none>`, dependency lists are comma-joined, and pipe-delimited string fields are escaped. Filters are conjunctive; `--kind` accepts only the exact persisted task-node kind wire values shown in usage and does not normalize input. `--node-id` matches exact persisted task graph node IDs with no normalization, `--title-contains` performs case-sensitive substring matching against persisted node titles without normalization or mutation, and `--spec-ref SPEC_REF` exact-matches the persisted optional task graph node `spec_ref` field without matching the escaped output, `<none>`, substrings, or normalized forms. It prints only the header when no persisted node matches. It opens only existing history, so missing paths fail without creating files; inspection is read-only, latest-round scoped, and never appends history, schedules work, launches agents, opens PRs, creates cron jobs, runs agents, or launches background work.
+
+Inspect whether the latest persisted round is eligible to start another bounded round with:
+
+```bash
+cargo run -p mdid-cli -- moat continue --history-path .mdid/moat-history.json
+```
+
+`moat continue` requires an already-existing history file created by `moat round --history-path ...` and fails for missing paths instead of creating a new history file during inspection.
+
+The continuation command prints a bounded gate summary containing:
+
+- `latest_round_id`
+- `latest_continue_decision`
+- `latest_tests_passed`
+- `latest_improvement_delta`
+- `latest_stop_reason`
+- `evaluation_completed=true|false`
+- `can_continue=true|false`
+- `reason`
+- `required_improvement_threshold`
+
+This is an inspection surface only. It does not auto-schedule or launch the next round.
+
+Schedule exactly one next bounded round when the continuation gate allows it with:
+
+```bash
+cargo run -p mdid-cli -- moat schedule-next --history-path .mdid/moat-history.json
+```
+
+`moat schedule-next` is a one-shot local scheduler control: it requires an existing history file, checks the same continuation gate as `moat continue`, appends one deterministic bounded round only when `can_continue=true`, and otherwise leaves history unchanged. It does not create a cron job, background daemon, live crawler, or unrestricted autonomous loop.
+
+Export the latest persisted implemented-spec handoffs as markdown with:
+
+```bash
+cargo run -p mdid-cli -- moat export-specs --history-path .mdid/moat-history.json --output-dir .mdid/moat-specs
+```
+
+`moat export-specs` requires an already-existing history file, fails when the history is empty, fails when the latest round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one markdown file per latest handoff such as `workflow-audit.md` for `moat-spec/workflow-audit`.
+
+The export command prints a deterministic summary containing:
+
+- `round_id`
+- `exported_specs=<comma-list>`
+- `written_files=<comma-list>`
+
+Export deterministic implementation-plan markdown for the latest persisted handoffs with:
+
+```bash
+cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.json --output-dir docs/superpowers/plans/generated
+```
+
+`moat export-plans --history-path PATH --output-dir DIR` is also one-shot and local: it requires an already-existing history file, fails when the history is empty or the latest round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one `*-implementation-plan.md` file per latest handoff. It does not start background agents, create cron jobs, open PRs, or run an unrestricted autonomous loop.
+
+This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
 
 ## Roadmap shape
 
@@ -78,4 +253,4 @@ Available docs:
 
 ## License
 
-License not set yet.
+Workspace metadata is currently marked `UNLICENSED`.
