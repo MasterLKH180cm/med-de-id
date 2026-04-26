@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -2617,6 +2617,235 @@ fn decision_log_rejects_duplicate_summary_contains_filter() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --summary-contains"));
     assert!(!history_path.exists());
+}
+
+#[test]
+fn decision_log_filters_latest_decisions_by_rationale_contains() {
+    let history_path = unique_history_path("decision-log-rationale");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for rationale filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--rationale-contains",
+            "evaluation cleared",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with rationale filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("decision_log_entries=1\n"));
+    assert!(stdout.contains("decision=reviewer|review approved bounded moat round|review approved bounded moat round after evaluation cleared the improvement threshold\n"));
+    assert!(!stdout.contains("decision=planner|selected workflow audit strategy|"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn decision_log_rationale_filter_returns_zero_entries_when_no_rationale_matches() {
+    let history_path = unique_history_path("decision-log-rationale-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for empty rationale filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--rationale-contains",
+            "not in persisted rationale",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with unmatched rationale filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "decision_log_entries=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn decision_log_rationale_filter_conjoins_with_role_filter() {
+    let history_path = unique_history_path("decision-log-rationale-role");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for rationale role filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "planner",
+            "--rationale-contains",
+            "evaluation cleared",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with role and rationale filters");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "decision_log_entries=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn decision_log_rejects_missing_rationale_contains_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--rationale-contains",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with missing rationale value");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("missing value for --rationale-contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn decision_log_rejects_flag_like_rationale_contains_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--rationale-contains",
+            "--role",
+            "planner",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with flag-like rationale value");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("missing value for --rationale-contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn decision_log_rejects_duplicate_rationale_contains_filter() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--rationale-contains",
+            "evaluation",
+            "--rationale-contains",
+            "tests",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log with duplicate rationale filter");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --rationale-contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn decision_log_rationale_filter_does_not_append_history() {
+    let history_path = unique_history_path("decision-log-rationale-read-only");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for rationale read-only check");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let inspect = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--rationale-contains",
+            "evaluation cleared",
+        ])
+        .output()
+        .expect("failed to inspect moat decision log by rationale");
+    assert!(
+        inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+
+    let history = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "history", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect moat history after rationale decision-log filter");
+    assert!(
+        history.status.success(),
+        "{}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    assert!(String::from_utf8_lossy(&history.stdout).contains("entries=1\n"));
+
+    cleanup_history_path(&history_path);
 }
 
 #[test]
