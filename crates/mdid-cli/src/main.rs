@@ -42,6 +42,7 @@ struct MoatDecisionLogCommand {
 struct MoatAssignmentsCommand {
     history_path: String,
     role: Option<AgentRole>,
+    state: Option<MoatTaskNodeState>,
     kind: Option<MoatTaskNodeKind>,
     node_id: Option<String>,
     title_contains: Option<String>,
@@ -290,6 +291,7 @@ fn parse_agent_role_filter(value: &str) -> Result<AgentRole, String> {
 fn parse_moat_assignments_command(args: &[String]) -> Result<MoatAssignmentsCommand, String> {
     let mut history_path = None;
     let mut role = None;
+    let mut state = None;
     let mut kind = None;
     let mut node_id = None;
     let mut title_contains = None;
@@ -312,6 +314,13 @@ fn parse_moat_assignments_command(args: &[String]) -> Result<MoatAssignmentsComm
                     return Err(duplicate_flag_error("--role"));
                 }
                 role = Some(parse_moat_assignments_role_filter(value)?);
+            }
+            "--state" => {
+                let value = required_flag_value(args, index, "--state", false)?;
+                if state.is_some() {
+                    return Err(duplicate_flag_error("--state"));
+                }
+                state = Some(parse_moat_assignments_state_filter(value)?);
             }
             "--kind" => {
                 let value = required_flag_value(args, index, "--kind", true)?;
@@ -358,6 +367,7 @@ fn parse_moat_assignments_command(args: &[String]) -> Result<MoatAssignmentsComm
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         role,
+        state,
         kind,
         node_id,
         title_contains,
@@ -378,6 +388,17 @@ fn parse_moat_assignments_role_filter(value: &str) -> Result<AgentRole, String> 
 fn parse_moat_assignments_kind_filter(value: &str) -> Result<MoatTaskNodeKind, String> {
     parse_moat_task_graph_kind_filter(value)
         .map_err(|_| format!("unknown moat assignments kind: {value}"))
+}
+
+fn parse_moat_assignments_state_filter(value: &str) -> Result<MoatTaskNodeState, String> {
+    match value {
+        "pending" => Ok(MoatTaskNodeState::Pending),
+        "ready" => Ok(MoatTaskNodeState::Ready),
+        "in_progress" => Ok(MoatTaskNodeState::InProgress),
+        "completed" => Ok(MoatTaskNodeState::Completed),
+        "blocked" => Ok(MoatTaskNodeState::Blocked),
+        other => Err(format!("unknown moat assignments state: {other}")),
+    }
 }
 
 fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand, String> {
@@ -939,6 +960,22 @@ fn run_moat_assignments(command: &MoatAssignmentsCommand) -> Result<(), String> 
         })
         .filter(|assignment| {
             command
+                .state
+                .map(|expected_state| {
+                    latest
+                        .report
+                        .control_plane
+                        .task_graph
+                        .nodes
+                        .iter()
+                        .find(|node| node.node_id == assignment.node_id)
+                        .map(|node| node.state == expected_state)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|assignment| {
+            command
                 .kind
                 .map(|kind| assignment.kind == kind)
                 .unwrap_or(true)
@@ -1462,7 +1499,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
