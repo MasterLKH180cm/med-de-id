@@ -27,7 +27,7 @@
 - Modify: `crates/mdid-cli/tests/moat_cli.rs`
 - Modify: `crates/mdid-cli/src/main.rs`
 
-- [ ] **Step 1: Write the failing integration test**
+- [x] **Step 1: Write the failing integration test**
 
 Add this test near the existing moat history filter tests in `crates/mdid-cli/tests/moat_cli.rs`:
 
@@ -89,7 +89,7 @@ fn cli_filters_moat_history_rounds_by_stop_reason_text() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         concat!(
-            "moat history filtered summary\n",
+            "moat history summary\n",
             "entries=1\n",
             "latest_round_id={stopped_round_id}\n",
             "latest_continue_decision=Stop\n",
@@ -109,7 +109,7 @@ fn cli_filters_moat_history_rounds_by_stop_reason_text() {
 }
 ```
 
-- [ ] **Step 2: Run the targeted test to verify RED**
+- [x] **Step 2: Run the targeted test to verify RED**
 
 Run:
 
@@ -119,7 +119,7 @@ CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/med-de-id-moat-loop-target cargo test 
 
 Expected: FAIL with `unknown moat history flag: --stop-reason-contains`.
 
-- [ ] **Step 3: Implement the minimal parser and filter**
+- [x] **Step 3: Implement the minimal parser and filter**
 
 Make these exact production changes in `crates/mdid-cli/src/main.rs`:
 
@@ -183,7 +183,7 @@ moat history --history-path PATH [--decision Continue|Stop] [--contains TEXT] [-
 
 Update parser unit-test expected `MoatHistoryCommand` literals to include `stop_reason_contains: None,`.
 
-- [ ] **Step 4: Run the targeted test to verify GREEN**
+- [x] **Step 4: Run the targeted test to verify GREEN**
 
 Run:
 
@@ -193,7 +193,7 @@ CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/med-de-id-moat-loop-target cargo test 
 
 Expected: PASS.
 
-- [ ] **Step 5: Run relevant broader tests**
+- [x] **Step 5: Run relevant broader tests**
 
 Run:
 
@@ -204,7 +204,7 @@ CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/med-de-id-moat-loop-target cargo test 
 
 Expected: PASS for both commands.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
