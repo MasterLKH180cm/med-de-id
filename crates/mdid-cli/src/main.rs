@@ -901,8 +901,8 @@ fn run_moat_decision_log(command: &MoatDecisionLogCommand) -> Result<(), String>
         println!(
             "decision={}|{}|{}",
             format_agent_role(decision.author_role),
-            decision.summary,
-            decision.rationale
+            escape_assignment_output_field(&decision.summary),
+            escape_assignment_output_field(&decision.rationale)
         );
     }
 
