@@ -30,6 +30,12 @@ struct MoatControlPlaneCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct MoatHistoryCommand {
+    history_path: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MoatDecisionLogCommand {
     history_path: String,
     role: Option<AgentRole>,
@@ -79,8 +85,8 @@ fn main() {
                 exit_with_error(error);
             }
         }
-        Ok(CliCommand::MoatHistory(history_path)) => {
-            if let Err(error) = run_moat_history(&history_path) {
+        Ok(CliCommand::MoatHistory(command)) => {
+            if let Err(error) = run_moat_history(&command) {
                 exit_with_error(error);
             }
         }
@@ -140,7 +146,7 @@ enum CliCommand {
     Status,
     MoatRound(MoatRoundCommand),
     MoatControlPlane(MoatControlPlaneCommand),
-    MoatHistory(String),
+    MoatHistory(MoatHistoryCommand),
     MoatDecisionLog(MoatDecisionLogCommand),
     MoatAssignments(MoatAssignmentsCommand),
     MoatTaskGraph(MoatTaskGraphCommand),
@@ -175,7 +181,7 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
             ))
         }
         [moat, history, rest @ ..] if moat == "moat" && history == "history" => {
-            Ok(CliCommand::MoatHistory(parse_required_history_path(rest)?))
+            Ok(CliCommand::MoatHistory(parse_moat_history_command(rest)?))
         }
         [moat, decision_log, rest @ ..] if moat == "moat" && decision_log == "decision-log" => Ok(
             CliCommand::MoatDecisionLog(parse_moat_decision_log_command(rest)?),
@@ -218,6 +224,40 @@ fn parse_moat_control_plane_command(args: &[String]) -> Result<MoatControlPlaneC
     Ok(MoatControlPlaneCommand {
         overrides,
         history_path,
+    })
+}
+
+fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, String> {
+    let mut history_path = None;
+    let mut limit = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--history-path" => {
+                let value = required_history_path_value(args, index)?.clone();
+                if history_path.is_some() {
+                    return Err(duplicate_flag_error("--history-path"));
+                }
+                history_path = Some(value);
+                index += 2;
+            }
+            "--limit" => {
+                let value = required_flag_value(args, index, "--limit", false)?;
+                if limit.is_some() {
+                    return Err(duplicate_flag_error("--limit"));
+                }
+                limit = Some(parse_limit_value(value)?);
+                index += 2;
+            }
+            flag => return Err(format!("unknown moat history flag: {flag}")),
+        }
+    }
+
+    Ok(MoatHistoryCommand {
+        history_path: history_path
+            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        limit,
     })
 }
 
@@ -744,28 +784,6 @@ fn required_flag_value<'a>(
     }
 }
 
-fn parse_required_history_path(args: &[String]) -> Result<String, String> {
-    let Some(flag) = args.first() else {
-        return Err("missing required flag: --history-path".to_string());
-    };
-
-    if flag != "--history-path" {
-        return Err(format!("unknown flag: {flag}"));
-    }
-
-    let history_path = required_history_path_value(args, 0)?.clone();
-
-    if let Some(extra) = args.get(2) {
-        if extra == "--history-path" {
-            Err(duplicate_flag_error(extra))
-        } else {
-            Err(format!("unknown flag: {extra}"))
-        }
-    } else {
-        Ok(history_path)
-    }
-}
-
 fn required_history_path_value<'a>(args: &'a [String], index: usize) -> Result<&'a String, String> {
     let value = args
         .get(index + 1)
@@ -819,6 +837,18 @@ fn parse_positive_usize_flag(flag: &str, value: &str) -> Result<usize, String> {
 
     if parsed == 0 {
         Err(format!("{flag} must be greater than 0"))
+    } else {
+        Ok(parsed)
+    }
+}
+
+fn parse_limit_value(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid value for --limit: {value}"))?;
+
+    if parsed == 0 {
+        Err("limit must be greater than zero".to_string())
     } else {
         Ok(parsed)
     }
@@ -933,10 +963,38 @@ fn print_control_plane_snapshot(
     println!("task_states={task_states}");
 }
 
-fn run_moat_history(history_path: &str) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(history_path)
+fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
         .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let entries = store.entries();
     print_history_summary(&store.summary());
+
+    if let Some(limit) = command.limit {
+        let recent_entries = entries
+            .iter()
+            .rev()
+            .take(limit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        println!("history_rounds={}", recent_entries.len());
+        for entry in recent_entries {
+            println!(
+                "round={}|{}|{}|{}",
+                entry.report.summary.round_id,
+                format_continue_decision(entry.report.summary.continue_decision),
+                entry.report.summary.moat_score_after,
+                entry
+                    .report
+                    .stop_reason
+                    .as_deref()
+                    .map(escape_assignment_output_field)
+                    .unwrap_or_else(|| "<none>".to_string())
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -1567,7 +1625,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -1671,7 +1729,10 @@ mod tests {
                 "history.json".into(),
             ])
             .unwrap(),
-            CliCommand::MoatHistory("history.json".into())
+            CliCommand::MoatHistory(MoatHistoryCommand {
+                history_path: "history.json".into(),
+                limit: None,
+            })
         );
         assert_eq!(
             parse_command(&[
