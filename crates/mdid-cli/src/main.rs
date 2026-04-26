@@ -1985,6 +1985,7 @@ mod tests {
             .unwrap(),
             CliCommand::MoatHistory(MoatHistoryCommand {
                 history_path: "history.json".into(),
+                round_id: None,
                 decision: None,
                 contains: None,
                 stop_reason_contains: None,
@@ -2004,6 +2005,7 @@ mod tests {
             .unwrap(),
             CliCommand::MoatHistory(MoatHistoryCommand {
                 history_path: "history.json".into(),
+                round_id: None,
                 decision: None,
                 contains: None,
                 stop_reason_contains: Some("budget".into()),
@@ -2057,11 +2059,34 @@ mod tests {
             .unwrap(),
             MoatHistoryCommand {
                 history_path: "history.json".into(),
+                round_id: None,
                 decision: None,
                 contains: None,
                 stop_reason_contains: Some("budget".into()),
                 min_score: None,
                 limit: Some(5),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_moat_history_command_parses_round_id() {
+        assert_eq!(
+            parse_moat_history_command(&[
+                "--history-path".into(),
+                "history.json".into(),
+                "--round-id".into(),
+                "round-123".into(),
+            ])
+            .unwrap(),
+            MoatHistoryCommand {
+                history_path: "history.json".into(),
+                round_id: Some("round-123".into()),
+                decision: None,
+                contains: None,
+                stop_reason_contains: None,
+                min_score: None,
+                limit: None,
             }
         );
     }
