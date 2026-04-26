@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -4682,6 +4682,161 @@ fn cli_filters_moat_assignments_by_role() {
     );
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_moat_assignments_by_task_dependency() {
+    let history_path = unique_history_path("assignments-depends-on-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        round_output.status.success(),
+        "expected round success, stderr was: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--depends-on",
+            "implementation",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with depends-on filter");
+
+    assert!(
+        output.status.success(),
+        "expected assignments success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat assignments\n",
+            "assignment_entries=1\n",
+            "assignment=reviewer|review|Review|review|<none>\n",
+        )
+    );
+
+    let after_summary = LocalMoatHistoryStore::open(&history_path)
+        .expect("history store should reopen")
+        .summary();
+    assert_eq!(
+        after_summary.entry_count, 1,
+        "read-only assignments dependency filter must not append history"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_combines_moat_assignments_depends_on_with_role_filter() {
+    let history_path = unique_history_path("assignments-depends-on-role-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        round_output.status.success(),
+        "expected round success, stderr was: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--depends-on",
+            "implementation",
+            "--role",
+            "coder",
+        ])
+        .output()
+        .expect(
+            "failed to run mdid-cli moat assignments with combined depends-on and role filters",
+        );
+
+    assert!(
+        output.status.success(),
+        "expected assignments success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!("moat assignments\n", "assignment_entries=0\n")
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_rejects_moat_assignments_depends_on_without_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            "history.json",
+            "--depends-on",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with missing depends-on value");
+
+    assert!(!output.status.success(), "expected command failure");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--depends-on requires a value"),
+        "stderr should explain missing depends-on value, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cli_rejects_duplicate_moat_assignments_depends_on_filter() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            "history.json",
+            "--depends-on",
+            "implementation",
+            "--depends-on",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with duplicate depends-on filter");
+
+    assert!(!output.status.success(), "expected command failure");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --depends-on"),
+        "stderr should explain duplicate depends-on filter, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
