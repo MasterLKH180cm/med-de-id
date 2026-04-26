@@ -26,7 +26,7 @@
 - Modify: `crates/mdid-cli/src/main.rs`
 - Test: `crates/mdid-cli/tests/moat_cli.rs`
 
-- [ ] **Step 1: Write the failing dependency filter integration test**
+- [x] **Step 1: Write the failing dependency filter integration test**
 
 Add this test near existing `moat task-graph` filter tests in `crates/mdid-cli/tests/moat_cli.rs`:
 
@@ -77,7 +77,7 @@ fn moat_task_graph_filters_nodes_by_dependency() {
 }
 ```
 
-- [ ] **Step 2: Run the new test and verify RED**
+- [x] **Step 2: Run the new test and verify RED**
 
 Run:
 
@@ -87,7 +87,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli moat_task_graph_filters_nodes_by_depe
 
 Expected: FAIL because `--depends-on` is an unknown flag.
 
-- [ ] **Step 3: Add duplicate flag coverage**
+- [x] **Step 3: Add duplicate flag coverage**
 
 Add this test near parser error tests in `crates/mdid-cli/tests/moat_cli.rs`:
 
@@ -117,7 +117,7 @@ fn moat_task_graph_rejects_duplicate_depends_on_filter() {
 }
 ```
 
-- [ ] **Step 4: Run the duplicate flag test and verify RED**
+- [x] **Step 4: Run the duplicate flag test and verify RED**
 
 Run:
 
@@ -127,7 +127,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli moat_task_graph_rejects_duplicate_dep
 
 Expected: FAIL because `--depends-on` is currently treated as an unknown flag rather than a duplicate-aware flag.
 
-- [ ] **Step 5: Implement the minimal parser and filter code**
+- [x] **Step 5: Implement the minimal parser and filter code**
 
 Change `crates/mdid-cli/src/main.rs` so `MoatTaskGraphCommand` includes the new field:
 
@@ -180,7 +180,7 @@ In `run_moat_task_graph`, add this filter before the existing `contains` filter:
 })
 ```
 
-- [ ] **Step 6: Run targeted tests and verify GREEN**
+- [x] **Step 6: Run targeted tests and verify GREEN**
 
 Run:
 
@@ -191,7 +191,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli moat_task_graph_rejects_duplicate_dep
 
 Expected: both tests PASS.
 
-- [ ] **Step 7: Run the relevant broader CLI filter test subset**
+- [x] **Step 7: Run the relevant broader CLI filter test subset**
 
 Run:
 
@@ -201,7 +201,7 @@ CARGO_INCREMENTAL=0 cargo test -p mdid-cli moat_task_graph --test moat_cli -- --
 
 Expected: all `moat_task_graph...` tests PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 Run:
 
