@@ -604,6 +604,55 @@ fn claim_ready_task_marks_latest_ready_node_in_progress_and_persists() {
 }
 
 #[test]
+fn claim_ready_task_rejects_stale_second_handle_without_overwriting_claim() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "ready node can only be claimed once",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+
+    let mut seed_store =
+        LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    seed_store
+        .append(recorded_at("2026-04-25T21:00:00Z"), report)
+        .expect("ready report should persist");
+    drop(seed_store);
+
+    let mut first_handle = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("first handle should open ready history");
+    let mut stale_second_handle = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("second handle should open same ready history");
+
+    first_handle
+        .claim_ready_task(None, "implementation")
+        .expect("first handle should claim ready task");
+
+    let error = stale_second_handle
+        .claim_ready_task(None, "implementation")
+        .expect_err("stale second handle must not claim already in-progress task");
+    assert!(
+        error.to_string().contains("moat task node is not ready"),
+        "unexpected error: {error}"
+    );
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path).expect("reload should open");
+    assert_eq!(
+        node_state(&reloaded.entries()[0].report, "implementation"),
+        MoatTaskNodeState::InProgress,
+        "stale failed claim must not overwrite persisted in-progress state"
+    );
+}
+
+#[test]
 fn claim_ready_task_uses_exact_round_id_when_provided() {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");

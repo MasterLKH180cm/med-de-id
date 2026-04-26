@@ -200,7 +200,7 @@ impl LocalMoatHistoryStore {
             ));
         }
 
-        let mut next_entries = self.entries.clone();
+        let mut next_entries = load_entries(&self.path)?;
         let entry = match round_id {
             Some(round_id) => next_entries
                 .iter_mut()
