@@ -6,7 +6,7 @@
 
 **Architecture:** The runtime history store owns the safe persisted mutation for a selected round and task node. The CLI parses a small command, calls the runtime mutation, and prints machine-readable output; it does not launch agents, create rounds, schedule background work, or write code.
 
-**Tech Stack:** Rust workspace, `mdid-runtime` local JSONL history store, `mdid-cli` integration tests, Cargo targeted tests with `CARGO_INCREMENTAL=0`.
+**Tech Stack:** Rust workspace, `mdid-runtime` local JSON array history store, `mdid-cli` integration tests, Cargo targeted tests with `CARGO_INCREMENTAL=0`.
 
 ---
 
@@ -40,7 +40,7 @@ Expected: FAIL because `claim_ready_task` does not exist.
 
 - [ ] **Step 3: Implement minimal runtime mutation**
 
-Add `ClaimReadyTaskError` and `LocalMoatHistoryStore::claim_ready_task` in `crates/mdid-runtime/src/moat_history.rs`. The method must not create missing history files, must select latest when `round_id` is `None`, must preserve all unrelated entries and fields, and must rewrite via the existing JSONL format.
+Add `ClaimReadyTaskError` and `LocalMoatHistoryStore::claim_ready_task` in `crates/mdid-runtime/src/moat_history.rs`. The method must not create missing history files, must select latest when `round_id` is `None`, must preserve all unrelated entries and fields, and must rewrite via the existing JSON array format.
 
 - [ ] **Step 4: Run runtime tests to verify GREEN**
 

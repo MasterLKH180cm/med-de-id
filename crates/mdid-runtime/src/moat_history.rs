@@ -3,9 +3,12 @@ use chrono::{DateTime, Utc};
 use mdid_domain::{ContinueDecision, MoatTaskNodeState};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io::Write,
+    ffi::OsString,
+    fs::{self, OpenOptions},
+    io::{self, Write},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -19,6 +22,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 const EVALUATION_TASK_ID: &str = "evaluation";
+const CLAIM_LOCK_RETRY_ATTEMPTS: usize = 200;
+const CLAIM_LOCK_RETRY_SLEEP: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoatHistoryEntry {
@@ -200,6 +205,7 @@ impl LocalMoatHistoryStore {
             ));
         }
 
+        let _claim_lock = ClaimReadyTaskLock::acquire(&self.path)?;
         let mut next_entries = load_entries(&self.path)?;
         let entry = match round_id {
             Some(round_id) => next_entries
@@ -242,6 +248,63 @@ impl LocalMoatHistoryStore {
         atomic_write(&self.path, &contents)?;
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct ClaimReadyTaskLock {
+    path: PathBuf,
+}
+
+impl ClaimReadyTaskLock {
+    fn acquire(history_path: &Path) -> Result<Self, LocalMoatHistoryStoreError> {
+        let path = claim_lock_path(history_path);
+        for attempt in 0..CLAIM_LOCK_RETRY_ATTEMPTS {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    if attempt + 1 == CLAIM_LOCK_RETRY_ATTEMPTS {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "timed out acquiring moat history claim lock: {}",
+                                path.display()
+                            ),
+                        )
+                        .into());
+                    }
+                    thread::sleep(CLAIM_LOCK_RETRY_SLEEP);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "timed out acquiring moat history claim lock: {}",
+                path.display()
+            ),
+        )
+        .into())
+    }
+}
+
+impl Drop for ClaimReadyTaskLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn claim_lock_path(history_path: &Path) -> PathBuf {
+    let mut lock_file_name = history_path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| OsString::from("moat-history.json"));
+    lock_file_name.push(".lock");
+    history_path.with_file_name(lock_file_name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

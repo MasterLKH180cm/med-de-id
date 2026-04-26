@@ -7,7 +7,11 @@ use mdid_runtime::{
     moat::{MoatControlPlaneReport, MoatRoundReport},
     moat_history::{LocalMoatHistoryStore, MoatHistorySummary},
 };
-use std::fs;
+use std::{
+    fs,
+    sync::{Arc, Barrier},
+    thread,
+};
 use tempfile::tempdir;
 use uuid::Uuid;
 
@@ -650,6 +654,72 @@ fn claim_ready_task_rejects_stale_second_handle_without_overwriting_claim() {
         MoatTaskNodeState::InProgress,
         "stale failed claim must not overwrite persisted in-progress state"
     );
+}
+
+#[test]
+fn concurrent_claim_ready_task_allows_exactly_one_claimer() {
+    for attempt in 0..100 {
+        let dir = tempdir().expect("temp dir should exist");
+        let history_path = dir.path().join("moat-history.json");
+        let round_id = Uuid::new_v4();
+        let mut report = sample_report(
+            round_id,
+            ContinueDecision::Continue,
+            None,
+            "concurrent ready node can only be claimed once",
+            90,
+            98,
+            true,
+            &[],
+        );
+        set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+
+        let mut seed_store =
+            LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+        seed_store
+            .append(recorded_at("2026-04-25T21:00:00Z"), report)
+            .expect("ready report should persist");
+        drop(seed_store);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let history_path = history_path.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let mut store = LocalMoatHistoryStore::open_existing(&history_path)
+                        .expect("claimer should open existing history");
+                    barrier.wait();
+                    store.claim_ready_task(None, "implementation")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claimer thread should not panic"))
+            .collect::<Vec<_>>();
+        let success_count = results.iter().filter(|result| result.is_ok()).count();
+        let not_ready_count = results
+            .iter()
+            .filter(|result| {
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.to_string().contains("moat task node is not ready"))
+            })
+            .count();
+
+        assert_eq!(success_count, 1, "attempt {attempt}: {results:?}");
+        assert_eq!(not_ready_count, 1, "attempt {attempt}: {results:?}");
+
+        let reloaded =
+            LocalMoatHistoryStore::open_existing(&history_path).expect("reload should open");
+        assert_eq!(
+            node_state(&reloaded.entries()[0].report, "implementation"),
+            MoatTaskNodeState::InProgress,
+            "attempt {attempt}: persisted node must remain in progress"
+        );
+    }
 }
 
 #[test]
