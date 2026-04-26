@@ -60,6 +60,7 @@ struct MoatTaskGraphCommand {
     node_id: Option<String>,
     title_contains: Option<String>,
     spec_ref: Option<String>,
+    limit: Option<usize>,
 }
 
 fn main() {
@@ -419,6 +420,7 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
     let mut node_id = None;
     let mut title_contains = None;
     let mut spec_ref = None;
+    let mut limit = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -472,6 +474,13 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
                 }
                 spec_ref = Some(value.to_string());
             }
+            "--limit" => {
+                let value = required_flag_value(args, index, "--limit", true)?;
+                if limit.is_some() {
+                    return Err(duplicate_flag_error("--limit"));
+                }
+                limit = Some(parse_task_graph_limit_value(value)?);
+            }
             flag => return Err(format!("unknown flag: {flag}")),
         }
 
@@ -487,7 +496,22 @@ fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand
         node_id,
         title_contains,
         spec_ref,
+        limit,
     })
+}
+
+fn parse_task_graph_limit_value(value: &str) -> Result<usize, String> {
+    let parsed = value.parse::<usize>().map_err(|_| {
+        format!("invalid value for --limit: expected positive integer, got {value}")
+    })?;
+
+    if parsed == 0 {
+        Err(format!(
+            "invalid value for --limit: expected positive integer, got {value}"
+        ))
+    } else {
+        Ok(parsed)
+    }
 }
 
 fn parse_moat_task_graph_role_filter(value: &str) -> Result<AgentRole, String> {
@@ -1070,6 +1094,7 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
     })?;
 
     println!("moat task graph");
+    let limit = command.limit.unwrap_or(usize::MAX);
     for node in latest
         .report
         .control_plane
@@ -1105,6 +1130,7 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
                 .map(|expected_spec_ref| node.spec_ref.as_deref() == Some(expected_spec_ref))
                 .unwrap_or(true)
         })
+        .take(limit)
     {
         println!(
             "node={}|{}|{}|{}|{}|{}|{}",
@@ -1527,7 +1553,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
