@@ -1,6 +1,6 @@
 use crate::moat::MoatRoundReport;
 use chrono::{DateTime, Utc};
-use mdid_domain::ContinueDecision;
+use mdid_domain::{ContinueDecision, MoatTaskNodeState};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -189,6 +189,54 @@ impl LocalMoatHistoryStore {
         }
     }
 
+    pub fn claim_ready_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<(), ClaimReadyTaskError> {
+        if !self.path.exists() {
+            return Err(ClaimReadyTaskError::Store(
+                LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
+            ));
+        }
+
+        let mut next_entries = self.entries.clone();
+        let entry = match round_id {
+            Some(round_id) => next_entries
+                .iter_mut()
+                .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+                .ok_or_else(|| ClaimReadyTaskError::RoundNotFound(round_id.to_string()))?,
+            None => next_entries
+                .last_mut()
+                .ok_or(ClaimReadyTaskError::NoHistoryEntries)?,
+        };
+
+        let node = entry
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| ClaimReadyTaskError::NodeNotFound {
+                round_id: entry.report.summary.round_id.to_string(),
+                node_id: node_id.to_string(),
+            })?;
+
+        if node.state != MoatTaskNodeState::Ready {
+            return Err(ClaimReadyTaskError::NodeNotReady {
+                round_id: entry.report.summary.round_id.to_string(),
+                node_id: node_id.to_string(),
+                state: node.state,
+            });
+        }
+
+        node.state = MoatTaskNodeState::InProgress;
+        self.persist(&next_entries)?;
+        self.entries = next_entries;
+        Ok(())
+    }
+
     fn persist(&self, entries: &[MoatHistoryEntry]) -> Result<(), LocalMoatHistoryStoreError> {
         let contents = serde_json::to_vec_pretty(entries)?;
         atomic_write(&self.path, &contents)?;
@@ -290,6 +338,24 @@ fn encode_wide_path(path: &Path) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+#[derive(Debug, Error)]
+pub enum ClaimReadyTaskError {
+    #[error(transparent)]
+    Store(#[from] LocalMoatHistoryStoreError),
+    #[error("no moat history entries exist")]
+    NoHistoryEntries,
+    #[error("moat round not found: {0}")]
+    RoundNotFound(String),
+    #[error("moat task node not found in round {round_id}: {node_id}")]
+    NodeNotFound { round_id: String, node_id: String },
+    #[error("moat task node is not ready in round {round_id}: {node_id} is {state:?}")]
+    NodeNotReady {
+        round_id: String,
+        node_id: String,
+        state: MoatTaskNodeState,
+    },
 }
 
 #[derive(Debug, Error)]
