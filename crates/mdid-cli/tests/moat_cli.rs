@@ -2084,6 +2084,164 @@ fn moat_decision_log_requires_history_path() {
     assert!(stderr.contains(USAGE));
 }
 
+fn patch_latest_reviewer_decision_with_escaped_field_fixtures(history_path: &PathBuf) {
+    let json = fs::read_to_string(history_path).expect("history json should be readable");
+    let json = json
+        .replace(
+            "\"summary\": \"review approved bounded moat round\"",
+            "\"summary\": \"review|approved\\nsummary\"",
+        )
+        .replace(
+            "\"rationale\": \"review approved bounded moat round after evaluation cleared the improvement threshold\"",
+            "\"rationale\": \"evaluation|completed\\rpath\\\\tail\"",
+        );
+    fs::write(history_path, json).expect("patched history json should be writable");
+}
+
+const ESCAPED_DECISION_LOG_OUTPUT: &str = concat!(
+    "decision_log_entries=1\n",
+    "decision=reviewer|review\\|approved\\nsummary|evaluation\\|completed\\rpath\\\\tail\n",
+);
+
+#[test]
+fn cli_moat_decision_log_escapes_pipe_delimited_summary_and_rationale_fields() {
+    let history_path = unique_history_path("decision-log-escaped-fields");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    patch_latest_reviewer_decision_with_escaped_field_fixtures(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "decision-log", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        ESCAPED_DECISION_LOG_OUTPUT
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn decision_log_escaped_output_does_not_append_history() {
+    let history_path = unique_history_path("decision-log-escaped-read-only");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    patch_latest_reviewer_decision_with_escaped_field_fixtures(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "decision-log", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat decision-log");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        ESCAPED_DECISION_LOG_OUTPUT
+    );
+
+    let history = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "history", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat history");
+    assert!(
+        history.status.success(),
+        "{}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    assert!(String::from_utf8_lossy(&history.stdout).contains("entries=1\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn decision_log_filters_before_escaping_output_fields() {
+    let history_path = unique_history_path("decision-log-escaped-filters");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    patch_latest_reviewer_decision_with_escaped_field_fixtures(&history_path);
+
+    for args in [
+        vec!["--summary-contains", "review|approved"],
+        vec!["--rationale-contains", "path\\tail"],
+        vec!["--contains", "completed\rpath"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+            .args(["moat", "decision-log", "--history-path", history_path_arg])
+            .args(args)
+            .output()
+            .expect("failed to run filtered mdid-cli moat decision-log");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            ESCAPED_DECISION_LOG_OUTPUT
+        );
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--summary-contains",
+            "review\\|approved",
+        ])
+        .output()
+        .expect("failed to run nonmatching filtered mdid-cli moat decision-log");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "decision_log_entries=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
 #[test]
 fn moat_decision_log_inspects_latest_persisted_round_without_appending() {
     let history_path = unique_history_path("decision-log");
