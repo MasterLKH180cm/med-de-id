@@ -1810,6 +1810,42 @@ fn run_moat_complete_task(command: &MoatCompleteTaskCommand) -> Result<(), Strin
     println!("new_state=completed");
     println!("history_path={}", command.history_path);
 
+    let updated_store = LocalMoatHistoryStore::open_existing(&command.history_path)
+        .map_err(|error| format!("failed to reload moat history store: {error}"))?;
+    let updated_entry = updated_store
+        .entries()
+        .iter()
+        .find(|entry| entry.report.summary.round_id.to_string() == selected_round_id)
+        .ok_or_else(|| format!("moat round not found after completion: {selected_round_id}"))?;
+    let ready_ids = updated_entry
+        .report
+        .control_plane
+        .task_graph
+        .ready_node_ids();
+    let next_ready_nodes = updated_entry
+        .report
+        .control_plane
+        .task_graph
+        .nodes
+        .iter()
+        .filter(|node| ready_ids.iter().any(|ready_id| ready_id == &node.node_id))
+        .collect::<Vec<_>>();
+
+    println!("next_ready_task_entries={}", next_ready_nodes.len());
+    for node in next_ready_nodes {
+        println!(
+            "next_ready_task={}|{}|{}|{}|{}",
+            format_agent_role(node.role),
+            escape_assignment_output_field(&node.node_id),
+            escape_assignment_output_field(&node.title),
+            format_moat_task_kind(node.kind),
+            node.spec_ref
+                .as_deref()
+                .map(escape_assignment_output_field)
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+    }
+
     Ok(())
 }
 
