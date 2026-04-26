@@ -32,6 +32,7 @@ struct MoatControlPlaneCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MoatHistoryCommand {
     history_path: String,
+    decision: Option<ContinueDecision>,
     limit: Option<usize>,
 }
 
@@ -230,6 +231,7 @@ fn parse_moat_control_plane_command(args: &[String]) -> Result<MoatControlPlaneC
 
 fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, String> {
     let mut history_path = None;
+    let mut decision = None;
     let mut limit = None;
     let mut index = 0;
 
@@ -241,6 +243,14 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
                     return Err(duplicate_flag_error("--history-path"));
                 }
                 history_path = Some(value);
+                index += 2;
+            }
+            "--decision" => {
+                let value = required_flag_value(args, index, "--decision", false)?;
+                if decision.is_some() {
+                    return Err(duplicate_flag_error("--decision"));
+                }
+                decision = Some(parse_continue_decision_filter(value)?);
                 index += 2;
             }
             "--limit" => {
@@ -258,8 +268,17 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
     Ok(MoatHistoryCommand {
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        decision,
         limit,
     })
+}
+
+fn parse_continue_decision_filter(value: &str) -> Result<ContinueDecision, String> {
+    match value {
+        "Continue" => Ok(ContinueDecision::Continue),
+        "Stop" => Ok(ContinueDecision::Stop),
+        other => Err(format!("unknown moat history decision: {other}")),
+    }
 }
 
 fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCommand, String> {
@@ -980,16 +999,21 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
     print_history_summary(&store.summary());
 
     if let Some(limit) = command.limit {
-        let recent_entries = entries
+        let mut filtered_entries = entries
             .iter()
-            .rev()
-            .take(limit)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
+            .filter(|entry| {
+                command
+                    .decision
+                    .map(|decision| entry.report.summary.continue_decision == decision)
+                    .unwrap_or(true)
+            })
             .collect::<Vec<_>>();
-        println!("history_rounds={}", recent_entries.len());
-        for entry in recent_entries {
+        let excess = filtered_entries.len().saturating_sub(limit);
+        if excess > 0 {
+            filtered_entries.drain(0..excess);
+        }
+        println!("history_rounds={}", filtered_entries.len());
+        for entry in filtered_entries {
             println!(
                 "round={}|{}|{}|{}",
                 entry.report.summary.round_id,
@@ -1658,7 +1682,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -1764,6 +1788,7 @@ mod tests {
             .unwrap(),
             CliCommand::MoatHistory(MoatHistoryCommand {
                 history_path: "history.json".into(),
+                decision: None,
                 limit: None,
             })
         );

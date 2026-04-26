@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--decision Continue|Stop] [--limit N] | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -227,6 +227,86 @@ fn cli_reports_limited_recent_moat_history_rounds() {
     assert!(
         output.status.success(),
         "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat history summary\n",
+            "entries=2\n",
+            "latest_round_id={latest_round_id}\n",
+            "latest_continue_decision=Stop\n",
+            "latest_stop_reason=review budget exhausted\n",
+            "latest_decision_summary=implementation stopped before review\n",
+            "latest_implemented_specs=moat-spec/workflow-audit\n",
+            "latest_moat_score_after=90\n",
+            "best_moat_score_after=98\n",
+            "improvement_deltas=8,0\n",
+            "history_rounds=1\n",
+            "round={latest_round_id}|Stop|90|review budget exhausted\n",
+        )
+        .replace("{latest_round_id}", &latest_round_id)
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_recent_moat_history_rounds_by_continue_decision() {
+    let history_path = unique_history_path("history-decision-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let continue_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run continuing mdid-cli moat round");
+    assert!(
+        continue_output.status.success(),
+        "expected continuing round success, stderr was: {}",
+        String::from_utf8_lossy(&continue_output.stderr)
+    );
+
+    let stop_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run stopping mdid-cli moat round");
+    assert!(
+        stop_output.status.success(),
+        "expected stopping round success, stderr was: {}",
+        String::from_utf8_lossy(&stop_output.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let latest_round_id = store
+        .summary()
+        .latest_round_id
+        .clone()
+        .expect("summary should expose latest round id");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--decision",
+            "Stop",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with decision filter");
+
+    assert!(
+        output.status.success(),
+        "expected history filter success, stderr was: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
