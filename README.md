@@ -60,7 +60,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, and the bounded Slice 5/6 PDF support foundation.
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and a bounded runtime DICOM HTTP entry.
 
 Implemented so far:
 
@@ -70,7 +70,10 @@ Implemented so far:
 - Tabular application orchestration that composes the adapters with vault-backed reversible encoding and honest batch summaries
 - Bounded PDF support for text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure
 - Current PDF support does not yet perform full OCR, visual redaction, handwriting handling, or final PDF rewrite/export
-- Initial `mdid-runtime`, `mdid-cli`, `mdid-browser`, and `mdid-desktop` scaffolding from the foundation slice
+- `mdid-runtime` now exposes a bounded local HTTP DICOM de-identification entry that accepts local/base64-transported DICOM bytes, applies the existing private-tag policy service logic, returns rewritten DICOM bytes plus a review summary/review queue, and honestly rejects invalid DICOM payloads
+- `mdid-cli`, `mdid-browser`, and `mdid-desktop` remain early surface scaffolds
+
+The current runtime HTTP slice is intentionally narrow: it does not yet imply full authentication, persistence, generalized decode, or export APIs.
 
 Planned next from the design:
 
