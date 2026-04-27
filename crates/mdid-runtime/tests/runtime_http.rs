@@ -109,7 +109,10 @@ async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
         .unwrap();
     let rewritten_obj = parse_dicom(&rewritten);
 
-    assert_ne!(tag_value(&rewritten_obj, Tag(0x0010, 0x0010)), "Alice^Smith");
+    assert_ne!(
+        tag_value(&rewritten_obj, Tag(0x0010, 0x0010)),
+        "Alice^Smith"
+    );
     assert_eq!(tag_value(&rewritten_obj, Tag(0x0028, 0x0301)), "YES");
 }
 
@@ -209,8 +212,14 @@ async fn vault_decode_endpoint_returns_decoded_values_and_audit_event() {
     assert_eq!(values[0]["original_value"], "Alice Smith");
     assert_eq!(values[0]["token"], stored.token);
     assert_eq!(values[0]["record_id"], stored.id.to_string());
-    assert_eq!(values[0]["scope"]["job_id"], stored.scope.job_id.to_string());
-    assert_eq!(values[0]["scope"]["artifact_id"], stored.scope.artifact_id.to_string());
+    assert_eq!(
+        values[0]["scope"]["job_id"],
+        stored.scope.job_id.to_string()
+    );
+    assert_eq!(
+        values[0]["scope"]["artifact_id"],
+        stored.scope.artifact_id.to_string()
+    );
     assert_eq!(values[0]["scope"]["field_path"], stored.scope.field_path);
 
     assert_eq!(json["audit_event"]["kind"], "decode");
@@ -252,12 +261,15 @@ async fn vault_decode_endpoint_rejects_unknown_record_scope() {
 
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json, json!({
-        "error": {
-            "code": "unknown_record",
-            "message": "decode scope referenced a record that does not exist"
-        }
-    }));
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "unknown_record",
+                "message": "decode scope referenced a record that does not exist"
+            }
+        })
+    );
     assert!(json.get("values").is_none());
     assert!(json.get("audit_event").is_none());
 }
@@ -304,12 +316,15 @@ async fn vault_decode_endpoint_rejects_wrong_passphrase() {
 
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json, json!({
-        "error": {
-            "code": "vault_unlock_failed",
-            "message": "vault could not be unlocked with the supplied passphrase"
-        }
-    }));
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "vault_unlock_failed",
+                "message": "vault could not be unlocked with the supplied passphrase"
+            }
+        })
+    );
     assert!(json.get("values").is_none());
     assert!(json.get("audit_event").is_none());
 }
@@ -376,18 +391,66 @@ async fn vault_decode_endpoint_rejects_unusable_vault_target() {
     assert_invalid_vault_target_response(response).await;
 }
 
+#[tokio::test]
+async fn vault_decode_endpoint_rejects_corrupted_encrypted_vault_artifact() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let mut envelope: Value =
+        serde_json::from_str(&std::fs::read_to_string(&vault_path).unwrap()).unwrap();
+    envelope["ciphertext_b64"] = json!("%%%not-base64%%%");
+    std::fs::write(&vault_path, envelope.to_string()).unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [stored.id],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_vault_target_response(response).await;
+}
+
 async fn assert_invalid_dicom_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json, json!({
-        "error": {
-            "code": "invalid_dicom",
-            "message": "request body did not contain a valid DICOM payload"
-        }
-    }));
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_dicom",
+                "message": "request body did not contain a valid DICOM payload"
+            }
+        })
+    );
     assert!(json.get("rewritten_dicom_bytes_base64").is_none());
     assert!(json.get("summary").is_none());
     assert!(json.get("review_queue").is_none());
@@ -399,12 +462,15 @@ async fn assert_invalid_decode_request_response(response: axum::response::Respon
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json, json!({
-        "error": {
-            "code": "invalid_decode_request",
-            "message": "request body did not contain a valid vault decode request"
-        }
-    }));
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_decode_request",
+                "message": "request body did not contain a valid vault decode request"
+            }
+        })
+    );
     assert!(json.get("values").is_none());
     assert!(json.get("audit_event").is_none());
 }
@@ -415,12 +481,15 @@ async fn assert_invalid_vault_target_response(response: axum::response::Response
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json, json!({
-        "error": {
-            "code": "invalid_vault_target",
-            "message": "vault target could not be read as a usable vault artifact"
-        }
-    }));
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_vault_target",
+                "message": "vault target could not be read as a usable vault artifact"
+            }
+        })
+    );
     assert!(json.get("values").is_none());
     assert!(json.get("audit_event").is_none());
 }

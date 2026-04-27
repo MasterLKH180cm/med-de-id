@@ -101,9 +101,7 @@ async fn create_pipeline(
     (StatusCode::CREATED, Json(pipeline))
 }
 
-async fn dicom_deidentify(
-    Json(payload): Json<DicomDeidentifyRequest>,
-) -> Response {
+async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Response {
     let dicom_bytes = match STANDARD.decode(&payload.dicom_bytes_base64) {
         Ok(bytes) => bytes,
         Err(_) => return invalid_dicom_response().into_response(),
@@ -178,22 +176,25 @@ fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnv
 fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         VaultError::UnknownRecord(_) => unknown_record_response(),
-        VaultError::Decrypt => vault_unlock_failed_response(),
-        VaultError::BlankPassphrase | VaultError::EmptyExportScope | VaultError::BlankExportContext => {
-            invalid_decode_request_response()
-        }
+        VaultError::UnlockFailed => vault_unlock_failed_response(),
+        VaultError::BlankPassphrase
+        | VaultError::EmptyExportScope
+        | VaultError::BlankExportContext => invalid_decode_request_response(),
         VaultError::Io(_)
         | VaultError::Serde(_)
         | VaultError::UnsupportedKdfAlgorithm(_)
         | VaultError::UnsupportedKdfVersion(_)
         | VaultError::InvalidKdfParameters
         | VaultError::InvalidNonceLength { .. }
-        | VaultError::KeyDerivation => invalid_vault_target_response(),
+        | VaultError::KeyDerivation
+        | VaultError::InvalidArtifact => invalid_vault_target_response(),
         VaultError::AlreadyExists(_) | VaultError::Encrypt => internal_error_response(),
     }
 }
 
-fn success_response(output: DicomDeidentificationOutput) -> (StatusCode, Json<DicomDeidentifyResponse>) {
+fn success_response(
+    output: DicomDeidentificationOutput,
+) -> (StatusCode, Json<DicomDeidentifyResponse>) {
     (
         StatusCode::OK,
         Json(DicomDeidentifyResponse {
@@ -292,23 +293,38 @@ mod tests {
                 .expect_err("garbage bytes should fail DICOM parse"),
         );
 
-        assert_eq!(map_application_error(&error).0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            map_application_error(&error).0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 
     #[test]
     fn classifies_rewrite_meta_errors_as_internal_error() {
         let error = ApplicationError::DicomAdapter(invalid_meta_error().into());
 
-        assert!(matches!(error, ApplicationError::DicomAdapter(DicomAdapterError::Meta(_))));
-        assert_eq!(map_application_error(&error).0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(matches!(
+            error,
+            ApplicationError::DicomAdapter(DicomAdapterError::Meta(_))
+        ));
+        assert_eq!(
+            map_application_error(&error).0,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
     fn classifies_rewrite_write_errors_as_internal_error() {
         let error = ApplicationError::DicomAdapter(invalid_write_error().into());
 
-        assert!(matches!(error, ApplicationError::DicomAdapter(DicomAdapterError::Write(_))));
-        assert_eq!(map_application_error(&error).0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(matches!(
+            error,
+            ApplicationError::DicomAdapter(DicomAdapterError::Write(_))
+        ));
+        assert_eq!(
+            map_application_error(&error).0,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     fn invalid_meta_error() -> dicom_object::WithMetaError {

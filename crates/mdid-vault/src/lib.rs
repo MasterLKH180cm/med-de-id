@@ -72,6 +72,8 @@ impl Default for KdfMetadata {
 pub struct PortableVaultArtifact {
     #[serde(default)]
     kdf: KdfMetadata,
+    #[serde(default)]
+    verifier_b64: Option<String>,
     salt_b64: String,
     nonce_b64: String,
     ciphertext_b64: String,
@@ -82,6 +84,7 @@ impl PortableVaultArtifact {
         decrypt_payload(
             passphrase,
             &self.kdf,
+            self.verifier_b64.as_deref(),
             &self.salt_b64,
             &self.nonce_b64,
             &self.ciphertext_b64,
@@ -99,6 +102,8 @@ struct VaultState {
 struct VaultEnvelope {
     #[serde(default)]
     kdf: KdfMetadata,
+    #[serde(default)]
+    verifier_b64: Option<String>,
     salt_b64: String,
     nonce_b64: String,
     ciphertext_b64: String,
@@ -145,6 +150,7 @@ impl LocalVaultStore {
         let state = decrypt_payload(
             passphrase,
             &envelope.kdf,
+            envelope.verifier_b64.as_deref(),
             &envelope.salt_b64,
             &envelope.nonce_b64,
             &envelope.ciphertext_b64,
@@ -291,6 +297,7 @@ impl LocalVaultStore {
 
         Ok(PortableVaultArtifact {
             kdf: encrypted.kdf,
+            verifier_b64: Some(encrypted.verifier_b64),
             salt_b64: encrypted.salt_b64,
             nonce_b64: encrypted.nonce_b64,
             ciphertext_b64: encrypted.ciphertext_b64,
@@ -368,6 +375,7 @@ impl LocalVaultStore {
         let encrypted = encrypt_payload(&self.passphrase, state)?;
         let envelope = VaultEnvelope {
             kdf: encrypted.kdf,
+            verifier_b64: Some(encrypted.verifier_b64),
             salt_b64: encrypted.salt_b64,
             nonce_b64: encrypted.nonce_b64,
             ciphertext_b64: encrypted.ciphertext_b64,
@@ -402,8 +410,10 @@ pub enum VaultError {
     KeyDerivation,
     #[error("vault encryption failure")]
     Encrypt,
-    #[error("vault decryption failure")]
-    Decrypt,
+    #[error("vault unlock failed")]
+    UnlockFailed,
+    #[error("vault artifact is malformed or corrupted")]
+    InvalidArtifact,
     #[error("unknown mapping record: {0}")]
     UnknownRecord(Uuid),
     #[error("portable export must include at least one mapping record")]
@@ -413,6 +423,7 @@ pub enum VaultError {
 #[derive(Debug, Clone)]
 struct EncryptedPayload {
     kdf: KdfMetadata,
+    verifier_b64: String,
     salt_b64: String,
     nonce_b64: String,
     ciphertext_b64: String,
@@ -442,6 +453,7 @@ fn encrypt_payload<T: Serialize>(
 
     Ok(EncryptedPayload {
         kdf,
+        verifier_b64: encode_passphrase_verifier(&key)?,
         salt_b64: STANDARD.encode(salt),
         nonce_b64: STANDARD.encode(nonce_bytes),
         ciphertext_b64: STANDARD.encode(ciphertext),
@@ -451,19 +463,22 @@ fn encrypt_payload<T: Serialize>(
 fn decrypt_payload<T: for<'de> Deserialize<'de>>(
     passphrase: &str,
     kdf: &KdfMetadata,
+    verifier_b64: Option<&str>,
     salt_b64: &str,
     nonce_b64: &str,
     ciphertext_b64: &str,
 ) -> Result<T, VaultError> {
     ensure_non_blank_passphrase(passphrase)?;
 
-    let salt = STANDARD.decode(salt_b64).map_err(|_| VaultError::Decrypt)?;
+    let salt = STANDARD
+        .decode(salt_b64)
+        .map_err(|_| VaultError::InvalidArtifact)?;
     let nonce_bytes = STANDARD
         .decode(nonce_b64)
-        .map_err(|_| VaultError::Decrypt)?;
+        .map_err(|_| VaultError::InvalidArtifact)?;
     let ciphertext = STANDARD
         .decode(ciphertext_b64)
-        .map_err(|_| VaultError::Decrypt)?;
+        .map_err(|_| VaultError::InvalidArtifact)?;
 
     if nonce_bytes.len() != CHACHA20POLY1305_NONCE_LEN {
         return Err(VaultError::InvalidNonceLength {
@@ -473,13 +488,40 @@ fn decrypt_payload<T: for<'de> Deserialize<'de>>(
     }
 
     let key = derive_key(passphrase, &salt, kdf)?;
+    if let Some(verifier_b64) = verifier_b64 {
+        verify_passphrase(&key, verifier_b64)?;
+    }
     let cipher = ChaCha20Poly1305::new((&key).into());
     let nonce = Nonce::clone_from_slice(&nonce_bytes);
-    let plaintext = cipher
-        .decrypt(&nonce, ciphertext.as_ref())
-        .map_err(|_| VaultError::Decrypt)?;
+    let plaintext = cipher.decrypt(&nonce, ciphertext.as_ref()).map_err(|_| {
+        if verifier_b64.is_some() {
+            VaultError::InvalidArtifact
+        } else {
+            VaultError::UnlockFailed
+        }
+    })?;
 
-    Ok(serde_json::from_slice(&plaintext)?)
+    serde_json::from_slice(&plaintext).map_err(|_| VaultError::InvalidArtifact)
+}
+
+fn encode_passphrase_verifier(key: &[u8; CHACHA20POLY1305_KEY_LEN]) -> Result<String, VaultError> {
+    let cipher = ChaCha20Poly1305::new(key.into());
+    let nonce = Nonce::from_slice(&[0u8; CHACHA20POLY1305_NONCE_LEN]);
+    let verifier = cipher
+        .encrypt(nonce, b"mdid-vault-passphrase-verifier-v1".as_ref())
+        .map_err(|_| VaultError::Encrypt)?;
+    Ok(STANDARD.encode(verifier))
+}
+
+fn verify_passphrase(
+    key: &[u8; CHACHA20POLY1305_KEY_LEN],
+    verifier_b64: &str,
+) -> Result<(), VaultError> {
+    if encode_passphrase_verifier(key)? == verifier_b64 {
+        Ok(())
+    } else {
+        Err(VaultError::UnlockFailed)
+    }
 }
 
 fn derive_key(

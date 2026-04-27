@@ -388,11 +388,56 @@ fn wrong_passphrases_fail_cleanly_for_vault_and_portable_artifact_unlock() {
 
     assert!(matches!(
         LocalVaultStore::unlock(&path, "totally wrong passphrase"),
-        Err(VaultError::Decrypt)
+        Err(VaultError::UnlockFailed)
     ));
     assert!(matches!(
         artifact.unlock("totally wrong passphrase"),
-        Err(VaultError::Decrypt)
+        Err(VaultError::UnlockFailed)
+    ));
+}
+
+#[test]
+fn corrupted_encrypted_vault_artifacts_return_invalid_artifact_errors() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("vault.mdid");
+
+    let mut vault = LocalVaultStore::create(&path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    let artifact = vault
+        .export_portable(
+            &[stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "incident package",
+        )
+        .unwrap();
+
+    let mut vault_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    vault_json["ciphertext_b64"] = serde_json::json!("%%%not-base64%%%");
+    std::fs::write(&path, vault_json.to_string()).unwrap();
+
+    let mut artifact_json = serde_json::to_value(&artifact).unwrap();
+    artifact_json["ciphertext_b64"] = serde_json::json!("%%%not-base64%%%");
+    let corrupted_artifact: PortableVaultArtifact = serde_json::from_value(artifact_json).unwrap();
+
+    assert!(matches!(
+        LocalVaultStore::unlock(&path, "correct horse battery staple"),
+        Err(VaultError::InvalidArtifact)
+    ));
+    assert!(matches!(
+        corrupted_artifact.unlock("portable-passphrase"),
+        Err(VaultError::InvalidArtifact)
     ));
 }
 
