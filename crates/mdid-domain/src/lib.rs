@@ -349,7 +349,11 @@ impl PdfPageRef {
     }
 
     pub fn field_path(&self) -> String {
-        format!("pdf/pages/{}/{}", self.page_number, self.label)
+        format!(
+            "pdf/pages/{}/{}",
+            self.page_number,
+            self.label.replace('/', "_")
+        )
     }
 }
 

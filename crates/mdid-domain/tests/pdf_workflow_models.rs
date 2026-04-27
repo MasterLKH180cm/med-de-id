@@ -1,4 +1,6 @@
-use mdid_domain::{PdfExtractionSummary, PdfPageRef, PdfPhiCandidate, PdfScanStatus, ReviewDecision};
+use mdid_domain::{
+    PdfExtractionSummary, PdfPageRef, PdfPhiCandidate, PdfScanStatus, ReviewDecision,
+};
 
 #[test]
 fn pdf_page_ref_builds_a_stable_field_path() {
@@ -7,9 +9,21 @@ fn pdf_page_ref_builds_a_stable_field_path() {
 }
 
 #[test]
+fn pdf_page_ref_sanitizes_slashes_in_field_path_labels() {
+    let page = PdfPageRef::new(3, "page/3".into());
+    assert_eq!(page.field_path(), "pdf/pages/3/page_3");
+}
+
+#[test]
 fn pdf_scan_status_wire_values_are_stable() {
-    assert_eq!(serde_json::to_string(&PdfScanStatus::TextLayerPresent).unwrap(), "\"text_layer_present\"");
-    assert_eq!(serde_json::to_string(&PdfScanStatus::OcrRequired).unwrap(), "\"ocr_required\"");
+    assert_eq!(
+        serde_json::to_string(&PdfScanStatus::TextLayerPresent).unwrap(),
+        "\"text_layer_present\""
+    );
+    assert_eq!(
+        serde_json::to_string(&PdfScanStatus::OcrRequired).unwrap(),
+        "\"ocr_required\""
+    );
 }
 
 #[test]
