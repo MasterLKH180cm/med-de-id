@@ -10,9 +10,13 @@ use dicom_object::{
     file::ReadPreamble, meta::FileMetaTableBuilder, DefaultDicomObject, InMemDicomObject,
     OpenFileOptions,
 };
+use mdid_domain::{MappingScope, SurfaceKind};
 use mdid_runtime::http::{build_router, RuntimeState};
+use mdid_vault::{LocalVaultStore, NewMappingRecord};
 use serde_json::{json, Value};
+use tempfile::tempdir;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
@@ -157,6 +161,159 @@ async fn dicom_deidentify_endpoint_rejects_invalid_dicom_bytes() {
     assert_invalid_dicom_response(response).await;
 }
 
+#[tokio::test]
+async fn vault_decode_endpoint_returns_decoded_values_and_audit_event() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [stored.id],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    let values = json["values"].as_array().unwrap();
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0]["original_value"], "Alice Smith");
+    assert_eq!(values[0]["token"], stored.token);
+    assert_eq!(values[0]["record_id"], stored.id.to_string());
+    assert_eq!(values[0]["scope"]["job_id"], stored.scope.job_id.to_string());
+    assert_eq!(values[0]["scope"]["artifact_id"], stored.scope.artifact_id.to_string());
+    assert_eq!(values[0]["scope"]["field_path"], stored.scope.field_path);
+
+    assert_eq!(json["audit_event"]["kind"], "decode");
+    let detail = json["audit_event"]["detail"].as_str().unwrap();
+    assert!(detail.contains("investigator export"));
+    assert!(detail.contains("incident review"));
+    assert!(detail.contains("1 record"));
+}
+
+#[tokio::test]
+async fn vault_decode_endpoint_rejects_unknown_record_scope() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [Uuid::new_v4()],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json, json!({
+        "error": {
+            "code": "unknown_record",
+            "message": "decode scope referenced a record that does not exist"
+        }
+    }));
+    assert!(json.get("values").is_none());
+    assert!(json.get("audit_event").is_none());
+}
+
+#[tokio::test]
+async fn vault_decode_endpoint_rejects_wrong_passphrase() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "totally wrong passphrase",
+        "record_ids": [stored.id],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json, json!({
+        "error": {
+            "code": "vault_unlock_failed",
+            "message": "vault could not be unlocked with the supplied passphrase"
+        }
+    }));
+    assert!(json.get("values").is_none());
+    assert!(json.get("audit_event").is_none());
+}
+
 async fn assert_invalid_dicom_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -235,4 +392,8 @@ fn tag_value(obj: &DefaultDicomObject, tag: Tag) -> String {
         .to_str()
         .expect("expected DICOM tag to be textual")
         .into_owned()
+}
+
+fn sample_scope(field_path: &str) -> MappingScope {
+    MappingScope::new(Uuid::new_v4(), Uuid::new_v4(), field_path.to_string())
 }

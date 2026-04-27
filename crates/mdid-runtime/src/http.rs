@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{rejection::JsonRejection, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -10,9 +10,13 @@ use mdid_adapters::DicomAdapterError;
 use mdid_application::{
     ApplicationError, ApplicationService, DicomDeidentificationOutput, DicomDeidentificationService,
 };
-use mdid_domain::{DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, SurfaceKind};
-use mdid_vault::LocalVaultStore;
+use mdid_domain::{
+    DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy,
+    SurfaceKind,
+};
+use mdid_vault::{LocalVaultStore, VaultError};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use tempfile::tempdir;
 
 #[derive(Clone, Default)]
@@ -32,6 +36,16 @@ struct DicomDeidentifyRequest {
     private_tag_policy: DicomPrivateTagPolicy,
 }
 
+#[derive(Debug, Deserialize)]
+struct VaultDecodeRequest {
+    vault_path: PathBuf,
+    vault_passphrase: String,
+    record_ids: Vec<uuid::Uuid>,
+    output_target: String,
+    justification: String,
+    requested_by: SurfaceKind,
+}
+
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
@@ -43,6 +57,12 @@ struct DicomDeidentifyResponse {
     rewritten_dicom_bytes_base64: String,
     summary: DicomDeidentificationSummary,
     review_queue: Vec<DicomPhiCandidate>,
+}
+
+#[derive(Debug, Serialize)]
+struct VaultDecodeResponse {
+    values: Vec<mdid_domain::DecodedValue>,
+    audit_event: mdid_domain::AuditEvent,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +81,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
         .route("/dicom/deidentify", post(dicom_deidentify))
+        .route("/vault/decode", post(vault_decode))
         .with_state(state)
 }
 
@@ -112,10 +133,53 @@ async fn dicom_deidentify(
     success_response(output).into_response()
 }
 
+async fn vault_decode(payload: Result<Json<VaultDecodeRequest>, JsonRejection>) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_decode_request_response().into_response(),
+    };
+
+    let request = match DecodeRequest::new(
+        payload.record_ids,
+        payload.output_target,
+        payload.justification,
+        payload.requested_by,
+    ) {
+        Ok(request) => request,
+        Err(_) => return invalid_decode_request_response().into_response(),
+    };
+
+    let mut vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
+        Ok(vault) => vault,
+        Err(error) => return map_vault_error(&error).into_response(),
+    };
+
+    match vault.decode(request) {
+        Ok(decoded) => (
+            StatusCode::OK,
+            Json(VaultDecodeResponse {
+                values: decoded.values,
+                audit_event: decoded.audit_event,
+            }),
+        )
+            .into_response(),
+        Err(error) => map_vault_error(&error).into_response(),
+    }
+}
+
 fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         ApplicationError::DicomAdapter(DicomAdapterError::Parse(_))
         | ApplicationError::DicomAdapter(DicomAdapterError::Value(_)) => invalid_dicom_response(),
+        _ => internal_error_response(),
+    }
+}
+
+fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        VaultError::UnknownRecord(_) => unknown_record_response(),
+        VaultError::Decrypt => vault_unlock_failed_response(),
+        VaultError::BlankPassphrase => invalid_decode_request_response(),
         _ => internal_error_response(),
     }
 }
@@ -139,6 +203,42 @@ fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_dicom",
                 message: "request body did not contain a valid DICOM payload",
+            },
+        }),
+    )
+}
+
+fn invalid_decode_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_decode_request",
+                message: "request body did not contain a valid vault decode request",
+            },
+        }),
+    )
+}
+
+fn unknown_record_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "unknown_record",
+                message: "decode scope referenced a record that does not exist",
+            },
+        }),
+    )
+}
+
+fn vault_unlock_failed_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "vault_unlock_failed",
+                message: "vault could not be unlocked with the supplied passphrase",
             },
         }),
     )
