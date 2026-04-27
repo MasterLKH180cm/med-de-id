@@ -1,6 +1,9 @@
 use crate::moat::MoatRoundReport;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use mdid_domain::{ContinueDecision, MoatTaskArtifact, MoatTaskNode, MoatTaskNodeState};
+use mdid_domain::{
+    ContinueDecision, MoatTaskArtifact, MoatTaskEvent, MoatTaskEventAction, MoatTaskNode,
+    MoatTaskNodeState,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -269,6 +272,15 @@ impl LocalMoatHistoryStore {
         node.claimed_at = Some(now);
         node.last_heartbeat_at = Some(now);
         node.lease_expires_at = Some(now + ChronoDuration::seconds(lease_seconds));
+        append_task_event(
+            &mut entry.report.control_plane.task_graph.events,
+            entry.report.summary.round_id,
+            node_id,
+            MoatTaskEventAction::Claim,
+            agent_id,
+            now,
+            "task claimed",
+        );
         self.persist(&next_entries)?;
         self.entries = next_entries;
         Ok(())
@@ -338,6 +350,14 @@ impl LocalMoatHistoryStore {
             node.lease_expires_at = Some(now + ChronoDuration::seconds(lease_seconds));
             Ok(())
         })?;
+        self.append_task_event_to_history(
+            &selected_round_id,
+            node_id,
+            MoatTaskEventAction::Heartbeat,
+            agent_id,
+            now,
+            "task heartbeat recorded",
+        )?;
         Ok(selected_round_id)
     }
 
@@ -367,9 +387,19 @@ impl LocalMoatHistoryStore {
             if node.state == MoatTaskNodeState::InProgress
                 && node.lease_expires_at.is_some_and(|expiry| expiry <= now)
             {
+                let reaped_agent_id = node.assigned_agent_id.clone();
                 node.state = MoatTaskNodeState::Ready;
                 node.assigned_agent_id = None;
                 clear_lease_metadata(node);
+                append_task_event(
+                    &mut entry.report.control_plane.task_graph.events,
+                    entry.report.summary.round_id,
+                    &node.node_id,
+                    MoatTaskEventAction::Reap,
+                    reaped_agent_id.as_deref(),
+                    now,
+                    "stale task reaped",
+                );
                 reaped.push(node.node_id.clone());
             }
         }
@@ -488,6 +518,27 @@ impl LocalMoatHistoryStore {
             });
         }
 
+        let action = match (expected_state, next_state) {
+            (MoatTaskNodeState::InProgress, MoatTaskNodeState::Completed) => {
+                MoatTaskEventAction::Complete
+            }
+            (MoatTaskNodeState::InProgress, MoatTaskNodeState::Ready) => {
+                MoatTaskEventAction::Release
+            }
+            (MoatTaskNodeState::InProgress, MoatTaskNodeState::Blocked) => {
+                MoatTaskEventAction::Block
+            }
+            (MoatTaskNodeState::Blocked, MoatTaskNodeState::Ready) => MoatTaskEventAction::Unblock,
+            _ => MoatTaskEventAction::Release,
+        };
+        let summary = match action {
+            MoatTaskEventAction::Complete => "task completed",
+            MoatTaskEventAction::Release => "task released",
+            MoatTaskEventAction::Block => "task blocked",
+            MoatTaskEventAction::Unblock => "task unblocked",
+            _ => "task released",
+        };
+        let event_agent_id = node.assigned_agent_id.clone();
         node.state = next_state;
         if matches!(
             next_state,
@@ -503,6 +554,15 @@ impl LocalMoatHistoryStore {
                 recorded_at: artifact.recorded_at,
             });
         }
+        append_task_event(
+            &mut entry.report.control_plane.task_graph.events,
+            entry.report.summary.round_id,
+            node_id,
+            action,
+            event_agent_id.as_deref(),
+            Utc::now(),
+            summary,
+        );
         self.persist(&next_entries)?;
         self.entries = next_entries;
         Ok(selected_round_id)
@@ -551,11 +611,59 @@ impl LocalMoatHistoryStore {
         Ok(selected_round_id.to_string())
     }
 
+    fn append_task_event_to_history(
+        &mut self,
+        round_id: &str,
+        node_id: &str,
+        action: MoatTaskEventAction,
+        agent_id: Option<&str>,
+        recorded_at: DateTime<Utc>,
+        summary: &str,
+    ) -> Result<(), CompleteInProgressTaskError> {
+        let mut next_entries = load_entries(&self.path)?;
+        let entry = next_entries
+            .iter_mut()
+            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+            .ok_or_else(|| CompleteInProgressTaskError::RoundNotFound(round_id.to_string()))?;
+        append_task_event(
+            &mut entry.report.control_plane.task_graph.events,
+            entry.report.summary.round_id,
+            node_id,
+            action,
+            agent_id,
+            recorded_at,
+            summary,
+        );
+        self.persist(&next_entries)?;
+        self.entries = next_entries;
+        Ok(())
+    }
+
     fn persist(&self, entries: &[MoatHistoryEntry]) -> Result<(), LocalMoatHistoryStoreError> {
         let contents = serde_json::to_vec_pretty(entries)?;
         atomic_write(&self.path, &contents)?;
         Ok(())
     }
+}
+
+fn append_task_event(
+    events: &mut Vec<MoatTaskEvent>,
+    round_id: Uuid,
+    node_id: &str,
+    action: MoatTaskEventAction,
+    agent_id: Option<&str>,
+    recorded_at: DateTime<Utc>,
+    summary: &str,
+) {
+    events.push(MoatTaskEvent {
+        event_id: Uuid::new_v4(),
+        round_id,
+        node_id: node_id.to_string(),
+        action,
+        agent_id: agent_id.map(str::to_string),
+        recorded_at,
+        summary: summary.to_string(),
+    });
 }
 
 fn clear_lease_metadata(node: &mut MoatTaskNode) {

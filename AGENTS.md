@@ -38,3 +38,8 @@ As soon as the scaffold is runnable, return to strict TDD immediately.
 - Shared domain/application/runtime semantics must stay consistent across surfaces.
 
 Moat task leases are local deterministic history-file coordination for external controllers only; heartbeat/reap commands must not be treated as daemon, crawler, or PR automation.
+
+## Moat task events
+
+Task lifecycle commands append deterministic task graph events for claim, heartbeat, reap, complete, release, block, and unblock. Inspect them with `mdid-cli moat task-events --history-path PATH`; this command is read-only, defaults to the latest round, supports exact `--round-id`, conjunctive filters, and prints `task_event_entries=0` when no round/events match.
+

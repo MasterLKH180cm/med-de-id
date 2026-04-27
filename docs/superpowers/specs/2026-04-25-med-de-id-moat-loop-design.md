@@ -510,3 +510,8 @@ The first implementation plan should not attempt:
 
 ## Task lease heartbeat/reap truth sync
 Local moat-loop task claims carry optional claim, expiry, and heartbeat timestamps. External controllers can renew leases with `moat heartbeat-task` and recover crashed agents with `moat reap-stale-tasks`. Coordination remains deterministic and local to the history file; no daemon, crawler, or PR automation is implied.
+
+## Task event log slice
+
+Moat task graphs include an append-only `events` log for lifecycle transitions. Runtime task mutations record actions using wire values `claim`, `heartbeat`, `reap`, `complete`, `release`, `block`, and `unblock` with stable summaries (`task claimed`, `task heartbeat recorded`, `stale task reaped`, `task completed`, `task released`, `task blocked`, `task unblocked`). The CLI exposes a read-only `moat task-events` inspector over existing history files with latest-round default selection, exact `--round-id`, conjunctive filters, and pipe-escaped rows.
+

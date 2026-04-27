@@ -498,6 +498,29 @@ pub struct MoatTaskArtifact {
     pub recorded_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MoatTaskEventAction {
+    Claim,
+    Heartbeat,
+    Reap,
+    Complete,
+    Release,
+    Block,
+    Unblock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatTaskEvent {
+    pub event_id: Uuid,
+    pub round_id: Uuid,
+    pub node_id: String,
+    pub action: MoatTaskEventAction,
+    pub agent_id: Option<String>,
+    pub recorded_at: DateTime<Utc>,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoatTaskNode {
     pub node_id: String,
@@ -550,6 +573,8 @@ impl MoatTaskNode {
 pub struct MoatTaskGraph {
     pub round_id: Uuid,
     pub nodes: Vec<MoatTaskNode>,
+    #[serde(default)]
+    pub events: Vec<MoatTaskEvent>,
 }
 
 impl MoatTaskGraph {

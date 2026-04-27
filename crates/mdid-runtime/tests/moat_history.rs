@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use mdid_application::{build_default_moat_task_graph, summarize_round_memory};
 use mdid_domain::{
-    AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary, MoatTaskNode,
-    MoatTaskNodeState,
+    AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary, MoatTaskEventAction,
+    MoatTaskNode, MoatTaskNodeState,
 };
 use mdid_runtime::{
     moat::{MoatControlPlaneReport, MoatRoundReport},
@@ -177,6 +177,61 @@ fn reap_expired_task_leases_returns_expired_in_progress_tasks_to_ready() {
     assert_eq!(node.state, MoatTaskNodeState::Ready);
     assert_eq!(node.assigned_agent_id, None);
     assert_eq!(node.lease_expires_at, None);
+}
+
+#[test]
+fn task_event_log_persists_claim_heartbeat_and_reap_events() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let mut report = sample_report(
+        Uuid::new_v4(),
+        ContinueDecision::Continue,
+        None,
+        "events",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("persist");
+    store
+        .claim_ready_task_with_agent_and_lease(
+            None,
+            "implementation",
+            Some("coder-7"),
+            60,
+            recorded_at("2026-04-28T00:00:00Z"),
+        )
+        .expect("claim");
+    store
+        .heartbeat_in_progress_task(
+            None,
+            "implementation",
+            Some("coder-7"),
+            120,
+            recorded_at("2026-04-28T00:00:30Z"),
+        )
+        .expect("heartbeat");
+    store
+        .reap_expired_task_leases(None, recorded_at("2026-04-28T00:02:31Z"))
+        .expect("reap");
+
+    drop(store);
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path).expect("reload");
+    let events = &reloaded.entries()[0].report.control_plane.task_graph.events;
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].action, MoatTaskEventAction::Claim);
+    assert_eq!(events[0].agent_id.as_deref(), Some("coder-7"));
+    assert_eq!(events[0].summary, "task claimed");
+    assert_eq!(events[1].action, MoatTaskEventAction::Heartbeat);
+    assert_eq!(events[1].summary, "task heartbeat recorded");
+    assert_eq!(events[2].action, MoatTaskEventAction::Reap);
+    assert_eq!(events[2].agent_id.as_deref(), Some("coder-7"));
+    assert_eq!(events[2].summary, "stale task reaped");
 }
 
 #[test]

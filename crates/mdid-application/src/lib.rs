@@ -713,6 +713,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 artifacts: Vec::new(),
             },
         ],
+        events: Vec::new(),
     }
 }
 

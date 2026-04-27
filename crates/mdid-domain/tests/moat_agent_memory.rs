@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use mdid_domain::{
-    AgentRole, DecisionLogEntry, MoatMemorySnapshot, MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind,
-    MoatTaskNodeState,
+    AgentRole, DecisionLogEntry, MoatMemorySnapshot, MoatTaskEventAction, MoatTaskGraph,
+    MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState,
 };
 use uuid::Uuid;
 
@@ -25,6 +25,51 @@ fn agent_role_wire_values_are_stable() {
         serde_json::to_string(&AgentRole::Reviewer).unwrap(),
         "\"reviewer\""
     );
+}
+
+#[test]
+fn task_event_action_wire_values_are_stable() {
+    assert_eq!(
+        serde_json::to_string(&MoatTaskEventAction::Claim).unwrap(),
+        "\"claim\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MoatTaskEventAction::Heartbeat).unwrap(),
+        "\"heartbeat\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MoatTaskEventAction::Reap).unwrap(),
+        "\"reap\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MoatTaskEventAction::Complete).unwrap(),
+        "\"complete\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MoatTaskEventAction::Release).unwrap(),
+        "\"release\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MoatTaskEventAction::Block).unwrap(),
+        "\"block\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MoatTaskEventAction::Unblock).unwrap(),
+        "\"unblock\""
+    );
+}
+
+#[test]
+fn task_graph_deserializes_legacy_events_as_empty() {
+    let graph: MoatTaskGraph = serde_json::from_str(
+        r#"{
+            "round_id": "00000000-0000-0000-0000-000000000000",
+            "nodes": []
+        }"#,
+    )
+    .expect("legacy task graph should deserialize");
+
+    assert!(graph.events.is_empty());
 }
 
 #[test]
@@ -82,6 +127,7 @@ fn task_graph_reports_ready_nodes_when_dependencies_are_satisfied() {
                 artifacts: Vec::new(),
             },
         ],
+        events: Vec::new(),
     };
 
     assert_eq!(graph.ready_node_ids(), vec!["strategy-gen".to_string()]);
@@ -121,6 +167,7 @@ fn task_graph_keeps_ready_nodes_when_dependencies_are_satisfied() {
                 artifacts: Vec::new(),
             },
         ],
+        events: Vec::new(),
     };
 
     assert_eq!(graph.ready_node_ids(), vec!["strategy-gen".to_string()]);
