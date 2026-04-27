@@ -913,16 +913,16 @@ fn parse_moat_ready_tasks_command(args: &[String]) -> Result<MoatReadyTasksComma
                 node_id = Some(value.to_string());
             }
             "--depends-on" => {
+                let value = required_flag_value(args, index, "--depends-on", false)?;
                 if depends_on.is_some() {
-                    return Err("--depends-on provided more than once".to_string());
+                    return Err(duplicate_flag_error("--depends-on"));
                 }
-                let value = args
-                    .get(index + 1)
-                    .filter(|value| !value.starts_with("--"))
-                    .ok_or_else(|| "error: --depends-on requires a node id".to_string())?;
                 depends_on = Some(value.to_string());
             }
             "--no-dependencies" => {
+                if no_dependencies {
+                    return Err(duplicate_flag_error("--no-dependencies"));
+                }
                 no_dependencies = true;
                 index += 1;
                 continue;
@@ -3010,9 +3010,7 @@ fn usage() -> &'static str {
 
 fn exit_with_usage(message: String) -> ! {
     eprintln!("{message}");
-    if !message.starts_with("error:") {
-        eprintln!("{}", usage());
-    }
+    eprintln!("{}", usage());
     std::process::exit(1);
 }
 

@@ -3341,8 +3341,52 @@ fn moat_ready_tasks_rejects_missing_dependency_filter_value() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "error: --depends-on requires a node id\n"
+        format!("missing value for --depends-on\n{}\n", USAGE)
     );
+}
+
+#[test]
+fn moat_ready_tasks_rejects_duplicate_dependency_filter() {
+    let history_path = unique_history_path("ready-tasks-depends-on-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--depends-on",
+            "market_scan",
+            "--depends-on",
+            "competitor_analysis",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with duplicate dependency filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --depends-on"));
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn moat_ready_tasks_rejects_duplicate_no_dependencies_filter() {
+    let history_path = unique_history_path("ready-tasks-no-dependencies-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--no-dependencies",
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with duplicate no-dependencies filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --no-dependencies"));
+    assert!(!history_path.exists());
 }
 
 #[test]
