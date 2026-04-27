@@ -6,6 +6,7 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use calamine::Reader;
 use mdid_adapters::{
     CsvTabularAdapter, DicomAdapterError, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
 };
@@ -20,8 +21,10 @@ use mdid_domain::{
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{io::{Cursor, Read, Write}, path::PathBuf};
 use tempfile::tempdir;
+use xmltree::{Element, XMLNode};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 #[derive(Clone, Default)]
 pub struct RuntimeState {
@@ -299,7 +302,10 @@ async fn tabular_xlsx_deidentify(
         Err(error) => return map_tabular_xlsx_application_error(&error).into_response(),
     };
 
-    tabular_xlsx_success_response(output).into_response()
+    match tabular_xlsx_success_response(&workbook_bytes, output) {
+        Ok(response) => response.into_response(),
+        Err(_) => internal_error_response().into_response(),
+    }
 }
 
 async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Response {
@@ -663,8 +669,9 @@ fn tabular_success_response(
 }
 
 fn tabular_xlsx_success_response(
+    original_workbook: &[u8],
     output: TabularDeidentificationOutput,
-) -> (StatusCode, Json<TabularXlsxDeidentifyResponse>) {
+) -> Result<(StatusCode, Json<TabularXlsxDeidentifyResponse>), XlsxRewriteError> {
     let extracted = CsvTabularAdapter::new(Vec::new())
         .extract(output.csv.as_bytes())
         .expect("tabular application output should remain valid CSV");
@@ -679,14 +686,18 @@ fn tabular_xlsx_success_response(
         .map(|row| row.iter().map(|value| value.as_str()).collect::<Vec<_>>())
         .collect::<Vec<_>>();
 
-    (
+    Ok((
         StatusCode::OK,
         Json(TabularXlsxDeidentifyResponse {
-            rewritten_workbook_base64: STANDARD.encode(build_xlsx_workbook_bytes(&headers, &rows)),
+            rewritten_workbook_base64: STANDARD.encode(rewrite_xlsx_workbook_bytes(
+                original_workbook,
+                &headers,
+                &rows,
+            )?),
             summary: output.summary,
             review_queue: output.review_queue,
         }),
-    )
+    ))
 }
 
 fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
@@ -869,85 +880,217 @@ fn internal_error_response() -> (StatusCode, Json<ErrorEnvelope>) {
     )
 }
 
-fn build_xlsx_workbook_bytes(headers: &[&str], rows: &[Vec<&str>]) -> Vec<u8> {
-    let files = [
-        (
-            "[Content_Types].xml",
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
-                r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
-                r#"<Default Extension="xml" ContentType="application/xml"/>"#,
-                r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
-                r#"<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#,
-                r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#,
-                r#"</Types>"#,
-            )
-            .to_string(),
-        ),
-        (
-            "_rels/.rels",
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
-                r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>"#,
-                r#"</Relationships>"#,
-            )
-            .to_string(),
-        ),
-        (
-            "xl/workbook.xml",
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
-            )
-            .to_string(),
-        ),
-        (
-            "xl/_rels/workbook.xml.rels",
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
-                r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>"#,
-                r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#,
-                r#"</Relationships>"#,
-            )
-            .to_string(),
-        ),
-        (
-            "xl/styles.xml",
-            concat!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-                r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>"#,
-            )
-            .to_string(),
-        ),
-        ("xl/worksheets/sheet1.xml", build_sheet_xml(headers, rows)),
-    ];
-
-    write_stored_zip(&files)
+#[derive(Debug, thiserror::Error)]
+enum XlsxRewriteError {
+    #[error("xlsx archive could not be opened: {0}")]
+    Zip(#[from] zip::result::ZipError),
+    #[error("worksheet xml could not be parsed: {0}")]
+    Xml(#[from] xmltree::ParseError),
+    #[error("worksheet xml could not be written: {0}")]
+    XmlWrite(#[from] xmltree::Error),
+    #[error("xlsx archive I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("xlsx workbook metadata was missing {0}")]
+    MissingPart(&'static str),
 }
 
-fn build_sheet_xml(headers: &[&str], rows: &[Vec<&str>]) -> String {
-    let mut xml = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
-    );
+fn rewrite_xlsx_workbook_bytes(
+    original_workbook: &[u8],
+    headers: &[&str],
+    rows: &[Vec<&str>],
+) -> Result<Vec<u8>, XlsxRewriteError> {
+    let worksheet_path = find_first_non_empty_worksheet_path(original_workbook)?;
+    let rewritten_sheet_xml = rewrite_sheet_xml(
+        read_zip_entry(original_workbook, &worksheet_path)?.as_slice(),
+        headers,
+        rows,
+    )?;
 
-    for (row_index, row) in std::iter::once(headers.to_vec()).chain(rows.iter().cloned()).enumerate() {
-        xml.push_str(&format!(r#"<row r="{}">"#, row_index + 1));
-        for (column_index, value) in row.iter().enumerate() {
-            xml.push_str(&format!(
-                r#"<c r="{}{}" t="inlineStr"><is><t>{}</t></is></c>"#,
-                excel_column_name(column_index),
-                row_index + 1,
-                escape_xml(value),
-            ));
+    let mut archive = ZipArchive::new(Cursor::new(original_workbook))?;
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index)?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
+        let options = SimpleFileOptions::default().compression_method(file.compression());
+        writer.start_file(file.name(), options)?;
+        if file.name() == worksheet_path {
+            writer.write_all(&rewritten_sheet_xml)?;
+        } else {
+            writer.write_all(&contents)?;
         }
-        xml.push_str("</row>");
     }
 
-    xml.push_str("</sheetData></worksheet>");
-    xml
+    Ok(writer.finish()?.into_inner())
+}
+
+fn find_first_non_empty_worksheet_path(workbook_bytes: &[u8]) -> Result<String, XlsxRewriteError> {
+    let workbook_xml = Element::parse(read_zip_entry(workbook_bytes, "xl/workbook.xml")?.as_slice())?;
+    let workbook_rels = Element::parse(
+        read_zip_entry(workbook_bytes, "xl/_rels/workbook.xml.rels")?.as_slice(),
+    )?;
+
+    let ordered_sheets = workbook_xml
+        .get_child("sheets")
+        .ok_or(XlsxRewriteError::MissingPart("sheets"))?
+        .children
+        .iter()
+        .filter_map(|node| match node {
+            XMLNode::Element(sheet) if sheet.name == "sheet" => Some(sheet),
+            _ => None,
+        })
+        .map(|sheet| {
+            Ok((
+                sheet.attributes
+                    .get("name")
+                    .cloned()
+                    .ok_or(XlsxRewriteError::MissingPart("sheet name"))?,
+                sheet.attributes
+                    .iter()
+                    .find(|(key, _)| key.ends_with("id"))
+                    .map(|(_, value)| value.clone())
+                    .ok_or(XlsxRewriteError::MissingPart("sheet relationship id"))?,
+            ))
+        })
+        .collect::<Result<Vec<_>, XlsxRewriteError>>()?;
+
+    let sheet_name = select_first_non_empty_sheet_name(workbook_bytes)?;
+    let relationship_id = ordered_sheets
+        .iter()
+        .find(|(name, _)| name == &sheet_name)
+        .map(|(_, relationship_id)| relationship_id.as_str())
+        .ok_or(XlsxRewriteError::MissingPart("selected worksheet relationship"))?;
+
+    let target = workbook_rels
+        .children
+        .iter()
+        .filter_map(|node| match node {
+            XMLNode::Element(relationship) if relationship.name == "Relationship" => Some(relationship),
+            _ => None,
+        })
+        .find(|relationship| relationship.attributes.get("Id").map(|id| id.as_str()) == Some(relationship_id))
+        .and_then(|relationship| relationship.attributes.get("Target"))
+        .cloned()
+        .ok_or(XlsxRewriteError::MissingPart("worksheet target"))?;
+
+    Ok(normalize_workbook_target(&target))
+}
+
+fn select_first_non_empty_sheet_name(workbook_bytes: &[u8]) -> Result<String, XlsxRewriteError> {
+    let mut workbook = calamine::open_workbook_from_rs::<calamine::Xlsx<_>, _>(Cursor::new(workbook_bytes))
+        .map_err(|_| XlsxRewriteError::MissingPart("readable worksheet"))?;
+    let sheet_names = workbook.sheet_names().to_owned();
+    let mut selected_sheet_name = sheet_names
+        .first()
+        .cloned()
+        .ok_or(XlsxRewriteError::MissingPart("worksheet"))?;
+
+    for (sheet_index, sheet_name) in sheet_names.iter().enumerate() {
+        let range = workbook
+            .worksheet_range(sheet_name)
+            .map_err(|_| XlsxRewriteError::MissingPart("worksheet range"))?;
+        let has_non_blank_cells = range
+            .rows()
+            .flatten()
+            .any(|cell| !cell.to_string().trim().is_empty());
+
+        if sheet_index == 0 {
+            selected_sheet_name = sheet_name.clone();
+            if has_non_blank_cells {
+                break;
+            }
+            continue;
+        }
+
+        if has_non_blank_cells {
+            selected_sheet_name = sheet_name.clone();
+            break;
+        }
+    }
+
+    Ok(selected_sheet_name)
+}
+
+fn rewrite_sheet_xml(
+    worksheet_xml: &[u8],
+    headers: &[&str],
+    rows: &[Vec<&str>],
+) -> Result<Vec<u8>, XlsxRewriteError> {
+    let mut worksheet = Element::parse(worksheet_xml)?;
+    if let Some(dimension) = worksheet.get_mut_child("dimension") {
+        dimension
+            .attributes
+            .insert("ref".into(), worksheet_dimension(headers.len(), rows.len()).to_string());
+    }
+
+    let sheet_data_index = worksheet
+        .children
+        .iter()
+        .position(|node| matches!(node, XMLNode::Element(element) if element.name == "sheetData"))
+        .ok_or(XlsxRewriteError::MissingPart("sheetData"))?;
+    worksheet.children[sheet_data_index] = XMLNode::Element(build_sheet_data_element(headers, rows));
+
+    let mut rewritten = Vec::new();
+    worksheet.write(&mut rewritten)?;
+    Ok(rewritten)
+}
+
+fn build_sheet_data_element(headers: &[&str], rows: &[Vec<&str>]) -> Element {
+    let mut sheet_data = Element::new("sheetData");
+
+    for (row_index, row) in std::iter::once(headers.to_vec()).chain(rows.iter().cloned()).enumerate() {
+        let mut row_element = Element::new("row");
+        row_element
+            .attributes
+            .insert("r".into(), (row_index + 1).to_string());
+
+        for (column_index, value) in row.iter().enumerate() {
+            let mut cell = Element::new("c");
+            cell.attributes.insert(
+                "r".into(),
+                format!("{}{}", excel_column_name(column_index), row_index + 1),
+            );
+            cell.attributes.insert("t".into(), "inlineStr".into());
+
+            let mut inline_string = Element::new("is");
+            let mut text = Element::new("t");
+            text.children.push(XMLNode::Text(value.to_string()));
+            inline_string.children.push(XMLNode::Element(text));
+            cell.children.push(XMLNode::Element(inline_string));
+            row_element.children.push(XMLNode::Element(cell));
+        }
+
+        sheet_data.children.push(XMLNode::Element(row_element));
+    }
+
+    sheet_data
+}
+
+fn worksheet_dimension(column_count: usize, row_count: usize) -> String {
+    if column_count == 0 {
+        return "A1".into();
+    }
+
+    format!("A1:{}{}", excel_column_name(column_count - 1), row_count + 1)
+}
+
+fn normalize_workbook_target(target: &str) -> String {
+    if let Some(stripped) = target.strip_prefix("/") {
+        stripped.to_string()
+    } else if let Some(stripped) = target.strip_prefix("xl/") {
+        format!("xl/{stripped}")
+    } else {
+        format!("xl/{target}")
+    }
+}
+
+fn read_zip_entry(workbook_bytes: &[u8], path: &str) -> Result<Vec<u8>, XlsxRewriteError> {
+    let mut archive = ZipArchive::new(Cursor::new(workbook_bytes))?;
+    let mut file = archive.by_name(path)?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    Ok(contents)
 }
 
 fn excel_column_name(mut index: usize) -> String {
@@ -960,90 +1103,6 @@ fn excel_column_name(mut index: usize) -> String {
         index = (index / 26) - 1;
     }
     name
-}
-
-fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn write_stored_zip(files: &[(&str, String)]) -> Vec<u8> {
-    let mut output = Vec::new();
-    let mut central_directory = Vec::new();
-    let mut offsets = Vec::new();
-
-    for (name, contents) in files {
-        let name_bytes = name.as_bytes();
-        let data = contents.as_bytes();
-        let crc = crc32(data);
-        let offset = output.len() as u32;
-        offsets.push(offset);
-
-        output.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
-        output.extend_from_slice(&20u16.to_le_bytes());
-        output.extend_from_slice(&0u16.to_le_bytes());
-        output.extend_from_slice(&0u16.to_le_bytes());
-        output.extend_from_slice(&0u16.to_le_bytes());
-        output.extend_from_slice(&0u16.to_le_bytes());
-        output.extend_from_slice(&crc.to_le_bytes());
-        output.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        output.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        output.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        output.extend_from_slice(&0u16.to_le_bytes());
-        output.extend_from_slice(name_bytes);
-        output.extend_from_slice(data);
-    }
-
-    let central_start = output.len() as u32;
-    for ((name, contents), offset) in files.iter().zip(offsets.iter()) {
-        let name_bytes = name.as_bytes();
-        let data = contents.as_bytes();
-        let crc = crc32(data);
-
-        central_directory.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-        central_directory.extend_from_slice(&20u16.to_le_bytes());
-        central_directory.extend_from_slice(&20u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&crc.to_le_bytes());
-        central_directory.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        central_directory.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        central_directory.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u16.to_le_bytes());
-        central_directory.extend_from_slice(&0u32.to_le_bytes());
-        central_directory.extend_from_slice(&offset.to_le_bytes());
-        central_directory.extend_from_slice(name_bytes);
-    }
-    output.extend_from_slice(&central_directory);
-
-    output.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
-    output.extend_from_slice(&0u16.to_le_bytes());
-    output.extend_from_slice(&0u16.to_le_bytes());
-    output.extend_from_slice(&(files.len() as u16).to_le_bytes());
-    output.extend_from_slice(&(files.len() as u16).to_le_bytes());
-    output.extend_from_slice(&(central_directory.len() as u32).to_le_bytes());
-    output.extend_from_slice(&central_start.to_le_bytes());
-    output.extend_from_slice(&0u16.to_le_bytes());
-    output
-}
-
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &byte in bytes {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg() & 0xedb8_8320;
-            crc = (crc >> 1) ^ mask;
-        }
-    }
-    !crc
 }
 
 fn deserialize_optional_limit<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>

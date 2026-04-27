@@ -5,6 +5,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
 use dicom_core::{Tag, VR};
 use dicom_object::{
     file::ReadPreamble, meta::FileMetaTableBuilder, DefaultDicomObject, InMemDicomObject,
@@ -14,6 +15,7 @@ use mdid_adapters::XlsxTabularAdapter;
 use mdid_domain::{MappingScope, SurfaceKind};
 use mdid_runtime::http::{build_router, RuntimeState};
 use mdid_vault::{LocalVaultStore, NewMappingRecord, PortableVaultArtifact};
+use rust_xlsxwriter::Workbook;
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -159,8 +161,19 @@ async fn tabular_deidentify_endpoint_rejects_invalid_policy_payload() {
 #[tokio::test]
 async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary() {
     let app = build_router(RuntimeState::default());
+    let workbook = workbook_with_named_sheets(
+        "Cover",
+        vec![],
+        "Patients",
+        vec![
+            vec!["patient_id", "patient_name"],
+            vec!["MRN-001", "Alice Smith"],
+            vec!["MRN-001", "Alice Smith"],
+        ],
+        Some(("Notes", vec![vec!["status"], vec!["keep me"]])),
+    );
     let request = json!({
-        "workbook_base64": SAMPLE_XLSX_WORKBOOK_BASE64,
+        "workbook_base64": STANDARD.encode(&workbook),
         "field_policies": [
             {
                 "header": "patient_id",
@@ -199,6 +212,23 @@ async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary
     let rewritten_workbook = STANDARD
         .decode(json["rewritten_workbook_base64"].as_str().unwrap())
         .unwrap();
+    let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(&rewritten_workbook)).unwrap();
+    assert_eq!(
+        workbook.sheet_names(),
+        vec!["Cover".to_string(), "Patients".to_string(), "Notes".to_string()]
+    );
+
+    let notes_rows = worksheet_rows(workbook.worksheet_range("Notes").unwrap());
+    assert_eq!(notes_rows, vec![vec!["status".to_string()], vec!["keep me".to_string()]]);
+
+    let patient_rows = worksheet_rows(workbook.worksheet_range("Patients").unwrap());
+    assert_eq!(patient_rows[0], vec!["patient_id".to_string(), "patient_name".to_string()]);
+    assert_eq!(patient_rows.len(), 3);
+    assert_eq!(patient_rows[1], patient_rows[2]);
+    assert!(patient_rows[1][0].starts_with("tok-"));
+    assert_eq!(patient_rows[1][1], "Alice Smith");
+    assert_ne!(patient_rows[1][0], "MRN-001");
+
     let extracted = XlsxTabularAdapter::new(Vec::new())
         .extract(&rewritten_workbook)
         .expect("rewritten workbook should remain parseable");
@@ -1814,6 +1844,56 @@ async fn portable_artifact_import_endpoint_rejects_invalid_vault_target() {
         .unwrap();
 
     assert_invalid_vault_target_response(response).await;
+}
+
+fn workbook_with_named_sheets(
+    cover_sheet_name: &str,
+    cover_rows: Vec<Vec<&str>>,
+    data_sheet_name: &str,
+    data_rows: Vec<Vec<&str>>,
+    trailing_sheet: Option<(&str, Vec<Vec<&str>>)>,
+) -> Vec<u8> {
+    let mut workbook = Workbook::new();
+
+    let cover = workbook.add_worksheet();
+    cover.set_name(cover_sheet_name).unwrap();
+    write_worksheet_rows(cover, &cover_rows);
+
+    let data = workbook.add_worksheet();
+    data.set_name(data_sheet_name).unwrap();
+    write_worksheet_rows(data, &data_rows);
+
+    if let Some((sheet_name, rows)) = trailing_sheet {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name(sheet_name).unwrap();
+        write_worksheet_rows(sheet, &rows);
+    }
+
+    workbook.save_to_buffer().unwrap()
+}
+
+fn write_worksheet_rows(worksheet: &mut rust_xlsxwriter::Worksheet, rows: &[Vec<&str>]) {
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, value) in row.iter().enumerate() {
+            worksheet
+                .write_string(row_index as u32, column_index as u16, *value)
+                .unwrap();
+        }
+    }
+}
+
+fn worksheet_rows(range: calamine::Range<Data>) -> Vec<Vec<String>> {
+    range
+        .rows()
+        .map(|row| row.iter().map(cell_to_string).collect::<Vec<_>>())
+        .collect()
+}
+
+fn cell_to_string(cell: &Data) -> String {
+    match cell {
+        Data::Empty => String::new(),
+        other => other.to_string(),
+    }
 }
 
 async fn assert_invalid_audit_events_request_response(response: axum::response::Response) {
