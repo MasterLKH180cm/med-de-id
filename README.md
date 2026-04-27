@@ -220,10 +220,10 @@ cargo run -p mdid-cli -- moat schedule-next --history-path .mdid/moat-history.js
 Export the latest persisted implemented-spec handoffs as markdown with:
 
 ```bash
-cargo run -p mdid-cli -- moat export-specs --history-path .mdid/moat-history.json --output-dir .mdid/moat-specs
+cargo run -p mdid-cli -- moat export-specs --history-path .mdid/moat-history.json [--round-id ROUND_ID] --output-dir .mdid/moat-specs
 ```
 
-`moat export-specs` requires an already-existing history file, fails when the history is empty, fails when the latest round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one markdown file per latest handoff such as `workflow-audit.md` for `moat-spec/workflow-audit`.
+`moat export-specs` requires an already-existing history file, fails when the history is empty, fails when the selected round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one markdown file per handoff such as `workflow-audit.md` for `moat-spec/workflow-audit`. By default it exports the latest persisted round; pass `--round-id ROUND_ID` to replay a prior handoff round by exact persisted round id.
 
 The export command prints a deterministic summary containing:
 
@@ -234,12 +234,12 @@ The export command prints a deterministic summary containing:
 Export deterministic implementation-plan markdown for the latest persisted handoffs with:
 
 ```bash
-cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.json --output-dir docs/superpowers/plans/generated
+cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.json [--round-id ROUND_ID] --output-dir docs/superpowers/plans/generated
 ```
 
-`moat export-plans --history-path PATH --output-dir DIR` is also one-shot and local: it requires an already-existing history file, fails when the history is empty or the latest round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one `*-implementation-plan.md` file per latest handoff. It does not start background agents, create cron jobs, open PRs, or run an unrestricted autonomous loop.
+`moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR` is also one-shot and local: it requires an already-existing history file, fails when the history is empty or the selected round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one `*-implementation-plan.md` file per handoff. By default it exports the latest persisted round; pass `--round-id ROUND_ID` to replay a prior handoff round by exact persisted round id. It does not start background agents, create cron jobs, open PRs, or run an unrestricted autonomous loop.
 
-This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
+This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest or exact prior persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
 
 External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
 

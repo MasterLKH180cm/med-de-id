@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -4926,7 +4926,7 @@ fn cli_exports_latest_handoff_specs_to_output_directory() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         concat!(
-            "moat spec export complete\n",
+            "moat spec export\n",
             "round_id={latest_round_id}\n",
             "exported_specs=moat-spec/workflow-audit\n",
             "written_files=workflow-audit.md\n",
@@ -8354,4 +8354,203 @@ fn unique_history_directory_path(label: &str) -> PathBuf {
 
 fn cleanup_history_directory_path(path: &PathBuf) {
     let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn moat_export_specs_can_select_persisted_round_by_exact_round_id() {
+    let history_path = unique_history_path("export-specs-round-id");
+    let output_dir = unique_history_path("export-specs-round-id-output");
+    if output_dir.exists() {
+        std::fs::remove_file(&output_dir).expect("remove placeholder path");
+    }
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let output_dir_arg = output_dir.to_str().expect("output dir should be utf-8");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed first round");
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let first_store =
+        LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let first_round_id = first_store
+        .summary()
+        .latest_round_id
+        .expect("first persisted round id should exist");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed second round");
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "export-specs",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &first_round_id,
+            "--output-dir",
+            output_dir_arg,
+        ])
+        .output()
+        .expect("failed to export moat specs for selected round");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("moat spec export\n"));
+    assert!(stdout.contains(&format!("round_id={first_round_id}\n")));
+    assert!(stdout.contains("exported_specs=moat-spec/workflow-audit\n"));
+    assert!(output_dir.join("workflow-audit.md").exists());
+
+    cleanup_history_path(&history_path);
+    cleanup_history_path(&output_dir);
+}
+
+#[test]
+fn moat_export_plans_can_select_persisted_round_by_exact_round_id() {
+    let history_path = unique_history_path("export-plans-round-id");
+    let output_dir = unique_history_path("export-plans-round-id-output");
+    if output_dir.exists() {
+        std::fs::remove_file(&output_dir).expect("remove placeholder path");
+    }
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let output_dir_arg = output_dir.to_str().expect("output dir should be utf-8");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed first round");
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let first_store =
+        LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let first_round_id = first_store
+        .summary()
+        .latest_round_id
+        .expect("first persisted round id should exist");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed second round");
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "export-plans",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &first_round_id,
+            "--output-dir",
+            output_dir_arg,
+        ])
+        .output()
+        .expect("failed to export moat plans for selected round");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("moat plan export\n"));
+    assert!(stdout.contains(&format!("round_id={first_round_id}\n")));
+    assert!(stdout.contains("exported_plans=moat-spec/workflow-audit\n"));
+    assert!(output_dir
+        .join("workflow-audit-implementation-plan.md")
+        .exists());
+
+    cleanup_history_path(&history_path);
+    cleanup_history_path(&output_dir);
+}
+
+#[test]
+fn moat_export_specs_reports_error_when_round_id_does_not_match_history() {
+    let history_path = unique_history_path("export-specs-missing-round-id");
+    let output_dir = unique_history_path("export-specs-missing-round-id-output");
+    if output_dir.exists() {
+        std::fs::remove_file(&output_dir).expect("remove placeholder path");
+    }
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let output_dir_arg = output_dir.to_str().expect("output dir should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "export-specs",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            "00000000-0000-0000-0000-000000000999",
+            "--output-dir",
+            output_dir_arg,
+        ])
+        .output()
+        .expect("failed to run moat spec export with missing round id");
+
+    assert!(
+        !output.status.success(),
+        "export should fail for missing round id"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "error: no moat history entry matched round_id 00000000-0000-0000-0000-000000000999\n"
+    );
+    assert!(
+        !output_dir.exists(),
+        "failed export must not create output directory"
+    );
+
+    cleanup_history_path(&history_path);
+    cleanup_history_path(&output_dir);
 }
