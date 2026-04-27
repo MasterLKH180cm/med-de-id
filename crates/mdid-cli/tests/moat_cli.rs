@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -1922,6 +1922,272 @@ fn moat_ready_tasks_json_prints_parseable_filtered_envelope() {
     assert!(tasks[0]["spec_ref"].is_null());
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_work_packet_json_exports_task_context_and_dependency_artifacts_read_only() {
+    let history_path = unique_history_path("work-packet-json");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    assert!(Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let mut history: Value =
+        serde_json::from_str(&fs::read_to_string(&history_path).unwrap()).unwrap();
+    let implementation = history[0]["report"]["control_plane"]["task_graph"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["node_id"] == "implementation")
+        .unwrap();
+    implementation["state"] = Value::String("completed".to_string());
+    implementation["artifacts"] = serde_json::json!([{
+        "artifact_ref": "plan://implementation-output",
+        "summary": "Implemented deterministic moat workflow audit slice",
+        "recorded_at": "2026-04-28T00:00:00Z"
+    }]);
+    let nodes = history[0]["report"]["control_plane"]["task_graph"]["nodes"]
+        .as_array_mut()
+        .unwrap();
+    let competitor = nodes
+        .iter_mut()
+        .find(|node| node["node_id"] == "competitor_analysis")
+        .unwrap();
+    competitor["state"] = Value::String("pending".to_string());
+    competitor["artifacts"] = serde_json::json!([{
+        "artifact_ref": "plan://pending-competitor-output",
+        "summary": "must not be exported before completion",
+        "recorded_at": "2026-04-28T00:01:00Z"
+    }]);
+    let review = nodes
+        .iter_mut()
+        .find(|node| node["node_id"] == "review")
+        .unwrap();
+    review["depends_on"] = serde_json::json!(["implementation", "competitor_analysis"]);
+    fs::write(
+        &history_path,
+        serde_json::to_string_pretty(&history).unwrap(),
+    )
+    .unwrap();
+    let before = fs::read_to_string(&history_path).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "work-packet",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let packet: Value =
+        serde_json::from_slice(&output.stdout).expect("packet should be valid json");
+    assert_eq!(packet["type"], "moat_work_packet");
+    assert_eq!(packet["history_path"], history_path_arg);
+    assert_eq!(packet["node_id"], "review");
+    assert_eq!(packet["role"], "reviewer");
+    assert_eq!(packet["kind"], "review");
+    assert_eq!(packet["state"], "ready");
+    assert_eq!(packet["dependencies"][0], "implementation");
+    assert_eq!(packet["dependencies"][1], "competitor_analysis");
+    assert_eq!(
+        packet["dependency_artifacts"].as_array().unwrap().len(),
+        1,
+        "only completed dependency node artifacts should be exported"
+    );
+    assert_eq!(
+        packet["dependency_artifacts"][0]["node_id"],
+        "implementation"
+    );
+    assert_eq!(
+        packet["dependency_artifacts"][0]["artifact_ref"],
+        "plan://implementation-output"
+    );
+    assert_eq!(
+        packet["acceptance_criteria"][0],
+        "Use SDD and TDD for any implementation work before completing this task."
+    );
+    assert!(packet["complete_command"]
+        .as_str()
+        .unwrap()
+        .contains("moat complete-task"));
+    assert_eq!(fs::read_to_string(&history_path).unwrap(), before);
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_work_packet_text_exports_controller_handoff_without_mutating_history() {
+    let history_path = unique_history_path("work-packet-text");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    assert!(Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    update_history_task_node(&history_path, "implementation", |node| {
+        node.insert("state".to_string(), Value::String("completed".to_string()));
+        node.insert(
+            "artifacts".to_string(),
+            serde_json::json!([{
+                "artifact_ref": "plan://impl|artifact",
+                "summary": "line one|line two\nnext",
+                "recorded_at": "2026-04-28T00:00:00Z"
+            }]),
+        );
+    });
+    let before = fs::read_to_string(&history_path).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "work-packet",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("moat work packet\n"));
+    assert!(stdout.contains("node_id=review\n"));
+    assert!(stdout.contains("role=reviewer\n"));
+    assert!(stdout.contains("kind=review\n"));
+    assert!(stdout.contains("state=ready\n"));
+    assert!(stdout.contains("dependency=implementation\n"));
+    assert!(stdout.contains(
+        "dependency_artifact=implementation|plan://impl\\|artifact|line one\\|line two\\nnext\n"
+    ));
+    assert!(stdout.contains(
+        "acceptance=Use SDD and TDD for any implementation work before completing this task.\n"
+    ));
+    assert!(stdout.contains("complete_command=mdid-cli moat complete-task"));
+    assert_eq!(fs::read_to_string(&history_path).unwrap(), before);
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_work_packet_complete_command_targets_explicit_round_id() {
+    let history_path = unique_history_path("work-packet-explicit-round-command");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_successful_moat_history(&history_path);
+    let selected_round_id = latest_history_round_id(&history_path);
+    seed_successful_moat_history(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "work-packet",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &selected_round_id,
+            "--node-id",
+            "review",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat work-packet for explicit round");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let packet: Value =
+        serde_json::from_slice(&output.stdout).expect("packet should be valid json");
+    assert_eq!(packet["round_id"], selected_round_id);
+    assert!(packet["complete_command"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("--round-id '{selected_round_id}'")));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_work_packet_fails_for_missing_node() {
+    let history_path = unique_history_path("work-packet-missing-node");
+    let history_path_arg = history_path.to_str().unwrap();
+    assert!(Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "work-packet",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "not-a-node",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("moat work-packet node not found: not-a-node"));
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_work_packet_rejects_unknown_format() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "work-packet",
+            "--history-path",
+            "history.json",
+            "--node-id",
+            "review",
+            "--format",
+            "yaml",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unknown moat work-packet format: yaml")
+    );
 }
 
 #[test]

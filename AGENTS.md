@@ -42,3 +42,7 @@ Moat task leases are local deterministic history-file coordination for external 
 ## Moat task events
 
 Task lifecycle commands append deterministic task graph events for claim, heartbeat, reap, complete, release, block, and unblock. Inspect them with `mdid-cli moat task-events --history-path PATH`; this command is read-only, defaults to the latest round, supports exact `--round-id`, conjunctive filters, and prints `task_event_entries=0` when no round/events match. Text output is the default (`--format text`). `--format json` emits a pretty deterministic envelope with `type: "moat_task_events"`, `round_id`, `history_path`, `task_event_entries`, and `events`; each event includes `recorded_at`, `node_id`, `action`, `previous_state`, `new_state`, `agent_id`, `lease_expires_at`, `artifact_ref`, `artifact_summary`, and `reason`, using `null` for unavailable optional fields.
+
+## Moat work packets
+
+`mdid-cli moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json]` exports a deterministic read-only work packet for an external Planner/Coder/Reviewer controller. It includes task metadata, dependency IDs, completed upstream artifact handoffs, acceptance criteria, and the recommended `complete-task` command. It never launches agents, mutates history, schedules work, crawls data, opens PRs, creates cron jobs, or writes artifact files.

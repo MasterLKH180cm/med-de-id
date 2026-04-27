@@ -153,6 +153,15 @@ cargo run -p mdid-cli -- moat ready-tasks --history-path .mdid/moat-history.json
 
 `moat ready-tasks --format json` is read-only and applies the same filters and limit as text output before emitting a pretty deterministic envelope with `type: "moat_ready_tasks"`, `round_id`, `history_path`, `ready_task_entries`, and `tasks`. Supported routing filters include exact `--round-id`, `--role`, `--kind`, exact `--node-id`, `--depends-on`, `--no-dependencies`, `--requires-artifacts`, case-sensitive `--title-contains`, exact `--spec-ref`, and positive `--limit`; filters are conjunctive and applied before rendering. Each task object includes `role`, `kind`, `node_id`, `title`, and nullable `spec_ref`. Text output remains the default (`--format text`) for backward compatibility.
 
+Export a deterministic work packet and later record the external controller handoff with:
+
+```bash
+cargo run -p mdid-cli -- moat work-packet --history-path .mdid/moat-history.json --node-id review --format json
+cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --artifact-ref plan://review-output --artifact-summary 'Reviewed implementation handoff'
+```
+
+`mdid-cli moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json]` exports a deterministic read-only work packet for an external Planner/Coder/Reviewer controller. It includes task metadata, dependency IDs, completed upstream artifact handoffs, acceptance criteria, and the recommended `complete-task` command. It never launches agents, mutates history, schedules work, crawls data, opens PRs, creates cron jobs, or writes artifact files.
+
 Inspect persisted local history with:
 
 ```bash
