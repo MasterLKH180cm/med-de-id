@@ -3542,6 +3542,7 @@ fn moat_dispatch_next_dry_run_prints_first_ready_task_without_mutating_history()
         String::from_utf8_lossy(&seed.stderr)
     );
     make_workflow_audit_spec_task_ready(&history_path);
+    let round_id = latest_history_round_id(&history_path);
 
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
@@ -3569,7 +3570,7 @@ fn moat_dispatch_next_dry_run_prints_first_ready_task_without_mutating_history()
     assert!(stdout.contains("title=Create spec for workflow audit\n"));
     assert!(stdout.contains("dependencies=<none>\n"));
     assert!(stdout.contains("spec_ref=moat-spec/workflow-audit\n"));
-    assert!(stdout.contains(&format!("complete_command=mdid-cli moat complete-task --history-path '{}' --node-id 'spec-workflow-audit' --artifact-ref '<artifact-ref>' --artifact-summary '<artifact-summary>'\n", history_path.display())));
+    assert!(stdout.contains(&format!("complete_command=mdid-cli moat complete-task --history-path '{}' --round-id '{}' --node-id 'spec-workflow-audit' --artifact-ref '<artifact-ref>' --artifact-summary '<artifact-summary>'\n", history_path.display(), round_id)));
 
     let ready_after = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "ready-tasks", "--history-path", history_path_arg])

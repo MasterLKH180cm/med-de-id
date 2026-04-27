@@ -2374,10 +2374,8 @@ fn format_dispatch_complete_command(
         "--history-path".to_string(),
         shell_single_quote(&command.history_path),
     ];
-    if command.round_id.is_some() {
-        parts.push("--round-id".to_string());
-        parts.push(shell_single_quote(round_id));
-    }
+    parts.push("--round-id".to_string());
+    parts.push(shell_single_quote(round_id));
     parts.extend([
         "--node-id".to_string(),
         shell_single_quote(node_id),
