@@ -94,7 +94,7 @@ git commit -m "feat: emit JSON moat dispatch envelopes"
 - Test: `crates/mdid-cli/tests/moat_cli.rs`
 - Modify: `docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md`
 
-- [ ] **Step 1: Write the failing JSON claim test**
+- [x] **Step 1: Write the failing JSON claim test** — Hardened `moat_dispatch_next_json_claim_includes_state_transition` to use `--agent-id dispatcher-json` and assert the full claim envelope (`type`, ownership fields, selected workflow-audit task fields, numeric `lease_seconds`, and `complete_command`). Added missing/duplicate/invalid `--format` parser coverage.
 
 Add an integration test that runs `mdid-cli moat dispatch-next --history-path <path> --format json` without `--dry-run`, parses stdout JSON, and asserts:
 
@@ -107,30 +107,30 @@ assert_eq!(json["new_state"], "in_progress");
 
 Then run `ready-tasks` and assert `ready_task_entries=0`.
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED** — RED: `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_dispatch_next_json -- --nocapture` failed because `complete_command` did not contain `--agent-id dispatcher-json`.
 
 Run: `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_dispatch_next_json_claim_includes_state_transition -- --nocapture`
 Expected: FAIL until JSON claim metadata is implemented.
 
-- [ ] **Step 3: Implement JSON claim metadata**
+- [x] **Step 3: Implement JSON claim metadata** — Existing claim metadata was present; added the claimed `--agent-id` to the recommended `complete-task` handoff command while preserving default text output behavior.
 
 When `output_format` is JSON and `dry_run` is false, include `previous_state: "ready"` and `new_state: "in_progress"` in the JSON object. Keep default text output byte-for-byte compatible with existing tests.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests** — GREEN: `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_dispatch_next_json -- --nocapture` passed (2 passed).
 
 Run: `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_dispatch_next_json -- --nocapture`
 Expected: both JSON dispatch tests PASS.
 
-- [ ] **Step 5: Update spec text**
+- [x] **Step 5: Update spec text** — Updated spec, README, and AGENTS truth-sync text for the dispatch JSON envelope fields and clarified that `lease_expires_at` is not part of the dispatch envelope.
 
 Update `docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md` so the `dispatch-next` bullet includes `[--format text|json]` and documents JSON fields: `type`, `dry_run`, `claimed`, `round_id`, `node_id`, `role`, `kind`, `title`, `dependencies`, `spec_ref`, `complete_command`, and claim-only `previous_state`/`new_state`.
 
-- [ ] **Step 6: Run broader CLI moat tests**
+- [x] **Step 6: Run broader CLI moat tests** — GREEN after correcting the test to the actual parser error string: `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_dispatch_next -- --nocapture` passed (18 passed).
 
 Run: `CARGO_INCREMENTAL=0 cargo test -p mdid-cli --test moat_cli moat_dispatch_next -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit** — Completed for Task 2 with commit message `feat(cli): emit dispatch claim json envelope`.
 
 Run:
 

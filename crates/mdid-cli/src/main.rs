@@ -3316,9 +3316,11 @@ fn format_dispatch_complete_command(
     ];
     parts.push("--round-id".to_string());
     parts.push(shell_single_quote(round_id));
+    parts.extend(["--node-id".to_string(), shell_single_quote(node_id)]);
+    if let Some(agent_id) = command.agent_id.as_deref() {
+        parts.extend(["--agent-id".to_string(), agent_id.to_string()]);
+    }
     parts.extend([
-        "--node-id".to_string(),
-        shell_single_quote(node_id),
         "--artifact-ref".to_string(),
         shell_single_quote("<artifact-ref>"),
         "--artifact-summary".to_string(),

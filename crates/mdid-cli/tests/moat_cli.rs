@@ -5590,6 +5590,8 @@ fn moat_dispatch_next_json_claim_includes_state_transition() {
             "dispatch-next",
             "--history-path",
             history_path_arg,
+            "--agent-id",
+            "dispatcher-json",
             "--format",
             "json",
         ])
@@ -5602,10 +5604,25 @@ fn moat_dispatch_next_json_claim_includes_state_transition() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be json");
+    assert_eq!(json["type"], "moat_dispatch_next");
     assert_eq!(json["dry_run"], false);
     assert_eq!(json["claimed"], true);
+    assert_eq!(json["agent_id"], "dispatcher-json");
+    assert_eq!(json["assigned_agent_id"], "dispatcher-json");
+    assert_eq!(json["node_id"], "spec-workflow-audit");
+    assert_eq!(json["role"], "planner");
+    assert_eq!(json["kind"], "spec_planning");
+    assert_eq!(json["title"], "Create spec for workflow audit");
+    assert_eq!(json["dependencies"], serde_json::json!([]));
+    assert_eq!(json["spec_ref"], "moat-spec/workflow-audit");
     assert_eq!(json["previous_state"], "ready");
     assert_eq!(json["new_state"], "in_progress");
+    assert!(json["lease_seconds"].is_number());
+    let complete_command = json["complete_command"]
+        .as_str()
+        .expect("complete_command should be string");
+    assert!(complete_command.contains("mdid-cli moat complete-task"));
+    assert!(complete_command.contains("--agent-id dispatcher-json"));
 
     let ready_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "ready-tasks", "--history-path", history_path_arg])
@@ -6268,6 +6285,70 @@ fn moat_dispatch_next_rejects_duplicate_node_id_filter() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         format!("duplicate moat dispatch-next --node-id\n{USAGE}\n")
+    );
+}
+
+#[test]
+fn moat_dispatch_next_rejects_missing_format_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            "history.json",
+            "--format",
+        ])
+        .output()
+        .expect("failed to run dispatch-next with missing format value");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("missing value for --format\n{USAGE}\n")
+    );
+}
+
+#[test]
+fn moat_dispatch_next_rejects_duplicate_format_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            "history.json",
+            "--format",
+            "json",
+            "--format",
+            "text",
+        ])
+        .output()
+        .expect("failed to run dispatch-next with duplicate format");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --format\n{USAGE}\n")
+    );
+}
+
+#[test]
+fn moat_dispatch_next_rejects_invalid_format_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            "history.json",
+            "--format",
+            "yaml",
+        ])
+        .output()
+        .expect("failed to run dispatch-next with invalid format");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("unknown moat dispatch-next format: yaml\n{USAGE}\n")
     );
 }
 
