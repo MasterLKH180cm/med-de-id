@@ -2,7 +2,7 @@ use chrono::Utc;
 use mdid_application::{render_moat_plan_markdown, render_moat_spec_markdown, MoatAgentAssignment};
 use mdid_domain::{
     AgentRole, CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
-    MoatTaskNodeKind, MoatTaskNodeState, MoatType, ResourceBudget,
+    MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState, MoatType, ResourceBudget,
 };
 use mdid_runtime::{
     moat::{run_bounded_round, MoatRoundInput, MoatRoundReport},
@@ -2293,25 +2293,18 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
         })?
     };
     let round_id = entry.report.summary.round_id.to_string();
-    let ready_ids = entry.report.control_plane.task_graph.ready_node_ids();
-    let selected = entry
-        .report
-        .control_plane
-        .task_graph
-        .nodes
-        .iter()
-        .find(|node| {
-            ready_ids.iter().any(|ready_id| ready_id == &node.node_id)
-                && command.role.map(|role| node.role == role).unwrap_or(true)
-                && command.kind.map(|kind| node.kind == kind).unwrap_or(true)
-        })
-        .cloned()
-        .ok_or_else(|| "no ready moat task matched dispatch filters".to_string())?;
+    let mut selected = select_dispatch_next_node(entry, command)?;
     drop(store);
 
     if !command.dry_run {
         let mut claim_store = LocalMoatHistoryStore::open_existing(&command.history_path)
             .map_err(|error| format!("failed to open moat history store: {error}"))?;
+        let claim_entry = claim_store
+            .entries()
+            .iter()
+            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+            .ok_or_else(|| "no ready moat task matched dispatch filters".to_string())?;
+        selected = select_dispatch_next_node(claim_entry, command)?;
         claim_store
             .claim_ready_task(Some(&round_id), &selected.node_id)
             .map_err(|error| format!("failed to claim moat task: {error}"))?;
@@ -2338,9 +2331,8 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
             .unwrap_or_else(|| "<none>".to_string())
     );
     println!(
-        "complete_command=mdid-cli moat complete-task --history-path {} --node-id {} --artifact-ref <artifact-ref> --artifact-summary <artifact-summary>",
-        command.history_path,
-        selected.node_id
+        "complete_command={}",
+        format_dispatch_complete_command(command, &round_id, &selected.node_id)
     );
     if !command.dry_run {
         println!("previous_state=ready");
@@ -2348,6 +2340,57 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
     }
 
     Ok(())
+}
+
+fn select_dispatch_next_node(
+    entry: &MoatHistoryEntry,
+    command: &MoatDispatchNextCommand,
+) -> Result<MoatTaskNode, String> {
+    let ready_ids = entry.report.control_plane.task_graph.ready_node_ids();
+    entry
+        .report
+        .control_plane
+        .task_graph
+        .nodes
+        .iter()
+        .find(|node| {
+            ready_ids.iter().any(|ready_id| ready_id == &node.node_id)
+                && command.role.map(|role| node.role == role).unwrap_or(true)
+                && command.kind.map(|kind| node.kind == kind).unwrap_or(true)
+        })
+        .cloned()
+        .ok_or_else(|| "no ready moat task matched dispatch filters".to_string())
+}
+
+fn format_dispatch_complete_command(
+    command: &MoatDispatchNextCommand,
+    round_id: &str,
+    node_id: &str,
+) -> String {
+    let mut parts = vec![
+        "mdid-cli".to_string(),
+        "moat".to_string(),
+        "complete-task".to_string(),
+        "--history-path".to_string(),
+        shell_single_quote(&command.history_path),
+    ];
+    if command.round_id.is_some() {
+        parts.push("--round-id".to_string());
+        parts.push(shell_single_quote(round_id));
+    }
+    parts.extend([
+        "--node-id".to_string(),
+        shell_single_quote(node_id),
+        "--artifact-ref".to_string(),
+        shell_single_quote("<artifact-ref>"),
+        "--artifact-summary".to_string(),
+        shell_single_quote("<artifact-summary>"),
+    ]);
+    parts.join(" ")
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn run_moat_claim_task(command: &MoatClaimTaskCommand) -> Result<(), String> {

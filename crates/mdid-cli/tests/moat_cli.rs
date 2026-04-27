@@ -3569,7 +3569,7 @@ fn moat_dispatch_next_dry_run_prints_first_ready_task_without_mutating_history()
     assert!(stdout.contains("title=Create spec for workflow audit\n"));
     assert!(stdout.contains("dependencies=<none>\n"));
     assert!(stdout.contains("spec_ref=moat-spec/workflow-audit\n"));
-    assert!(stdout.contains(&format!("complete_command=mdid-cli moat complete-task --history-path {} --node-id spec-workflow-audit --artifact-ref <artifact-ref> --artifact-summary <artifact-summary>\n", history_path.display())));
+    assert!(stdout.contains(&format!("complete_command=mdid-cli moat complete-task --history-path '{}' --node-id 'spec-workflow-audit' --artifact-ref '<artifact-ref>' --artifact-summary '<artifact-summary>'\n", history_path.display())));
 
     let ready_after = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "ready-tasks", "--history-path", history_path_arg])
@@ -3627,6 +3627,47 @@ fn moat_dispatch_next_claims_selected_ready_task() {
         String::from_utf8_lossy(&ready_after.stderr)
     );
     assert!(String::from_utf8_lossy(&ready_after.stdout).contains("ready_task_entries=0\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_dispatch_next_complete_command_targets_explicit_round_id() {
+    let history_path = unique_history_path("dispatch-next-explicit-round");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed dispatch-next explicit round history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    make_workflow_audit_spec_task_ready(&history_path);
+    let round_id = latest_history_round_id(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &round_id,
+            "--dry-run",
+        ])
+        .output()
+        .expect("failed to dispatch next task for explicit round");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&format!("round_id={round_id}\n")));
+    assert!(stdout.contains(&format!("complete_command=mdid-cli moat complete-task --history-path '{}' --round-id '{}' --node-id 'spec-workflow-audit' --artifact-ref '<artifact-ref>' --artifact-summary '<artifact-summary>'\n", history_path.display(), round_id)));
 
     cleanup_history_path(&history_path);
 }
@@ -9041,6 +9082,22 @@ fn unique_history_path(label: &str) -> PathBuf {
 
 fn cleanup_history_path(path: &PathBuf) {
     let _ = std::fs::remove_file(path);
+}
+
+fn latest_history_round_id(history_path: &PathBuf) -> String {
+    let persisted = fs::read_to_string(history_path)
+        .expect("seeded moat history should be readable for round id lookup");
+    let history: Value = serde_json::from_str(&persisted)
+        .expect("seeded moat history should be valid JSON for round id lookup");
+    history
+        .as_array()
+        .and_then(|entries| entries.last())
+        .and_then(|entry| entry.get("report"))
+        .and_then(|report| report.get("summary"))
+        .and_then(|summary| summary.get("round_id"))
+        .and_then(Value::as_str)
+        .expect("seeded moat history should include latest round id")
+        .to_string()
 }
 
 fn seed_successful_moat_history(history_path: &PathBuf) {
