@@ -86,7 +86,7 @@ Available docs:
 
 ## Roadmap
 
-- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, bounded PDF/OCR foundation, conservative image/video/FCS support
+- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, bounded PDF/scanned-record foundation, conservative image/video/FCS support
 - **v1.5**: detection quality/provenance upgrades, PDF/DICOM policy depth, parity and workflow polish
 - **v2**: AI/NLP detectors, stronger media handling, richer custom node/plugin model, enterprise controls
 
