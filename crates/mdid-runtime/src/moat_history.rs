@@ -248,7 +248,12 @@ impl LocalMoatHistoryStore {
         round_id: Option<&str>,
         node_id: &str,
     ) -> Result<String, CompleteInProgressTaskError> {
-        self.transition_in_progress_task(round_id, node_id, MoatTaskNodeState::Completed)
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::InProgress,
+            MoatTaskNodeState::Completed,
+        )
     }
 
     pub fn block_in_progress_task(
@@ -256,13 +261,32 @@ impl LocalMoatHistoryStore {
         round_id: Option<&str>,
         node_id: &str,
     ) -> Result<String, CompleteInProgressTaskError> {
-        self.transition_in_progress_task(round_id, node_id, MoatTaskNodeState::Blocked)
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::InProgress,
+            MoatTaskNodeState::Blocked,
+        )
     }
 
-    fn transition_in_progress_task(
+    pub fn unblock_blocked_task(
         &mut self,
         round_id: Option<&str>,
         node_id: &str,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::Blocked,
+            MoatTaskNodeState::Ready,
+        )
+    }
+
+    fn transition_task_state(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+        expected_state: MoatTaskNodeState,
         next_state: MoatTaskNodeState,
     ) -> Result<String, CompleteInProgressTaskError> {
         if !self.path.exists() {
@@ -296,11 +320,19 @@ impl LocalMoatHistoryStore {
                 node_id: node_id.to_string(),
             })?;
 
-        if node.state != MoatTaskNodeState::InProgress {
-            return Err(CompleteInProgressTaskError::NodeNotInProgress {
+        if node.state != expected_state {
+            if expected_state == MoatTaskNodeState::InProgress {
+                return Err(CompleteInProgressTaskError::NodeNotInProgress {
+                    round_id: selected_round_id.clone(),
+                    node_id: node_id.to_string(),
+                    state: node.state,
+                });
+            }
+            return Err(CompleteInProgressTaskError::NodeNotInExpectedState {
                 round_id: selected_round_id.clone(),
                 node_id: node_id.to_string(),
                 state: node.state,
+                expected_state,
             });
         }
 
@@ -503,6 +535,13 @@ pub enum CompleteInProgressTaskError {
         round_id: String,
         node_id: String,
         state: MoatTaskNodeState,
+    },
+    #[error("moat task node is not in expected state in round {round_id}: {node_id} is {state:?}, expected {expected_state:?}")]
+    NodeNotInExpectedState {
+        round_id: String,
+        node_id: String,
+        state: MoatTaskNodeState,
+        expected_state: MoatTaskNodeState,
     },
 }
 
