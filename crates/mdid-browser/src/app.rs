@@ -60,6 +60,9 @@ struct TabularFlowState {
     review_queue: String,
     error_banner: Option<String>,
     is_submitting: bool,
+    state_revision: u64,
+    next_submission_token: u64,
+    active_submission_token: Option<u64>,
 }
 
 impl Default for TabularFlowState {
@@ -73,6 +76,9 @@ impl Default for TabularFlowState {
             review_queue: IDLE_REVIEW_QUEUE.to_string(),
             error_banner: None,
             is_submitting: false,
+            state_revision: 0,
+            next_submission_token: 1,
+            active_submission_token: None,
         }
     }
 }
@@ -83,7 +89,11 @@ impl TabularFlowState {
         self.summary = IDLE_SUMMARY.to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = None;
-        self.is_submitting = false;
+    }
+
+    fn invalidate_generated_state(&mut self) {
+        self.state_revision += 1;
+        self.clear_generated_state();
     }
 
     fn validate_submission(&self) -> Result<TabularSubmitRequest, String> {
@@ -101,7 +111,11 @@ impl TabularFlowState {
         build_submit_request(self.input_mode, &self.payload, &self.field_policy_json)
     }
 
-    fn begin_submit(&mut self) -> Result<TabularSubmitRequest, ()> {
+    fn begin_submit(&mut self) -> Result<SubmissionHandle, ()> {
+        if self.is_submitting {
+            return Err(());
+        }
+
         self.result_output.clear();
         self.summary = "Submitting to runtime...".to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
@@ -109,8 +123,21 @@ impl TabularFlowState {
         self.is_submitting = true;
 
         match self.validate_submission() {
-            Ok(request) => Ok(request),
+            Ok(request) => {
+                let submission_token = self.next_submission_token;
+                self.next_submission_token += 1;
+                self.active_submission_token = Some(submission_token);
+
+                Ok(SubmissionHandle {
+                    request,
+                    input_mode: self.input_mode,
+                    submission_token,
+                    state_revision: self.state_revision,
+                })
+            }
             Err(message) => {
+                self.active_submission_token = None;
+                self.is_submitting = false;
                 self.clear_generated_state();
                 self.error_banner = Some(message);
                 Err(())
@@ -118,20 +145,45 @@ impl TabularFlowState {
         }
     }
 
-    fn apply_runtime_success(&mut self, response: RuntimeResponseEnvelope) {
+    fn apply_runtime_success(
+        &mut self,
+        submission_token: u64,
+        state_revision: u64,
+        response: RuntimeResponseEnvelope,
+    ) {
+        if self.active_submission_token != Some(submission_token) {
+            return;
+        }
+
+        self.active_submission_token = None;
+        self.is_submitting = false;
+
+        if self.state_revision != state_revision {
+            return;
+        }
+
         self.result_output = response.rewritten_output;
         self.summary = format_summary(&response.summary);
         self.review_queue = format_review_queue(&response.review_queue);
         self.error_banner = None;
-        self.is_submitting = false;
     }
 
-    fn apply_runtime_error(&mut self, message: String) {
+    fn apply_runtime_error(&mut self, submission_token: u64, state_revision: u64, message: String) {
+        if self.active_submission_token != Some(submission_token) {
+            return;
+        }
+
+        self.active_submission_token = None;
+        self.is_submitting = false;
+
+        if self.state_revision != state_revision {
+            return;
+        }
+
         self.result_output.clear();
         self.summary = IDLE_SUMMARY.to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = Some(message);
-        self.is_submitting = false;
     }
 }
 
@@ -158,6 +210,14 @@ struct XlsxSubmitRequest {
 struct TabularSubmitRequest {
     endpoint: &'static str,
     body_json: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SubmissionHandle {
+    request: TabularSubmitRequest,
+    input_mode: InputMode,
+    submission_token: u64,
+    state_revision: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -291,7 +351,10 @@ fn truncate_for_banner(message: &str, max_chars: usize) -> String {
         return message.to_string();
     }
 
-    let truncated = message.chars().take(max_chars.saturating_sub(1)).collect::<String>();
+    let truncated = message
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
     format!("{truncated}…")
 }
 
@@ -360,7 +423,7 @@ pub fn App() -> impl IntoView {
         let next_mode = InputMode::from_select_value(&event_target_value(&event));
         state.update(|state| {
             state.input_mode = next_mode;
-            state.clear_generated_state();
+            state.invalidate_generated_state();
         });
     };
 
@@ -368,7 +431,7 @@ pub fn App() -> impl IntoView {
         let next_payload = event_target_value(&event);
         state.update(|state| {
             state.payload = next_payload;
-            state.clear_generated_state();
+            state.invalidate_generated_state();
         });
     };
 
@@ -376,7 +439,7 @@ pub fn App() -> impl IntoView {
         let next_policy = event_target_value(&event);
         state.update(|state| {
             state.field_policy_json = next_policy;
-            state.clear_generated_state();
+            state.invalidate_generated_state();
         });
     };
 
@@ -389,15 +452,32 @@ pub fn App() -> impl IntoView {
 
         state.set(maybe_request.0);
 
-        if let Some(request) = maybe_request.1 {
-            let input_mode = state.get_untracked().input_mode;
+        if let Some(handle) = maybe_request.1 {
             spawn_local(async move {
-                match perform_runtime_request(request).await {
-                    Ok(body) => match parse_runtime_success(input_mode, &body) {
-                        Ok(response) => state.update(|state| state.apply_runtime_success(response)),
-                        Err(message) => state.update(|state| state.apply_runtime_error(message)),
+                match perform_runtime_request(handle.request).await {
+                    Ok(body) => match parse_runtime_success(handle.input_mode, &body) {
+                        Ok(response) => state.update(|state| {
+                            state.apply_runtime_success(
+                                handle.submission_token,
+                                handle.state_revision,
+                                response,
+                            )
+                        }),
+                        Err(message) => state.update(|state| {
+                            state.apply_runtime_error(
+                                handle.submission_token,
+                                handle.state_revision,
+                                message,
+                            )
+                        }),
                     },
-                    Err(message) => state.update(|state| state.apply_runtime_error(message)),
+                    Err(message) => state.update(|state| {
+                        state.apply_runtime_error(
+                            handle.submission_token,
+                            handle.state_revision,
+                            message,
+                        )
+                    }),
                 }
             });
         }
@@ -471,9 +551,8 @@ pub fn App() -> impl IntoView {
 mod tests {
     use super::{
         build_submit_request, format_review_queue, format_summary, parse_runtime_error,
-        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary,
-        TabularFlowState, DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE,
-        IDLE_SUMMARY,
+        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, TabularFlowState,
+        DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
     };
     use serde_json::json;
 
@@ -489,6 +568,9 @@ mod tests {
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
         assert!(state.error_banner.is_none());
         assert!(!state.is_submitting);
+        assert_eq!(state.state_revision, 0);
+        assert_eq!(state.next_submission_token, 1);
+        assert!(state.active_submission_token.is_none());
     }
 
     #[test]
@@ -560,12 +642,8 @@ mod tests {
 
     #[test]
     fn build_submit_request_rejects_non_array_policy_json() {
-        let error = build_submit_request(
-            InputMode::CsvText,
-            "patient_id\n1",
-            "{\"columns\":{}}",
-        )
-        .unwrap_err();
+        let error = build_submit_request(InputMode::CsvText, "patient_id\n1", "{\"columns\":{}}")
+            .unwrap_err();
 
         assert!(error.contains("Field policy JSON must be a JSON array of policies"));
     }
@@ -595,7 +673,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(response.rewritten_output, "patient_id,patient_name\ntok-123,Alice Smith\n");
+        assert_eq!(
+            response.rewritten_output,
+            "patient_id,patient_name\ntok-123,Alice Smith\n"
+        );
         assert_eq!(response.summary.total_rows, 1);
         assert_eq!(response.review_queue.len(), 1);
     }
@@ -676,9 +757,13 @@ mod tests {
         let request = state.begin_submit().unwrap();
         assert_eq!(state.summary, "Submitting to runtime...");
         assert!(state.is_submitting);
-        assert_eq!(request.endpoint, "/tabular/deidentify");
+        assert_eq!(request.request.endpoint, "/tabular/deidentify");
 
-        state.apply_runtime_error(FETCH_UNAVAILABLE_MESSAGE.to_string());
+        state.apply_runtime_error(
+            request.submission_token,
+            request.state_revision,
+            FETCH_UNAVAILABLE_MESSAGE.to_string(),
+        );
 
         assert_eq!(
             state.error_banner.as_deref(),
@@ -687,5 +772,78 @@ mod tests {
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
         assert!(!state.is_submitting);
+    }
+
+    #[test]
+    fn overlapping_submission_attempt_is_blocked_while_request_is_in_flight() {
+        let mut state = TabularFlowState {
+            payload: "patient_id\n1".to_string(),
+            ..TabularFlowState::default()
+        };
+
+        let first = state.begin_submit().unwrap();
+        let second = state.begin_submit();
+
+        assert!(second.is_err());
+        assert!(state.is_submitting);
+        assert_eq!(state.active_submission_token, Some(first.submission_token));
+    }
+
+    #[test]
+    fn editing_during_in_flight_request_invalidates_stale_response_without_clearing_spinner() {
+        let mut state = TabularFlowState {
+            payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
+            result_output: "old-result".to_string(),
+            summary: "old-summary".to_string(),
+            review_queue: "old-review".to_string(),
+            error_banner: Some("old-error".to_string()),
+            ..TabularFlowState::default()
+        };
+
+        let submission = state.begin_submit().unwrap();
+        state.payload = "patient_id,patient_name\nMRN-002,Bob Jones".to_string();
+        state.invalidate_generated_state();
+
+        assert!(state.is_submitting);
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+        assert!(state.error_banner.is_none());
+        assert_eq!(state.state_revision, submission.state_revision + 1);
+
+        let response = parse_runtime_success(
+            InputMode::CsvText,
+            &json!({
+                "csv": "patient_id,patient_name\ntok-123,Alice Smith\n",
+                "summary": {
+                    "total_rows": 1,
+                    "encoded_cells": 1,
+                    "review_required_cells": 1,
+                    "failed_rows": 0
+                },
+                "review_queue": [
+                    {
+                        "row_index": 1,
+                        "column": "patient_name",
+                        "value": "Alice Smith",
+                        "phi_type": "patient_name"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        state.apply_runtime_success(
+            submission.submission_token,
+            submission.state_revision,
+            response,
+        );
+
+        assert!(!state.is_submitting);
+        assert!(state.result_output.is_empty());
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+        assert!(state.error_banner.is_none());
+        assert_eq!(state.payload, "patient_id,patient_name\nMRN-002,Bob Jones");
     }
 }
