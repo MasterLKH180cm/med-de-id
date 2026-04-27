@@ -49,6 +49,13 @@ pub struct PortableVaultSnapshot {
     pub records: Vec<MappingRecord>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PortableImportResult {
+    pub imported_records: Vec<MappingRecord>,
+    pub duplicate_records: Vec<MappingRecord>,
+    pub audit_event: AuditEvent,
+}
+
 const CHACHA20POLY1305_KEY_LEN: usize = 32;
 const CHACHA20POLY1305_NONCE_LEN: usize = 12;
 
@@ -304,6 +311,71 @@ impl LocalVaultStore {
         })
     }
 
+    pub fn import_portable(
+        &mut self,
+        artifact: PortableVaultArtifact,
+        portable_passphrase: &str,
+        actor: SurfaceKind,
+        context: &str,
+    ) -> Result<PortableImportResult, VaultError> {
+        ensure_non_blank_passphrase(portable_passphrase)?;
+        ensure_non_blank_import_context(context)?;
+
+        let snapshot = artifact.unlock(portable_passphrase)?;
+        let mut imported_records = Vec::new();
+        let mut duplicate_records = Vec::new();
+        let mut staged_state = self.state.clone();
+
+        for record in snapshot.records {
+            if staged_state
+                .records
+                .iter()
+                .any(|candidate| candidate.id == record.id)
+            {
+                duplicate_records.push(record);
+            } else {
+                staged_state.records.push(record.clone());
+                imported_records.push(record);
+            }
+        }
+
+        let imported_record_ids = imported_records
+            .iter()
+            .map(|record| record.id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let duplicate_record_ids = duplicate_records
+            .iter()
+            .map(|record| record.id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let audit_event = AuditEvent {
+            id: Uuid::new_v4(),
+            kind: AuditEventKind::Import,
+            actor,
+            detail: format!(
+                "portable import context=\"{}\" imported {} record{} with {} duplicate{} imported_record_ids=[{}] duplicate_record_ids=[{}]",
+                context.trim(),
+                imported_records.len(),
+                if imported_records.len() == 1 { "" } else { "s" },
+                duplicate_records.len(),
+                if duplicate_records.len() == 1 { "" } else { "s" },
+                imported_record_ids,
+                duplicate_record_ids,
+            ),
+            recorded_at: Utc::now(),
+        };
+        staged_state.audit_events.push(audit_event.clone());
+        self.flush_state(&staged_state)?;
+        self.state = staged_state;
+
+        Ok(PortableImportResult {
+            imported_records,
+            duplicate_records,
+            audit_event,
+        })
+    }
+
     pub fn audit_events(&self) -> &[AuditEvent] {
         &self.state.audit_events
     }
@@ -396,6 +468,8 @@ pub enum VaultError {
     BlankPassphrase,
     #[error("portable export context must not be blank or whitespace")]
     BlankExportContext,
+    #[error("portable import context must not be blank or whitespace")]
+    BlankImportContext,
     #[error("vault path already exists: {0}")]
     AlreadyExists(PathBuf),
     #[error("unsupported kdf algorithm: {0}")]
@@ -570,6 +644,14 @@ fn ensure_non_blank_passphrase(passphrase: &str) -> Result<(), VaultError> {
 fn ensure_non_blank_export_context(context: &str) -> Result<(), VaultError> {
     if context.trim().is_empty() {
         return Err(VaultError::BlankExportContext);
+    }
+
+    Ok(())
+}
+
+fn ensure_non_blank_import_context(context: &str) -> Result<(), VaultError> {
+    if context.trim().is_empty() {
+        return Err(VaultError::BlankImportContext);
     }
 
     Ok(())

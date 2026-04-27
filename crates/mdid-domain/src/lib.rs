@@ -84,6 +84,7 @@ pub enum AuditEventKind {
     Encode,
     Decode,
     Export,
+    Import,
 }
 
 impl AuditEventKind {
@@ -92,11 +93,15 @@ impl AuditEventKind {
             AuditEventKind::Encode => "encode",
             AuditEventKind::Decode => "decode",
             AuditEventKind::Export => "export",
+            AuditEventKind::Import => "import",
         }
     }
 
     pub fn is_high_risk(&self) -> bool {
-        matches!(self, AuditEventKind::Decode | AuditEventKind::Export)
+        matches!(
+            self,
+            AuditEventKind::Decode | AuditEventKind::Export | AuditEventKind::Import
+        )
     }
 }
 

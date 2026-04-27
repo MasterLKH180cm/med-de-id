@@ -234,6 +234,194 @@ fn portable_export_rejects_blank_context() {
 }
 
 #[test]
+fn portable_import_persists_new_records_reports_duplicates_and_records_import_audit() {
+    let dir = tempdir().unwrap();
+    let export_path = dir.path().join("export-source.mdid");
+    let import_path = dir.path().join("import-target.mdid");
+
+    let mut export_vault =
+        LocalVaultStore::create(&export_path, "correct horse battery staple").unwrap();
+    let imported_record = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let duplicate_record = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let duplicate_only_artifact = export_vault
+        .export_portable(
+            &[duplicate_record.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "seed duplicate for import test",
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[imported_record.id, duplicate_record.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let mut import_vault =
+        LocalVaultStore::create(&import_path, "correct horse battery staple").unwrap();
+    let seeded = import_vault
+        .import_portable(
+            duplicate_only_artifact,
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "seed duplicate into target vault",
+        )
+        .unwrap();
+    assert_eq!(seeded.imported_records.len(), 1);
+    assert_eq!(seeded.imported_records[0].id, duplicate_record.id);
+    assert!(seeded.duplicate_records.is_empty());
+
+    let result = import_vault
+        .import_portable(
+            artifact,
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site intake",
+        )
+        .unwrap();
+
+    assert_eq!(result.imported_records.len(), 1);
+    assert_eq!(result.imported_records[0].id, imported_record.id);
+    assert_eq!(result.duplicate_records.len(), 1);
+    assert_eq!(result.duplicate_records[0].id, duplicate_record.id);
+    assert_eq!(result.audit_event.kind.as_str(), "import");
+    assert_eq!(result.audit_event.actor, SurfaceKind::Desktop);
+    assert!(result.audit_event.detail.contains("partner-site intake"));
+    assert!(result.audit_event.detail.contains("imported 1 record"));
+    assert!(result.audit_event.detail.contains("1 duplicate"));
+    assert!(result
+        .audit_event
+        .detail
+        .contains(&imported_record.id.to_string()));
+    assert!(result
+        .audit_event
+        .detail
+        .contains(&duplicate_record.id.to_string()));
+
+    let reopened = LocalVaultStore::unlock(&import_path, "correct horse battery staple").unwrap();
+    let audit_events = reopened.audit_events();
+    assert_eq!(audit_events.len(), 2);
+    assert_eq!(audit_events[0].kind.as_str(), "import");
+    assert_eq!(audit_events[1].kind.as_str(), "import");
+}
+
+#[test]
+fn portable_import_rejects_blank_context() {
+    let dir = tempdir().unwrap();
+    let export_path = dir.path().join("export-source.mdid");
+    let import_path = dir.path().join("import-target.mdid");
+
+    let mut export_vault =
+        LocalVaultStore::create(&export_path, "correct horse battery staple").unwrap();
+    let stored = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let mut import_vault =
+        LocalVaultStore::create(&import_path, "correct horse battery staple").unwrap();
+
+    assert!(matches!(
+        import_vault.import_portable(
+            artifact,
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "   \n\t  ",
+        ),
+        Err(VaultError::BlankImportContext)
+    ));
+}
+
+#[test]
+fn portable_import_rejects_wrong_passphrase_and_corrupted_artifacts() {
+    let dir = tempdir().unwrap();
+    let export_path = dir.path().join("export-source.mdid");
+    let import_path = dir.path().join("import-target.mdid");
+
+    let mut export_vault =
+        LocalVaultStore::create(&export_path, "correct horse battery staple").unwrap();
+    let stored = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+    let mut corrupted_artifact_json = serde_json::to_value(&artifact).unwrap();
+    corrupted_artifact_json["ciphertext_b64"] = serde_json::json!("%%%not-base64%%%");
+    let corrupted_artifact: PortableVaultArtifact =
+        serde_json::from_value(corrupted_artifact_json).unwrap();
+
+    let mut import_vault =
+        LocalVaultStore::create(&import_path, "correct horse battery staple").unwrap();
+
+    assert!(matches!(
+        import_vault.import_portable(
+            artifact,
+            "totally wrong passphrase",
+            SurfaceKind::Desktop,
+            "partner-site intake",
+        ),
+        Err(VaultError::UnlockFailed)
+    ));
+    assert!(matches!(
+        import_vault.import_portable(
+            corrupted_artifact,
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site intake",
+        ),
+        Err(VaultError::InvalidArtifact)
+    ));
+}
+
+#[test]
 fn failed_store_mapping_persistence_leaves_memory_and_disk_state_unchanged() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("vault.mdid");
