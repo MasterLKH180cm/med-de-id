@@ -10,6 +10,9 @@ mdid-domain = { path = "../mdid-domain" }
 mdid-runtime = { path = "../mdid-runtime" }
 chrono.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [[bin]]
 name = "mdid-cli"
 path = "src/main.rs"

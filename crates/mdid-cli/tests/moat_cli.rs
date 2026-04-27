@@ -1,4 +1,5 @@
 use mdid_runtime::moat_history::LocalMoatHistoryStore;
+use serde_json::Value;
 use std::{
     fs,
     path::PathBuf,
@@ -6,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -3322,35 +3323,7 @@ fn cli_filters_ready_tasks_by_title_contains() {
         String::from_utf8_lossy(&round_output.stderr)
     );
 
-    let mut persisted_history = fs::read_to_string(&history_path)
-        .expect("seeded moat history should be readable for fixture adjustment");
-    let spec_completed_state = concat!(
-        "\"node_id\": \"spec_planning\",\n",
-        "              \"title\": \"Spec Planning\",\n",
-        "              \"role\": \"planner\",\n",
-        "              \"kind\": \"spec_planning\",\n",
-        "              \"state\": \"completed\""
-    );
-    assert!(
-        persisted_history.contains(spec_completed_state),
-        "expected deterministic spec planning node in seeded history"
-    );
-    persisted_history = persisted_history.replace(
-        spec_completed_state,
-        concat!(
-            "\"node_id\": \"spec-workflow-audit\",\n",
-            "              \"title\": \"Create spec for workflow audit\",\n",
-            "              \"role\": \"planner\",\n",
-            "              \"kind\": \"spec_planning\",\n",
-            "              \"state\": \"ready\""
-        ),
-    );
-    persisted_history = persisted_history.replace(
-        "\"spec_ref\": \"docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\"",
-        "\"spec_ref\": \"moat-spec/workflow-audit\"",
-    );
-    fs::write(&history_path, persisted_history)
-        .expect("seeded moat history should be writable for fixture adjustment");
+    make_workflow_audit_spec_task_ready(&history_path);
 
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
@@ -3377,6 +3350,8 @@ fn cli_filters_ready_tasks_by_title_contains() {
             "ready_task=planner|spec_planning|spec-workflow-audit|Create spec for workflow audit|moat-spec/workflow-audit\n",
         )
     );
+
+    cleanup_history_path(&history_path);
 }
 
 #[test]
@@ -3415,6 +3390,8 @@ fn cli_ready_tasks_title_filter_succeeds_with_no_matches() {
         String::from_utf8_lossy(&output.stdout),
         concat!("moat ready tasks\n", "ready_task_entries=0\n")
     );
+
+    cleanup_history_path(&history_path);
 }
 
 #[test]
@@ -8533,6 +8510,46 @@ fn seed_moat_history_with_assignment_rows(history_path: &PathBuf) {
     let patched = persisted.replacen(original, replacement, 1);
     assert_ne!(patched, persisted, "seed history assignment block changed");
     fs::write(history_path, patched).expect("history should be patchable");
+}
+
+fn make_workflow_audit_spec_task_ready(history_path: &PathBuf) {
+    let persisted = fs::read_to_string(history_path)
+        .expect("seeded moat history should be readable for fixture adjustment");
+    let mut history: Value =
+        serde_json::from_str(&persisted).expect("seeded moat history should be valid JSON");
+    let nodes = history
+        .get_mut(0)
+        .and_then(|entry| entry.get_mut("report"))
+        .and_then(|report| report.get_mut("control_plane"))
+        .and_then(|control_plane| control_plane.get_mut("task_graph"))
+        .and_then(|task_graph| task_graph.get_mut("nodes"))
+        .and_then(Value::as_array_mut)
+        .expect("seeded moat history should contain task graph nodes");
+    let spec_node = nodes
+        .iter_mut()
+        .find(|node| node.get("node_id").and_then(Value::as_str) == Some("spec_planning"))
+        .and_then(Value::as_object_mut)
+        .expect("seeded moat history should contain deterministic spec planning node");
+
+    spec_node.insert(
+        "node_id".to_string(),
+        Value::String("spec-workflow-audit".to_string()),
+    );
+    spec_node.insert(
+        "title".to_string(),
+        Value::String("Create spec for workflow audit".to_string()),
+    );
+    spec_node.insert("state".to_string(), Value::String("ready".to_string()));
+    spec_node.insert("depends_on".to_string(), Value::Array(Vec::new()));
+    spec_node.insert(
+        "spec_ref".to_string(),
+        Value::String("moat-spec/workflow-audit".to_string()),
+    );
+
+    let persisted = serde_json::to_string_pretty(&history)
+        .expect("adjusted moat history should serialize as JSON");
+    fs::write(history_path, persisted)
+        .expect("seeded moat history should be writable for fixture adjustment");
 }
 
 fn unique_history_path(label: &str) -> PathBuf {

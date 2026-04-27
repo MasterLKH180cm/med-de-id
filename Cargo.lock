@@ -2953,6 +2953,7 @@ dependencies = [
  "mdid-application",
  "mdid-domain",
  "mdid-runtime",
+ "serde_json",
 ]
 
 [[package]]
