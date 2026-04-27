@@ -331,8 +331,24 @@ impl LocalVaultStore {
                 .records
                 .iter()
                 .any(|candidate| candidate.id == record.id)
+                || find_exact_mapping_in_records(
+                    &staged_state.records,
+                    &record.scope,
+                    &record.phi_type,
+                    &record.original_value,
+                )
+                .is_some()
             {
                 duplicate_records.push(record);
+            } else if let Some(existing) = find_mapping_by_value_in_records(
+                &staged_state.records,
+                &record.phi_type,
+                &record.original_value,
+            ) {
+                let mut imported = record;
+                imported.token = existing.token;
+                staged_state.records.push(imported.clone());
+                imported_records.push(imported);
             } else {
                 staged_state.records.push(record.clone());
                 imported_records.push(record);
@@ -428,11 +444,7 @@ impl LocalVaultStore {
     }
 
     fn find_mapping_by_value(&self, phi_type: &str, original_value: &str) -> Option<MappingRecord> {
-        self.state
-            .records
-            .iter()
-            .find(|record| record.phi_type == phi_type && record.original_value == original_value)
-            .cloned()
+        find_mapping_by_value_in_records(&self.state.records, phi_type, original_value)
     }
 
     fn flush(&self) -> Result<(), VaultError> {
@@ -456,6 +468,33 @@ impl LocalVaultStore {
         atomic_write(&self.path, &raw)?;
         Ok(())
     }
+}
+
+fn find_exact_mapping_in_records(
+    records: &[MappingRecord],
+    scope: &MappingScope,
+    phi_type: &str,
+    original_value: &str,
+) -> Option<MappingRecord> {
+    records
+        .iter()
+        .find(|record| {
+            record.scope == *scope
+                && record.phi_type == phi_type
+                && record.original_value == original_value
+        })
+        .cloned()
+}
+
+fn find_mapping_by_value_in_records(
+    records: &[MappingRecord],
+    phi_type: &str,
+    original_value: &str,
+) -> Option<MappingRecord> {
+    records
+        .iter()
+        .find(|record| record.phi_type == phi_type && record.original_value == original_value)
+        .cloned()
 }
 
 #[derive(Debug, Error)]

@@ -327,6 +327,137 @@ fn portable_import_persists_new_records_reports_duplicates_and_records_import_au
 }
 
 #[test]
+fn portable_import_treats_semantically_equivalent_existing_records_as_duplicates() {
+    let dir = tempdir().unwrap();
+    let export_path = dir.path().join("export-source.mdid");
+    let import_path = dir.path().join("import-target.mdid");
+
+    let shared_scope = sample_scope("patient.id");
+    let mut export_vault =
+        LocalVaultStore::create(&export_path, "correct horse battery staple").unwrap();
+    let exported = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: shared_scope.clone(),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[exported.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let mut import_vault =
+        LocalVaultStore::create(&import_path, "correct horse battery staple").unwrap();
+    let existing = import_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: shared_scope,
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    let result = import_vault
+        .import_portable(
+            artifact,
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site intake",
+        )
+        .unwrap();
+
+    assert!(result.imported_records.is_empty());
+    assert_eq!(result.duplicate_records.len(), 1);
+    assert_eq!(result.duplicate_records[0].id, exported.id);
+    assert_ne!(result.duplicate_records[0].id, existing.id);
+    assert!(result.audit_event.detail.contains("imported 0 records"));
+    assert!(result.audit_event.detail.contains("1 duplicate"));
+
+    let mut reopened =
+        LocalVaultStore::unlock(&import_path, "correct horse battery staple").unwrap();
+    let decoded = reopened
+        .decode(
+            DecodeRequest::new(
+                vec![existing.id],
+                "stdout".into(),
+                "verify semantic duplicate import did not add a new record".into(),
+                SurfaceKind::Desktop,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(decoded.values.len(), 1);
+    assert_eq!(decoded.values[0].record_id, existing.id);
+}
+
+#[test]
+fn portable_import_reuses_existing_token_for_new_scope_records_with_same_phi_value() {
+    let dir = tempdir().unwrap();
+    let export_path = dir.path().join("export-source.mdid");
+    let import_path = dir.path().join("import-target.mdid");
+
+    let mut export_vault =
+        LocalVaultStore::create(&export_path, "correct horse battery staple").unwrap();
+    let exported = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("rows/2/columns/0/patient_id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[exported.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let mut import_vault =
+        LocalVaultStore::create(&import_path, "correct horse battery staple").unwrap();
+    let existing = import_vault
+        .ensure_mapping(
+            NewMappingRecord {
+                scope: sample_scope("rows/1/columns/0/patient_id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    let result = import_vault
+        .import_portable(
+            artifact,
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site intake",
+        )
+        .unwrap();
+
+    assert_eq!(result.imported_records.len(), 1);
+    assert!(result.duplicate_records.is_empty());
+    assert_eq!(result.imported_records[0].id, exported.id);
+    assert_ne!(result.imported_records[0].scope, existing.scope);
+    assert_eq!(result.imported_records[0].token, existing.token);
+    assert_ne!(exported.token, existing.token);
+}
+
+#[test]
 fn portable_import_rejects_blank_context() {
     let dir = tempdir().unwrap();
     let export_path = dir.path().join("export-source.mdid");
