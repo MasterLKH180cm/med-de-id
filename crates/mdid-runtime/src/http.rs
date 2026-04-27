@@ -12,8 +12,8 @@ use mdid_application::{
     TabularDeidentificationOutput, TabularDeidentificationService,
 };
 use mdid_domain::{
-    BatchSummary, DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, PhiCandidate, SurfaceKind,
+    AuditEvent, AuditEventKind, BatchSummary, DecodeRequest, DicomDeidentificationSummary,
+    DicomPhiCandidate, DicomPrivateTagPolicy, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, VaultError};
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,16 @@ struct VaultDecodeRequest {
     output_target: String,
     justification: String,
     requested_by: SurfaceKind,
+}
+
+#[derive(Debug, Deserialize)]
+struct VaultAuditEventsRequest {
+    vault_path: PathBuf,
+    vault_passphrase: String,
+    kind: Option<AuditEventKind>,
+    actor: Option<SurfaceKind>,
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +98,11 @@ struct VaultDecodeResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct VaultAuditEventsResponse {
+    events: Vec<AuditEvent>,
+}
+
+#[derive(Debug, Serialize)]
 struct TabularDeidentifyResponse {
     csv: String,
     summary: BatchSummary,
@@ -112,6 +127,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
+        .route("/vault/audit/events", post(vault_audit_events))
         .with_state(state)
 }
 
@@ -230,6 +246,31 @@ async fn vault_decode(payload: Result<Json<VaultDecodeRequest>, JsonRejection>) 
     }
 }
 
+async fn vault_audit_events(payload: Result<Json<VaultAuditEventsRequest>, JsonRejection>) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_audit_events_request_response().into_response(),
+    };
+
+    let vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
+        Ok(vault) => vault,
+        Err(error) => return map_vault_error(&error).into_response(),
+    };
+
+    let limit = payload.limit.unwrap_or(100).min(100);
+    let events = vault
+        .audit_events()
+        .iter()
+        .rev()
+        .filter(|event| payload.kind.is_none_or(|kind| event.kind == kind))
+        .filter(|event| payload.actor.is_none_or(|actor| event.actor == actor))
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    (StatusCode::OK, Json(VaultAuditEventsResponse { events })).into_response()
+}
+
 fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         ApplicationError::DicomAdapter(DicomAdapterError::Parse(_))
@@ -341,6 +382,18 @@ fn invalid_decode_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
     )
 }
 
+fn invalid_audit_events_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_audit_events_request",
+                message: "request body did not contain a valid vault audit events request",
+            },
+        }),
+    )
+}
+
 fn invalid_vault_target_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -387,6 +440,19 @@ fn internal_error_response() -> (StatusCode, Json<ErrorEnvelope>) {
             },
         }),
     )
+}
+
+fn deserialize_optional_limit<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let limit = Option::<usize>::deserialize(deserializer)?;
+
+    match limit {
+        Some(0) => Err(serde::de::Error::custom("limit must be greater than zero")),
+        Some(limit) => Ok(Some(limit)),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]

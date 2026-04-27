@@ -528,6 +528,258 @@ async fn vault_decode_endpoint_rejects_corrupted_encrypted_vault_artifact() {
     assert_invalid_vault_target_response(response).await;
 }
 
+#[tokio::test]
+async fn audit_events_endpoint_returns_filtered_events_in_reverse_chronological_order() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let first = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let second = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    vault
+        .decode(
+            mdid_domain::DecodeRequest::new(
+                vec![first.id],
+                "investigator export".into(),
+                "incident review".into(),
+                SurfaceKind::Desktop,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    vault
+        .export_portable(
+            &[second.id],
+            "partner-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "actor": "desktop",
+        "limit": 2
+    });
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let events = json["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+
+    assert_eq!(events[0]["kind"], "export");
+    assert_eq!(events[0]["actor"], "desktop");
+    assert!(events[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("partner-site transfer package"));
+    assert!(events[0]["recorded_at"].as_str().is_some());
+
+    assert_eq!(events[1]["kind"], "decode");
+    assert_eq!(events[1]["actor"], "desktop");
+    assert!(events[1]["detail"].as_str().unwrap().contains("incident review"));
+    assert!(events[1]["recorded_at"].as_str().is_some());
+
+    let first_timestamp = events[0]["recorded_at"].as_str().unwrap();
+    let second_timestamp = events[1]["recorded_at"].as_str().unwrap();
+    assert!(first_timestamp >= second_timestamp);
+
+    let kind_filtered_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "kind": "encode",
+                        "actor": "cli",
+                        "limit": 10
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(kind_filtered_response.status(), StatusCode::OK);
+    let body = to_bytes(kind_filtered_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let events = json["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["kind"], "encode");
+    assert_eq!(events[0]["actor"], "cli");
+    assert!(events[0]["detail"].as_str().unwrap().contains("patient.id"));
+}
+
+#[tokio::test]
+async fn audit_events_endpoint_rejects_wrong_passphrase() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "wrong passphrase"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "vault_unlock_failed",
+                "message": "vault could not be unlocked with the supplied passphrase"
+            }
+        })
+    );
+    assert!(json.get("events").is_none());
+}
+
+#[tokio::test]
+async fn audit_events_endpoint_rejects_invalid_filter_payload() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let bad_limit_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "limit": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_audit_events_request_response(bad_limit_response).await;
+
+    let bad_enum_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "kind": "totally_invalid"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_audit_events_request_response(bad_enum_response).await;
+}
+
+async fn assert_invalid_audit_events_request_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_audit_events_request",
+                "message": "request body did not contain a valid vault audit events request"
+            }
+        })
+    );
+    assert!(json.get("events").is_none());
+}
+
 async fn assert_invalid_tabular_request_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
