@@ -1803,28 +1803,7 @@ fn run_moat_complete_task(command: &MoatCompleteTaskCommand) -> Result<(), Strin
         );
     }
 
-    let selected_round_id = if let Some(round_id) = command.round_id.as_deref() {
-        let entry = store
-            .entries()
-            .iter()
-            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
-            .ok_or_else(|| format!("moat round not found: {round_id}"))?;
-        entry.report.summary.round_id.to_string()
-    } else {
-        store
-            .entries()
-            .last()
-            .ok_or_else(|| {
-                "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                    .to_string()
-            })?
-            .report
-            .summary
-            .round_id
-            .to_string()
-    };
-
-    store
+    let selected_round_id = store
         .complete_in_progress_task(command.round_id.as_deref(), &command.node_id)
         .map_err(|error| format!("failed to complete moat task: {error}"))?;
 
@@ -1884,28 +1863,7 @@ fn run_moat_block_task(command: &MoatBlockTaskCommand) -> Result<(), String> {
         );
     }
 
-    let selected_round_id = if let Some(round_id) = command.round_id.as_deref() {
-        let entry = store
-            .entries()
-            .iter()
-            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
-            .ok_or_else(|| format!("moat round not found: {round_id}"))?;
-        entry.report.summary.round_id.to_string()
-    } else {
-        store
-            .entries()
-            .last()
-            .ok_or_else(|| {
-                "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                    .to_string()
-            })?
-            .report
-            .summary
-            .round_id
-            .to_string()
-    };
-
-    store
+    let selected_round_id = store
         .block_in_progress_task(command.round_id.as_deref(), &command.node_id)
         .map_err(|error| format!("failed to block moat task: {error}"))?;
 

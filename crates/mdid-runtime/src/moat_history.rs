@@ -247,7 +247,7 @@ impl LocalMoatHistoryStore {
         &mut self,
         round_id: Option<&str>,
         node_id: &str,
-    ) -> Result<(), CompleteInProgressTaskError> {
+    ) -> Result<String, CompleteInProgressTaskError> {
         self.transition_in_progress_task(round_id, node_id, MoatTaskNodeState::Completed)
     }
 
@@ -255,7 +255,7 @@ impl LocalMoatHistoryStore {
         &mut self,
         round_id: Option<&str>,
         node_id: &str,
-    ) -> Result<(), CompleteInProgressTaskError> {
+    ) -> Result<String, CompleteInProgressTaskError> {
         self.transition_in_progress_task(round_id, node_id, MoatTaskNodeState::Blocked)
     }
 
@@ -264,7 +264,7 @@ impl LocalMoatHistoryStore {
         round_id: Option<&str>,
         node_id: &str,
         next_state: MoatTaskNodeState,
-    ) -> Result<(), CompleteInProgressTaskError> {
+    ) -> Result<String, CompleteInProgressTaskError> {
         if !self.path.exists() {
             return Err(CompleteInProgressTaskError::Store(
                 LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
@@ -283,6 +283,7 @@ impl LocalMoatHistoryStore {
                 .ok_or(CompleteInProgressTaskError::NoHistoryEntries)?,
         };
 
+        let selected_round_id = entry.report.summary.round_id.to_string();
         let node = entry
             .report
             .control_plane
@@ -291,13 +292,13 @@ impl LocalMoatHistoryStore {
             .iter_mut()
             .find(|node| node.node_id == node_id)
             .ok_or_else(|| CompleteInProgressTaskError::NodeNotFound {
-                round_id: entry.report.summary.round_id.to_string(),
+                round_id: selected_round_id.clone(),
                 node_id: node_id.to_string(),
             })?;
 
         if node.state != MoatTaskNodeState::InProgress {
             return Err(CompleteInProgressTaskError::NodeNotInProgress {
-                round_id: entry.report.summary.round_id.to_string(),
+                round_id: selected_round_id.clone(),
                 node_id: node_id.to_string(),
                 state: node.state,
             });
@@ -306,7 +307,7 @@ impl LocalMoatHistoryStore {
         node.state = next_state;
         self.persist(&next_entries)?;
         self.entries = next_entries;
-        Ok(())
+        Ok(selected_round_id)
     }
 
     fn persist(&self, entries: &[MoatHistoryEntry]) -> Result<(), LocalMoatHistoryStoreError> {
