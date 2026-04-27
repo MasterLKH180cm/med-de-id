@@ -33,7 +33,8 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 | Format family | v1 depth | Notes |
 |---|---|---|
 | DICOM | L3 | tag-level handling, UID remap, private-tag policy, burned-in suspicion flagging |
-| CSV / Excel | L3 | schema-aware reversible mapping and batch consistency |
+| CSV | L3 | schema-aware reversible mapping and batch consistency |
+| Excel (XLSX, bounded) | L2 | schema-aware reversible mapping on only the first non-empty worksheet; rewritten output preserves that bounded single-sheet flow and does not offer caller-controlled sheet selection |
 | PDF / scanned records | L1/L2 foundation | text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure; no full OCR, visual redaction, handwriting handling, or final PDF rewrite/export yet |
 | FCS | L2/L3 metadata-first | TEXT/metadata identifier handling |
 | Images | L1 | filename/path/metadata cleanup, OCR-assisted suspicion |
@@ -71,7 +72,7 @@ Implemented so far:
 - Bounded PDF support for text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure
 - Current PDF support does not yet perform full OCR, visual redaction, handwriting handling, or final PDF rewrite/export
 - `mdid-runtime` now exposes a bounded local HTTP DICOM de-identification entry that accepts local/base64-transported DICOM bytes, applies the existing private-tag policy service logic, returns rewritten DICOM bytes plus a review summary/review queue, and honestly rejects invalid DICOM payloads
-- `mdid-runtime` also exposes bounded local HTTP tabular de-identification entries: one accepts CSV text plus explicit field policies and returns rewritten CSV plus a summary and review queue; another accepts base64-transported XLSX workbook bytes plus explicit field policies and returns rewritten workbook bytes plus a summary and review queue while preserving the bounded worksheet-focused rewrite behavior that landed. These entries still do not imply multipart upload flows, generalized spreadsheet browsing/import/export APIs, or any auth/session handling
+- `mdid-runtime` also exposes bounded local HTTP tabular de-identification entries: one accepts CSV text plus explicit field policies and returns rewritten CSV plus a summary and review queue; another accepts base64-transported XLSX workbook bytes plus explicit field policies and returns rewritten workbook bytes plus a summary and review queue, but only extracts and rewrites the first non-empty worksheet and does not offer caller-controlled sheet selection. These entries still do not imply multipart upload flows, generalized spreadsheet browsing/import/export APIs, workbook-wide fidelity guarantees, or any auth/session handling
 - `mdid-runtime` also exposes a bounded local HTTP vault decode entry that unlocks a local vault with an explicit passphrase, decodes only the requested record scope, returns decoded values plus the resulting audit event, and honestly rejects wrong passphrases, unknown records, invalid decode requests, and unusable vault targets
 - `mdid-runtime` also exposes a bounded local HTTP vault audit browsing entry that unlocks a local vault with an explicit passphrase, returns persisted audit events in reverse chronological order with bounded filtering, supports filtering by event kind and actor, and remains read-only
 - `mdid-runtime` also exposes a bounded local HTTP portable export entry that unlocks a local vault with an explicit passphrase, exports only the requested bounded record subset into an encrypted portable artifact, records the resulting export audit event, and remains scoped to local export creation rather than import or transfer workflows
@@ -79,7 +80,7 @@ Implemented so far:
 - `mdid-runtime` also exposes a bounded local HTTP portable artifact import entry that unlocks a local vault with an explicit vault passphrase, imports an encrypted portable artifact into that local vault, skips duplicate record ids and existing semantic duplicates while deterministically normalizing shared-value token reuse through the shared import contract, records the resulting import audit event, and returns bounded imported/duplicate counts rather than artifact contents or generalized transfer state
 - `mdid-cli`, `mdid-browser`, and `mdid-desktop` remain early surface scaffolds
 
-The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, base64-transported XLSX workbook bytes, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The XLSX route is limited to returning rewritten workbook bytes plus a summary/review queue for the landed worksheet-preservation behavior; the import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event. These routes do not add multipart upload handling, generalized spreadsheet browsing/import/export APIs, auth/session handling, or any broader multi-step transfer flow.
+The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, base64-transported XLSX workbook bytes, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The XLSX route is limited to returning rewritten workbook bytes plus a summary/review queue for only the first non-empty worksheet that it extracts and rewrites; it does not let callers choose a worksheet and should not be read as workbook-wide Excel handling. The import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event. These routes do not add multipart upload handling, generalized spreadsheet browsing/import/export APIs, auth/session handling, or any broader multi-step transfer flow.
 
 Planned next from the design:
 
@@ -95,7 +96,7 @@ Available docs:
 
 ## Roadmap
 
-- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, bounded PDF/scanned-record foundation, conservative image/video/FCS support
+- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV support, bounded XLSX runtime support, DICOM tag-level support, bounded PDF/scanned-record foundation, conservative image/video/FCS support
 - **v1.5**: detection quality/provenance upgrades, PDF/DICOM policy depth, parity and workflow polish
 - **v2**: AI/NLP detectors, stronger media handling, richer custom node/plugin model, enterprise controls
 
