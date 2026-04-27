@@ -66,24 +66,27 @@ impl Default for TabularFlowState {
 }
 
 impl TabularFlowState {
+    fn clear_generated_state(&mut self) {
+        self.result_output.clear();
+        self.summary = IDLE_SUMMARY.to_string();
+        self.review_queue = IDLE_REVIEW_QUEUE.to_string();
+        self.error_banner = None;
+    }
+
     fn submit(&mut self) {
         if self.payload.trim().is_empty() {
+            self.clear_generated_state();
             self.error_banner = Some(format!(
                 "{} payload is required before submitting.",
                 self.input_mode.label()
             ));
-            self.result_output.clear();
-            self.summary = IDLE_SUMMARY.to_string();
-            self.review_queue = IDLE_REVIEW_QUEUE.to_string();
             return;
         }
 
         if self.field_policy_json.trim().is_empty() {
+            self.clear_generated_state();
             self.error_banner =
                 Some("Field policy JSON is required before submitting.".to_string());
-            self.result_output.clear();
-            self.summary = IDLE_SUMMARY.to_string();
-            self.review_queue = IDLE_REVIEW_QUEUE.to_string();
             return;
         }
 
@@ -110,7 +113,7 @@ pub fn App() -> impl IntoView {
         let next_mode = InputMode::from_select_value(&event_target_value(&event));
         state.update(|state| {
             state.input_mode = next_mode;
-            state.error_banner = None;
+            state.clear_generated_state();
         });
     };
 
@@ -118,7 +121,7 @@ pub fn App() -> impl IntoView {
         let next_payload = event_target_value(&event);
         state.update(|state| {
             state.payload = next_payload;
-            state.error_banner = None;
+            state.clear_generated_state();
         });
     };
 
@@ -126,7 +129,7 @@ pub fn App() -> impl IntoView {
         let next_policy = event_target_value(&event);
         state.update(|state| {
             state.field_policy_json = next_policy;
-            state.error_banner = None;
+            state.clear_generated_state();
         });
     };
 
@@ -245,5 +248,44 @@ mod tests {
             .summary
             .contains("Shell submission captured for XLSX base64"));
         assert!(state.review_queue.contains("Review queue preview"));
+    }
+
+    #[test]
+    fn submit_requires_non_blank_field_policy_before_previewing_results() {
+        let mut state = TabularFlowState {
+            payload: "patient_id,name\n1,Alice".to_string(),
+            field_policy_json: "   \n\t".to_string(),
+            ..TabularFlowState::default()
+        };
+
+        state.submit();
+
+        assert_eq!(
+            state.error_banner.as_deref(),
+            Some("Field policy JSON is required before submitting.")
+        );
+        assert!(state.result_output.is_empty());
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+    }
+
+    #[test]
+    fn clearing_inputs_resets_stale_generated_preview_state() {
+        let mut state = TabularFlowState {
+            payload: "patient_id,name\n1,Alice".to_string(),
+            ..TabularFlowState::default()
+        };
+        state.submit();
+
+        assert!(!state.result_output.is_empty());
+        assert_ne!(state.summary, IDLE_SUMMARY);
+        assert_ne!(state.review_queue, IDLE_REVIEW_QUEUE);
+
+        state.clear_generated_state();
+
+        assert!(state.result_output.is_empty());
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+        assert!(state.error_banner.is_none());
     }
 }
