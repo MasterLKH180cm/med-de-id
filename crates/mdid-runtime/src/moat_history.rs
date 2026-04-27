@@ -248,6 +248,23 @@ impl LocalMoatHistoryStore {
         round_id: Option<&str>,
         node_id: &str,
     ) -> Result<(), CompleteInProgressTaskError> {
+        self.transition_in_progress_task(round_id, node_id, MoatTaskNodeState::Completed)
+    }
+
+    pub fn block_in_progress_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<(), CompleteInProgressTaskError> {
+        self.transition_in_progress_task(round_id, node_id, MoatTaskNodeState::Blocked)
+    }
+
+    fn transition_in_progress_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+        next_state: MoatTaskNodeState,
+    ) -> Result<(), CompleteInProgressTaskError> {
         if !self.path.exists() {
             return Err(CompleteInProgressTaskError::Store(
                 LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
@@ -286,7 +303,7 @@ impl LocalMoatHistoryStore {
             });
         }
 
-        node.state = MoatTaskNodeState::Completed;
+        node.state = next_state;
         self.persist(&next_entries)?;
         self.entries = next_entries;
         Ok(())
