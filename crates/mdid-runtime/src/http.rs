@@ -254,7 +254,7 @@ async fn vault_audit_events(payload: Result<Json<VaultAuditEventsRequest>, JsonR
 
     let vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
         Ok(vault) => vault,
-        Err(error) => return map_vault_error(&error).into_response(),
+        Err(error) => return map_audit_events_vault_error(&error).into_response(),
     };
 
     let limit = payload.limit.unwrap_or(100).min(100);
@@ -316,6 +316,13 @@ fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
         | VaultError::KeyDerivation
         | VaultError::InvalidArtifact => invalid_vault_target_response(),
         VaultError::AlreadyExists(_) | VaultError::Encrypt => internal_error_response(),
+    }
+}
+
+fn map_audit_events_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        VaultError::BlankPassphrase => invalid_audit_events_request_response(),
+        _ => map_vault_error(error),
     }
 }
 

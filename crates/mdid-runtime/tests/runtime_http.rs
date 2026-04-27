@@ -741,6 +741,26 @@ async fn audit_events_endpoint_rejects_invalid_filter_payload() {
         .unwrap();
     assert_invalid_audit_events_request_response(bad_limit_response).await;
 
+    let blank_passphrase_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": ""
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_audit_events_request_response(blank_passphrase_response).await;
+
     let bad_enum_response = app
         .oneshot(
             Request::builder()
