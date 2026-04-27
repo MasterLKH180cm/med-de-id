@@ -293,7 +293,7 @@ cargo run -p mdid-cli -- moat dispatch-next --history-path .mdid/moat-history.js
 
 `--agent-id AGENT_ID` is optional local persisted ownership metadata only. Text output preserves `agent_id=<value|<none>>` request attribution and reports persisted ownership separately as `assigned_agent_id=<value|<none>>`; dry-runs never persist ownership, so `assigned_agent_id=<none>` even when `--agent-id` is supplied. JSON output includes nullable `agent_id` and `assigned_agent_id` fields, with `assigned_agent_id: null` on dry-run. `moat dispatch-next` selects and, unless `--dry-run` is used, claims exactly one already-ready persisted task; it does not launch agents, open PRs, create schedulers or cron jobs, start background work, crawl the web, or run an autonomous loop.
 
-External workers can claim tasks with optional local ownership metadata via `mdid-cli moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID]`; output includes `assigned_agent_id=<value|<none>>`, and the CLI only records metadata/state in local history. External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
+External workers can claim tasks with optional local ownership metadata via `mdid-cli moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json]`; text output remains the default and includes `assigned_agent_id=<value|<none>>`, while `--format json` emits a deterministic pretty `moat_claim_task` envelope. The CLI only records metadata/state in local history. External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
 
 ```bash
 cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --artifact-ref docs/review.md --artifact-summary "review approved"
@@ -328,7 +328,7 @@ cargo run -p mdid-cli -- moat complete-task \
 
 Workspace metadata is currently marked `UNLICENSED`.
 
-Moat task leases: local external controllers coordinate claims via history-file lease metadata (`claimed_at`, `lease_expires_at`, `last_heartbeat_at`). Use `mdid-cli moat heartbeat-task` to renew and `mdid-cli moat reap-stale-tasks` to requeue expired in-progress local claims; this is not a daemon/crawler/PR automation loop.
+Moat task leases: local external controllers coordinate claims via history-file lease metadata (`claimed_at`, `lease_expires_at`, `last_heartbeat_at`). Use `mdid-cli moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json]` to renew and `mdid-cli moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] [--format text|json]` to requeue expired in-progress local claims; text remains default, and JSON emits deterministic pretty `moat_heartbeat_task` / `moat_reap_stale_tasks` envelopes. This is not a daemon/crawler/PR automation loop and does not launch agents, schedule background work, create cron jobs, crawl data, open PRs, or write artifacts.
 
 ### Moat task event inspection
 
