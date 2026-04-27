@@ -9,7 +9,7 @@ Windows-first, local-first medical de-identification platform with a pure Rust c
 The product has three formal surfaces:
 
 1. **CLI** — automation, batch, integration, headless execution
-2. **Browser tool** — localhost workflow workbench for composing and running de-identification flows
+2. **Browser tool** — local-first browser surface, currently limited to a bounded tabular de-identification page served on localhost
 3. **Desktop app** — sensitive workstation for review, vault operations, decode flows, and audit investigation
 
 ## Core workflow
@@ -78,7 +78,9 @@ Implemented so far:
 - `mdid-runtime` also exposes a bounded local HTTP portable export entry that unlocks a local vault with an explicit passphrase, exports only the requested bounded record subset into an encrypted portable artifact, records the resulting export audit event, and remains scoped to local export creation rather than import or transfer workflows
 - `mdid-runtime` also exposes a bounded local HTTP portable artifact inspection entry that locally unlocks an encrypted portable artifact with an explicit portable passphrase and returns a bounded preview of persisted record fields from the encrypted artifact contents, including sensitive persisted values already stored in the artifact such as tokens and original values
 - `mdid-runtime` also exposes a bounded local HTTP portable artifact import entry that unlocks a local vault with an explicit vault passphrase, imports an encrypted portable artifact into that local vault, skips duplicate record ids and existing semantic duplicates while deterministically normalizing shared-value token reuse through the shared import contract, records the resulting import audit event, and returns bounded imported/duplicate counts rather than artifact contents or generalized transfer state
-- `mdid-cli`, `mdid-browser`, and `mdid-desktop` remain early surface scaffolds
+- `mdid-browser` is no longer only a scaffold: it now provides a local-first browser page for a bounded tabular de-identification flow that submits CSV text or base64-transported XLSX workbook bytes plus explicit field policies to the local `mdid-runtime` on localhost and renders the bounded rewritten result, summary, and review queue that come back
+- `mdid-browser` still does not provide auth/session handling, a generalized workflow builder, a rich upload UX, or any broader browser governance workspace
+- `mdid-cli` and `mdid-desktop` remain early surface scaffolds
 
 The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, base64-transported XLSX workbook bytes, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The XLSX route is limited to returning rewritten workbook bytes plus a summary/review queue for only the first non-empty worksheet that it extracts and rewrites; it does not let callers choose a worksheet and should not be read as workbook-wide Excel handling. The import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event. These routes do not add multipart upload handling, generalized spreadsheet browsing/import/export APIs, auth/session handling, or any broader multi-step transfer flow.
 
