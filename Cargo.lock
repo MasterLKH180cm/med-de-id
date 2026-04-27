@@ -2949,6 +2949,7 @@ dependencies = [
 name = "mdid-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "mdid-application",
  "mdid-domain",
  "mdid-runtime",

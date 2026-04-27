@@ -241,6 +241,14 @@ cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.jso
 
 This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
 
+External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
+
+```bash
+cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --artifact-ref docs/review.md --artifact-summary "review approved"
+```
+
+`--artifact-ref` and `--artifact-summary` must be supplied together. When present, the completed task records the handoff in persisted history and the deterministic completion output includes `artifact_recorded=true`, `artifact_ref=...`, and `artifact_summary=...` before `next_ready_task_entries`. Without those flags, completion preserves the prior transition behavior and prints `<none>` artifact fields.
+
 ## Roadmap shape
 
 - **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, medium PDF/OCR support, conservative image/video/FCS support

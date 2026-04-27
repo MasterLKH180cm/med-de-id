@@ -1,3 +1,4 @@
+use chrono::Utc;
 use mdid_application::{render_moat_plan_markdown, render_moat_spec_markdown, MoatAgentAssignment};
 use mdid_domain::{
     AgentRole, CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
@@ -6,7 +7,8 @@ use mdid_domain::{
 use mdid_runtime::{
     moat::{run_bounded_round, MoatRoundInput, MoatRoundReport},
     moat_history::{
-        CompleteInProgressTaskError, LocalMoatHistoryStore, MoatHistoryEntry, MoatHistorySummary,
+        CompleteInProgressTaskError, CompleteTaskArtifact, LocalMoatHistoryStore, MoatHistoryEntry,
+        MoatHistorySummary,
     },
 };
 
@@ -107,6 +109,8 @@ struct MoatCompleteTaskCommand {
     history_path: String,
     round_id: Option<String>,
     node_id: String,
+    artifact_ref: Option<String>,
+    artifact_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -927,11 +931,67 @@ fn parse_moat_claim_task_command(args: &[String]) -> Result<MoatClaimTaskCommand
 }
 
 fn parse_moat_complete_task_command(args: &[String]) -> Result<MoatCompleteTaskCommand, String> {
-    let command = parse_moat_claim_task_command(args)?;
+    let mut history_path = None;
+    let mut round_id = None;
+    let mut node_id = None;
+    let mut artifact_ref = None;
+    let mut artifact_summary = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--history-path" => {
+                let value = required_history_path_value(args, index)?.clone();
+                if history_path.is_some() {
+                    return Err(duplicate_flag_error("--history-path"));
+                }
+                history_path = Some(value);
+            }
+            "--round-id" => {
+                let value = required_flag_value(args, index, "--round-id", true)?;
+                if round_id.is_some() {
+                    return Err(duplicate_flag_error("--round-id"));
+                }
+                round_id = Some(value.to_string());
+            }
+            "--node-id" => {
+                let value = required_flag_value(args, index, "--node-id", true)?;
+                if node_id.is_some() {
+                    return Err(duplicate_flag_error("--node-id"));
+                }
+                node_id = Some(value.to_string());
+            }
+            "--artifact-ref" => {
+                let value = required_flag_value(args, index, "--artifact-ref", false)?;
+                if artifact_ref.is_some() {
+                    return Err(duplicate_flag_error("--artifact-ref"));
+                }
+                artifact_ref = Some(value.to_string());
+            }
+            "--artifact-summary" => {
+                let value = required_flag_value(args, index, "--artifact-summary", false)?;
+                if artifact_summary.is_some() {
+                    return Err(duplicate_flag_error("--artifact-summary"));
+                }
+                artifact_summary = Some(value.to_string());
+            }
+            flag => return Err(format!("unknown flag: {flag}")),
+        }
+
+        index += 2;
+    }
+
+    if artifact_ref.is_some() != artifact_summary.is_some() {
+        return Err("--artifact-ref and --artifact-summary must be supplied together".to_string());
+    }
+
     Ok(MoatCompleteTaskCommand {
-        history_path: command.history_path,
-        round_id: command.round_id,
-        node_id: command.node_id,
+        history_path: history_path
+            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        round_id,
+        node_id: node_id.ok_or_else(|| "missing required flag: --node-id".to_string())?,
+        artifact_ref,
+        artifact_summary,
     })
 }
 
@@ -1855,8 +1915,21 @@ fn run_moat_complete_task(command: &MoatCompleteTaskCommand) -> Result<(), Strin
         );
     }
 
+    let artifact = match (&command.artifact_ref, &command.artifact_summary) {
+        (Some(artifact_ref), Some(artifact_summary)) => Some(CompleteTaskArtifact {
+            artifact_ref: artifact_ref.clone(),
+            artifact_summary: artifact_summary.clone(),
+            recorded_at: Utc::now(),
+        }),
+        _ => None,
+    };
+
     let selected_round_id = store
-        .complete_in_progress_task(command.round_id.as_deref(), &command.node_id)
+        .complete_in_progress_task_with_artifact(
+            command.round_id.as_deref(),
+            &command.node_id,
+            artifact,
+        )
         .map_err(|error| format!("failed to complete moat task: {error}"))?;
 
     println!("moat task completed");
@@ -1865,6 +1938,26 @@ fn run_moat_complete_task(command: &MoatCompleteTaskCommand) -> Result<(), Strin
     println!("previous_state=in_progress");
     println!("new_state=completed");
     println!("history_path={}", command.history_path);
+    println!(
+        "artifact_recorded={}",
+        command.artifact_ref.is_some() && command.artifact_summary.is_some()
+    );
+    println!(
+        "artifact_ref={}",
+        command
+            .artifact_ref
+            .as_deref()
+            .map(escape_assignment_output_field)
+            .unwrap_or_else(|| "<none>".to_string())
+    );
+    println!(
+        "artifact_summary={}",
+        command
+            .artifact_summary
+            .as_deref()
+            .map(escape_assignment_output_field)
+            .unwrap_or_else(|| "<none>".to_string())
+    );
 
     let updated_store = LocalMoatHistoryStore::open_existing(&command.history_path)
         .map_err(|error| format!("failed to reload moat history store: {error}"))?;
@@ -2541,7 +2634,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {

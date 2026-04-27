@@ -8,6 +8,7 @@ license.workspace = true
 mdid-application = { path = "../mdid-application" }
 mdid-domain = { path = "../mdid-domain" }
 mdid-runtime = { path = "../mdid-runtime" }
+chrono.workspace = true
 
 [[bin]]
 name = "mdid-cli"

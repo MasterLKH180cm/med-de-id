@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -2122,7 +2122,7 @@ fn cli_completes_claimed_moat_task() {
     assert_eq!(
         String::from_utf8_lossy(&complete_review.stdout),
         format!(
-            "moat task completed\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=completed\nhistory_path={history_path_arg}\nnext_ready_task_entries=1\nnext_ready_task=reviewer|evaluation|Evaluation|evaluation|<none>\n"
+            "moat task completed\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=completed\nhistory_path={history_path_arg}\nartifact_recorded=false\nartifact_ref=<none>\nartifact_summary=<none>\nnext_ready_task_entries=1\nnext_ready_task=reviewer|evaluation|Evaluation|evaluation|<none>\n"
         )
     );
 
@@ -2146,6 +2146,151 @@ fn cli_completes_claimed_moat_task() {
         .contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn complete_task_artifact_records_handoff_and_prints_deterministic_fields() {
+    let history_path = unique_history_path("complete-task-artifact-success");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed complete-task artifact history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to claim review before artifact completion");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let round_id = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("history should reload")
+        .entries()[0]
+        .report
+        .summary
+        .round_id
+        .to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--artifact-ref",
+            "docs/review handoff.md",
+            "--artifact-summary",
+            "Reviewed | approved\nready for evaluation",
+        ])
+        .output()
+        .expect("failed to complete review with artifact handoff");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!(
+            "moat task completed\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=completed\nhistory_path={history_path_arg}\nartifact_recorded=true\nartifact_ref=docs/review handoff.md\nartifact_summary=Reviewed \\| approved\\nready for evaluation\nnext_ready_task_entries=1\nnext_ready_task=reviewer|evaluation|Evaluation|evaluation|<none>\n"
+        )
+    );
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path).expect("history should reload");
+    let review_node = store.entries()[0]
+        .report
+        .control_plane
+        .task_graph
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "review")
+        .expect("review node should exist");
+    assert_eq!(review_node.artifacts.len(), 1);
+    assert_eq!(
+        review_node.artifacts[0].artifact_ref,
+        "docs/review handoff.md"
+    );
+    assert_eq!(
+        review_node.artifacts[0].summary,
+        "Reviewed | approved\nready for evaluation"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn complete_task_artifact_rejects_unpaired_flags() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            "history.json",
+            "--node-id",
+            "review",
+            "--artifact-ref",
+            "docs/review.md",
+        ])
+        .output()
+        .expect("failed to run complete-task with unpaired artifact flag");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--artifact-ref and --artifact-summary must be supplied together"));
+    assert!(stderr.contains(USAGE));
+}
+
+#[test]
+fn complete_task_artifact_rejects_duplicate_artifact_ref() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            "history.json",
+            "--node-id",
+            "review",
+            "--artifact-ref",
+            "first",
+            "--artifact-ref",
+            "second",
+            "--artifact-summary",
+            "summary",
+        ])
+        .output()
+        .expect("failed to run complete-task with duplicate artifact ref");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("duplicate flag: --artifact-ref"));
+    assert!(stderr.contains(USAGE));
 }
 
 #[test]
@@ -2871,7 +3016,8 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"kind\": \"market_scan\",\n",
             "              \"state\": \"completed\",\n",
             "              \"depends_on\": [],\n",
-            "              \"spec_ref\": null\n",
+            "              \"spec_ref\": null,\n",
+            "              \"artifacts\": []\n",
             "            },\n"
         ),
         concat!(
@@ -2882,7 +3028,8 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"kind\": \"market_scan\",\n",
             "              \"state\": \"completed\",\n",
             "              \"depends_on\": [],\n",
-            "              \"spec_ref\": null\n",
+            "              \"spec_ref\": null,\n",
+            "              \"artifacts\": []\n",
             "            },\n",
             "            {\n",
             "              \"node_id\": \"independent_spec_planning\",\n",
@@ -2891,7 +3038,8 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"kind\": \"spec_planning\",\n",
             "              \"state\": \"completed\",\n",
             "              \"depends_on\": [],\n",
-            "              \"spec_ref\": null\n",
+            "              \"spec_ref\": null,\n",
+            "              \"artifacts\": []\n",
             "            },\n"
         ),
     );
