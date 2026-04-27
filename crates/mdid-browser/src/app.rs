@@ -1,8 +1,11 @@
 use leptos::*;
+use serde::{Deserialize, Serialize};
 
-const DEFAULT_FIELD_POLICY_JSON: &str = "{\n  \"columns\": {},\n  \"default\": \"keep\"\n}";
+const DEFAULT_FIELD_POLICY_JSON: &str = "[\n  {\n    \"header\": \"patient_id\",\n    \"phi_type\": \"patient_id\",\n    \"action\": \"encode\"\n  },\n  {\n    \"header\": \"patient_name\",\n    \"phi_type\": \"patient_name\",\n    \"action\": \"review\"\n  }\n]";
 const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
+const FETCH_UNAVAILABLE_MESSAGE: &str =
+    "Runtime submission is only available from a wasm32 browser build.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InputMode {
@@ -38,6 +41,13 @@ impl InputMode {
             Self::XlsxBase64 => "Paste base64-encoded XLSX content here",
         }
     }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::CsvText => "/tabular/deidentify",
+            Self::XlsxBase64 => "/tabular/deidentify/xlsx",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +59,7 @@ struct TabularFlowState {
     summary: String,
     review_queue: String,
     error_banner: Option<String>,
+    is_submitting: bool,
 }
 
 impl Default for TabularFlowState {
@@ -61,6 +72,7 @@ impl Default for TabularFlowState {
             summary: IDLE_SUMMARY.to_string(),
             review_queue: IDLE_REVIEW_QUEUE.to_string(),
             error_banner: None,
+            is_submitting: false,
         }
     }
 }
@@ -71,38 +83,273 @@ impl TabularFlowState {
         self.summary = IDLE_SUMMARY.to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = None;
+        self.is_submitting = false;
     }
 
-    fn submit(&mut self) {
+    fn validate_submission(&self) -> Result<TabularSubmitRequest, String> {
         if self.payload.trim().is_empty() {
-            self.clear_generated_state();
-            self.error_banner = Some(format!(
+            return Err(format!(
                 "{} payload is required before submitting.",
                 self.input_mode.label()
             ));
-            return;
         }
 
         if self.field_policy_json.trim().is_empty() {
-            self.clear_generated_state();
-            self.error_banner =
-                Some("Field policy JSON is required before submitting.".to_string());
-            return;
+            return Err("Field policy JSON is required before submitting.".to_string());
         }
 
-        self.error_banner = None;
-        self.result_output = format!(
-            "// rewritten output preview\n// mode: {}\n{}",
-            self.input_mode.label(),
-            self.payload.trim()
-        );
-        self.summary = format!(
-            "Shell submission captured for {} with {} payload characters.",
-            self.input_mode.label(),
-            self.payload.chars().count()
-        );
-        self.review_queue = "Review queue preview:\n- No flagged cells yet. Wire runtime review output in a later slice.".to_string();
+        build_submit_request(self.input_mode, &self.payload, &self.field_policy_json)
     }
+
+    fn begin_submit(&mut self) -> Result<TabularSubmitRequest, ()> {
+        self.result_output.clear();
+        self.summary = "Submitting to runtime...".to_string();
+        self.review_queue = IDLE_REVIEW_QUEUE.to_string();
+        self.error_banner = None;
+        self.is_submitting = true;
+
+        match self.validate_submission() {
+            Ok(request) => Ok(request),
+            Err(message) => {
+                self.clear_generated_state();
+                self.error_banner = Some(message);
+                Err(())
+            }
+        }
+    }
+
+    fn apply_runtime_success(&mut self, response: RuntimeResponseEnvelope) {
+        self.result_output = response.rewritten_output;
+        self.summary = format_summary(&response.summary);
+        self.review_queue = format_review_queue(&response.review_queue);
+        self.error_banner = None;
+        self.is_submitting = false;
+    }
+
+    fn apply_runtime_error(&mut self, message: String) {
+        self.result_output.clear();
+        self.summary = IDLE_SUMMARY.to_string();
+        self.review_queue = IDLE_REVIEW_QUEUE.to_string();
+        self.error_banner = Some(message);
+        self.is_submitting = false;
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct FieldPolicyRequest {
+    header: String,
+    phi_type: String,
+    action: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct CsvSubmitRequest {
+    csv: String,
+    policies: Vec<FieldPolicyRequest>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct XlsxSubmitRequest {
+    workbook_base64: String,
+    field_policies: Vec<FieldPolicyRequest>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TabularSubmitRequest {
+    endpoint: &'static str,
+    body_json: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct RuntimeSummary {
+    total_rows: usize,
+    encoded_cells: usize,
+    review_required_cells: usize,
+    failed_rows: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct RuntimeReviewCandidate {
+    row_index: usize,
+    column: String,
+    value: String,
+    phi_type: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct CsvRuntimeSuccessResponse {
+    csv: String,
+    summary: RuntimeSummary,
+    review_queue: Vec<RuntimeReviewCandidate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct XlsxRuntimeSuccessResponse {
+    rewritten_workbook_base64: String,
+    summary: RuntimeSummary,
+    review_queue: Vec<RuntimeReviewCandidate>,
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct ErrorEnvelope {
+    error: ErrorBody,
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct ErrorBody {
+    code: String,
+    message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeResponseEnvelope {
+    rewritten_output: String,
+    summary: RuntimeSummary,
+    review_queue: Vec<RuntimeReviewCandidate>,
+}
+
+fn build_submit_request(
+    input_mode: InputMode,
+    payload: &str,
+    field_policy_json: &str,
+) -> Result<TabularSubmitRequest, String> {
+    let policies: Vec<FieldPolicyRequest> = serde_json::from_str(field_policy_json)
+        .map_err(|error| format!("Field policy JSON must be a JSON array of policies: {error}"))?;
+
+    if policies.is_empty() {
+        return Err("Field policy JSON must include at least one policy.".to_string());
+    }
+
+    let body_json = match input_mode {
+        InputMode::CsvText => serde_json::to_string(&CsvSubmitRequest {
+            csv: payload.trim().to_string(),
+            policies,
+        }),
+        InputMode::XlsxBase64 => serde_json::to_string(&XlsxSubmitRequest {
+            workbook_base64: payload.trim().to_string(),
+            field_policies: policies,
+        }),
+    }
+    .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+
+    Ok(TabularSubmitRequest {
+        endpoint: input_mode.endpoint(),
+        body_json,
+    })
+}
+
+fn parse_runtime_success(
+    input_mode: InputMode,
+    response_body: &str,
+) -> Result<RuntimeResponseEnvelope, String> {
+    match input_mode {
+        InputMode::CsvText => {
+            let parsed: CsvRuntimeSuccessResponse = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: parsed.csv,
+                summary: parsed.summary,
+                review_queue: parsed.review_queue,
+            })
+        }
+        InputMode::XlsxBase64 => {
+            let parsed: XlsxRuntimeSuccessResponse = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: parsed.rewritten_workbook_base64,
+                summary: parsed.summary,
+                review_queue: parsed.review_queue,
+            })
+        }
+    }
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn parse_runtime_error(status: u16, response_body: &str) -> String {
+    const MAX_MESSAGE_LEN: usize = 240;
+
+    let message = serde_json::from_str::<ErrorEnvelope>(response_body)
+        .map(|envelope| format!("{}: {}", envelope.error.code, envelope.error.message))
+        .unwrap_or_else(|_| {
+            let trimmed = response_body.trim();
+            if trimmed.is_empty() {
+                format!("runtime request failed with status {status}")
+            } else {
+                format!("runtime request failed with status {status}: {trimmed}")
+            }
+        });
+
+    truncate_for_banner(&message, MAX_MESSAGE_LEN)
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn truncate_for_banner(message: &str, max_chars: usize) -> String {
+    let char_count = message.chars().count();
+    if char_count <= max_chars {
+        return message.to_string();
+    }
+
+    let truncated = message.chars().take(max_chars.saturating_sub(1)).collect::<String>();
+    format!("{truncated}…")
+}
+
+fn format_summary(summary: &RuntimeSummary) -> String {
+    format!(
+        "total_rows: {}\nencoded_cells: {}\nreview_required_cells: {}\nfailed_rows: {}",
+        summary.total_rows,
+        summary.encoded_cells,
+        summary.review_required_cells,
+        summary.failed_rows
+    )
+}
+
+fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
+    if review_queue.is_empty() {
+        return "No review items returned.".to_string();
+    }
+
+    review_queue
+        .iter()
+        .map(|candidate| {
+            format!(
+                "- row {} / {} / {}: {}",
+                candidate.row_index, candidate.column, candidate.phi_type, candidate.value
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn perform_runtime_request(request: TabularSubmitRequest) -> Result<String, String> {
+    use gloo_net::http::Request;
+
+    let response = Request::post(request.endpoint)
+        .header("content-type", "application/json")
+        .body(request.body_json)
+        .map_err(|error| format!("Failed to build runtime request: {error}"))?
+        .send()
+        .await
+        .map_err(|error| parse_runtime_error(0, &error.to_string()))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read runtime response: {error}"))?;
+
+    if (200..300).contains(&status) {
+        Ok(body)
+    } else {
+        Err(parse_runtime_error(status, &body))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn perform_runtime_request(_request: TabularSubmitRequest) -> Result<String, String> {
+    Err(FETCH_UNAVAILABLE_MESSAGE.to_string())
 }
 
 #[component]
@@ -134,7 +381,26 @@ pub fn App() -> impl IntoView {
     };
 
     let on_submit = move |_| {
-        state.update(TabularFlowState::submit);
+        let maybe_request = state.with_untracked(|state| {
+            let mut next_state = state.clone();
+            let request = next_state.begin_submit().ok();
+            (next_state, request)
+        });
+
+        state.set(maybe_request.0);
+
+        if let Some(request) = maybe_request.1 {
+            let input_mode = state.get_untracked().input_mode;
+            spawn_local(async move {
+                match perform_runtime_request(request).await {
+                    Ok(body) => match parse_runtime_success(input_mode, &body) {
+                        Ok(response) => state.update(|state| state.apply_runtime_success(response)),
+                        Err(message) => state.update(|state| state.apply_runtime_error(message)),
+                    },
+                    Err(message) => state.update(|state| state.apply_runtime_error(message)),
+                }
+            });
+        }
     };
 
     view! {
@@ -171,7 +437,9 @@ pub fn App() -> impl IntoView {
                     />
                 </label>
 
-                <button on:click=on_submit type="button">"Submit"</button>
+                <button on:click=on_submit disabled=move || state.get().is_submitting type="button">
+                    {move || if state.get().is_submitting { "Submitting..." } else { "Submit" }}
+                </button>
             </section>
 
             <Show when=move || state.get().error_banner.is_some()>
@@ -188,7 +456,7 @@ pub fn App() -> impl IntoView {
 
             <section>
                 <h2>"Summary"</h2>
-                <p>{move || state.get().summary}</p>
+                <pre>{move || state.get().summary}</pre>
             </section>
 
             <section>
@@ -202,8 +470,12 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        InputMode, TabularFlowState, DEFAULT_FIELD_POLICY_JSON, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
+        build_submit_request, format_review_queue, format_summary, parse_runtime_error,
+        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary,
+        TabularFlowState, DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE,
+        IDLE_SUMMARY,
     };
+    use serde_json::json;
 
     #[test]
     fn tabular_flow_state_defaults_to_csv_shell() {
@@ -216,13 +488,15 @@ mod tests {
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
         assert!(state.error_banner.is_none());
+        assert!(!state.is_submitting);
     }
 
     #[test]
-    fn submit_requires_payload_before_previewing_results() {
+    fn submit_requires_payload_before_runtime_request() {
         let mut state = TabularFlowState::default();
-        state.submit();
+        let result = state.begin_submit();
 
+        assert!(result.is_err());
         assert_eq!(
             state.error_banner.as_deref(),
             Some("CSV text payload is required before submitting.")
@@ -233,33 +507,16 @@ mod tests {
     }
 
     #[test]
-    fn submit_generates_shell_preview_for_xlsx_base64_mode() {
-        let mut state = TabularFlowState {
-            input_mode: InputMode::XlsxBase64,
-            payload: "UEsDBBQAAAAIA...".to_string(),
-            ..TabularFlowState::default()
-        };
-
-        state.submit();
-
-        assert!(state.error_banner.is_none());
-        assert!(state.result_output.contains("mode: XLSX base64"));
-        assert!(state
-            .summary
-            .contains("Shell submission captured for XLSX base64"));
-        assert!(state.review_queue.contains("Review queue preview"));
-    }
-
-    #[test]
-    fn submit_requires_non_blank_field_policy_before_previewing_results() {
+    fn submit_requires_non_blank_field_policy_before_runtime_request() {
         let mut state = TabularFlowState {
             payload: "patient_id,name\n1,Alice".to_string(),
             field_policy_json: "   \n\t".to_string(),
             ..TabularFlowState::default()
         };
 
-        state.submit();
+        let result = state.begin_submit();
 
+        assert!(result.is_err());
         assert_eq!(
             state.error_banner.as_deref(),
             Some("Field policy JSON is required before submitting.")
@@ -270,22 +527,165 @@ mod tests {
     }
 
     #[test]
-    fn clearing_inputs_resets_stale_generated_preview_state() {
+    fn build_submit_request_targets_csv_endpoint() {
+        let request = build_submit_request(
+            InputMode::CsvText,
+            "patient_id,patient_name\nMRN-001,Alice Smith\n",
+            DEFAULT_FIELD_POLICY_JSON,
+        )
+        .unwrap();
+
+        assert_eq!(request.endpoint, "/tabular/deidentify");
+        let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
+        assert_eq!(body["csv"], "patient_id,patient_name\nMRN-001,Alice Smith");
+        assert!(body["policies"].is_array());
+        assert!(body.get("field_policies").is_none());
+    }
+
+    #[test]
+    fn build_submit_request_targets_xlsx_endpoint() {
+        let request = build_submit_request(
+            InputMode::XlsxBase64,
+            "UEsDBBQAAAAIA...\n",
+            DEFAULT_FIELD_POLICY_JSON,
+        )
+        .unwrap();
+
+        assert_eq!(request.endpoint, "/tabular/deidentify/xlsx");
+        let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
+        assert_eq!(body["workbook_base64"], "UEsDBBQAAAAIA...");
+        assert!(body["field_policies"].is_array());
+        assert!(body.get("policies").is_none());
+    }
+
+    #[test]
+    fn build_submit_request_rejects_non_array_policy_json() {
+        let error = build_submit_request(
+            InputMode::CsvText,
+            "patient_id\n1",
+            "{\"columns\":{}}",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Field policy JSON must be a JSON array of policies"));
+    }
+
+    #[test]
+    fn parse_csv_runtime_success_renders_rewritten_csv() {
+        let response = parse_runtime_success(
+            InputMode::CsvText,
+            &json!({
+                "csv": "patient_id,patient_name\ntok-123,Alice Smith\n",
+                "summary": {
+                    "total_rows": 1,
+                    "encoded_cells": 1,
+                    "review_required_cells": 1,
+                    "failed_rows": 0
+                },
+                "review_queue": [
+                    {
+                        "row_index": 1,
+                        "column": "patient_name",
+                        "value": "Alice Smith",
+                        "phi_type": "patient_name"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(response.rewritten_output, "patient_id,patient_name\ntok-123,Alice Smith\n");
+        assert_eq!(response.summary.total_rows, 1);
+        assert_eq!(response.review_queue.len(), 1);
+    }
+
+    #[test]
+    fn parse_xlsx_runtime_success_renders_rewritten_workbook_base64() {
+        let response = parse_runtime_success(
+            InputMode::XlsxBase64,
+            &json!({
+                "rewritten_workbook_base64": "UEsDBBQAAAAIA...",
+                "summary": {
+                    "total_rows": 2,
+                    "encoded_cells": 2,
+                    "review_required_cells": 2,
+                    "failed_rows": 0
+                },
+                "review_queue": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(response.rewritten_output, "UEsDBBQAAAAIA...");
+        assert_eq!(response.summary.encoded_cells, 2);
+        assert!(response.review_queue.is_empty());
+    }
+
+    #[test]
+    fn parse_runtime_error_prefers_error_envelope_and_truncates() {
+        let error = parse_runtime_error(
+            422,
+            &json!({
+                "error": {
+                    "code": "invalid_tabular_request",
+                    "message": "x".repeat(260)
+                }
+            })
+            .to_string(),
+        );
+
+        assert!(error.starts_with("invalid_tabular_request: x"));
+        assert!(error.ends_with('…'));
+        assert!(error.chars().count() <= 240);
+    }
+
+    #[test]
+    fn formatters_render_bounded_summary_and_review_queue() {
+        let summary = RuntimeSummary {
+            total_rows: 2,
+            encoded_cells: 1,
+            review_required_cells: 1,
+            failed_rows: 0,
+        };
+        let review = vec![RuntimeReviewCandidate {
+            row_index: 2,
+            column: "patient_name".to_string(),
+            value: "Alice Smith".to_string(),
+            phi_type: "patient_name".to_string(),
+        }];
+
+        assert_eq!(
+            format_summary(&summary),
+            "total_rows: 2\nencoded_cells: 1\nreview_required_cells: 1\nfailed_rows: 0"
+        );
+        assert_eq!(
+            format_review_queue(&review),
+            "- row 2 / patient_name / patient_name: Alice Smith"
+        );
+    }
+
+    #[test]
+    fn runtime_failure_path_keeps_browser_honest() {
         let mut state = TabularFlowState {
-            payload: "patient_id,name\n1,Alice".to_string(),
+            payload: "patient_id\n1".to_string(),
             ..TabularFlowState::default()
         };
-        state.submit();
 
-        assert!(!state.result_output.is_empty());
-        assert_ne!(state.summary, IDLE_SUMMARY);
-        assert_ne!(state.review_queue, IDLE_REVIEW_QUEUE);
+        let request = state.begin_submit().unwrap();
+        assert_eq!(state.summary, "Submitting to runtime...");
+        assert!(state.is_submitting);
+        assert_eq!(request.endpoint, "/tabular/deidentify");
 
-        state.clear_generated_state();
+        state.apply_runtime_error(FETCH_UNAVAILABLE_MESSAGE.to_string());
 
-        assert!(state.result_output.is_empty());
+        assert_eq!(
+            state.error_banner.as_deref(),
+            Some(FETCH_UNAVAILABLE_MESSAGE)
+        );
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
-        assert!(state.error_banner.is_none());
+        assert!(!state.is_submitting);
     }
 }
