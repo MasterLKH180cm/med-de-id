@@ -42,4 +42,3 @@ Moat task leases are local deterministic history-file coordination for external 
 ## Moat task events
 
 Task lifecycle commands append deterministic task graph events for claim, heartbeat, reap, complete, release, block, and unblock. Inspect them with `mdid-cli moat task-events --history-path PATH`; this command is read-only, defaults to the latest round, supports exact `--round-id`, conjunctive filters, and prints `task_event_entries=0` when no round/events match.
-

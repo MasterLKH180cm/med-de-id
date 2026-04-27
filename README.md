@@ -279,4 +279,3 @@ Moat task leases: local external controllers coordinate claims via history-file 
 ### Moat task event inspection
 
 `mdid-cli moat task-events --history-path PATH` opens an existing moat history file without mutating it and prints the latest round task lifecycle events. Use `--round-id` for exact round selection, and combine `--node-id`, `--action claim|heartbeat|reap|complete|release|block|unblock`, `--agent-id`, `--contains`, and positive `--limit` filters. Rows are emitted as `task_event=<action>|<node_id>|<agent-or-<none>>|<summary>`.
-
