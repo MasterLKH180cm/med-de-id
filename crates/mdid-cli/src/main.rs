@@ -50,6 +50,7 @@ struct MoatHistoryCommand {
     min_score: Option<u32>,
     tests_passed: Option<bool>,
     limit: Option<usize>,
+    format: MoatOutputFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -541,6 +542,7 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
     let mut min_score = None;
     let mut tests_passed = None;
     let mut limit = None;
+    let mut format = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -615,6 +617,14 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
                 tests_passed = Some(parse_bool_flag("--tests-passed", value)?);
                 index += 2;
             }
+            "--format" => {
+                let value = required_flag_value(args, index, "--format", false)?;
+                if format.is_some() {
+                    return Err(duplicate_flag_error("--format"));
+                }
+                format = Some(parse_moat_history_format(value)?);
+                index += 2;
+            }
             flag => return Err(format!("unknown moat history flag: {flag}")),
         }
     }
@@ -629,7 +639,18 @@ fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, Str
         min_score,
         tests_passed,
         limit,
+        format: format.unwrap_or(MoatOutputFormat::Text),
     })
+}
+
+fn parse_moat_history_format(value: &str) -> Result<MoatOutputFormat, String> {
+    match value {
+        "text" => Ok(MoatOutputFormat::Text),
+        "json" => Ok(MoatOutputFormat::Json),
+        other => Err(format!(
+            "error: unknown output format for --format: {other}"
+        )),
+    }
 }
 
 fn parse_min_score_value(value: &str) -> Result<u32, String> {
@@ -2435,6 +2456,20 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
         })
         .collect::<Vec<_>>();
 
+    if command.limit.is_some() || command.round_id.is_some() || command.tests_passed.is_some() {
+        if let Some(limit) = command.limit {
+            let excess = filtered_entries.len().saturating_sub(limit);
+            if excess > 0 {
+                filtered_entries.drain(0..excess);
+            }
+        }
+    }
+
+    if command.format == MoatOutputFormat::Json {
+        print_moat_history_json(&command.history_path, &filtered_entries)?;
+        return Ok(());
+    }
+
     if command.contains.is_some()
         || command.stop_reason_contains.is_some()
         || command.min_score.is_some()
@@ -2450,12 +2485,6 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
     }
 
     if command.limit.is_some() || command.round_id.is_some() || command.tests_passed.is_some() {
-        if let Some(limit) = command.limit {
-            let excess = filtered_entries.len().saturating_sub(limit);
-            if excess > 0 {
-                filtered_entries.drain(0..excess);
-            }
-        }
         println!("history_rounds={}", filtered_entries.len());
         for entry in filtered_entries {
             println!(
@@ -2473,6 +2502,52 @@ fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+fn print_moat_history_json(
+    history_path: &str,
+    entries: &[&MoatHistoryEntry],
+) -> Result<(), String> {
+    let latest = entries.last();
+    let best_moat_score_after = entries
+        .iter()
+        .map(|entry| entry.report.summary.moat_score_after)
+        .max();
+    let rounds = entries
+        .iter()
+        .map(|entry| {
+            let summary = &entry.report.summary;
+            serde_json::json!({
+                "round_id": summary.round_id.to_string(),
+                "decision": format_continue_decision(summary.continue_decision),
+                "moat_score_after": summary.moat_score_after,
+                "stop_reason": summary.stop_reason,
+                "tests_passed": summary.tests_passed,
+                "implemented_specs": summary.implemented_specs,
+            })
+        })
+        .collect::<Vec<_>>();
+    let envelope = serde_json::json!({
+        "type": "moat_history",
+        "history_path": history_path,
+        "summary": {
+            "total_rounds": entries.len(),
+            "latest_round_id": latest.map(|entry| entry.report.summary.round_id.to_string()),
+            "latest_decision": latest.map(|entry| format_continue_decision(entry.report.summary.continue_decision)),
+            "latest_implemented_specs": latest
+                .map(|entry| entry.report.summary.implemented_specs.clone())
+                .unwrap_or_default(),
+            "latest_moat_score_after": latest.map(|entry| entry.report.summary.moat_score_after),
+            "best_moat_score_after": best_moat_score_after,
+        },
+        "history_rounds": entries.len(),
+        "rounds": rounds,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&envelope).map_err(|error| error.to_string())?
+    );
     Ok(())
 }
 
@@ -4557,7 +4632,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--input-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--input-path PATH] [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] [--format text|json] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] [--format text|json] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--input-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--input-path PATH] [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] [--format text|json] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] [--format text|json] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] [--format text|json] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -4672,6 +4747,7 @@ mod tests {
                 tests_passed: None,
                 min_score: None,
                 limit: None,
+                format: MoatOutputFormat::Text,
             })
         );
         assert_eq!(
@@ -4693,6 +4769,7 @@ mod tests {
                 tests_passed: None,
                 min_score: None,
                 limit: None,
+                format: MoatOutputFormat::Text,
             })
         );
         assert_eq!(
@@ -4748,6 +4825,31 @@ mod tests {
                 tests_passed: None,
                 min_score: None,
                 limit: Some(5),
+                format: MoatOutputFormat::Text,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_moat_history_command_parses_json_format() {
+        assert_eq!(
+            parse_moat_history_command(&[
+                "--history-path".into(),
+                "history.json".into(),
+                "--format".into(),
+                "json".into(),
+            ])
+            .unwrap(),
+            MoatHistoryCommand {
+                history_path: "history.json".into(),
+                round_id: None,
+                decision: None,
+                contains: None,
+                stop_reason_contains: None,
+                tests_passed: None,
+                min_score: None,
+                limit: None,
+                format: MoatOutputFormat::Json,
             }
         );
     }
@@ -4771,6 +4873,7 @@ mod tests {
                 tests_passed: None,
                 min_score: None,
                 limit: None,
+                format: MoatOutputFormat::Text,
             }
         );
     }
