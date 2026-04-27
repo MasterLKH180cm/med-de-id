@@ -3258,6 +3258,26 @@ fn cli_filters_ready_tasks_by_exact_node_id() {
         String::from_utf8_lossy(&round_output.stderr)
     );
 
+    let mut persisted_history = fs::read_to_string(&history_path)
+        .expect("seeded moat history should be readable for fixture adjustment");
+    let lockin_completed_state = concat!(
+        "\"node_id\": \"lockin_analysis\",\n",
+        "              \"title\": \"Lock-In Analysis\",\n",
+        "              \"role\": \"planner\",\n",
+        "              \"kind\": \"lock_in_analysis\",\n",
+        "              \"state\": \"completed\"",
+    );
+    assert!(
+        persisted_history.contains(lockin_completed_state),
+        "expected deterministic lock-in analysis node in seeded history"
+    );
+    persisted_history = persisted_history.replace(
+        lockin_completed_state,
+        &lockin_completed_state.replace("\"state\": \"completed\"", "\"state\": \"ready\""),
+    );
+    fs::write(&history_path, persisted_history)
+        .expect("seeded moat history should be writable for fixture adjustment");
+
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
             "moat",
@@ -3265,7 +3285,7 @@ fn cli_filters_ready_tasks_by_exact_node_id() {
             "--history-path",
             history_path_arg,
             "--node-id",
-            "strategy_generation",
+            "lockin_analysis",
         ])
         .output()
         .expect("failed to run mdid-cli moat ready-tasks with node id filter");
@@ -3280,7 +3300,7 @@ fn cli_filters_ready_tasks_by_exact_node_id() {
         concat!(
             "moat ready tasks\n",
             "ready_task_entries=1\n",
-            "ready_task=planner|strategy_generation|strategy_generation|Strategy Generation|<none>\n",
+            "ready_task=planner|lock_in_analysis|lockin_analysis|Lock-In Analysis|<none>\n",
         )
     );
 
