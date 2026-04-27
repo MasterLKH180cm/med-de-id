@@ -9,6 +9,7 @@ mdid-application = { path = "../mdid-application" }
 mdid-domain = { path = "../mdid-domain" }
 mdid-runtime = { path = "../mdid-runtime" }
 chrono.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
