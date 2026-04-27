@@ -60,7 +60,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV de-identification, vault decode, bounded vault audit browsing, and bounded portable subset export.
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV de-identification, vault decode, bounded vault audit browsing, bounded portable subset export, and bounded portable artifact inspection.
 
 Implemented so far:
 
@@ -75,9 +75,10 @@ Implemented so far:
 - `mdid-runtime` also exposes a bounded local HTTP vault decode entry that unlocks a local vault with an explicit passphrase, decodes only the requested record scope, returns decoded values plus the resulting audit event, and honestly rejects wrong passphrases, unknown records, invalid decode requests, and unusable vault targets
 - `mdid-runtime` also exposes a bounded local HTTP vault audit browsing entry that unlocks a local vault with an explicit passphrase, returns persisted audit events in reverse chronological order with bounded filtering, supports filtering by event kind and actor, and remains read-only
 - `mdid-runtime` also exposes a bounded local HTTP portable export entry that unlocks a local vault with an explicit passphrase, exports only the requested bounded record subset into an encrypted portable artifact, records the resulting export audit event, and remains scoped to local export creation rather than import or transfer workflows
+- `mdid-runtime` also exposes a bounded local HTTP portable artifact inspection entry that locally unlocks an encrypted portable artifact with an explicit portable passphrase and returns only bounded record preview metadata for the artifact contents
 - `mdid-cli`, `mdid-browser`, and `mdid-desktop` remain early surface scaffolds
 
-The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, bounded audit browsing, and bounded portable export creation, and it does not yet imply portable import flows, authentication/authorization, generalized transfer APIs, orchestration workflows, full audit search, audit mutation workflows, XLSX upload support, generalized vault browsing, or generalized decode.
+The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, bounded audit browsing, bounded portable export creation, and bounded portable artifact inspection. It does not yet provide a portable artifact import workflow, persistence of inspected artifact records into a vault, or auth/session/orchestration layers, and it still does not imply generalized transfer APIs, full audit search, audit mutation workflows, XLSX upload support, generalized vault browsing, or generalized decode.
 
 Planned next from the design:
 
