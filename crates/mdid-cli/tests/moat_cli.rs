@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--input-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--input-path PATH] [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -103,6 +103,220 @@ fn cli_runs_moat_round_with_history_path_and_persists_report() {
     assert_eq!(summary.best_moat_score_after, Some(98));
 
     cleanup_history_path(&history_path);
+}
+
+fn local_moat_round_input_json() -> String {
+    serde_json::json!({
+        "market": {
+            "market_id": "clinic-deid",
+            "industry_segment": "local clinic de-identification",
+            "market_snapshot_at": null,
+            "moat_score": 20,
+            "moat_type": ["compliance_moat"],
+            "confidence": 0.8,
+            "evidence": ["local workflow evidence"],
+            "assumptions": ["clinic users value offline auditability"]
+        },
+        "competitor": {
+            "competitor_id": "manual-competitor",
+            "name": "Manual redaction workflow",
+            "category": "manual_process",
+            "pricing_summary": "staff time",
+            "feature_summary": "spreadsheet tracking and manual review",
+            "talent_signal_summary": "compliance operations",
+            "suspected_moat_types": ["workflow_lockin"],
+            "threat_score": 80,
+            "evidence": ["manual workflows are entrenched"]
+        },
+        "lock_in": {
+            "lockin_score": 90,
+            "lockin_vectors": ["workflow_dependency"],
+            "switching_cost_strength": 85,
+            "data_gravity_strength": 70,
+            "workflow_dependency_strength": 95,
+            "portability_risk": 40,
+            "evidence": ["audit evidence stays in local workflows"]
+        },
+        "strategies": [{
+            "strategy_id": "clinic-workflow-lock",
+            "title": "Clinic workflow lock",
+            "rationale": "Use local audit trails to make repeat clinic workflows safer and stickier.",
+            "target_moat_type": "workflow_lockin",
+            "implementation_cost": 1,
+            "expected_moat_gain": 12,
+            "risk_level": 2,
+            "dependencies": ["local-audit-foundation"],
+            "testable_hypotheses": ["operators reuse generated review packets"]
+        }],
+        "budget": {
+            "max_round_minutes": 30,
+            "max_parallel_tasks": 3,
+            "max_strategy_candidates": 2,
+            "max_spec_generations": 1,
+            "max_implementation_tasks": 1,
+            "max_review_loops": 1
+        },
+        "improvement_threshold": 3,
+        "tests_passed": true
+    })
+    .to_string()
+}
+
+#[test]
+fn moat_round_uses_local_json_input_file() {
+    let input_path = unique_history_path("round-input-file");
+    let history_path = unique_history_path("round-input-history");
+    let input_path_arg = input_path.to_string_lossy().to_string();
+    let history_path_arg = history_path.to_string_lossy().to_string();
+
+    fs::write(&input_path, local_moat_round_input_json())
+        .expect("failed to write moat input fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--input-path",
+            &input_path_arg,
+            "--history-path",
+            &history_path_arg,
+        ])
+        .output()
+        .expect("failed to run moat round with input path");
+
+    assert!(
+        output.status.success(),
+        "round failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(&format!("input_path={input_path_arg}\n")));
+    assert!(stdout.contains("implemented_specs=moat-spec/clinic-workflow-lock\n"));
+    assert!(stdout.contains(&format!("history_saved_to={history_path_arg}\n")));
+
+    cleanup_history_path(&input_path);
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_control_plane_uses_local_json_input_file_without_saving_history() {
+    let input_path = unique_history_path("control-plane-input-file");
+    let input_path_arg = input_path.to_string_lossy().to_string();
+
+    fs::write(&input_path, local_moat_round_input_json())
+        .expect("failed to write moat input fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--input-path", &input_path_arg])
+        .output()
+        .expect("failed to run moat control-plane with input path");
+
+    assert!(
+        output.status.success(),
+        "control-plane failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("source=input\n"));
+    assert!(stdout.contains(&format!("input_path={input_path_arg}\n")));
+    assert!(stdout.contains("latest_implemented_specs=moat-spec/clinic-workflow-lock\n"));
+
+    cleanup_history_path(&input_path);
+}
+
+#[test]
+fn moat_round_rejects_missing_input_path_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--input-path"])
+        .output()
+        .expect("failed to run moat round with missing input path");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("missing value for moat round --input-path"));
+}
+
+#[test]
+fn moat_round_rejects_duplicate_input_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--input-path",
+            "one.json",
+            "--input-path",
+            "two.json",
+        ])
+        .output()
+        .expect("failed to run moat round with duplicate input path");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate moat round --input-path"));
+}
+
+#[test]
+fn moat_control_plane_rejects_missing_input_path_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--input-path"])
+        .output()
+        .expect("failed to run moat control-plane with missing input path");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("missing value for moat control-plane --input-path"));
+}
+
+#[test]
+fn moat_control_plane_rejects_duplicate_input_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "control-plane",
+            "--input-path",
+            "one.json",
+            "--input-path",
+            "two.json",
+        ])
+        .output()
+        .expect("failed to run moat control-plane with duplicate input path");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("duplicate moat control-plane --input-path"));
+}
+
+#[test]
+fn moat_round_rejects_invalid_input_json() {
+    let input_path = unique_history_path("round-invalid-input-json");
+    let input_path_arg = input_path.to_string_lossy().to_string();
+    fs::write(&input_path, "{not-json").expect("failed to write invalid input fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--input-path", &input_path_arg])
+        .output()
+        .expect("failed to run moat round with invalid input json");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse moat round input"));
+
+    cleanup_history_path(&input_path);
+}
+
+#[test]
+fn moat_control_plane_rejects_invalid_input_json() {
+    let input_path = unique_history_path("control-plane-invalid-input-json");
+    let input_path_arg = input_path.to_string_lossy().to_string();
+    fs::write(&input_path, "{not-json").expect("failed to write invalid input fixture");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "control-plane", "--input-path", &input_path_arg])
+        .output()
+        .expect("failed to run moat control-plane with invalid input json");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to parse moat round input"));
+
+    cleanup_history_path(&input_path);
 }
 
 #[test]
@@ -1433,7 +1647,9 @@ fn cli_control_plane_rejects_history_path_combined_with_override_flags() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot combine --history-path with control-plane override flags"));
+    assert!(stderr.contains(
+        "cannot combine --history-path with moat control-plane --input-path or override flags"
+    ));
     assert!(stderr.contains(USAGE));
     assert!(!history_path.exists());
 

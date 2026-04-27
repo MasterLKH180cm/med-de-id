@@ -39,6 +39,8 @@ As soon as the scaffold is runnable, return to strict TDD immediately.
 
 Moat task leases are local deterministic history-file coordination for external controllers only; heartbeat/reap commands must not be treated as daemon, crawler, or PR automation.
 
+Moat input-file mode is local-only: `mdid-cli moat round --input-path PATH` and `mdid-cli moat control-plane --input-path PATH` read a JSON `MoatRoundInput`, apply explicit override flags, and run the same bounded deterministic pipeline. Input-file mode must not crawl data, launch agents, open PRs, create cron jobs, schedule background work, or write artifacts; `moat round` persists only when `--history-path PATH` is also supplied, while `moat control-plane --input-path` remains an inspection run.
+
 ## Moat task events
 
 Task lifecycle commands append deterministic task graph events for claim, heartbeat, reap, complete, release, block, and unblock. Inspect them with `mdid-cli moat task-events --history-path PATH`; this command is read-only, defaults to the latest round, supports exact `--round-id`, conjunctive filters, and prints `task_event_entries=0` when no round/events match. Text output is the default (`--format text`). `--format json` emits a pretty deterministic envelope with `type: "moat_task_events"`, `round_id`, `history_path`, `task_event_entries`, and `events`; each event includes `recorded_at`, `node_id`, `action`, `previous_state`, `new_state`, `agent_id`, `lease_expires_at`, `artifact_ref`, `artifact_summary`, and `reason`, using `null` for unavailable optional fields.

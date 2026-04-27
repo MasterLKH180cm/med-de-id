@@ -92,6 +92,14 @@ Run the default bounded round with:
 cargo run -p mdid-cli -- moat round
 ```
 
+Or run the same deterministic round pipeline from a local JSON file matching `MoatRoundInput`:
+
+```bash
+cargo run -p mdid-cli -- moat round --input-path moat-input.json
+```
+
+Input-file mode is local-only. The CLI reads the file synchronously, applies the same override flags, prints `input_path=PATH`, and persists history only when `--history-path PATH` is explicitly supplied; it does not crawl data, launch agents, open PRs, create cron jobs, or write artifacts.
+
 The round command prints a deterministic report containing:
 
 - `continue_decision=Continue|Stop|Pivot`
@@ -126,11 +134,20 @@ Inspect the bounded control-plane snapshot with:
 cargo run -p mdid-cli -- moat control-plane
 ```
 
+Inspect a dry-run control-plane snapshot from a local `MoatRoundInput` JSON file without saving history:
+
+```bash
+cargo run -p mdid-cli -- moat control-plane --input-path moat-input.json
+```
+
+This input source prints `source=input` and `input_path=PATH` and remains local-only: it does not save history, crawl data, launch agents, open PRs, create cron jobs, or write artifacts.
+
 The control-plane command prints a deterministic snapshot containing:
 
-- `source=sample|history`
+- `source=sample|input|history`
 - `latest_round_id` when inspecting persisted history
 - `history_path` when inspecting persisted history
+- `input_path` when inspecting a local input file
 - `ready_nodes`
 - `latest_decision_summary`
 - `improvement_delta`

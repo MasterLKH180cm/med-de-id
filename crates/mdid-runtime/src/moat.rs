@@ -25,7 +25,7 @@ const PLANNING_STOPPED_SUMMARY: &str = "planning stopped before implementation";
 const IMPLEMENTATION_STOPPED_SUMMARY: &str = "implementation stopped before review";
 const REVIEW_RECORDED_AT: &str = "1970-01-01T00:00:00Z";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoatRoundInput {
     pub market: MarketMoatSnapshot,
     pub competitor: CompetitorProfile,
