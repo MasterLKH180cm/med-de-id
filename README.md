@@ -82,7 +82,7 @@ Available docs:
 - Slice 2 vault/decode MVP plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-2-vault-encode-decode-mvp.md`
 - Slice 3 tabular deep-support plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md`
 
-
+## Roadmap
 
 - **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, medium PDF/OCR support, conservative image/video/FCS support
 - **v1.5**: detection quality/provenance upgrades, PDF/DICOM policy depth, parity and workflow polish

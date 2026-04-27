@@ -25,12 +25,29 @@ fn cli_prints_ready_banner_with_no_args() {
 }
 
 #[test]
-fn cli_rejects_removed_moat_command_family() {
+fn cli_rejects_removed_moat_command_family_with_exact_usage() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "round"])
         .output()
         .expect("failed to run mdid-cli moat round");
+
     assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unknown command: moat round"));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "unknown command: moat round\nusage: mdid-cli [status]\n"
+    );
+}
+
+#[test]
+fn cli_rejects_moat_token_as_unknown_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .arg("moat")
+        .output()
+        .expect("failed to run mdid-cli moat");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "unknown command: moat\nusage: mdid-cli [status]\n"
+    );
 }
