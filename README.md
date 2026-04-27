@@ -60,7 +60,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV de-identification, vault decode, and bounded vault audit browsing.
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV de-identification, vault decode, bounded vault audit browsing, and bounded portable subset export.
 
 Implemented so far:
 
@@ -74,9 +74,10 @@ Implemented so far:
 - `mdid-runtime` also exposes a bounded local HTTP tabular de-identification entry that currently stays scoped to CSV request bodies, accepts CSV text plus explicit field policies, returns rewritten CSV plus a summary and review queue, and does not yet imply XLSX uploads or broader tabular import/export APIs
 - `mdid-runtime` also exposes a bounded local HTTP vault decode entry that unlocks a local vault with an explicit passphrase, decodes only the requested record scope, returns decoded values plus the resulting audit event, and honestly rejects wrong passphrases, unknown records, invalid decode requests, and unusable vault targets
 - `mdid-runtime` also exposes a bounded local HTTP vault audit browsing entry that unlocks a local vault with an explicit passphrase, returns persisted audit events in reverse chronological order with bounded filtering, supports filtering by event kind and actor, and remains read-only
+- `mdid-runtime` also exposes a bounded local HTTP portable export entry that unlocks a local vault with an explicit passphrase, exports only the requested bounded record subset into an encrypted portable artifact, records the resulting export audit event, and remains scoped to local export creation rather than import or transfer workflows
 - `mdid-cli`, `mdid-browser`, and `mdid-desktop` remain early surface scaffolds
 
-The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, and bounded audit browsing flows, and it does not yet imply full audit search, authentication/authorization, audit mutation workflows, XLSX upload support, generalized vault browsing, generalized decode, or export APIs.
+The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, bounded audit browsing, and bounded portable export creation, and it does not yet imply portable import flows, authentication/authorization, generalized transfer APIs, orchestration workflows, full audit search, audit mutation workflows, XLSX upload support, generalized vault browsing, or generalized decode.
 
 Planned next from the design:
 
