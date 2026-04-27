@@ -875,6 +875,70 @@ fn claim_then_complete_task_persists_completed_state() {
 }
 
 #[test]
+fn block_task_returns_reloaded_latest_round_id_for_implicit_round_selection() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let first_round_id = Uuid::new_v4();
+    let latest_round_id = Uuid::new_v4();
+    let mut first_report = sample_report(
+        first_round_id,
+        ContinueDecision::Continue,
+        None,
+        "older round should not be reported",
+        90,
+        98,
+        true,
+        &[],
+    );
+    let mut latest_report = sample_report(
+        latest_round_id,
+        ContinueDecision::Continue,
+        None,
+        "reloaded latest round should be reported",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(
+        &mut first_report,
+        "implementation",
+        MoatTaskNodeState::InProgress,
+    );
+    set_node_state(
+        &mut latest_report,
+        "implementation",
+        MoatTaskNodeState::InProgress,
+    );
+
+    let mut stale_store =
+        LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    stale_store
+        .append(recorded_at("2026-04-25T20:00:00Z"), first_report)
+        .expect("first report should persist");
+    let mut concurrent_store = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("concurrent history store should open");
+    concurrent_store
+        .append(recorded_at("2026-04-25T20:01:00Z"), latest_report)
+        .expect("latest report should persist");
+    drop(concurrent_store);
+
+    let mutated_round_id = stale_store
+        .block_in_progress_task(None, "implementation")
+        .expect("in-progress task should be blocked");
+
+    assert_eq!(mutated_round_id, latest_round_id.to_string());
+    assert_eq!(
+        node_state(&stale_store.entries()[0].report, "implementation"),
+        MoatTaskNodeState::InProgress
+    );
+    assert_eq!(
+        node_state(&stale_store.entries()[1].report, "implementation"),
+        MoatTaskNodeState::Blocked
+    );
+}
+
+#[test]
 fn complete_task_rejects_non_in_progress_node() {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");
