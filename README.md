@@ -145,6 +145,14 @@ cargo run -p mdid-cli -- moat control-plane --history-path .mdid/moat-history.js
 
 This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, improvement delta, and inspection-only agent assignment projection for ready nodes. `agent_assignments` is a projection only: it does not launch agents, start a daemon, dispatch Planner/Coder/Reviewer work, write code, schedule work, append rounds, crawl the web, or automate code changes.
 
+External controllers can inspect ready tasks in parseable JSON without mutating local history:
+
+```bash
+cargo run -p mdid-cli -- moat ready-tasks --history-path .mdid/moat-history.json --role reviewer --format json
+```
+
+`moat ready-tasks --format json` is read-only and applies the same filters and limit as text output before emitting a pretty deterministic envelope with `type: "moat_ready_tasks"`, `round_id`, `history_path`, `ready_task_entries`, and `tasks`. Each task object includes `role`, `kind`, `node_id`, `title`, and nullable `spec_ref`. Text output remains the default (`--format text`) for backward compatibility.
+
 Inspect persisted local history with:
 
 ```bash
