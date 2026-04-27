@@ -1,8 +1,20 @@
-use mdid_adapters::{ExtractedPdfData, PdfAdapter};
+use std::{fs, path::PathBuf};
+
+use mdid_adapters::{ExtractedPdfData, PdfAdapter, PdfAdapterError};
 use mdid_domain::{PdfScanStatus, ReviewDecision};
 
 const TEXT_LAYER_PDF: &[u8] = include_bytes!("fixtures/pdf/text-layer-minimal.pdf");
 const NO_TEXT_PDF: &[u8] = include_bytes!("fixtures/pdf/no-text-minimal.pdf");
+
+fn fixture_bytes(name: &str) -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("pdf")
+        .join(name);
+    fs::read(&path)
+        .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()))
+}
 
 #[test]
 fn extract_pdf_text_layer_returns_review_only_candidates_with_placeholder_confidence() {
@@ -52,6 +64,48 @@ fn extract_pdf_with_no_extractable_text_marks_ocr_required_without_claiming_dete
     assert_eq!(extracted.summary.extracted_candidates, 0);
     assert_eq!(extracted.summary.review_required_candidates, 0);
     assert!(extracted.summary.requires_review());
+}
+
+#[test]
+fn extract_pdf_mixed_multipage_reports_page_order_and_mixed_statuses() {
+    let adapter = PdfAdapter::new();
+    let mixed_pdf = fixture_bytes("mixed-multipage.pdf");
+
+    let extracted = adapter
+        .extract(&mixed_pdf, "mixed-multipage.pdf")
+        .expect("mixed multipage pdf should parse");
+
+    assert_eq!(extracted.pages.len(), 2);
+    assert_eq!(
+        extracted
+            .pages
+            .iter()
+            .map(|page| page.page.page_number)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(extracted.pages[0].status, PdfScanStatus::TextLayerPresent);
+    assert_eq!(extracted.pages[1].status, PdfScanStatus::OcrRequired);
+
+    assert_eq!(extracted.summary.total_pages, 2);
+    assert_eq!(extracted.summary.text_layer_pages, 1);
+    assert_eq!(extracted.summary.ocr_required_pages, 1);
+
+    assert_eq!(extracted.candidates.len(), 1);
+    let candidate = &extracted.candidates[0];
+    assert_eq!(candidate.page.page_number, 1);
+    assert_eq!(candidate.decision, ReviewDecision::NeedsReview);
+}
+
+#[test]
+fn extract_pdf_invalid_bytes_returns_parse_error() {
+    let adapter = PdfAdapter::new();
+
+    let error = adapter
+        .extract(b"this is definitely not a pdf", "invalid.pdf")
+        .expect_err("invalid bytes should return a parse error");
+
+    assert!(matches!(error, PdfAdapterError::Parse(_)));
 }
 
 #[test]
