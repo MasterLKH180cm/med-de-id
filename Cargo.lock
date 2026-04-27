@@ -3081,6 +3081,7 @@ dependencies = [
  "chrono",
  "dicom-core",
  "dicom-object",
+ "mdid-adapters",
  "mdid-application",
  "mdid-domain",
  "mdid-vault",

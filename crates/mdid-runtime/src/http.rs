@@ -105,11 +105,25 @@ async fn dicom_deidentify(
         SurfaceKind::Browser,
     ) {
         Ok(output) => output,
-        Err(ApplicationError::DicomAdapter(_)) => return invalid_dicom_response().into_response(),
-        Err(_) => return internal_error_response().into_response(),
+        Err(error) => return map_application_error(&error).into_response(),
     };
 
     success_response(output).into_response()
+}
+
+fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        ApplicationError::DicomAdapter(error) if is_invalid_dicom_input_error(error) => {
+            invalid_dicom_response()
+        }
+        _ => internal_error_response(),
+    }
+}
+
+fn is_invalid_dicom_input_error(error: &dyn std::error::Error) -> bool {
+    let message = error.to_string();
+    message.starts_with("failed to parse DICOM input:")
+        || message.starts_with("failed to convert DICOM value:")
 }
 
 fn success_response(output: DicomDeidentificationOutput) -> (StatusCode, Json<DicomDeidentifyResponse>) {
@@ -146,4 +160,40 @@ fn internal_error_response() -> (StatusCode, Json<ErrorEnvelope>) {
             },
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mdid_adapters::{DicomAdapter, DicomAdapterError};
+    use mdid_domain::DicomPrivateTagPolicy;
+    use std::backtrace::Backtrace;
+
+    #[test]
+    fn classifies_parse_errors_as_invalid_dicom() {
+        let error = ApplicationError::DicomAdapter(
+            DicomAdapter::new(DicomPrivateTagPolicy::Remove)
+                .extract(b"not-a-dicom-payload", "broken.dcm")
+                .expect_err("garbage bytes should fail DICOM parse"),
+        );
+
+        assert_eq!(map_application_error(&error).0, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn classifies_rewrite_meta_errors_as_internal_error() {
+        let error = ApplicationError::DicomAdapter(invalid_meta_error().into());
+
+        assert!(matches!(error, ApplicationError::DicomAdapter(DicomAdapterError::Meta(_))));
+        assert_eq!(map_application_error(&error).0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    fn invalid_meta_error() -> dicom_object::WithMetaError {
+        dicom_object::WithMetaError::BuildMetaTable {
+            source: dicom_object::meta::Error::MissingElement {
+                alias: "Media Storage SOP Class UID",
+                backtrace: Backtrace::capture(),
+            },
+        }
+    }
 }

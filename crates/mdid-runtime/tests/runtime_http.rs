@@ -110,6 +110,30 @@ async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
 }
 
 #[tokio::test]
+async fn dicom_deidentify_endpoint_rejects_malformed_base64_payload() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "dicom_bytes_base64": "%%%not-base64%%%",
+        "source_name": "broken.dcm",
+        "private_tag_policy": "remove"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dicom/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_dicom_response(response).await;
+}
+
+#[tokio::test]
 async fn dicom_deidentify_endpoint_rejects_invalid_dicom_bytes() {
     let app = build_router(RuntimeState::default());
     let request = json!({
@@ -130,6 +154,10 @@ async fn dicom_deidentify_endpoint_rejects_invalid_dicom_bytes() {
         .await
         .unwrap();
 
+    assert_invalid_dicom_response(response).await;
+}
+
+async fn assert_invalid_dicom_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
