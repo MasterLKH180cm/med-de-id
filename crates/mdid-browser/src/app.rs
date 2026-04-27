@@ -42,6 +42,15 @@ impl InputMode {
         }
     }
 
+    fn disclosure_copy(self) -> Option<&'static str> {
+        match self {
+            Self::CsvText => None,
+            Self::XlsxBase64 => Some(
+                "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
+            ),
+        }
+    }
+
     fn endpoint(self) -> &'static str {
         match self {
             Self::CsvText => "/tabular/deidentify",
@@ -508,6 +517,12 @@ pub fn App() -> impl IntoView {
                     />
                 </label>
 
+                <Show when=move || state.get().input_mode.disclosure_copy().is_some()>
+                    <p class="input-disclosure">
+                        {move || state.get().input_mode.disclosure_copy().unwrap_or_default()}
+                    </p>
+                </Show>
+
                 <label>
                     "Field policy JSON"
                     <textarea
@@ -606,6 +621,17 @@ mod tests {
         assert!(state.result_output.is_empty());
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+    }
+
+    #[test]
+    fn xlsx_mode_disclosure_matches_runtime_limits() {
+        assert_eq!(InputMode::CsvText.disclosure_copy(), None);
+        assert_eq!(
+            InputMode::XlsxBase64.disclosure_copy(),
+            Some(
+                "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
+            )
+        );
     }
 
     #[test]
