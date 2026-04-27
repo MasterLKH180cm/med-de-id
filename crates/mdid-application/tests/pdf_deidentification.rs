@@ -1,10 +1,13 @@
-use mdid_application::{PdfDeidentificationOutput, PdfDeidentificationService};
+use mdid_application::{ApplicationError, PdfDeidentificationOutput, PdfDeidentificationService};
 use mdid_domain::{PdfScanStatus, ReviewDecision};
 
 const TEXT_LAYER_PDF: &[u8] =
     include_bytes!("../../mdid-adapters/tests/fixtures/pdf/text-layer-minimal.pdf");
 const NO_TEXT_PDF: &[u8] =
     include_bytes!("../../mdid-adapters/tests/fixtures/pdf/no-text-minimal.pdf");
+const MIXED_MULTIPAGE_PDF: &[u8] =
+    include_bytes!("../../mdid-adapters/tests/fixtures/pdf/mixed-multipage.pdf");
+const INVALID_PDF_BYTES: &[u8] = b"not a pdf";
 
 #[test]
 fn pdf_deidentification_reports_ocr_required_pages_honestly() {
@@ -55,6 +58,44 @@ fn pdf_deidentification_routes_text_layer_candidates_to_review() {
         .review_queue
         .iter()
         .any(|candidate| candidate.source_text.contains("Alice Smith")));
+}
+
+#[test]
+fn pdf_deidentification_reports_mixed_page_statuses_honestly() {
+    let service = PdfDeidentificationService;
+
+    let output = service
+        .deidentify_bytes(MIXED_MULTIPAGE_PDF, "mixed-multipage.pdf")
+        .expect("mixed pdf should parse");
+
+    assert_eq!(output.page_statuses.len(), 2);
+    assert_eq!(output.page_statuses[0].page.page_number, 1);
+    assert_eq!(
+        output.page_statuses[0].status,
+        PdfScanStatus::TextLayerPresent
+    );
+    assert_eq!(output.page_statuses[1].page.page_number, 2);
+    assert_eq!(output.page_statuses[1].status, PdfScanStatus::OcrRequired);
+    assert_eq!(output.summary.total_pages, 2);
+    assert_eq!(output.summary.text_layer_pages, 1);
+    assert_eq!(output.summary.ocr_required_pages, 1);
+    assert_eq!(output.review_queue.len(), 1);
+    assert!(output
+        .review_queue
+        .iter()
+        .all(|candidate| candidate.page.page_number == 1));
+    assert_eq!(output.rewritten_pdf_bytes, None);
+}
+
+#[test]
+fn pdf_deidentification_returns_parse_failure_for_invalid_pdf_bytes() {
+    let service = PdfDeidentificationService;
+
+    let error = service
+        .deidentify_bytes(INVALID_PDF_BYTES, "invalid.pdf")
+        .expect_err("invalid bytes should not return a fake partial success object");
+
+    assert!(matches!(error, ApplicationError::PdfAdapter(_)));
 }
 
 #[test]
