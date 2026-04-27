@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -3687,6 +3687,100 @@ fn moat_dispatch_next_filters_by_exact_node_id() {
 }
 
 #[test]
+fn cli_dispatch_next_text_output_includes_agent_id_attribution() {
+    let history_path = unique_history_path("dispatch-agent-id-text");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to create persisted moat round for dispatch agent id test");
+    assert!(
+        round_output.status.success(),
+        "expected round success, stderr was: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+    update_history_task_node(&history_path, "implementation", |implementation_node| {
+        implementation_node.insert("state".to_string(), Value::String("ready".to_string()));
+        implementation_node.insert("depends_on".to_string(), Value::Array(Vec::new()));
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+            "--agent-id",
+            "coder-7",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat dispatch-next with agent id");
+
+    assert!(
+        output.status.success(),
+        "expected dispatch success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("agent_id=coder-7\n"),
+        "stdout was: {stdout}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_dispatch_next_json_output_includes_agent_id_attribution() {
+    let history_path = unique_history_path("dispatch-agent-id-json");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to create persisted moat round for dispatch agent id json test");
+    assert!(
+        round_output.status.success(),
+        "expected round success, stderr was: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+    update_history_task_node(&history_path, "implementation", |implementation_node| {
+        implementation_node.insert("state".to_string(), Value::String("ready".to_string()));
+        implementation_node.insert("depends_on".to_string(), Value::Array(Vec::new()));
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+            "--agent-id",
+            "coder-7",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat dispatch-next json with agent id");
+
+    assert!(
+        output.status.success(),
+        "expected dispatch success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value =
+        serde_json::from_slice(&output.stdout).expect("dispatch output should be json");
+    assert_eq!(payload["agent_id"], "coder-7");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn moat_dispatch_next_json_dry_run_prints_parseable_envelope() {
     let history_path = unique_history_path("dispatch-next-json-dry-run");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -3967,6 +4061,7 @@ fn cli_dispatch_next_filters_ready_task_by_exact_spec_ref() {
             "moat dispatch next\n\
 dry_run=true\n\
 claimed=false\n\
+agent_id=<none>\n\
 round_id={round_id}\n\
 node_id=task-implementation\n\
 role=coder\n\

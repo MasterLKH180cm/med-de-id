@@ -241,6 +241,15 @@ cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.jso
 
 This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest or exact prior persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
 
+External workers can claim one ready task with a bounded dispatch envelope:
+
+```bash
+cargo run -p mdid-cli -- moat dispatch-next --history-path .mdid/moat-history.json --role coder --agent-id coder-7
+cargo run -p mdid-cli -- moat dispatch-next --history-path .mdid/moat-history.json --role coder --agent-id coder-7 --format json
+```
+
+`--agent-id AGENT_ID` is optional local attribution metadata only. Text output includes `agent_id=<value>` or `agent_id=<none>` when omitted; JSON output includes a nullable `agent_id` field. `moat dispatch-next` selects and, unless `--dry-run` is used, claims exactly one already-ready persisted task; it does not launch agents, open PRs, create schedulers or cron jobs, start background work, crawl the web, or run an autonomous loop.
+
 External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
 
 ```bash
