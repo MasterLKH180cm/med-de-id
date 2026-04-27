@@ -291,13 +291,14 @@ impl LocalMoatHistoryStore {
         round_id: Option<&str>,
         node_id: &str,
     ) -> Result<String, CompleteInProgressTaskError> {
-        self.complete_in_progress_task_with_artifact(round_id, node_id, None)
+        self.complete_in_progress_task_with_artifact(round_id, node_id, None, None)
     }
 
     pub fn complete_in_progress_task_with_artifact(
         &mut self,
         round_id: Option<&str>,
         node_id: &str,
+        agent_id: Option<&str>,
         artifact: Option<CompleteTaskArtifact>,
     ) -> Result<String, CompleteInProgressTaskError> {
         self.transition_task_state_with_artifact(
@@ -305,6 +306,7 @@ impl LocalMoatHistoryStore {
             node_id,
             MoatTaskNodeState::InProgress,
             MoatTaskNodeState::Completed,
+            agent_id,
             artifact,
         )
     }
@@ -475,6 +477,7 @@ impl LocalMoatHistoryStore {
             expected_state,
             next_state,
             None,
+            None,
         )
     }
 
@@ -484,6 +487,7 @@ impl LocalMoatHistoryStore {
         node_id: &str,
         expected_state: MoatTaskNodeState,
         next_state: MoatTaskNodeState,
+        agent_id: Option<&str>,
         artifact: Option<CompleteTaskArtifact>,
     ) -> Result<String, CompleteInProgressTaskError> {
         if let Some(artifact) = artifact.as_ref() {
@@ -546,6 +550,17 @@ impl LocalMoatHistoryStore {
             });
         }
 
+        if let (Some(actual_agent_id), Some(expected_agent_id)) =
+            (agent_id, node.assigned_agent_id.as_deref())
+        {
+            if actual_agent_id != expected_agent_id {
+                return Err(CompleteInProgressTaskError::WrongAssignedAgent {
+                    expected_agent_id: expected_agent_id.to_string(),
+                    actual_agent_id: actual_agent_id.to_string(),
+                });
+            }
+        }
+
         let (action, summary) = match (expected_state, next_state) {
             (MoatTaskNodeState::InProgress, MoatTaskNodeState::Completed) => {
                 (MoatTaskEventAction::Complete, "task completed")
@@ -566,7 +581,10 @@ impl LocalMoatHistoryStore {
                 });
             }
         };
-        let event_agent_id = node.assigned_agent_id.clone();
+        let event_agent_id = node
+            .assigned_agent_id
+            .clone()
+            .or_else(|| agent_id.map(str::to_string));
         let event_recorded_at = node
             .last_heartbeat_at
             .or(node.claimed_at)
@@ -931,6 +949,7 @@ mod tests {
             .complete_in_progress_task_with_artifact(
                 None,
                 "strategy_generation",
+                None,
                 Some(CompleteTaskArtifact {
                     artifact_ref: "docs/superpowers/plans/artifact.md".to_string(),
                     artifact_summary: "handoff summary".to_string(),
@@ -984,7 +1003,7 @@ mod tests {
         let mut store =
             LocalMoatHistoryStore::open(history_path.clone()).expect("failed to open history");
         store
-            .complete_in_progress_task_with_artifact(None, "strategy_generation", None)
+            .complete_in_progress_task_with_artifact(None, "strategy_generation", None, None)
             .expect("failed to complete task without artifact");
 
         let entries = load_entries(&history_path).expect("failed to reload entries");
@@ -1029,6 +1048,7 @@ mod tests {
             .complete_in_progress_task_with_artifact(
                 None,
                 "strategy_generation",
+                None,
                 Some(CompleteTaskArtifact {
                     artifact_ref: " \t\n".to_string(),
                     artifact_summary: "handoff summary".to_string(),
@@ -1085,6 +1105,7 @@ mod tests {
             .complete_in_progress_task_with_artifact(
                 None,
                 "strategy_generation",
+                None,
                 Some(CompleteTaskArtifact {
                     artifact_ref: "docs/superpowers/plans/artifact.md".to_string(),
                     artifact_summary: " \t\n".to_string(),

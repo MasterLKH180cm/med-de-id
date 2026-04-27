@@ -174,7 +174,7 @@ Export a deterministic work packet and later record the external controller hand
 
 ```bash
 cargo run -p mdid-cli -- moat work-packet --history-path .mdid/moat-history.json --node-id review --format json
-cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --artifact-ref plan://review-output --artifact-summary 'Reviewed implementation handoff'
+cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --agent-id reviewer-1 --artifact-ref plan://review-output --artifact-summary 'Reviewed implementation handoff'
 ```
 
 `mdid-cli moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json]` exports a deterministic read-only work packet for an external Planner/Coder/Reviewer controller. It includes task metadata, dependency IDs, completed upstream artifact handoffs, acceptance criteria, and the recommended `complete-task` command. It never launches agents, mutates history, schedules work, crawls data, opens PRs, creates cron jobs, or writes artifact files.
@@ -293,7 +293,7 @@ cargo run -p mdid-cli -- moat dispatch-next --history-path .mdid/moat-history.js
 
 `--agent-id AGENT_ID` is optional local persisted ownership metadata only. Text output preserves `agent_id=<value|<none>>` request attribution and reports persisted ownership separately as `assigned_agent_id=<value|<none>>`; dry-runs never persist ownership, so `assigned_agent_id=<none>` even when `--agent-id` is supplied. JSON output includes nullable `agent_id` and `assigned_agent_id` fields, with `assigned_agent_id: null` on dry-run. `moat dispatch-next` selects and, unless `--dry-run` is used, claims exactly one already-ready persisted task; it does not launch agents, open PRs, create schedulers or cron jobs, start background work, crawl the web, or run an autonomous loop.
 
-External workers can claim tasks with optional local ownership metadata via `mdid-cli moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json]`; text output remains the default and includes `assigned_agent_id=<value|<none>>`, while `--format json` emits a deterministic pretty `moat_claim_task` envelope. The CLI only records metadata/state in local history. External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
+External workers can claim tasks with optional local ownership metadata via `mdid-cli moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json]`; text output remains the default and includes `assigned_agent_id=<value|<none>>`, while `--format json` emits a deterministic pretty `moat_claim_task` envelope. The CLI only records metadata/state in local history. External workers can complete claimed tasks with optional matching `--agent-id AGENT_ID` attribution and optionally hand off produced artifacts with paired flags:
 
 ```bash
 cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --artifact-ref docs/review.md --artifact-summary "review approved"
@@ -310,7 +310,7 @@ cargo run -p mdid-cli -- moat complete-task \
   --format json
 ```
 
-`--artifact-ref` and `--artifact-summary` must be supplied together. When present, the completed task records the handoff in persisted history and the deterministic completion output includes `artifact_recorded=true`, `artifact_ref=...`, and `artifact_summary=...` before `next_ready_task_entries`. Without those flags, completion preserves the prior transition behavior and prints `<none>` artifact fields. Text output remains the default (`--format text`); `--format json` emits `type`, `round_id`, `history_path`, `node_id`, `previous_state`, `new_state`, `artifact_recorded`, nullable `artifact`, `next_ready_task_entries`, and `next_ready_tasks[]`.
+`--agent-id` is optional for completion. When the task has persisted ownership from `claim-task`/`dispatch-next`, a supplied value must match it; the completion event records the assigned or supplied agent id. `--artifact-ref` and `--artifact-summary` must be supplied together. When present, the completed task records the handoff in persisted history and the deterministic completion output includes `artifact_recorded=true`, `artifact_ref=...`, and `artifact_summary=...` before `next_ready_task_entries`. Without those flags, completion preserves the prior transition behavior and prints `<none>` artifact fields. Text output remains the default (`--format text`); `--format json` emits `type`, `round_id`, `history_path`, `node_id`, `previous_state`, `new_state`, `artifact_recorded`, nullable `artifact`, `next_ready_task_entries`, and `next_ready_tasks[]`.
 
 ## Roadmap shape
 
