@@ -12,7 +12,7 @@ use dicom_object::{
 };
 use mdid_domain::{MappingScope, SurfaceKind};
 use mdid_runtime::http::{build_router, RuntimeState};
-use mdid_vault::{LocalVaultStore, NewMappingRecord};
+use mdid_vault::{LocalVaultStore, NewMappingRecord, PortableVaultArtifact};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -782,6 +782,238 @@ async fn audit_events_endpoint_rejects_invalid_filter_payload() {
     assert_invalid_audit_events_request_response(bad_enum_response).await;
 }
 
+#[tokio::test]
+async fn vault_export_endpoint_returns_portable_artifact_and_records_audit_event() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let kept = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let omitted = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [kept.id],
+        "export_passphrase": "portable-passphrase",
+        "context": "partner-site transfer package",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/export")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let artifact_json = json.get("artifact").cloned().expect("artifact should be present");
+    assert!(json.get("audit_event").is_none());
+
+    let artifact: PortableVaultArtifact = serde_json::from_value(artifact_json).unwrap();
+    let snapshot = artifact.unlock("portable-passphrase").unwrap();
+    assert_eq!(snapshot.records.len(), 1);
+    assert_eq!(snapshot.records[0].id, kept.id);
+    assert_eq!(snapshot.records[0].original_value, "Alice Smith");
+    assert_eq!(snapshot.records[0].token, kept.token);
+    assert!(snapshot.records.iter().all(|record| record.id != omitted.id));
+
+    let reopened = LocalVaultStore::unlock(&vault_path, "correct horse battery staple").unwrap();
+    let audit_events = reopened.audit_events();
+    let export_event = audit_events.last().expect("export event should be recorded");
+    assert_eq!(export_event.kind.as_str(), "export");
+    assert_eq!(export_event.actor, SurfaceKind::Desktop);
+    assert!(export_event.detail.contains("partner-site transfer package"));
+    assert!(export_event.detail.contains("1 record"));
+    assert!(export_event.detail.contains(&kept.id.to_string()));
+    assert!(!export_event.detail.contains(&omitted.id.to_string()));
+}
+
+#[tokio::test]
+async fn vault_export_endpoint_rejects_unknown_record_scope() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [Uuid::new_v4()],
+        "export_passphrase": "portable-passphrase",
+        "context": "partner-site transfer package",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/export")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "unknown_record",
+                "message": "decode scope referenced a record that does not exist"
+            }
+        })
+    );
+    assert!(json.get("artifact").is_none());
+}
+
+#[tokio::test]
+async fn vault_export_endpoint_rejects_invalid_export_payload() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    for request in [
+        json!({
+            "vault_path": vault_path,
+            "vault_passphrase": "correct horse battery staple",
+            "record_ids": [],
+            "export_passphrase": "portable-passphrase",
+            "context": "partner-site transfer package",
+            "requested_by": "desktop"
+        }),
+        json!({
+            "vault_path": vault_path,
+            "vault_passphrase": "correct horse battery staple",
+            "record_ids": [stored.id],
+            "export_passphrase": "portable-passphrase",
+            "context": "   ",
+            "requested_by": "desktop"
+        }),
+        json!({
+            "vault_path": vault_path,
+            "vault_passphrase": "correct horse battery staple",
+            "record_ids": [stored.id],
+            "export_passphrase": " ",
+            "context": "partner-site transfer package",
+            "requested_by": "desktop"
+        }),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vault/export")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_export_request_response(response).await;
+    }
+}
+
+#[tokio::test]
+async fn vault_export_endpoint_rejects_wrong_passphrase() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "wrong passphrase",
+        "record_ids": [stored.id],
+        "export_passphrase": "portable-passphrase",
+        "context": "partner-site transfer package",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/export")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "vault_unlock_failed",
+                "message": "vault could not be unlocked with the supplied passphrase"
+            }
+        })
+    );
+    assert!(json.get("artifact").is_none());
+}
+
 async fn assert_invalid_audit_events_request_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -857,6 +1089,24 @@ async fn assert_invalid_decode_request_response(response: axum::response::Respon
     );
     assert!(json.get("values").is_none());
     assert!(json.get("audit_event").is_none());
+}
+
+async fn assert_invalid_export_request_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_export_request",
+                "message": "request body did not contain a valid vault export request"
+            }
+        })
+    );
+    assert!(json.get("artifact").is_none());
 }
 
 async fn assert_invalid_vault_target_response(response: axum::response::Response) {

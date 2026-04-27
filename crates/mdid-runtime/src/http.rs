@@ -48,6 +48,16 @@ struct VaultDecodeRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct VaultExportRequest {
+    vault_path: PathBuf,
+    vault_passphrase: String,
+    record_ids: Vec<uuid::Uuid>,
+    export_passphrase: String,
+    context: String,
+    requested_by: SurfaceKind,
+}
+
+#[derive(Debug, Deserialize)]
 struct VaultAuditEventsRequest {
     vault_path: PathBuf,
     vault_passphrase: String,
@@ -98,6 +108,11 @@ struct VaultDecodeResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct VaultExportResponse {
+    artifact: mdid_vault::PortableVaultArtifact,
+}
+
+#[derive(Debug, Serialize)]
 struct VaultAuditEventsResponse {
     events: Vec<AuditEvent>,
 }
@@ -127,6 +142,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
+        .route("/vault/export", post(vault_export))
         .route("/vault/audit/events", post(vault_audit_events))
         .with_state(state)
 }
@@ -246,6 +262,28 @@ async fn vault_decode(payload: Result<Json<VaultDecodeRequest>, JsonRejection>) 
     }
 }
 
+async fn vault_export(payload: Result<Json<VaultExportRequest>, JsonRejection>) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_export_request_response().into_response(),
+    };
+
+    let mut vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
+        Ok(vault) => vault,
+        Err(error) => return map_export_vault_error(&error).into_response(),
+    };
+
+    match vault.export_portable(
+        &payload.record_ids,
+        &payload.export_passphrase,
+        payload.requested_by,
+        &payload.context,
+    ) {
+        Ok(artifact) => (StatusCode::OK, Json(VaultExportResponse { artifact })).into_response(),
+        Err(error) => map_export_vault_error(&error).into_response(),
+    }
+}
+
 async fn vault_audit_events(payload: Result<Json<VaultAuditEventsRequest>, JsonRejection>) -> Response {
     let Json(payload) = match payload {
         Ok(payload) => payload,
@@ -326,6 +364,15 @@ fn map_audit_events_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEn
     }
 }
 
+fn map_export_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        VaultError::BlankPassphrase | VaultError::EmptyExportScope | VaultError::BlankExportContext => {
+            invalid_export_request_response()
+        }
+        _ => map_vault_error(error),
+    }
+}
+
 fn success_response(
     output: DicomDeidentificationOutput,
 ) -> (StatusCode, Json<DicomDeidentifyResponse>) {
@@ -384,6 +431,18 @@ fn invalid_decode_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_decode_request",
                 message: "request body did not contain a valid vault decode request",
+            },
+        }),
+    )
+}
+
+fn invalid_export_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_export_request",
+                message: "request body did not contain a valid vault export request",
             },
         }),
     )
