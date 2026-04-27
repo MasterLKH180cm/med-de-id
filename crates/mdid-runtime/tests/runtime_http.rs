@@ -893,11 +893,87 @@ async fn vault_export_endpoint_rejects_unknown_record_scope() {
         json!({
             "error": {
                 "code": "unknown_record",
-                "message": "decode scope referenced a record that does not exist"
+                "message": "export scope referenced a record that does not exist"
             }
         })
     );
     assert!(json.get("artifact").is_none());
+}
+
+#[tokio::test]
+async fn vault_export_endpoint_rejects_unusable_vault_target() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("not-a-vault.mdid");
+    std::fs::write(&vault_path, "not valid vault json").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [Uuid::new_v4()],
+        "export_passphrase": "portable-passphrase",
+        "context": "partner-site transfer package",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/export")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_vault_target_response(response).await;
+}
+
+#[tokio::test]
+async fn vault_export_endpoint_rejects_corrupted_encrypted_vault_artifact() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let mut envelope: Value =
+        serde_json::from_str(&std::fs::read_to_string(&vault_path).unwrap()).unwrap();
+    envelope["ciphertext_b64"] = json!("%%%not-base64%%%");
+    std::fs::write(&vault_path, envelope.to_string()).unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [stored.id],
+        "export_passphrase": "portable-passphrase",
+        "context": "partner-site transfer package",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/export")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_vault_target_response(response).await;
 }
 
 #[tokio::test]

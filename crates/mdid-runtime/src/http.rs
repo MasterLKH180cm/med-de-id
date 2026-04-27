@@ -369,6 +369,7 @@ fn map_export_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope
         VaultError::BlankPassphrase | VaultError::EmptyExportScope | VaultError::BlankExportContext => {
             invalid_export_request_response()
         }
+        VaultError::UnknownRecord(_) => unknown_export_record_response(),
         _ => map_vault_error(error),
     }
 }
@@ -479,6 +480,18 @@ fn unknown_record_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "unknown_record",
                 message: "decode scope referenced a record that does not exist",
+            },
+        }),
+    )
+}
+
+fn unknown_export_record_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "unknown_record",
+                message: "export scope referenced a record that does not exist",
             },
         }),
     )
