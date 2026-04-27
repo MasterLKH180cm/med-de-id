@@ -4,6 +4,8 @@ use mdid_domain::{
 };
 use thiserror::Error;
 
+const REVIEW_PLACEHOLDER_CONFIDENCE: u8 = 1;
+
 #[derive(Debug, Error)]
 pub enum PdfAdapterError {
     #[error("failed to parse PDF input: {0}")]
@@ -53,7 +55,7 @@ impl PdfAdapter {
                         page: page.clone(),
                         phi_type: "extracted_text".into(),
                         source_text: fragment,
-                        confidence: 100,
+                        confidence: REVIEW_PLACEHOLDER_CONFIDENCE,
                         decision: ReviewDecision::NeedsReview,
                     });
                 }

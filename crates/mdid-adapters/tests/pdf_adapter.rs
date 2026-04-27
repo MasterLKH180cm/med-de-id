@@ -5,7 +5,7 @@ const TEXT_LAYER_PDF: &[u8] = include_bytes!("fixtures/pdf/text-layer-minimal.pd
 const NO_TEXT_PDF: &[u8] = include_bytes!("fixtures/pdf/no-text-minimal.pdf");
 
 #[test]
-fn extract_pdf_text_layer_returns_review_candidates() {
+fn extract_pdf_text_layer_returns_review_only_candidates_with_placeholder_confidence() {
     let adapter = PdfAdapter::new();
 
     let extracted = adapter
@@ -21,6 +21,7 @@ fn extract_pdf_text_layer_returns_review_candidates() {
     assert_eq!(candidate.page.page_number, 1);
     assert_eq!(candidate.phi_type, "extracted_text");
     assert_eq!(candidate.source_text, "Alice Smith");
+    assert_eq!(candidate.confidence, 1);
     assert_eq!(candidate.decision, ReviewDecision::NeedsReview);
 
     assert_eq!(extracted.summary.total_pages, 1);
@@ -28,10 +29,11 @@ fn extract_pdf_text_layer_returns_review_candidates() {
     assert_eq!(extracted.summary.ocr_required_pages, 0);
     assert_eq!(extracted.summary.extracted_candidates, 1);
     assert_eq!(extracted.summary.review_required_candidates, 1);
+    assert!(extracted.summary.requires_review());
 }
 
 #[test]
-fn extract_pdf_without_text_layer_marks_ocr_required() {
+fn extract_pdf_with_no_extractable_text_marks_ocr_required_without_claiming_detected_phi() {
     let adapter = PdfAdapter::new();
 
     let extracted = adapter
@@ -40,10 +42,16 @@ fn extract_pdf_without_text_layer_marks_ocr_required() {
 
     assert_eq!(extracted.pages.len(), 1);
     assert_eq!(extracted.pages[0].status, PdfScanStatus::OcrRequired);
-    assert!(extracted.candidates.is_empty());
+    assert!(
+        extracted.candidates.is_empty(),
+        "a page with no extractable text should only be flagged for OCR review"
+    );
     assert_eq!(extracted.summary.total_pages, 1);
     assert_eq!(extracted.summary.text_layer_pages, 0);
     assert_eq!(extracted.summary.ocr_required_pages, 1);
+    assert_eq!(extracted.summary.extracted_candidates, 0);
+    assert_eq!(extracted.summary.review_required_candidates, 0);
+    assert!(extracted.summary.requires_review());
 }
 
 #[test]
