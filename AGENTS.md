@@ -48,3 +48,7 @@ Task lifecycle commands append deterministic task graph events for claim, heartb
 ## Moat work packets
 
 `mdid-cli moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json]` exports a deterministic read-only work packet for an external Planner/Coder/Reviewer controller. It includes task metadata, dependency IDs, completed upstream artifact handoffs, acceptance criteria, and the recommended `complete-task` command. It never launches agents, mutates history, schedules work, crawls data, opens PRs, creates cron jobs, or writes artifact files.
+
+## Moat artifacts
+
+`mdid-cli moat artifacts --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] [--format text|json]` is a read-only completed-artifact handoff inspection surface. Text output remains the default. `--format json` emits a deterministic `moat_artifacts` envelope with `round_id`, `history_path`, `artifact_entries`, and artifact rows containing node metadata plus `artifact_ref` and `artifact_summary`. It never launches agents, mutates history, schedules work, crawls data, opens PRs, creates cron jobs, or writes artifact files.
