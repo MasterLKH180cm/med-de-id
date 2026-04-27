@@ -4,7 +4,7 @@
 
 **Goal:** Add a persisted read-only task event log so the moat-loop external controller can audit claim/heartbeat/reap/complete/release/block/unblock lifecycle transitions end-to-end.
 
-**Architecture:** Extend the existing local-first history JSON contract with append-only `MoatTaskEvent` records stored on each persisted task graph. Mutation commands append deterministic event rows when they change task state or lease metadata. Add `mdid-cli moat task-events` as a bounded inspection surface with round/node/kind/agent/action filters; it must never launch agents, schedule jobs, append rounds, or mutate history.
+**Architecture:** Extend the existing local-first history JSON contract with append-only `MoatTaskEvent` records stored on each persisted task graph. Mutation commands append deterministic event rows when they change task state or lease metadata. Add `mdid-cli moat task-events` as a bounded inspection surface with round/node/agent/action filters; it must never launch agents, schedule jobs, append rounds, or mutate history.
 
 **Tech Stack:** Rust workspace; `mdid-domain` serde models; `mdid-runtime::moat_history::LocalMoatHistoryStore`; `mdid-cli` argument parser; integration tests in `crates/mdid-cli/tests/moat_cli.rs`; targeted `cargo test` with `CARGO_INCREMENTAL=0`.
 

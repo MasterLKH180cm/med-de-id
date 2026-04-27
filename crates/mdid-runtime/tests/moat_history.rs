@@ -235,6 +235,140 @@ fn task_event_log_persists_claim_heartbeat_and_reap_events() {
 }
 
 #[test]
+fn task_event_ids_are_deterministic_for_equivalent_histories() {
+    let event_ids = |history_path: &std::path::Path| {
+        let mut report = sample_report(
+            Uuid::parse_str("11111111-1111-5111-8111-111111111111").unwrap(),
+            ContinueDecision::Continue,
+            None,
+            "events",
+            90,
+            98,
+            true,
+            &[],
+        );
+        set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+        let mut store = LocalMoatHistoryStore::open(history_path).expect("open");
+        store
+            .append(recorded_at("2026-04-25T20:00:00Z"), report)
+            .expect("persist");
+        store
+            .claim_ready_task_with_agent_and_lease(
+                None,
+                "implementation",
+                Some("coder-7"),
+                60,
+                recorded_at("2026-04-28T00:00:00Z"),
+            )
+            .expect("claim");
+        store
+            .heartbeat_in_progress_task(
+                None,
+                "implementation",
+                Some("coder-7"),
+                120,
+                recorded_at("2026-04-28T00:00:30Z"),
+            )
+            .expect("heartbeat");
+        store
+            .release_in_progress_task(None, "implementation")
+            .expect("release");
+        store.entries()[0]
+            .report
+            .control_plane
+            .task_graph
+            .events
+            .iter()
+            .map(|event| event.event_id)
+            .collect::<Vec<_>>()
+    };
+
+    let left_dir = tempdir().expect("temp dir should exist");
+    let right_dir = tempdir().expect("temp dir should exist");
+
+    assert_eq!(
+        event_ids(&left_dir.path().join("moat-history.json")),
+        event_ids(&right_dir.path().join("moat-history.json"))
+    );
+}
+
+#[test]
+fn task_event_log_persists_complete_release_block_and_unblock_events() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let mut report = sample_report(
+        Uuid::new_v4(),
+        ContinueDecision::Continue,
+        None,
+        "transitions",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    set_node_state(&mut report, "review", MoatTaskNodeState::Ready);
+    set_node_state(&mut report, "evaluation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("persist");
+
+    store
+        .claim_ready_task_with_agent_and_lease(
+            None,
+            "implementation",
+            Some("a"),
+            60,
+            recorded_at("2026-04-28T00:00:00Z"),
+        )
+        .expect("claim implementation");
+    store
+        .complete_in_progress_task(None, "implementation")
+        .expect("complete");
+    store
+        .claim_ready_task_with_agent_and_lease(
+            None,
+            "review",
+            Some("b"),
+            60,
+            recorded_at("2026-04-28T00:01:00Z"),
+        )
+        .expect("claim review");
+    store
+        .release_in_progress_task(None, "review")
+        .expect("release");
+    store
+        .claim_ready_task_with_agent_and_lease(
+            None,
+            "evaluation",
+            Some("c"),
+            60,
+            recorded_at("2026-04-28T00:02:00Z"),
+        )
+        .expect("claim evaluation");
+    store
+        .block_in_progress_task(None, "evaluation")
+        .expect("block");
+    store
+        .unblock_blocked_task(None, "evaluation")
+        .expect("unblock");
+
+    let actions = store.entries()[0]
+        .report
+        .control_plane
+        .task_graph
+        .events
+        .iter()
+        .map(|event| event.action)
+        .collect::<Vec<_>>();
+    assert!(actions.contains(&MoatTaskEventAction::Complete));
+    assert!(actions.contains(&MoatTaskEventAction::Release));
+    assert!(actions.contains(&MoatTaskEventAction::Block));
+    assert!(actions.contains(&MoatTaskEventAction::Unblock));
+}
+
+#[test]
 fn legacy_history_without_agent_assignments_opens_with_empty_assignments() {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");

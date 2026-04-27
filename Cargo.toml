@@ -37,4 +37,4 @@ thiserror = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
-uuid = { version = "1", features = ["serde", "v4"] }
+uuid = { version = "1", features = ["serde", "v4", "v5"] }
