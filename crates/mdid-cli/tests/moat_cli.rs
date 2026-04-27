@@ -3259,25 +3259,7 @@ fn cli_filters_ready_tasks_by_exact_node_id() {
         String::from_utf8_lossy(&round_output.stderr)
     );
 
-    let mut persisted_history = fs::read_to_string(&history_path)
-        .expect("seeded moat history should be readable for fixture adjustment");
-    let lockin_completed_state = concat!(
-        "\"node_id\": \"lockin_analysis\",\n",
-        "              \"title\": \"Lock-In Analysis\",\n",
-        "              \"role\": \"planner\",\n",
-        "              \"kind\": \"lock_in_analysis\",\n",
-        "              \"state\": \"completed\"",
-    );
-    assert!(
-        persisted_history.contains(lockin_completed_state),
-        "expected deterministic lock-in analysis node in seeded history"
-    );
-    persisted_history = persisted_history.replace(
-        lockin_completed_state,
-        &lockin_completed_state.replace("\"state\": \"completed\"", "\"state\": \"ready\""),
-    );
-    fs::write(&history_path, persisted_history)
-        .expect("seeded moat history should be writable for fixture adjustment");
+    make_history_task_node_ready(&history_path, "lockin_analysis");
 
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
@@ -8513,6 +8495,35 @@ fn seed_moat_history_with_assignment_rows(history_path: &PathBuf) {
 }
 
 fn make_workflow_audit_spec_task_ready(history_path: &PathBuf) {
+    update_history_task_node(history_path, "spec_planning", |spec_node| {
+        spec_node.insert(
+            "node_id".to_string(),
+            Value::String("spec-workflow-audit".to_string()),
+        );
+        spec_node.insert(
+            "title".to_string(),
+            Value::String("Create spec for workflow audit".to_string()),
+        );
+        spec_node.insert("state".to_string(), Value::String("ready".to_string()));
+        spec_node.insert("depends_on".to_string(), Value::Array(Vec::new()));
+        spec_node.insert(
+            "spec_ref".to_string(),
+            Value::String("moat-spec/workflow-audit".to_string()),
+        );
+    });
+}
+
+fn make_history_task_node_ready(history_path: &PathBuf, node_id: &str) {
+    update_history_task_node(history_path, node_id, |node| {
+        node.insert("state".to_string(), Value::String("ready".to_string()));
+    });
+}
+
+fn update_history_task_node(
+    history_path: &PathBuf,
+    node_id: &str,
+    update: impl FnOnce(&mut serde_json::Map<String, Value>),
+) {
     let persisted = fs::read_to_string(history_path)
         .expect("seeded moat history should be readable for fixture adjustment");
     let mut history: Value =
@@ -8525,26 +8536,13 @@ fn make_workflow_audit_spec_task_ready(history_path: &PathBuf) {
         .and_then(|task_graph| task_graph.get_mut("nodes"))
         .and_then(Value::as_array_mut)
         .expect("seeded moat history should contain task graph nodes");
-    let spec_node = nodes
+    let task_node = nodes
         .iter_mut()
-        .find(|node| node.get("node_id").and_then(Value::as_str) == Some("spec_planning"))
+        .find(|node| node.get("node_id").and_then(Value::as_str) == Some(node_id))
         .and_then(Value::as_object_mut)
-        .expect("seeded moat history should contain deterministic spec planning node");
+        .expect("seeded moat history should contain deterministic task graph node");
 
-    spec_node.insert(
-        "node_id".to_string(),
-        Value::String("spec-workflow-audit".to_string()),
-    );
-    spec_node.insert(
-        "title".to_string(),
-        Value::String("Create spec for workflow audit".to_string()),
-    );
-    spec_node.insert("state".to_string(), Value::String("ready".to_string()));
-    spec_node.insert("depends_on".to_string(), Value::Array(Vec::new()));
-    spec_node.insert(
-        "spec_ref".to_string(),
-        Value::String("moat-spec/workflow-audit".to_string()),
-    );
+    update(task_node);
 
     let persisted = serde_json::to_string_pretty(&history)
         .expect("adjusted moat history should serialize as JSON");
