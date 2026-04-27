@@ -3308,6 +3308,133 @@ fn cli_filters_ready_tasks_by_exact_node_id() {
 }
 
 #[test]
+fn cli_filters_ready_tasks_by_title_contains() {
+    let history_path = unique_history_path("ready-tasks-title-contains");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        round_output.status.success(),
+        "moat round failed: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+
+    let mut persisted_history = fs::read_to_string(&history_path)
+        .expect("seeded moat history should be readable for fixture adjustment");
+    let spec_completed_state = concat!(
+        "\"node_id\": \"spec_planning\",\n",
+        "              \"title\": \"Spec Planning\",\n",
+        "              \"role\": \"planner\",\n",
+        "              \"kind\": \"spec_planning\",\n",
+        "              \"state\": \"completed\""
+    );
+    assert!(
+        persisted_history.contains(spec_completed_state),
+        "expected deterministic spec planning node in seeded history"
+    );
+    persisted_history = persisted_history.replace(
+        spec_completed_state,
+        concat!(
+            "\"node_id\": \"spec-workflow-audit\",\n",
+            "              \"title\": \"Create spec for workflow audit\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"spec_planning\",\n",
+            "              \"state\": \"ready\""
+        ),
+    );
+    persisted_history = persisted_history.replace(
+        "\"spec_ref\": \"docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\"",
+        "\"spec_ref\": \"moat-spec/workflow-audit\"",
+    );
+    fs::write(&history_path, persisted_history)
+        .expect("seeded moat history should be writable for fixture adjustment");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--title-contains",
+            "workflow audit",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with title filter");
+
+    assert!(
+        output.status.success(),
+        "ready-tasks failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat ready tasks\n",
+            "ready_task_entries=1\n",
+            "ready_task=planner|spec_planning|spec-workflow-audit|Create spec for workflow audit|moat-spec/workflow-audit\n",
+        )
+    );
+}
+
+#[test]
+fn cli_ready_tasks_title_filter_succeeds_with_no_matches() {
+    let history_path = unique_history_path("ready-tasks-title-no-match");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        round_output.status.success(),
+        "moat round failed: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--title-contains",
+            "nonexistent title substring",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with missing title filter");
+
+    assert!(
+        output.status.success(),
+        "ready-tasks failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!("moat ready tasks\n", "ready_task_entries=0\n")
+    );
+}
+
+#[test]
+fn ready_tasks_rejects_missing_title_contains_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            "history.json",
+            "--title-contains",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with missing title value");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("missing value for --title-contains"));
+}
+
+#[test]
 fn cli_ready_tasks_node_id_filter_succeeds_with_no_matches() {
     let history_path = unique_history_path("ready-tasks-node-id-no-match");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
