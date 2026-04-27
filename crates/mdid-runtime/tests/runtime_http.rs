@@ -62,6 +62,98 @@ async fn pipelines_endpoint_registers_pipeline() {
 }
 
 #[tokio::test]
+async fn tabular_deidentify_endpoint_returns_rewritten_csv_and_summary() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "csv": "patient_id,patient_name\nMRN-001,Alice Smith\nMRN-001,Alice Smith\n",
+        "policies": [
+            {
+                "header": "patient_id",
+                "phi_type": "patient_id",
+                "action": "encode"
+            },
+            {
+                "header": "patient_name",
+                "phi_type": "patient_name",
+                "action": "review"
+            }
+        ]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(json["csv"].as_str().is_some());
+    assert!(json["summary"].is_object());
+    assert!(json["review_queue"].is_array());
+
+    let rewritten_csv = json["csv"].as_str().unwrap();
+    let lines = rewritten_csv
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .collect::<Vec<_>>();
+    assert_eq!(lines[0], "patient_id,patient_name");
+    assert_eq!(lines[1], lines[2]);
+    assert!(lines[1].starts_with("tok-"));
+    assert!(lines[1].contains(",Alice Smith"));
+    assert!(!lines[1].contains("MRN-001"));
+
+    let review_queue = json["review_queue"].as_array().unwrap();
+    assert_eq!(review_queue.len(), 2);
+    assert!(review_queue
+        .iter()
+        .all(|candidate| candidate["value"] == "Alice Smith"));
+
+    assert_eq!(json["summary"]["total_rows"], 2);
+    assert_eq!(json["summary"]["encoded_cells"], 2);
+    assert_eq!(json["summary"]["review_required_cells"], 2);
+    assert_eq!(json["summary"]["failed_rows"], 0);
+}
+
+#[tokio::test]
+async fn tabular_deidentify_endpoint_rejects_invalid_policy_payload() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "csv": "patient_id\nMRN-001\n",
+        "policies": [
+            {
+                "header": "patient_id",
+                "phi_type": "patient_id",
+                "action": "totally_invalid"
+            }
+        ]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_tabular_request_response(response).await;
+}
+
+#[tokio::test]
 async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
     let app = build_router(RuntimeState::default());
     let request = json!({
@@ -434,6 +526,26 @@ async fn vault_decode_endpoint_rejects_corrupted_encrypted_vault_artifact() {
         .unwrap();
 
     assert_invalid_vault_target_response(response).await;
+}
+
+async fn assert_invalid_tabular_request_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_tabular_request",
+                "message": "request body did not contain a valid tabular deidentification request"
+            }
+        })
+    );
+    assert!(json.get("csv").is_none());
+    assert!(json.get("summary").is_none());
+    assert!(json.get("review_queue").is_none());
 }
 
 async fn assert_invalid_dicom_response(response: axum::response::Response) {

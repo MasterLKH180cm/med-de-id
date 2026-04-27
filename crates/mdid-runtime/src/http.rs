@@ -6,13 +6,14 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use mdid_adapters::DicomAdapterError;
+use mdid_adapters::{DicomAdapterError, FieldPolicy, FieldPolicyAction};
 use mdid_application::{
     ApplicationError, ApplicationService, DicomDeidentificationOutput, DicomDeidentificationService,
+    TabularDeidentificationOutput, TabularDeidentificationService,
 };
 use mdid_domain::{
-    DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy,
-    SurfaceKind,
+    BatchSummary, DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate,
+    DicomPrivateTagPolicy, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, VaultError};
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,27 @@ struct VaultDecodeRequest {
     requested_by: SurfaceKind,
 }
 
+#[derive(Debug, Deserialize)]
+struct TabularDeidentifyRequest {
+    csv: String,
+    policies: Vec<FieldPolicyRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FieldPolicyRequest {
+    header: String,
+    phi_type: String,
+    action: FieldPolicyActionRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FieldPolicyActionRequest {
+    Encode,
+    Review,
+    Ignore,
+}
+
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
@@ -66,6 +88,13 @@ struct VaultDecodeResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct TabularDeidentifyResponse {
+    csv: String,
+    summary: BatchSummary,
+    review_queue: Vec<PhiCandidate>,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorEnvelope {
     error: ErrorBody,
 }
@@ -80,6 +109,7 @@ pub fn build_router(state: RuntimeState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
+        .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
         .with_state(state)
@@ -99,6 +129,41 @@ async fn create_pipeline(
 ) -> impl IntoResponse {
     let pipeline = state.application.register_pipeline(payload.name);
     (StatusCode::CREATED, Json(pipeline))
+}
+
+async fn tabular_deidentify(payload: Result<Json<TabularDeidentifyRequest>, JsonRejection>) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_tabular_request_response().into_response(),
+    };
+
+    let temp_dir = match tempdir() {
+        Ok(dir) => dir,
+        Err(_) => return internal_error_response().into_response(),
+    };
+    let vault_path = temp_dir.path().join("runtime-tabular-vault.mdid");
+    let mut vault = match LocalVaultStore::create(&vault_path, "correct horse battery staple") {
+        Ok(vault) => vault,
+        Err(_) => return internal_error_response().into_response(),
+    };
+
+    let policies = payload
+        .policies
+        .into_iter()
+        .map(FieldPolicy::from)
+        .collect::<Vec<_>>();
+
+    let output = match TabularDeidentificationService.deidentify_csv(
+        &payload.csv,
+        &policies,
+        &mut vault,
+        SurfaceKind::Browser,
+    ) {
+        Ok(output) => output,
+        Err(error) => return map_application_error(&error).into_response(),
+    };
+
+    tabular_success_response(output).into_response()
 }
 
 async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Response {
@@ -169,7 +234,28 @@ fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnv
     match error {
         ApplicationError::DicomAdapter(DicomAdapterError::Parse(_))
         | ApplicationError::DicomAdapter(DicomAdapterError::Value(_)) => invalid_dicom_response(),
+        ApplicationError::TabularAdapter(_) => invalid_tabular_request_response(),
         _ => internal_error_response(),
+    }
+}
+
+impl From<FieldPolicyActionRequest> for FieldPolicyAction {
+    fn from(value: FieldPolicyActionRequest) -> Self {
+        match value {
+            FieldPolicyActionRequest::Encode => Self::Encode,
+            FieldPolicyActionRequest::Review => Self::Review,
+            FieldPolicyActionRequest::Ignore => Self::Ignore,
+        }
+    }
+}
+
+impl From<FieldPolicyRequest> for FieldPolicy {
+    fn from(value: FieldPolicyRequest) -> Self {
+        Self {
+            header: value.header,
+            phi_type: value.phi_type,
+            action: value.action.into(),
+        }
     }
 }
 
@@ -206,6 +292,19 @@ fn success_response(
     )
 }
 
+fn tabular_success_response(
+    output: TabularDeidentificationOutput,
+) -> (StatusCode, Json<TabularDeidentifyResponse>) {
+    (
+        StatusCode::OK,
+        Json(TabularDeidentifyResponse {
+            csv: output.csv,
+            summary: output.summary,
+            review_queue: output.review_queue,
+        }),
+    )
+}
+
 fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -213,6 +312,18 @@ fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_dicom",
                 message: "request body did not contain a valid DICOM payload",
+            },
+        }),
+    )
+}
+
+fn invalid_tabular_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_tabular_request",
+                message: "request body did not contain a valid tabular deidentification request",
             },
         }),
     )
