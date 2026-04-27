@@ -75,6 +75,16 @@ struct PortableArtifactInspectionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct PortableArtifactImportRequest {
+    vault_path: PathBuf,
+    vault_passphrase: String,
+    artifact: PortableVaultArtifact,
+    portable_passphrase: String,
+    context: String,
+    requested_by: SurfaceKind,
+}
+
+#[derive(Debug, Deserialize)]
 struct TabularDeidentifyRequest {
     csv: String,
     policies: Vec<FieldPolicyRequest>,
@@ -131,6 +141,13 @@ struct PortableArtifactInspectionResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PortableArtifactImportResponse {
+    imported_record_count: usize,
+    duplicate_record_count: usize,
+    audit_event: AuditEvent,
+}
+
+#[derive(Debug, Serialize)]
 struct PortableArtifactInspectionRecordPreview {
     id: uuid::Uuid,
     scope: MappingScope,
@@ -168,6 +185,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/vault/export", post(vault_export))
         .route("/vault/audit/events", post(vault_audit_events))
         .route("/portable-artifacts/inspect", post(portable_artifact_inspect))
+        .route("/portable-artifacts/import", post(portable_artifact_import))
         .with_state(state)
 }
 
@@ -366,6 +384,45 @@ async fn portable_artifact_inspect(
         .into_response()
 }
 
+async fn portable_artifact_import(
+    payload: Result<Json<PortableArtifactImportRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_portable_artifact_import_request_response().into_response(),
+    };
+
+    if payload.vault_passphrase.trim().is_empty()
+        || payload.portable_passphrase.trim().is_empty()
+        || payload.context.trim().is_empty()
+    {
+        return invalid_portable_artifact_import_request_response().into_response();
+    }
+
+    let mut vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
+        Ok(vault) => vault,
+        Err(error) => return map_portable_artifact_import_unlock_error(&error).into_response(),
+    };
+
+    match vault.import_portable(
+        payload.artifact,
+        &payload.portable_passphrase,
+        payload.requested_by,
+        &payload.context,
+    ) {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(PortableArtifactImportResponse {
+                imported_record_count: result.imported_records.len(),
+                duplicate_record_count: result.duplicate_records.len(),
+                audit_event: result.audit_event,
+            }),
+        )
+            .into_response(),
+        Err(error) => map_portable_artifact_import_vault_error(&error).into_response(),
+    }
+}
+
 fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         ApplicationError::DicomAdapter(DicomAdapterError::Parse(_))
@@ -414,7 +471,8 @@ fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
         VaultError::UnlockFailed => vault_unlock_failed_response(),
         VaultError::BlankPassphrase
         | VaultError::EmptyExportScope
-        | VaultError::BlankExportContext => invalid_decode_request_response(),
+        | VaultError::BlankExportContext
+        | VaultError::BlankImportContext => invalid_decode_request_response(),
         VaultError::Io(_)
         | VaultError::Serde(_)
         | VaultError::UnsupportedKdfAlgorithm(_)
@@ -459,6 +517,50 @@ fn map_portable_artifact_inspection_error(error: &VaultError) -> (StatusCode, Js
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
         | VaultError::BlankExportContext
+        | VaultError::BlankImportContext
+        | VaultError::AlreadyExists(_)
+        | VaultError::Encrypt => internal_error_response(),
+    }
+}
+
+fn map_portable_artifact_import_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        VaultError::BlankPassphrase | VaultError::BlankImportContext => {
+            invalid_portable_artifact_import_request_response()
+        }
+        VaultError::UnlockFailed => portable_artifact_unlock_failed_response(),
+        VaultError::Io(_)
+        | VaultError::Serde(_)
+        | VaultError::UnsupportedKdfAlgorithm(_)
+        | VaultError::UnsupportedKdfVersion(_)
+        | VaultError::InvalidKdfParameters
+        | VaultError::InvalidNonceLength { .. }
+        | VaultError::KeyDerivation
+        | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
+        VaultError::UnknownRecord(_)
+        | VaultError::EmptyExportScope
+        | VaultError::BlankExportContext
+        | VaultError::AlreadyExists(_)
+        | VaultError::Encrypt => internal_error_response(),
+    }
+}
+
+fn map_portable_artifact_import_unlock_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        VaultError::BlankPassphrase => invalid_portable_artifact_import_request_response(),
+        VaultError::UnlockFailed => vault_unlock_failed_response(),
+        VaultError::Io(_)
+        | VaultError::Serde(_)
+        | VaultError::UnsupportedKdfAlgorithm(_)
+        | VaultError::UnsupportedKdfVersion(_)
+        | VaultError::InvalidKdfParameters
+        | VaultError::InvalidNonceLength { .. }
+        | VaultError::KeyDerivation
+        | VaultError::InvalidArtifact => invalid_vault_target_response(),
+        VaultError::UnknownRecord(_)
+        | VaultError::EmptyExportScope
+        | VaultError::BlankExportContext
+        | VaultError::BlankImportContext
         | VaultError::AlreadyExists(_)
         | VaultError::Encrypt => internal_error_response(),
     }
@@ -558,6 +660,18 @@ fn invalid_portable_artifact_inspection_request_response() -> (StatusCode, Json<
             error: ErrorBody {
                 code: "invalid_portable_artifact_inspection_request",
                 message: "request body did not contain a valid portable artifact inspection request",
+            },
+        }),
+    )
+}
+
+fn invalid_portable_artifact_import_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_portable_artifact_import_request",
+                message: "request body did not contain a valid portable artifact import request",
             },
         }),
     )

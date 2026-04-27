@@ -1282,6 +1282,393 @@ async fn portable_artifact_inspect_endpoint_rejects_corrupted_artifact() {
     assert_invalid_portable_artifact_response(response).await;
 }
 
+#[tokio::test]
+async fn portable_artifact_import_endpoint_returns_bounded_import_summary_and_audit_event() {
+    let dir = tempdir().unwrap();
+    let export_vault_path = dir.path().join("export-vault.mdid");
+    let mut export_vault =
+        LocalVaultStore::create(&export_vault_path, "correct horse battery staple").unwrap();
+    let first = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let second = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[first.id, second.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let import_vault_path = dir.path().join("import-vault.mdid");
+    let mut import_vault =
+        LocalVaultStore::create(&import_vault_path, "correct horse battery staple").unwrap();
+    let duplicate_seed = import_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: second.scope.clone(),
+                phi_type: second.phi_type.clone(),
+                original_value: second.original_value.clone(),
+            },
+            SurfaceKind::Desktop,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": import_vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "artifact": artifact,
+        "portable_passphrase": "portable-passphrase",
+        "context": "runtime import into local vault",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/import")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["imported_record_count"], 1);
+    assert_eq!(json["duplicate_record_count"], 1);
+    assert_eq!(json["audit_event"]["kind"], "import");
+    assert_eq!(json["audit_event"]["actor"], "desktop");
+    let detail = json["audit_event"]["detail"].as_str().unwrap();
+    assert!(detail.contains("runtime import into local vault"));
+    assert!(detail.contains("imported 1 record"));
+    assert!(detail.contains("with 1 duplicate"));
+    assert!(detail.contains(&first.id.to_string()));
+    assert!(detail.contains(&second.id.to_string()));
+    assert!(json.get("artifact").is_none());
+    assert!(json.get("records").is_none());
+
+    let mut unlocked = LocalVaultStore::unlock(&import_vault_path, "correct horse battery staple").unwrap();
+    let audit_events = unlocked.audit_events();
+    assert!(audit_events.iter().any(|event| event.kind == mdid_domain::AuditEventKind::Import));
+    assert_eq!(
+        unlocked
+            .decode(
+                mdid_domain::DecodeRequest::new(
+                    vec![first.id, duplicate_seed.id],
+                    "verification target".into(),
+                    "verify import route".into(),
+                    SurfaceKind::Desktop,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .values
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn portable_artifact_import_endpoint_rejects_invalid_request_payload() {
+    let app = build_router(RuntimeState::default());
+
+    for request in [
+        json!({
+            "vault_passphrase": "correct horse battery staple",
+            "portable_passphrase": "portable-passphrase",
+            "context": "runtime import into local vault",
+            "requested_by": "desktop"
+        }),
+        json!({
+            "vault_path": "/tmp/runtime-vault.mdid",
+            "vault_passphrase": "   ",
+            "artifact": {},
+            "portable_passphrase": "portable-passphrase",
+            "context": "runtime import into local vault",
+            "requested_by": "desktop"
+        }),
+        json!({
+            "vault_path": "/tmp/runtime-vault.mdid",
+            "vault_passphrase": "correct horse battery staple",
+            "artifact": {},
+            "portable_passphrase": "   ",
+            "context": "runtime import into local vault",
+            "requested_by": "desktop"
+        }),
+        json!({
+            "vault_path": "/tmp/runtime-vault.mdid",
+            "vault_passphrase": "correct horse battery staple",
+            "artifact": {},
+            "portable_passphrase": "portable-passphrase",
+            "context": "   ",
+            "requested_by": "desktop"
+        }),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/portable-artifacts/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_portable_artifact_import_request_response(response).await;
+    }
+}
+
+#[tokio::test]
+async fn portable_artifact_import_endpoint_rejects_wrong_vault_passphrase() {
+    let dir = tempdir().unwrap();
+    let export_vault_path = dir.path().join("export-vault.mdid");
+    let mut export_vault =
+        LocalVaultStore::create(&export_vault_path, "correct horse battery staple").unwrap();
+    let stored = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let import_vault_path = dir.path().join("import-vault.mdid");
+    let _import_vault =
+        LocalVaultStore::create(&import_vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": import_vault_path,
+        "vault_passphrase": "wrong passphrase",
+        "artifact": artifact,
+        "portable_passphrase": "portable-passphrase",
+        "context": "runtime import into local vault",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/import")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "vault_unlock_failed",
+                "message": "vault could not be unlocked with the supplied passphrase"
+            }
+        })
+    );
+    assert!(json.get("imported_record_count").is_none());
+    assert!(json.get("duplicate_record_count").is_none());
+    assert!(json.get("audit_event").is_none());
+}
+
+#[tokio::test]
+async fn portable_artifact_import_endpoint_rejects_wrong_portable_passphrase() {
+    let dir = tempdir().unwrap();
+    let export_vault_path = dir.path().join("export-vault.mdid");
+    let mut export_vault =
+        LocalVaultStore::create(&export_vault_path, "correct horse battery staple").unwrap();
+    let stored = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let import_vault_path = dir.path().join("import-vault.mdid");
+    let _import_vault =
+        LocalVaultStore::create(&import_vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": import_vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "artifact": artifact,
+        "portable_passphrase": "wrong passphrase",
+        "context": "runtime import into local vault",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/import")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "portable_artifact_unlock_failed",
+                "message": "portable artifact could not be unlocked with the supplied passphrase"
+            }
+        })
+    );
+    assert!(json.get("imported_record_count").is_none());
+    assert!(json.get("duplicate_record_count").is_none());
+    assert!(json.get("audit_event").is_none());
+}
+
+#[tokio::test]
+async fn portable_artifact_import_endpoint_rejects_corrupted_artifact() {
+    let dir = tempdir().unwrap();
+    let import_vault_path = dir.path().join("import-vault.mdid");
+    let _import_vault =
+        LocalVaultStore::create(&import_vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": import_vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "artifact": {
+            "salt_b64": "%%%not-base64%%%",
+            "nonce_b64": "still-not-base64",
+            "ciphertext_b64": "broken"
+        },
+        "portable_passphrase": "portable-passphrase",
+        "context": "runtime import into local vault",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/import")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_portable_artifact_response(response).await;
+}
+
+#[tokio::test]
+async fn portable_artifact_import_endpoint_rejects_invalid_vault_target() {
+    let dir = tempdir().unwrap();
+    let export_vault_path = dir.path().join("export-vault.mdid");
+    let mut export_vault =
+        LocalVaultStore::create(&export_vault_path, "correct horse battery staple").unwrap();
+    let stored = export_vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let artifact = export_vault
+        .export_portable(
+            &[stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let import_vault_path = dir.path().join("not-a-vault.mdid");
+    std::fs::write(&import_vault_path, "not valid vault json").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": import_vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "artifact": artifact,
+        "portable_passphrase": "portable-passphrase",
+        "context": "runtime import into local vault",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/import")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_vault_target_response(response).await;
+}
+
 async fn assert_invalid_audit_events_request_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -1413,6 +1800,28 @@ async fn assert_invalid_portable_artifact_response(response: axum::response::Res
         })
     );
     assert!(json.get("records").is_none());
+}
+
+async fn assert_invalid_portable_artifact_import_request_response(
+    response: axum::response::Response,
+) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_portable_artifact_import_request",
+                "message": "request body did not contain a valid portable artifact import request"
+            }
+        })
+    );
+    assert!(json.get("imported_record_count").is_none());
+    assert!(json.get("duplicate_record_count").is_none());
+    assert!(json.get("audit_event").is_none());
 }
 
 async fn assert_invalid_vault_target_response(response: axum::response::Response) {
