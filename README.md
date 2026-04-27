@@ -60,12 +60,12 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV de-identification, vault decode, bounded vault audit browsing, bounded portable subset export, and bounded portable artifact inspection.
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV de-identification, vault decode, bounded vault audit browsing, bounded portable subset export, bounded portable artifact inspection, and bounded portable artifact import into a local vault.
 
 Implemented so far:
 
 - Shared domain models for pipeline, review, vault mapping, decode requests, audit events, and tabular workflow state
-- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, and repeated-value token reuse
+- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, bounded portable artifact import, deterministic duplicate/normalization handling via the shared import contract, and repeated-value token reuse
 - An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
 - Tabular application orchestration that composes the adapters with vault-backed reversible encoding and honest batch summaries
 - Bounded PDF support for text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure
@@ -76,9 +76,10 @@ Implemented so far:
 - `mdid-runtime` also exposes a bounded local HTTP vault audit browsing entry that unlocks a local vault with an explicit passphrase, returns persisted audit events in reverse chronological order with bounded filtering, supports filtering by event kind and actor, and remains read-only
 - `mdid-runtime` also exposes a bounded local HTTP portable export entry that unlocks a local vault with an explicit passphrase, exports only the requested bounded record subset into an encrypted portable artifact, records the resulting export audit event, and remains scoped to local export creation rather than import or transfer workflows
 - `mdid-runtime` also exposes a bounded local HTTP portable artifact inspection entry that locally unlocks an encrypted portable artifact with an explicit portable passphrase and returns a bounded preview of persisted record fields from the encrypted artifact contents, including sensitive persisted values already stored in the artifact such as tokens and original values
+- `mdid-runtime` also exposes a bounded local HTTP portable artifact import entry that unlocks a local vault with an explicit vault passphrase, imports an encrypted portable artifact into that local vault, skips duplicate record ids and existing semantic duplicates while deterministically normalizing shared-value token reuse through the shared import contract, records the resulting import audit event, and returns bounded imported/duplicate counts rather than artifact contents or generalized transfer state
 - `mdid-cli`, `mdid-browser`, and `mdid-desktop` remain early surface scaffolds
 
-The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, bounded audit browsing, bounded portable export creation, and bounded portable artifact inspection. It does not yet provide a portable artifact import workflow, persistence of inspected artifact records into a vault, or auth/session/orchestration layers, and it still does not imply generalized transfer APIs, full audit search, audit mutation workflows, XLSX upload support, generalized vault browsing, or generalized decode.
+The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event; it does not yet provide generalized transfer orchestration, auth/session handling, remote handoff workflows, full audit search, audit mutation workflows, XLSX upload support, generalized vault browsing, or generalized decode.
 
 Planned next from the design:
 
