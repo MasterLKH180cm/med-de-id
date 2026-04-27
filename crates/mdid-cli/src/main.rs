@@ -1225,6 +1225,7 @@ fn parse_moat_dispatch_next_command(args: &[String]) -> Result<MoatDispatchNextC
     let mut dry_run = false;
     let mut output_format = None;
     let mut lease_seconds = 900;
+    let mut lease_seconds_seen = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -1335,9 +1336,16 @@ fn parse_moat_dispatch_next_command(args: &[String]) -> Result<MoatDispatchNextC
             }
             "--lease-seconds" => {
                 let value = required_flag_value(args, index, "--lease-seconds", true)?;
+                if lease_seconds_seen {
+                    return Err(duplicate_flag_error("--lease-seconds"));
+                }
+                lease_seconds_seen = true;
                 lease_seconds = value
                     .parse()
                     .map_err(|_| "invalid moat dispatch-next --lease-seconds".to_string())?;
+                if lease_seconds <= 0 {
+                    return Err("invalid moat dispatch-next --lease-seconds".to_string());
+                }
                 index += 2;
             }
             flag => return Err(format!("unknown flag: {flag}")),
@@ -1387,6 +1395,7 @@ fn parse_moat_claim_task_command(args: &[String]) -> Result<MoatClaimTaskCommand
     let mut node_id = None;
     let mut agent_id = None;
     let mut lease_seconds = 900;
+    let mut lease_seconds_seen = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -1421,9 +1430,16 @@ fn parse_moat_claim_task_command(args: &[String]) -> Result<MoatClaimTaskCommand
             }
             "--lease-seconds" => {
                 let value = required_flag_value(args, index, "--lease-seconds", true)?;
+                if lease_seconds_seen {
+                    return Err(duplicate_flag_error("--lease-seconds"));
+                }
+                lease_seconds_seen = true;
                 lease_seconds = value
                     .parse()
                     .map_err(|_| "invalid moat claim-task --lease-seconds".to_string())?;
+                if lease_seconds <= 0 {
+                    return Err("invalid moat claim-task --lease-seconds".to_string());
+                }
             }
             flag => return Err(format!("unknown flag: {flag}")),
         }
@@ -2615,6 +2631,7 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
         if !command.dry_run {
             envelope["previous_state"] = serde_json::Value::String("ready".to_string());
             envelope["new_state"] = serde_json::Value::String("in_progress".to_string());
+            envelope["lease_seconds"] = serde_json::Value::Number(command.lease_seconds.into());
         }
         println!(
             "{}",
@@ -2663,6 +2680,7 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
         format_dispatch_complete_command(command, &round_id, &selected.node_id)
     );
     if !command.dry_run {
+        println!("lease_seconds={}", command.lease_seconds);
         println!("previous_state=ready");
         println!("new_state=in_progress");
     }

@@ -1950,6 +1950,344 @@ fn claim_task_marks_latest_ready_node_in_progress() {
 }
 
 #[test]
+fn claim_task_accepts_custom_positive_lease_seconds() {
+    let history_path = unique_history_path("claim-task-custom-lease");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed claim-task custom lease history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--agent-id",
+            "agent-a",
+            "--lease-seconds",
+            "37",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat claim-task with custom lease");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("moat task claimed\n"), "{stdout}");
+    assert!(stdout.contains("assigned_agent_id=agent-a\n"), "{stdout}");
+    assert!(stdout.contains("lease_seconds=37\n"), "{stdout}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn claim_task_rejects_non_positive_lease_seconds() {
+    let history_path = unique_history_path("claim-task-invalid-lease");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--lease-seconds",
+            "0",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat claim-task with invalid lease");
+
+    assert!(
+        !output.status.success(),
+        "claim-task should reject zero lease seconds"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid moat claim-task --lease-seconds"),
+        "{stderr}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn dispatch_next_accepts_custom_positive_lease_seconds() {
+    let history_path = unique_history_path("dispatch-next-custom-lease");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed dispatch-next custom lease history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--agent-id",
+            "agent-a",
+            "--lease-seconds",
+            "41",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat dispatch-next with custom lease");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("moat dispatch next\n"), "{stdout}");
+    assert!(stdout.contains("node_id=review\n"), "{stdout}");
+    assert!(stdout.contains("lease_seconds=41\n"), "{stdout}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn dispatch_next_rejects_non_positive_lease_seconds() {
+    let history_path = unique_history_path("dispatch-next-invalid-lease");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--lease-seconds",
+            "-1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat dispatch-next with invalid lease");
+
+    assert!(
+        !output.status.success(),
+        "dispatch-next should reject negative lease seconds"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid moat dispatch-next --lease-seconds"),
+        "{stderr}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn heartbeat_task_extends_lease_for_claiming_agent_and_rejects_wrong_agent() {
+    let history_path = unique_history_path("heartbeat-task-agent");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed heartbeat-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--agent-id",
+            "agent-a",
+            "--lease-seconds",
+            "10",
+        ])
+        .output()
+        .expect("failed to claim task before heartbeat");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let wrong = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "heartbeat-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--agent-id",
+            "agent-b",
+            "--lease-seconds",
+            "20",
+        ])
+        .output()
+        .expect("failed to run wrong-agent heartbeat");
+    assert!(!wrong.status.success(), "wrong-agent heartbeat should fail");
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("failed to heartbeat moat task"));
+
+    let ok = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "heartbeat-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--agent-id",
+            "agent-a",
+            "--lease-seconds",
+            "20",
+        ])
+        .output()
+        .expect("failed to run heartbeat");
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&ok.stdout);
+    assert!(
+        stdout.contains("moat task heartbeat recorded\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("node_id=review\n"), "{stdout}");
+    assert!(stdout.contains("lease_expires_at="), "{stdout}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn reap_stale_tasks_releases_expired_claims() {
+    let history_path = unique_history_path("reap-stale-tasks");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed reap history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--agent-id",
+            "agent-a",
+            "--lease-seconds",
+            "1",
+        ])
+        .output()
+        .expect("failed to claim task before reap");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "reap-stale-tasks",
+            "--history-path",
+            history_path_arg,
+            "--now",
+            "2999-01-01T00:00:00Z",
+        ])
+        .output()
+        .expect("failed to run reap-stale-tasks");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("moat stale tasks reaped\n"), "{stdout}");
+    assert!(stdout.contains("reaped_count=1\n"), "{stdout}");
+    assert!(stdout.contains("reaped_node_ids=review\n"), "{stdout}");
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to inspect task graph after reap");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(String::from_utf8_lossy(&graph.stdout)
+        .contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn claim_task_rejects_non_ready_node() {
     let history_path = unique_history_path("claim-task-non-ready");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -5186,6 +5524,9 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"depends_on\": [],\n",
             "              \"spec_ref\": null,\n",
             "              \"assigned_agent_id\": null,\n",
+            "              \"claimed_at\": null,\n",
+            "              \"lease_expires_at\": null,\n",
+            "              \"last_heartbeat_at\": null,\n",
             "              \"artifacts\": []\n",
             "            },\n"
         ),
@@ -5199,6 +5540,9 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"depends_on\": [],\n",
             "              \"spec_ref\": null,\n",
             "              \"assigned_agent_id\": null,\n",
+            "              \"claimed_at\": null,\n",
+            "              \"lease_expires_at\": null,\n",
+            "              \"last_heartbeat_at\": null,\n",
             "              \"artifacts\": []\n",
             "            },\n",
             "            {\n",
@@ -5209,6 +5553,10 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"state\": \"completed\",\n",
             "              \"depends_on\": [],\n",
             "              \"spec_ref\": null,\n",
+            "              \"assigned_agent_id\": null,\n",
+            "              \"claimed_at\": null,\n",
+            "              \"lease_expires_at\": null,\n",
+            "              \"last_heartbeat_at\": null,\n",
             "              \"artifacts\": []\n",
             "            },\n"
         ),
