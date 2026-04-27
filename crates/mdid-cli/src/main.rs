@@ -103,6 +103,8 @@ struct MoatArtifactsCommand {
     round_id: Option<String>,
     node_id: Option<String>,
     contains: Option<String>,
+    artifact_ref: Option<String>,
+    artifact_summary: Option<String>,
     limit: Option<usize>,
 }
 
@@ -910,6 +912,8 @@ fn parse_moat_artifacts_command(args: &[String]) -> Result<MoatArtifactsCommand,
     let mut round_id = None;
     let mut node_id = None;
     let mut contains = None;
+    let mut artifact_ref = None;
+    let mut artifact_summary = None;
     let mut limit = None;
     let mut index = 0;
 
@@ -943,6 +947,20 @@ fn parse_moat_artifacts_command(args: &[String]) -> Result<MoatArtifactsCommand,
                 }
                 contains = Some(value.to_string());
             }
+            "--artifact-ref" => {
+                let value = required_flag_value(args, index, "--artifact-ref", false)?;
+                if artifact_ref.is_some() {
+                    return Err(duplicate_flag_error("--artifact-ref"));
+                }
+                artifact_ref = Some(value.to_string());
+            }
+            "--artifact-summary" => {
+                let value = required_flag_value(args, index, "--artifact-summary", false)?;
+                if artifact_summary.is_some() {
+                    return Err(duplicate_flag_error("--artifact-summary"));
+                }
+                artifact_summary = Some(value.to_string());
+            }
             "--limit" => {
                 let value = required_flag_value(args, index, "--limit", false)?;
                 if limit.is_some() {
@@ -962,6 +980,8 @@ fn parse_moat_artifacts_command(args: &[String]) -> Result<MoatArtifactsCommand,
         round_id,
         node_id,
         contains,
+        artifact_ref,
+        artifact_summary,
         limit,
     })
 }
@@ -1990,6 +2010,20 @@ fn run_moat_artifacts(command: &MoatArtifactsCommand) -> Result<(), String> {
                 })
                 .unwrap_or(true)
         })
+        .filter(|(_node_id, artifact)| {
+            command
+                .artifact_ref
+                .as_deref()
+                .map(|needle| artifact.artifact_ref.contains(needle))
+                .unwrap_or(true)
+        })
+        .filter(|(_node_id, artifact)| {
+            command
+                .artifact_summary
+                .as_deref()
+                .map(|needle| artifact.summary.contains(needle))
+                .unwrap_or(true)
+        })
         .collect::<Vec<_>>();
 
     if let Some(limit) = command.limit {
@@ -2784,7 +2818,7 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--contains TEXT] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
@@ -3060,6 +3094,10 @@ mod tests {
             "implementation-task".to_string(),
             "--contains".to_string(),
             "handoff".to_string(),
+            "--artifact-ref".to_string(),
+            "review handoff".to_string(),
+            "--artifact-summary".to_string(),
+            "approved release".to_string(),
             "--limit".to_string(),
             "2".to_string(),
         ];
@@ -3071,6 +3109,8 @@ mod tests {
                 round_id: Some("round-7".to_string()),
                 node_id: Some("implementation-task".to_string()),
                 contains: Some("handoff".to_string()),
+                artifact_ref: Some("review handoff".to_string()),
+                artifact_summary: Some("approved release".to_string()),
                 limit: Some(2),
             }))
         );
