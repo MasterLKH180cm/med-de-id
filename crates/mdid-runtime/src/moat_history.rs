@@ -269,6 +269,19 @@ impl LocalMoatHistoryStore {
         )
     }
 
+    pub fn release_in_progress_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::InProgress,
+            MoatTaskNodeState::Ready,
+        )
+    }
+
     pub fn unblock_blocked_task(
         &mut self,
         round_id: Option<&str>,
@@ -553,4 +566,96 @@ pub enum LocalMoatHistoryStoreError {
     Json(#[from] serde_json::Error),
     #[error("moat history file does not exist: {0}")]
     MissingFile(PathBuf),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::moat::{run_bounded_round, MoatRoundInput};
+    use chrono::Utc;
+    use mdid_domain::{
+        CompetitorProfile, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType, ResourceBudget,
+    };
+    use tempfile::TempDir;
+
+    #[test]
+    fn release_in_progress_task_returns_node_to_ready() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let history_path = temp_dir.path().join("moat-history.json");
+        let mut report = run_bounded_round(sample_round_input());
+        let round_id = report.summary.round_id;
+        report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist")
+            .state = MoatTaskNodeState::InProgress;
+        fs::write(
+            &history_path,
+            serde_json::to_vec_pretty(&vec![MoatHistoryEntry {
+                recorded_at: Utc::now(),
+                report,
+            }])
+            .expect("failed to serialize history"),
+        )
+        .expect("failed to write history");
+
+        let mut store =
+            LocalMoatHistoryStore::open(history_path.clone()).expect("failed to open history");
+        let selected_round_id = store
+            .release_in_progress_task(None, "strategy_generation")
+            .expect("failed to release task");
+
+        assert_eq!(selected_round_id, round_id.to_string());
+        let entries = load_entries(&history_path).expect("failed to reload entries");
+        let strategy_node = entries[0]
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist");
+        assert_eq!(strategy_node.state, MoatTaskNodeState::Ready);
+    }
+
+    fn sample_round_input() -> MoatRoundInput {
+        MoatRoundInput {
+            market: MarketMoatSnapshot {
+                market_id: "healthcare-deid".into(),
+                moat_score: 45,
+                ..MarketMoatSnapshot::default()
+            },
+            competitor: CompetitorProfile {
+                competitor_id: "comp-1".into(),
+                threat_score: 30,
+                ..CompetitorProfile::default()
+            },
+            lock_in: LockInReport {
+                lockin_score: 60,
+                workflow_dependency_strength: 72,
+                ..LockInReport::default()
+            },
+            strategies: vec![MoatStrategy {
+                strategy_id: "workflow-audit".into(),
+                title: "Workflow audit moat".into(),
+                target_moat_type: MoatType::WorkflowLockIn,
+                implementation_cost: 2,
+                expected_moat_gain: 8,
+                ..MoatStrategy::default()
+            }],
+            budget: ResourceBudget {
+                max_round_minutes: 30,
+                max_parallel_tasks: 3,
+                max_strategy_candidates: 2,
+                max_spec_generations: 1,
+                max_implementation_tasks: 1,
+                max_review_loops: 1,
+            },
+            improvement_threshold: 3,
+            tests_passed: true,
+        }
+    }
 }
