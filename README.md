@@ -248,9 +248,9 @@ cargo run -p mdid-cli -- moat dispatch-next --history-path .mdid/moat-history.js
 cargo run -p mdid-cli -- moat dispatch-next --history-path .mdid/moat-history.json --role coder --agent-id coder-7 --format json
 ```
 
-`--agent-id AGENT_ID` is optional local attribution metadata only. Text output includes `agent_id=<value>` or `agent_id=<none>` when omitted; JSON output includes a nullable `agent_id` field. `moat dispatch-next` selects and, unless `--dry-run` is used, claims exactly one already-ready persisted task; it does not launch agents, open PRs, create schedulers or cron jobs, start background work, crawl the web, or run an autonomous loop.
+`--agent-id AGENT_ID` is optional local persisted ownership metadata only. Text output includes `assigned_agent_id=<value>` or `assigned_agent_id=<none>` when omitted; JSON output includes nullable `agent_id` and `assigned_agent_id` fields. `moat dispatch-next` selects and, unless `--dry-run` is used, claims exactly one already-ready persisted task; it does not launch agents, open PRs, create schedulers or cron jobs, start background work, crawl the web, or run an autonomous loop.
 
-External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
+External workers can claim tasks with optional local ownership metadata via `mdid-cli moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID]`; output includes `assigned_agent_id=<value|<none>>`, and the CLI only records metadata/state in local history. External workers can complete claimed tasks and optionally hand off produced artifacts with paired flags:
 
 ```bash
 cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --artifact-ref docs/review.md --artifact-summary "review approved"

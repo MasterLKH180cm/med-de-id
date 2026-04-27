@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -1808,17 +1808,19 @@ fn task_graph_prints_latest_persisted_graph() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("moat task graph\n"));
-    assert!(stdout
-        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout.contains(
+        "node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>|<none>\n"
+    ));
     assert!(stdout
         .contains("node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|"));
     assert!(stdout.contains(
-        "node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"
+        "node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md|<none>\n"
     ));
     assert!(stdout.contains(
-        "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n"
+        "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>|<none>\n"
     ));
-    assert!(stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
+    assert!(stdout
+        .contains("node=reviewer|review|Review|review|completed|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -1944,7 +1946,7 @@ fn claim_task_marks_latest_ready_node_in_progress() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|in_progress|implementation|<none>\n"));
+        .contains("node=reviewer|review|Review|review|in_progress|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -2144,7 +2146,7 @@ fn cli_completes_claimed_moat_task() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
+        .contains("node=reviewer|review|Review|review|completed|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -2771,7 +2773,7 @@ fn cli_releases_claimed_moat_task() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+        .contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -2906,7 +2908,7 @@ fn cli_blocks_claimed_moat_task() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|blocked|implementation|<none>\n"));
+        .contains("node=reviewer|review|Review|review|blocked|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -3015,7 +3017,7 @@ fn cli_unblocks_blocked_moat_task_to_ready() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+        .contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -3726,7 +3728,7 @@ fn cli_dispatch_next_text_output_includes_agent_id_attribution() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("agent_id=coder-7\n"),
+        stdout.contains("assigned_agent_id=coder-7\n"),
         "stdout was: {stdout}"
     );
 
@@ -3776,6 +3778,140 @@ fn cli_dispatch_next_json_output_includes_agent_id_attribution() {
     let payload: Value =
         serde_json::from_slice(&output.stdout).expect("dispatch output should be json");
     assert_eq!(payload["agent_id"], "coder-7");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn dispatch_next_persists_assigned_agent_id() {
+    let history_path = unique_history_path("dispatch-assigned-agent-id");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to create persisted moat round for dispatch assigned agent id test");
+    assert!(
+        round_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+    update_history_task_node(&history_path, "implementation", |implementation_node| {
+        implementation_node.insert("state".to_string(), Value::String("ready".to_string()));
+        implementation_node.insert("depends_on".to_string(), Value::Array(Vec::new()));
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+            "--agent-id",
+            "coder-7",
+        ])
+        .output()
+        .expect("failed to dispatch with assigned agent id");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "implementation",
+        ])
+        .output()
+        .expect("failed to inspect graph after dispatch");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&graph.stdout).contains("node=coder|implementation|Implementation|implementation|in_progress|<none>|<none>|coder-7\n"),
+        "graph stdout was: {}",
+        String::from_utf8_lossy(&graph.stdout)
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn claim_task_persists_assigned_agent_id() {
+    let history_path = unique_history_path("claim-assigned-agent-id");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to create persisted moat round for claim assigned agent id test");
+    assert!(
+        round_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+    update_history_task_node(&history_path, "implementation", |implementation_node| {
+        implementation_node.insert("state".to_string(), Value::String("ready".to_string()));
+        implementation_node.insert("depends_on".to_string(), Value::Array(Vec::new()));
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "implementation",
+            "--agent-id",
+            "planner-2",
+        ])
+        .output()
+        .expect("failed to claim task with assigned agent id");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("assigned_agent_id=planner-2\n"));
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "implementation",
+        ])
+        .output()
+        .expect("failed to inspect graph after claim");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&graph.stdout).contains("node=coder|implementation|Implementation|implementation|in_progress|<none>|<none>|planner-2\n"),
+        "graph stdout was: {}",
+        String::from_utf8_lossy(&graph.stdout)
+    );
 
     cleanup_history_path(&history_path);
 }
@@ -4061,7 +4197,7 @@ fn cli_dispatch_next_filters_ready_task_by_exact_spec_ref() {
             "moat dispatch next\n\
 dry_run=true\n\
 claimed=false\n\
-agent_id=<none>\n\
+assigned_agent_id=<none>\n\
 round_id={round_id}\n\
 node_id=task-implementation\n\
 role=coder\n\
@@ -4839,10 +4975,11 @@ fn moat_task_graph_filters_nodes_by_exact_round_id() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
     assert!(
-        !stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n")
+        stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n")
     );
+    assert!(!stdout
+        .contains("node=reviewer|review|Review|review|completed|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -4886,7 +5023,9 @@ fn moat_task_graph_filters_nodes_by_dependency() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+    assert!(
+        stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n")
+    );
     assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
     assert!(!stdout.contains("node=reviewer|evaluation|Evaluation|evaluation"));
 
@@ -4919,6 +5058,7 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"state\": \"completed\",\n",
             "              \"depends_on\": [],\n",
             "              \"spec_ref\": null,\n",
+            "              \"assigned_agent_id\": null,\n",
             "              \"artifacts\": []\n",
             "            },\n"
         ),
@@ -4931,6 +5071,7 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
             "              \"state\": \"completed\",\n",
             "              \"depends_on\": [],\n",
             "              \"spec_ref\": null,\n",
+            "              \"assigned_agent_id\": null,\n",
             "              \"artifacts\": []\n",
             "            },\n",
             "            {\n",
@@ -4969,13 +5110,14 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout
-        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
     assert!(stdout.contains(
-        "node=planner|independent_spec_planning|Independent Spec Planning|spec_planning|completed|<none>|<none>\n"
+        "node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>|<none>\n"
     ));
     assert!(stdout.contains(
-        "node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"
+        "node=planner|independent_spec_planning|Independent Spec Planning|spec_planning|completed|<none>|<none>|<none>\n"
+    ));
+    assert!(stdout.contains(
+        "node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>|<none>\n"
     ));
     assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
 
@@ -5129,7 +5271,7 @@ fn task_graph_filters_latest_graph_by_role_and_state() {
         String::from_utf8_lossy(&output.stdout),
         concat!(
             "moat task graph\n",
-            "node=reviewer|review|Review|review|ready|implementation|<none>\n",
+            "node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n",
         )
     );
 
@@ -5326,8 +5468,7 @@ fn task_graph_filters_latest_graph_by_spec_ref() {
             .count(),
         1
     );
-    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"));
-    assert!(!stdout.contains("|<none>\n"));
+    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -5552,7 +5693,7 @@ fn task_graph_filters_latest_graph_by_kind() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("moat task graph\n"));
     assert!(stdout.contains(
-        "node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|<none>|<none>\n"
+        "node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|<none>|<none>|<none>\n"
     ));
     assert!(!stdout
         .contains("node=planner|strategy_generation|Strategy Generation|strategy_generation|"));
@@ -6048,7 +6189,7 @@ fn task_graph_filters_latest_nodes_by_contains_text() {
     assert!(stdout.contains(
         "node=planner|strategy_generation|Strategy Generation|strategy_generation|completed|"
     ));
-    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"));
+    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md|<none>\n"));
     assert!(!stdout.contains("node=planner|market_scan|"));
 
     cleanup_history_path(&history_path);
@@ -6125,7 +6266,7 @@ fn task_graph_contains_filter_combines_with_role_filter() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "moat task graph\nnode=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n"
+        "moat task graph\nnode=coder|implementation|Implementation|implementation|completed|spec_planning|<none>|<none>\n"
     );
 
     cleanup_history_path(&history_path);
@@ -6238,9 +6379,10 @@ fn task_graph_limit_bounds_rendered_nodes_after_filters() {
             .count(),
         2
     );
-    assert!(stdout
-        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
-    assert!(stdout.contains("node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"));
+    assert!(stdout.contains(
+        "node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>|<none>\n"
+    ));
+    assert!(stdout.contains("node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>|<none>\n"));
     assert!(!stdout.contains("node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|"));
 
     cleanup_history_path(&history_path);
