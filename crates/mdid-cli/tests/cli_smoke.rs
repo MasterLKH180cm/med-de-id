@@ -23,3 +23,14 @@ fn cli_prints_ready_banner_with_no_args() {
         "med-de-id CLI ready\n"
     );
 }
+
+#[test]
+fn cli_rejects_removed_moat_command_family() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round"])
+        .output()
+        .expect("failed to run mdid-cli moat round");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown command: moat round"));
+}
