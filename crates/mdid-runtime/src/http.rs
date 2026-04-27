@@ -6,7 +6,9 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use mdid_adapters::{DicomAdapterError, FieldPolicy, FieldPolicyAction};
+use mdid_adapters::{
+    CsvTabularAdapter, DicomAdapterError, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
+};
 use mdid_application::{
     ApplicationError, ApplicationService, DicomDeidentificationOutput, DicomDeidentificationService,
     TabularDeidentificationOutput, TabularDeidentificationService,
@@ -91,6 +93,12 @@ struct TabularDeidentifyRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct TabularXlsxDeidentifyRequest {
+    workbook_base64: String,
+    field_policies: Vec<FieldPolicyRequest>,
+}
+
+#[derive(Debug, Deserialize)]
 struct FieldPolicyRequest {
     header: String,
     phi_type: String,
@@ -165,6 +173,13 @@ struct TabularDeidentifyResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct TabularXlsxDeidentifyResponse {
+    rewritten_workbook_base64: String,
+    summary: BatchSummary,
+    review_queue: Vec<PhiCandidate>,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorEnvelope {
     error: ErrorBody,
 }
@@ -180,6 +195,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
         .route("/tabular/deidentify", post(tabular_deidentify))
+        .route("/tabular/deidentify/xlsx", post(tabular_xlsx_deidentify))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
         .route("/vault/export", post(vault_export))
@@ -238,6 +254,52 @@ async fn tabular_deidentify(payload: Result<Json<TabularDeidentifyRequest>, Json
     };
 
     tabular_success_response(output).into_response()
+}
+
+async fn tabular_xlsx_deidentify(
+    payload: Result<Json<TabularXlsxDeidentifyRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_tabular_xlsx_request_response().into_response(),
+    };
+
+    let workbook_bytes = match STANDARD.decode(&payload.workbook_base64) {
+        Ok(bytes) => bytes,
+        Err(_) => return invalid_tabular_xlsx_request_response().into_response(),
+    };
+
+    let temp_dir = match tempdir() {
+        Ok(dir) => dir,
+        Err(_) => return internal_error_response().into_response(),
+    };
+    let vault_path = temp_dir.path().join("runtime-tabular-xlsx-vault.mdid");
+    let mut vault = match LocalVaultStore::create(&vault_path, "correct horse battery staple") {
+        Ok(vault) => vault,
+        Err(_) => return internal_error_response().into_response(),
+    };
+
+    let policies = payload
+        .field_policies
+        .into_iter()
+        .map(FieldPolicy::from)
+        .collect::<Vec<_>>();
+
+    let extracted = match XlsxTabularAdapter::new(policies).extract(&workbook_bytes) {
+        Ok(extracted) => extracted,
+        Err(_) => return invalid_tabular_xlsx_request_response().into_response(),
+    };
+
+    let output = match TabularDeidentificationService.deidentify_extracted(
+        extracted,
+        &mut vault,
+        SurfaceKind::Browser,
+    ) {
+        Ok(output) => output,
+        Err(error) => return map_tabular_xlsx_application_error(&error).into_response(),
+    };
+
+    tabular_xlsx_success_response(output).into_response()
 }
 
 async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Response {
@@ -432,6 +494,13 @@ fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnv
     }
 }
 
+fn map_tabular_xlsx_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        ApplicationError::TabularAdapter(_) => invalid_tabular_xlsx_request_response(),
+        _ => internal_error_response(),
+    }
+}
+
 impl From<FieldPolicyActionRequest> for FieldPolicyAction {
     fn from(value: FieldPolicyActionRequest) -> Self {
         match value {
@@ -593,6 +662,33 @@ fn tabular_success_response(
     )
 }
 
+fn tabular_xlsx_success_response(
+    output: TabularDeidentificationOutput,
+) -> (StatusCode, Json<TabularXlsxDeidentifyResponse>) {
+    let extracted = CsvTabularAdapter::new(Vec::new())
+        .extract(output.csv.as_bytes())
+        .expect("tabular application output should remain valid CSV");
+    let headers = extracted
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    let rows = extracted
+        .rows
+        .iter()
+        .map(|row| row.iter().map(|value| value.as_str()).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    (
+        StatusCode::OK,
+        Json(TabularXlsxDeidentifyResponse {
+            rewritten_workbook_base64: STANDARD.encode(build_xlsx_workbook_bytes(&headers, &rows)),
+            summary: output.summary,
+            review_queue: output.review_queue,
+        }),
+    )
+}
+
 fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -612,6 +708,18 @@ fn invalid_tabular_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_tabular_request",
                 message: "request body did not contain a valid tabular deidentification request",
+            },
+        }),
+    )
+}
+
+fn invalid_tabular_xlsx_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_tabular_xlsx_request",
+                message: "request body did not contain a valid XLSX tabular deidentification request",
             },
         }),
     )
@@ -759,6 +867,183 @@ fn internal_error_response() -> (StatusCode, Json<ErrorEnvelope>) {
             },
         }),
     )
+}
+
+fn build_xlsx_workbook_bytes(headers: &[&str], rows: &[Vec<&str>]) -> Vec<u8> {
+    let files = [
+        (
+            "[Content_Types].xml",
+            concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
+                r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
+                r#"<Default Extension="xml" ContentType="application/xml"/>"#,
+                r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
+                r#"<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#,
+                r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#,
+                r#"</Types>"#,
+            )
+            .to_string(),
+        ),
+        (
+            "_rels/.rels",
+            concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+                r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>"#,
+                r#"</Relationships>"#,
+            )
+            .to_string(),
+        ),
+        (
+            "xl/workbook.xml",
+            concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            )
+            .to_string(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+                r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>"#,
+                r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#,
+                r#"</Relationships>"#,
+            )
+            .to_string(),
+        ),
+        (
+            "xl/styles.xml",
+            concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>"#,
+            )
+            .to_string(),
+        ),
+        ("xl/worksheets/sheet1.xml", build_sheet_xml(headers, rows)),
+    ];
+
+    write_stored_zip(&files)
+}
+
+fn build_sheet_xml(headers: &[&str], rows: &[Vec<&str>]) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+    );
+
+    for (row_index, row) in std::iter::once(headers.to_vec()).chain(rows.iter().cloned()).enumerate() {
+        xml.push_str(&format!(r#"<row r="{}">"#, row_index + 1));
+        for (column_index, value) in row.iter().enumerate() {
+            xml.push_str(&format!(
+                r#"<c r="{}{}" t="inlineStr"><is><t>{}</t></is></c>"#,
+                excel_column_name(column_index),
+                row_index + 1,
+                escape_xml(value),
+            ));
+        }
+        xml.push_str("</row>");
+    }
+
+    xml.push_str("</sheetData></worksheet>");
+    xml
+}
+
+fn excel_column_name(mut index: usize) -> String {
+    let mut name = String::new();
+    loop {
+        name.insert(0, (b'A' + (index % 26) as u8) as char);
+        if index < 26 {
+            break;
+        }
+        index = (index / 26) - 1;
+    }
+    name
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn write_stored_zip(files: &[(&str, String)]) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut central_directory = Vec::new();
+    let mut offsets = Vec::new();
+
+    for (name, contents) in files {
+        let name_bytes = name.as_bytes();
+        let data = contents.as_bytes();
+        let crc = crc32(data);
+        let offset = output.len() as u32;
+        offsets.push(offset);
+
+        output.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        output.extend_from_slice(&20u16.to_le_bytes());
+        output.extend_from_slice(&0u16.to_le_bytes());
+        output.extend_from_slice(&0u16.to_le_bytes());
+        output.extend_from_slice(&0u16.to_le_bytes());
+        output.extend_from_slice(&0u16.to_le_bytes());
+        output.extend_from_slice(&crc.to_le_bytes());
+        output.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        output.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        output.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        output.extend_from_slice(&0u16.to_le_bytes());
+        output.extend_from_slice(name_bytes);
+        output.extend_from_slice(data);
+    }
+
+    let central_start = output.len() as u32;
+    for ((name, contents), offset) in files.iter().zip(offsets.iter()) {
+        let name_bytes = name.as_bytes();
+        let data = contents.as_bytes();
+        let crc = crc32(data);
+
+        central_directory.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central_directory.extend_from_slice(&20u16.to_le_bytes());
+        central_directory.extend_from_slice(&20u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&crc.to_le_bytes());
+        central_directory.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central_directory.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central_directory.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u16.to_le_bytes());
+        central_directory.extend_from_slice(&0u32.to_le_bytes());
+        central_directory.extend_from_slice(&offset.to_le_bytes());
+        central_directory.extend_from_slice(name_bytes);
+    }
+    output.extend_from_slice(&central_directory);
+
+    output.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    output.extend_from_slice(&0u16.to_le_bytes());
+    output.extend_from_slice(&0u16.to_le_bytes());
+    output.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    output.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    output.extend_from_slice(&(central_directory.len() as u32).to_le_bytes());
+    output.extend_from_slice(&central_start.to_le_bytes());
+    output.extend_from_slice(&0u16.to_le_bytes());
+    output
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg() & 0xedb8_8320;
+            crc = (crc >> 1) ^ mask;
+        }
+    }
+    !crc
 }
 
 fn deserialize_optional_limit<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>

@@ -10,6 +10,7 @@ use dicom_object::{
     file::ReadPreamble, meta::FileMetaTableBuilder, DefaultDicomObject, InMemDicomObject,
     OpenFileOptions,
 };
+use mdid_adapters::XlsxTabularAdapter;
 use mdid_domain::{MappingScope, SurfaceKind};
 use mdid_runtime::http::{build_router, RuntimeState};
 use mdid_vault::{LocalVaultStore, NewMappingRecord, PortableVaultArtifact};
@@ -17,6 +18,8 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+const SAMPLE_XLSX_WORKBOOK_BASE64: &str = "UEsDBBQAAAAAAHmpm1y2+9qcrgIAAK4CAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbDw/eG1sIHZlcnNpb249IjEuMCIgZW5jb2Rpbmc9IlVURi04IiBzdGFuZGFsb25lPSJ5ZXMiPz4KPFR5cGVzIHhtbG5zPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvcGFja2FnZS8yMDA2L2NvbnRlbnQtdHlwZXMiPgo8RGVmYXVsdCBFeHRlbnNpb249InJlbHMiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtcGFja2FnZS5yZWxhdGlvbnNoaXBzK3htbCIvPgo8RGVmYXVsdCBFeHRlbnNpb249InhtbCIgQ29udGVudFR5cGU9ImFwcGxpY2F0aW9uL3htbCIvPgo8T3ZlcnJpZGUgUGFydE5hbWU9Ii94bC93b3JrYm9vay54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC5zaGVldC5tYWluK3htbCIvPgo8T3ZlcnJpZGUgUGFydE5hbWU9Ii94bC93b3Jrc2hlZXRzL3NoZWV0MS54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC53b3Jrc2hlZXQreG1sIi8+CjxPdmVycmlkZSBQYXJ0TmFtZT0iL3hsL3N0eWxlcy54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC5zdHlsZXMreG1sIi8+CjwvVHlwZXM+UEsDBBQAAAAAAHmpm1x+b8CFKgEAACoBAAALAAAAX3JlbHMvLnJlbHM8P3htbCB2ZXJzaW9uPSIxLjAiIGVuY29kaW5nPSJVVEYtOCIgc3RhbmRhbG9uZT0ieWVzIj8+CjxSZWxhdGlvbnNoaXBzIHhtbG5zPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvcGFja2FnZS8yMDA2L3JlbGF0aW9uc2hpcHMiPgo8UmVsYXRpb25zaGlwIElkPSJySWQxIiBUeXBlPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvb2ZmaWNlRG9jdW1lbnQvMjAwNi9yZWxhdGlvbnNoaXBzL29mZmljZURvY3VtZW50IiBUYXJnZXQ9InhsL3dvcmtib29rLnhtbCIvPgo8L1JlbGF0aW9uc2hpcHM+UEsDBBQAAAAAAHmpm1x3QP7EHAEAABwBAAAPAAAAeGwvd29ya2Jvb2sueG1sPD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9InllcyI/Pgo8d29ya2Jvb2sgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9zcHJlYWRzaGVldG1sLzIwMDYvbWFpbiIgeG1sbnM6cj0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL29mZmljZURvY3VtZW50LzIwMDYvcmVsYXRpb25zaGlwcyI+PHNoZWV0cz48c2hlZXQgbmFtZT0iU2hlZXQxIiBzaGVldElkPSIxIiByOmlkPSJySWQxIi8+PC9zaGVldHM+PC93b3JrYm9vaz5QSwMEFAAAAAAAeambXB+qsIOrAQAAqwEAABoAAAB4bC9fcmVscy93b3JrYm9vay54bWwucmVsczw/eG1sIHZlcnNpb249IjEuMCIgZW5jb2Rpbmc9IlVURi04IiBzdGFuZGFsb25lPSJ5ZXMiPz4KPFJlbGF0aW9uc2hpcHMgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9wYWNrYWdlLzIwMDYvcmVsYXRpb25zaGlwcyI+CjxSZWxhdGlvbnNoaXAgSWQ9InJJZDEiIFR5cGU9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9vZmZpY2VEb2N1bWVudC8yMDA2L3JlbGF0aW9uc2hpcHMvd29ya3NoZWV0IiBUYXJnZXQ9IndvcmtzaGVldHMvc2hlZXQxLnhtbCIvPgo8UmVsYXRpb25zaGlwIElkPSJySWQyIiBUeXBlPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvb2ZmaWNlRG9jdW1lbnQvMjAwNi9yZWxhdGlvbnNoaXBzL3N0eWxlcyIgVGFyZ2V0PSJzdHlsZXMueG1sIi8+CjwvUmVsYXRpb25zaGlwcz5QSwMEFAAAAAAAeambXL2k1bb0AQAA9AEAAA0AAAB4bC9zdHlsZXMueG1sPD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9InllcyI/Pgo8c3R5bGVTaGVldCB4bWxucz0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL3NwcmVhZHNoZWV0bWwvMjAwNi9tYWluIj48Zm9udHMgY291bnQ9IjEiPjxmb250PjxzeiB2YWw9IjExIi8+PG5hbWUgdmFsPSJDYWxpYnJpIi8+PC9mb250PjwvZm9udHM+PGZpbGxzIGNvdW50PSIxIj48ZmlsbD48cGF0dGVybkZpbGwgcGF0dGVyblR5cGU9Im5vbmUiLz48L2ZpbGw+PC9maWxscz48Ym9yZGVycyBjb3VudD0iMSI+PGJvcmRlci8+PC9ib3JkZXJzPjxjZWxsU3R5bGVYZnMgY291bnQ9IjEiPjx4Zi8+PC9jZWxsU3R5bGVYZnM+PGNlbGxYZnMgY291bnQ9IjEiPjx4ZiB4ZklkPSIwIi8+PC9jZWxsWGZzPjxjZWxsU3R5bGVzIGNvdW50PSIxIj48Y2VsbFN0eWxlIG5hbWU9Ik5vcm1hbCIgeGZJZD0iMCIgYnVpbHRpbklkPSIwIi8+PC9jZWxsU3R5bGVzPjwvc3R5bGVTaGVldD5QSwMEFAAAAAAAeambXJyibJUdAgAAHQIAABgAAAB4bC93b3Jrc2hlZXRzL3NoZWV0MS54bWw8P3htbCB2ZXJzaW9uPSIxLjAiIGVuY29kaW5nPSJVVEYtOCIgc3RhbmRhbG9uZT0ieWVzIj8+Cjx3b3Jrc2hlZXQgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9zcHJlYWRzaGVldG1sLzIwMDYvbWFpbiI+PHNoZWV0RGF0YT48cm93IHI9IjEiPjxjIHI9IkExIiB0PSJpbmxpbmVTdHIiPjxpcz48dD5wYXRpZW50X2lkPC90PjwvaXM+PC9jPjxjIHI9IkIxIiB0PSJpbmxpbmVTdHIiPjxpcz48dD5wYXRpZW50X25hbWU8L3Q+PC9pcz48L2M+PC9yb3c+PHJvdyByPSIyIj48YyByPSJBMiIgdD0iaW5saW5lU3RyIj48aXM+PHQ+TVJOLTAwMTwvdD48L2lzPjwvYz48YyByPSJCMiIgdD0iaW5saW5lU3RyIj48aXM+PHQ+QWxpY2UgU21pdGg8L3Q+PC9pcz48L2M+PC9yb3c+PHJvdyByPSIzIj48YyByPSJBMyIgdD0iaW5saW5lU3RyIj48aXM+PHQ+TVJOLTAwMTwvdD48L2lzPjwvYz48YyByPSJCMyIgdD0iaW5saW5lU3RyIj48aXM+PHQ+QWxpY2UgU21pdGg8L3Q+PC9pcz48L2M+PC9yb3c+PC9zaGVldERhdGE+PC93b3Jrc2hlZXQ+UEsBAhQDFAAAAAAAeambXLb72pyuAgAArgIAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAMUAAAAAAB5qZtcfm/AhSoBAAAqAQAACwAAAAAAAAAAAAAAgAHfAgAAX3JlbHMvLnJlbHNQSwECFAMUAAAAAAB5qZtcd0D+xBwBAAAcAQAADwAAAAAAAAAAAAAAgAEyBAAAeGwvd29ya2Jvb2sueG1sUEsBAhQDFAAAAAAAeambXB+qsIOrAQAAqwEAABoAAAAAAAAAAAAAAIABewUAAHhsL19yZWxzL3dvcmtib29rLnhtbC5yZWxzUEsBAhQDFAAAAAAAeambXL2k1bb0AQAA9AEAAA0AAAAAAAAAAAAAAIABXgcAAHhsL3N0eWxlcy54bWxQSwECFAMUAAAAAAB5qZtcnKJslR0CAAAdAgAAGAAAAAAAAAAAAAAAgAF9CQAAeGwvd29ya3NoZWV0cy9zaGVldDEueG1sUEsFBgAAAAAGAAYAgAEAANALAAAAAA==";
 
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
@@ -151,6 +154,150 @@ async fn tabular_deidentify_endpoint_rejects_invalid_policy_payload() {
         .unwrap();
 
     assert_invalid_tabular_request_response(response).await;
+}
+
+#[tokio::test]
+async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "workbook_base64": SAMPLE_XLSX_WORKBOOK_BASE64,
+        "field_policies": [
+            {
+                "header": "patient_id",
+                "phi_type": "patient_id",
+                "action": "encode"
+            },
+            {
+                "header": "patient_name",
+                "phi_type": "patient_name",
+                "action": "review"
+            }
+        ]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify/xlsx")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["rewritten_workbook_base64"].as_str().is_some());
+    assert!(json["summary"].is_object());
+    assert!(json["review_queue"].is_array());
+    assert!(json.get("csv").is_none());
+
+    let rewritten_workbook = STANDARD
+        .decode(json["rewritten_workbook_base64"].as_str().unwrap())
+        .unwrap();
+    let extracted = XlsxTabularAdapter::new(Vec::new())
+        .extract(&rewritten_workbook)
+        .expect("rewritten workbook should remain parseable");
+
+    assert_eq!(
+        extracted.columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
+        vec!["patient_id", "patient_name"]
+    );
+    assert_eq!(extracted.rows.len(), 2);
+    assert_eq!(extracted.rows[0], extracted.rows[1]);
+    assert!(extracted.rows[0][0].starts_with("tok-"));
+    assert_eq!(extracted.rows[0][1], "Alice Smith");
+    assert_ne!(extracted.rows[0][0], "MRN-001");
+
+    assert_eq!(json["summary"]["total_rows"], 2);
+    assert_eq!(json["summary"]["encoded_cells"], 2);
+    assert_eq!(json["summary"]["review_required_cells"], 2);
+    assert_eq!(json["summary"]["failed_rows"], 0);
+    assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn tabular_xlsx_deidentify_endpoint_rejects_invalid_payloads() {
+    let app = build_router(RuntimeState::default());
+
+    let malformed_json_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify/xlsx")
+                .header("content-type", "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_tabular_xlsx_request_response(malformed_json_response).await;
+
+    let missing_fields_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify/xlsx")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"workbook_base64": SAMPLE_XLSX_WORKBOOK_BASE64}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_tabular_xlsx_request_response(missing_fields_response).await;
+
+    let malformed_base64_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify/xlsx")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "workbook_base64": "%%%not-base64%%%",
+                        "field_policies": [{
+                            "header": "patient_id",
+                            "phi_type": "patient_id",
+                            "action": "encode"
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_tabular_xlsx_request_response(malformed_base64_response).await;
+
+    let invalid_workbook_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify/xlsx")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "workbook_base64": STANDARD.encode(b"not-an-xlsx"),
+                        "field_policies": [{
+                            "header": "patient_id",
+                            "phi_type": "patient_id",
+                            "action": "encode"
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_tabular_xlsx_request_response(invalid_workbook_response).await;
 }
 
 #[tokio::test]
@@ -1723,6 +1870,26 @@ async fn assert_invalid_dicom_response(response: axum::response::Response) {
         })
     );
     assert!(json.get("rewritten_dicom_bytes_base64").is_none());
+    assert!(json.get("summary").is_none());
+    assert!(json.get("review_queue").is_none());
+}
+
+async fn assert_invalid_tabular_xlsx_request_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_tabular_xlsx_request",
+                "message": "request body did not contain a valid XLSX tabular deidentification request"
+            }
+        })
+    );
+    assert!(json.get("rewritten_workbook_base64").is_none());
     assert!(json.get("summary").is_none());
     assert!(json.get("review_queue").is_none());
 }
