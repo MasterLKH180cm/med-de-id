@@ -34,7 +34,7 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 |---|---|---|
 | DICOM | L3 | tag-level handling, UID remap, private-tag policy, burned-in suspicion flagging |
 | CSV / Excel | L3 | schema-aware reversible mapping and batch consistency |
-| PDF / scanned records | L2 | text extraction, OCR, review, governed rewrite/export |
+| PDF / scanned records | L1/L2 foundation | text-layer extraction, OCR-needed suspicion routing, review-required candidate summaries; no PDF rewrite/export yet |
 | FCS | L2/L3 metadata-first | TEXT/metadata identifier handling |
 | Images | L1 | filename/path/metadata cleanup, OCR-assisted suspicion |
 | Videos | L1 | filename/path/container metadata and sidecar handling |
@@ -60,7 +60,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, and the first Slice 3 tabular workflow and adapter work.
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, and the bounded Slice 5 PDF/OCR foundation.
 
 Implemented so far:
 
@@ -68,6 +68,8 @@ Implemented so far:
 - An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, and repeated-value token reuse
 - An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
 - Tabular application orchestration that composes the adapters with vault-backed reversible encoding and honest batch summaries
+- Bounded PDF/OCR foundation support for text-layer extraction, OCR-needed suspicion routing, and review-required candidate summaries
+- Current PDF support does not yet perform full OCR, visual redaction, handwriting handling, or final PDF rewrite/export
 - Initial `mdid-runtime`, `mdid-cli`, `mdid-browser`, and `mdid-desktop` scaffolding from the foundation slice
 
 Planned next from the design:
@@ -84,7 +86,7 @@ Available docs:
 
 ## Roadmap
 
-- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, medium PDF/OCR support, conservative image/video/FCS support
+- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, bounded PDF/OCR foundation, conservative image/video/FCS support
 - **v1.5**: detection quality/provenance upgrades, PDF/DICOM policy depth, parity and workflow polish
 - **v2**: AI/NLP detectors, stronger media handling, richer custom node/plugin model, enterprise controls
 
