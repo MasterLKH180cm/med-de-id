@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -2506,6 +2506,185 @@ fn cli_complete_task_reports_newly_ready_downstream_tasks() {
 }
 
 #[test]
+fn moat_complete_task_json_prints_artifact_and_downstream_ready_envelope() {
+    let history_path = unique_history_path("complete-task-json-envelope");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        round_output.status.success(),
+        "moat round failed: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+    make_workflow_audit_spec_task_ready(&history_path);
+    update_history_task_node(&history_path, "implementation", |implementation_node| {
+        implementation_node.insert(
+            "node_id".to_string(),
+            Value::String("implement-workflow-audit".to_string()),
+        );
+        implementation_node.insert(
+            "depends_on".to_string(),
+            Value::Array(vec![Value::String("spec-workflow-audit".to_string())]),
+        );
+        implementation_node.insert("state".to_string(), Value::String("pending".to_string()));
+        implementation_node.insert(
+            "spec_ref".to_string(),
+            Value::String("moat-spec/workflow-audit".to_string()),
+        );
+    });
+
+    let claim_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "spec-workflow-audit",
+            "--agent-id",
+            "planner-complete-json",
+        ])
+        .output()
+        .expect("failed to claim spec workflow audit task");
+    assert!(
+        claim_output.status.success(),
+        "claim failed: {}",
+        String::from_utf8_lossy(&claim_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "spec-workflow-audit",
+            "--artifact-ref",
+            "docs/superpowers/specs/workflow-audit.md",
+            "--artifact-summary",
+            "Workflow audit spec drafted",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to complete task with json format");
+
+    assert!(
+        output.status.success(),
+        "complete-task json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("complete-task json should be parseable");
+    assert_eq!(json["type"], "moat_complete_task");
+    assert_eq!(json["history_path"], history_path_arg);
+    assert!(json["round_id"]
+        .as_str()
+        .expect("round id string")
+        .starts_with("moat-round-"));
+    assert_eq!(json["node_id"], "spec-workflow-audit");
+    assert_eq!(json["previous_state"], "in_progress");
+    assert_eq!(json["new_state"], "completed");
+    assert_eq!(json["artifact_recorded"], true);
+    assert_eq!(
+        json["artifact"]["ref"],
+        "docs/superpowers/specs/workflow-audit.md"
+    );
+    assert_eq!(json["artifact"]["summary"], "Workflow audit spec drafted");
+    assert_eq!(
+        json["next_ready_task_entries"],
+        json["next_ready_tasks"]
+            .as_array()
+            .expect("next ready array")
+            .len()
+    );
+    assert!(
+        json["next_ready_tasks"]
+            .as_array()
+            .expect("next ready tasks should be an array")
+            .iter()
+            .any(|task| task["node_id"] == "implement-workflow-audit"
+                && task["role"] == "coder"
+                && task["kind"] == "implementation"
+                && task["spec_ref"] == "moat-spec/workflow-audit"),
+        "expected implementation task to become ready: {json:#?}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_complete_task_rejects_missing_format_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            "history.json",
+            "--node-id",
+            "node-1",
+            "--format",
+        ])
+        .output()
+        .expect("failed to run complete-task with missing format value");
+
+    assert!(!output.status.success(), "missing format should fail");
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("missing value for moat complete-task --format"));
+}
+
+#[test]
+fn moat_complete_task_rejects_duplicate_format() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            "history.json",
+            "--node-id",
+            "node-1",
+            "--format",
+            "json",
+            "--format",
+            "text",
+        ])
+        .output()
+        .expect("failed to run complete-task with duplicate format flag");
+
+    assert!(!output.status.success(), "duplicate format should fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("duplicate moat complete-task --format")
+    );
+}
+
+#[test]
+fn moat_complete_task_rejects_unknown_format_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            "history.json",
+            "--node-id",
+            "node-1",
+            "--format",
+            "yaml",
+        ])
+        .output()
+        .expect("failed to run complete-task with unknown format value");
+
+    assert!(!output.status.success(), "unknown format should fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unknown moat complete-task format: yaml")
+    );
+}
+
+#[test]
 fn cli_completes_claimed_moat_task() {
     let history_path = unique_history_path("complete-task-claimed");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -3563,7 +3742,7 @@ fn cli_block_task_rejects_unclaimed_ready_task() {
 
 #[test]
 fn cli_complete_task_rejects_unclaimed_ready_task() {
-    let history_path = unique_history_path("complete-task-unclaimed");
+    let history_path = unique_history_path("complete-task-ready-rejected");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
 
     let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
@@ -3604,7 +3783,7 @@ fn cli_complete_task_rejects_unclaimed_ready_task() {
         stderr.contains("moat task node is not in progress"),
         "{stderr}"
     );
-    assert!(stderr.contains("review"), "{stderr}");
+    assert!(stderr.contains("market_scan"), "{stderr}");
 
     cleanup_history_path(&history_path);
 }

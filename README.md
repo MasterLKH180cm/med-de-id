@@ -151,7 +151,7 @@ External controllers can inspect ready tasks in parseable JSON without mutating 
 cargo run -p mdid-cli -- moat ready-tasks --history-path .mdid/moat-history.json --role reviewer --format json
 ```
 
-`moat ready-tasks --format json` is read-only and applies the same filters and limit as text output before emitting a pretty deterministic envelope with `type: "moat_ready_tasks"`, `round_id`, `history_path`, `ready_task_entries`, and `tasks`. Each task object includes `role`, `kind`, `node_id`, `title`, and nullable `spec_ref`. Text output remains the default (`--format text`) for backward compatibility.
+`moat ready-tasks --format json` is read-only and applies the same filters and limit as text output before emitting a pretty deterministic envelope with `type: "moat_ready_tasks"`, `round_id`, `history_path`, `ready_task_entries`, and `tasks`. Supported routing filters include exact `--round-id`, `--role`, `--kind`, exact `--node-id`, `--depends-on`, `--no-dependencies`, `--requires-artifacts`, case-sensitive `--title-contains`, exact `--spec-ref`, and positive `--limit`; filters are conjunctive and applied before rendering. Each task object includes `role`, `kind`, `node_id`, `title`, and nullable `spec_ref`. Text output remains the default (`--format text`) for backward compatibility.
 
 Inspect persisted local history with:
 
@@ -264,7 +264,18 @@ External workers can claim tasks with optional local ownership metadata via `mdi
 cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.json --node-id review --artifact-ref docs/review.md --artifact-summary "review approved"
 ```
 
-`--artifact-ref` and `--artifact-summary` must be supplied together. When present, the completed task records the handoff in persisted history and the deterministic completion output includes `artifact_recorded=true`, `artifact_ref=...`, and `artifact_summary=...` before `next_ready_task_entries`. Without those flags, completion preserves the prior transition behavior and prints `<none>` artifact fields.
+External controllers that need parseable completion, artifact handoff, and downstream routing metadata from one local mutation can request the JSON envelope:
+
+```bash
+cargo run -p mdid-cli -- moat complete-task \
+  --history-path .mdid/moat-history.json \
+  --node-id spec-workflow-audit \
+  --artifact-ref docs/superpowers/specs/workflow-audit.md \
+  --artifact-summary "Workflow audit spec drafted" \
+  --format json
+```
+
+`--artifact-ref` and `--artifact-summary` must be supplied together. When present, the completed task records the handoff in persisted history and the deterministic completion output includes `artifact_recorded=true`, `artifact_ref=...`, and `artifact_summary=...` before `next_ready_task_entries`. Without those flags, completion preserves the prior transition behavior and prints `<none>` artifact fields. Text output remains the default (`--format text`); `--format json` emits `type`, `round_id`, `history_path`, `node_id`, `previous_state`, `new_state`, `artifact_recorded`, nullable `artifact`, `next_ready_task_entries`, and `next_ready_tasks[]`.
 
 ## Roadmap shape
 
