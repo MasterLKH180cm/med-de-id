@@ -3077,9 +3077,13 @@ name = "mdid-runtime"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "chrono",
+ "dicom-core",
+ "dicom-object",
  "mdid-application",
  "mdid-domain",
+ "mdid-vault",
  "serde",
  "serde_json",
  "tempfile",
