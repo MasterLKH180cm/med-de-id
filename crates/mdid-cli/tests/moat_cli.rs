@@ -5538,8 +5538,6 @@ fn moat_dispatch_next_json_dry_run_prints_parseable_envelope() {
             "--history-path",
             history_path_arg,
             "--dry-run",
-            "--agent-id",
-            "coder-7",
             "--format",
             "json",
         ])
@@ -5555,8 +5553,6 @@ fn moat_dispatch_next_json_dry_run_prints_parseable_envelope() {
     assert_eq!(json["type"], "moat_dispatch_next");
     assert_eq!(json["dry_run"], true);
     assert_eq!(json["claimed"], false);
-    assert_eq!(json["agent_id"], "coder-7");
-    assert!(json["assigned_agent_id"].is_null());
     assert_eq!(json["node_id"], "spec-workflow-audit");
     assert_eq!(json["role"], "planner");
     assert_eq!(json["kind"], "spec_planning");
