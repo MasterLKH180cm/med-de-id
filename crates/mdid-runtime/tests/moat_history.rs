@@ -17,6 +17,169 @@ use tempfile::tempdir;
 use uuid::Uuid;
 
 #[test]
+fn claim_ready_task_with_lease_persists_claim_and_expiry() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "lease claim",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("persist");
+    let now = recorded_at("2026-04-28T00:00:00Z");
+    store
+        .claim_ready_task_with_agent_and_lease(None, "implementation", Some("coder-7"), 60, now)
+        .expect("claim");
+    drop(store);
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path).expect("reload");
+    let node = moat_node(&reloaded.entries()[0].report, "implementation");
+    assert_eq!(node.state, MoatTaskNodeState::InProgress);
+    assert_eq!(node.assigned_agent_id.as_deref(), Some("coder-7"));
+    assert_eq!(node.claimed_at, Some(now));
+    assert_eq!(node.last_heartbeat_at, Some(now));
+    assert_eq!(
+        node.lease_expires_at,
+        Some(recorded_at("2026-04-28T00:01:00Z"))
+    );
+}
+
+#[test]
+fn heartbeat_in_progress_task_extends_lease_for_assigned_agent() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let mut report = sample_report(
+        Uuid::new_v4(),
+        ContinueDecision::Continue,
+        None,
+        "heartbeat",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("persist");
+    store
+        .claim_ready_task_with_agent_and_lease(
+            None,
+            "implementation",
+            Some("coder-7"),
+            60,
+            recorded_at("2026-04-28T00:00:00Z"),
+        )
+        .expect("claim");
+    store
+        .heartbeat_in_progress_task(
+            None,
+            "implementation",
+            Some("coder-7"),
+            120,
+            recorded_at("2026-04-28T00:00:30Z"),
+        )
+        .expect("heartbeat");
+    let node = moat_node(&store.entries()[0].report, "implementation");
+    assert_eq!(
+        node.last_heartbeat_at,
+        Some(recorded_at("2026-04-28T00:00:30Z"))
+    );
+    assert_eq!(
+        node.lease_expires_at,
+        Some(recorded_at("2026-04-28T00:02:30Z"))
+    );
+}
+
+#[test]
+fn heartbeat_rejects_wrong_assigned_agent() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let mut report = sample_report(
+        Uuid::new_v4(),
+        ContinueDecision::Continue,
+        None,
+        "heartbeat",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("persist");
+    store
+        .claim_ready_task_with_agent_and_lease(
+            None,
+            "implementation",
+            Some("coder-7"),
+            60,
+            recorded_at("2026-04-28T00:00:00Z"),
+        )
+        .expect("claim");
+    let error = store
+        .heartbeat_in_progress_task(
+            None,
+            "implementation",
+            Some("coder-8"),
+            120,
+            recorded_at("2026-04-28T00:00:30Z"),
+        )
+        .expect_err("wrong agent rejected");
+    assert!(error.to_string().contains("agent mismatch"));
+}
+
+#[test]
+fn reap_expired_task_leases_returns_expired_in_progress_tasks_to_ready() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let mut report = sample_report(
+        Uuid::new_v4(),
+        ContinueDecision::Continue,
+        None,
+        "reap",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("persist");
+    store
+        .claim_ready_task_with_agent_and_lease(
+            None,
+            "implementation",
+            Some("coder-7"),
+            60,
+            recorded_at("2026-04-28T00:00:00Z"),
+        )
+        .expect("claim");
+    let reaped = store
+        .reap_expired_task_leases(None, recorded_at("2026-04-28T00:01:01Z"))
+        .expect("reap");
+    assert_eq!(reaped, vec!["implementation".to_string()]);
+    let node = moat_node(&store.entries()[0].report, "implementation");
+    assert_eq!(node.state, MoatTaskNodeState::Ready);
+    assert_eq!(node.assigned_agent_id, None);
+    assert_eq!(node.lease_expires_at, None);
+}
+
+#[test]
 fn legacy_history_without_agent_assignments_opens_with_empty_assignments() {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");

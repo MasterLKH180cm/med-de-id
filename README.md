@@ -273,3 +273,5 @@ cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.js
 ## License
 
 Workspace metadata is currently marked `UNLICENSED`.
+
+Moat task leases: local external controllers coordinate claims via history-file lease metadata (`claimed_at`, `lease_expires_at`, `last_heartbeat_at`). Use `mdid-cli moat heartbeat-task` to renew and `mdid-cli moat reap-stale-tasks` to requeue expired in-progress local claims; this is not a daemon/crawler/PR automation loop.

@@ -504,3 +504,7 @@ The first implementation plan should not attempt:
 ## 17. Final Design Statement
 
 `med-de-id` will gain a **local-first moat loop engine** that continuously analyzes market structure, competitor behavior, and user lock-in patterns, converts the strongest opportunities into executable specs and tests, and iterates only while verified moat strength improves under explicit resource limits.
+
+
+## Task lease heartbeat/reap truth sync
+Local moat-loop task claims carry optional claim, expiry, and heartbeat timestamps. External controllers can renew leases with `moat heartbeat-task` and recover crashed agents with `moat reap-stale-tasks`. Coordination remains deterministic and local to the history file; no daemon, crawler, or PR automation is implied.

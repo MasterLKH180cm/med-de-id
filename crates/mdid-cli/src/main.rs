@@ -120,6 +120,7 @@ struct MoatDispatchNextCommand {
     spec_ref: Option<String>,
     dry_run: bool,
     output_format: DispatchOutputFormat,
+    lease_seconds: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +149,23 @@ struct MoatClaimTaskCommand {
     round_id: Option<String>,
     node_id: String,
     agent_id: Option<String>,
+    lease_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoatHeartbeatTaskCommand {
+    history_path: String,
+    round_id: Option<String>,
+    node_id: String,
+    agent_id: Option<String>,
+    lease_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoatReapStaleTasksCommand {
+    history_path: String,
+    round_id: Option<String>,
+    now: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +253,16 @@ fn main() {
                 exit_with_error(error);
             }
         }
+        Ok(CliCommand::MoatHeartbeatTask(command)) => {
+            if let Err(error) = run_moat_heartbeat_task(&command) {
+                exit_with_error(error);
+            }
+        }
+        Ok(CliCommand::MoatReapStaleTasks(command)) => {
+            if let Err(error) = run_moat_reap_stale_tasks(&command) {
+                exit_with_error(error);
+            }
+        }
         Ok(CliCommand::MoatCompleteTask(command)) => {
             if let Err(error) = run_moat_complete_task(&command) {
                 exit_with_error(error);
@@ -310,6 +338,8 @@ enum CliCommand {
     MoatDispatchNext(MoatDispatchNextCommand),
     MoatArtifacts(MoatArtifactsCommand),
     MoatClaimTask(MoatClaimTaskCommand),
+    MoatHeartbeatTask(MoatHeartbeatTaskCommand),
+    MoatReapStaleTasks(MoatReapStaleTasksCommand),
     MoatCompleteTask(MoatCompleteTaskCommand),
     MoatReleaseTask(MoatReleaseTaskCommand),
     MoatBlockTask(MoatBlockTaskCommand),
@@ -372,6 +402,20 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [moat, claim_task, rest @ ..] if moat == "moat" && claim_task == "claim-task" => Ok(
             CliCommand::MoatClaimTask(parse_moat_claim_task_command(rest)?),
         ),
+        [moat, heartbeat_task, rest @ ..]
+            if moat == "moat" && heartbeat_task == "heartbeat-task" =>
+        {
+            Ok(CliCommand::MoatHeartbeatTask(
+                parse_moat_heartbeat_task_command(rest)?,
+            ))
+        }
+        [moat, reap_stale_tasks, rest @ ..]
+            if moat == "moat" && reap_stale_tasks == "reap-stale-tasks" =>
+        {
+            Ok(CliCommand::MoatReapStaleTasks(
+                parse_moat_reap_stale_tasks_command(rest)?,
+            ))
+        }
         [moat, complete_task, rest @ ..] if moat == "moat" && complete_task == "complete-task" => {
             Ok(CliCommand::MoatCompleteTask(
                 parse_moat_complete_task_command(rest)?,
@@ -1180,6 +1224,7 @@ fn parse_moat_dispatch_next_command(args: &[String]) -> Result<MoatDispatchNextC
     let mut spec_ref = None;
     let mut dry_run = false;
     let mut output_format = None;
+    let mut lease_seconds = 900;
     let mut index = 0;
 
     while index < args.len() {
@@ -1288,6 +1333,13 @@ fn parse_moat_dispatch_next_command(args: &[String]) -> Result<MoatDispatchNextC
                 output_format = Some(parse_dispatch_output_format(value)?);
                 index += 2;
             }
+            "--lease-seconds" => {
+                let value = required_flag_value(args, index, "--lease-seconds", true)?;
+                lease_seconds = value
+                    .parse()
+                    .map_err(|_| "invalid moat dispatch-next --lease-seconds".to_string())?;
+                index += 2;
+            }
             flag => return Err(format!("unknown flag: {flag}")),
         }
     }
@@ -1307,6 +1359,7 @@ fn parse_moat_dispatch_next_command(args: &[String]) -> Result<MoatDispatchNextC
         spec_ref,
         dry_run,
         output_format: output_format.unwrap_or(DispatchOutputFormat::Text),
+        lease_seconds,
     })
 }
 
@@ -1333,6 +1386,7 @@ fn parse_moat_claim_task_command(args: &[String]) -> Result<MoatClaimTaskCommand
     let mut round_id = None;
     let mut node_id = None;
     let mut agent_id = None;
+    let mut lease_seconds = 900;
     let mut index = 0;
 
     while index < args.len() {
@@ -1365,6 +1419,12 @@ fn parse_moat_claim_task_command(args: &[String]) -> Result<MoatClaimTaskCommand
                 }
                 agent_id = Some(value.to_string());
             }
+            "--lease-seconds" => {
+                let value = required_flag_value(args, index, "--lease-seconds", true)?;
+                lease_seconds = value
+                    .parse()
+                    .map_err(|_| "invalid moat claim-task --lease-seconds".to_string())?;
+            }
             flag => return Err(format!("unknown flag: {flag}")),
         }
 
@@ -1377,6 +1437,46 @@ fn parse_moat_claim_task_command(args: &[String]) -> Result<MoatClaimTaskCommand
         round_id,
         node_id: node_id.ok_or_else(|| "missing required flag: --node-id".to_string())?,
         agent_id,
+        lease_seconds,
+    })
+}
+
+fn parse_moat_heartbeat_task_command(args: &[String]) -> Result<MoatHeartbeatTaskCommand, String> {
+    let claim = parse_moat_claim_task_command(args)?;
+    Ok(MoatHeartbeatTaskCommand {
+        history_path: claim.history_path,
+        round_id: claim.round_id,
+        node_id: claim.node_id,
+        agent_id: claim.agent_id,
+        lease_seconds: claim.lease_seconds,
+    })
+}
+
+fn parse_moat_reap_stale_tasks_command(
+    args: &[String],
+) -> Result<MoatReapStaleTasksCommand, String> {
+    let mut history_path = None;
+    let mut round_id = None;
+    let mut now = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--history-path" => {
+                history_path = Some(required_history_path_value(args, index)?.clone())
+            }
+            "--round-id" => {
+                round_id = Some(required_flag_value(args, index, "--round-id", true)?.to_string())
+            }
+            "--now" => now = Some(required_flag_value(args, index, "--now", true)?.to_string()),
+            flag => return Err(format!("unknown flag: {flag}")),
+        }
+        index += 2;
+    }
+    Ok(MoatReapStaleTasksCommand {
+        history_path: history_path
+            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
+        round_id,
+        now,
     })
 }
 
@@ -2482,10 +2582,12 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
             .ok_or_else(|| "no ready moat task matched dispatch filters".to_string())?;
         selected = select_dispatch_next_node(claim_entry, command)?;
         claim_store
-            .claim_ready_task_with_agent(
+            .claim_ready_task_with_agent_and_lease(
                 Some(&round_id),
                 &selected.node_id,
                 command.agent_id.as_deref(),
+                command.lease_seconds,
+                Utc::now(),
             )
             .map_err(|error| format!("failed to claim moat task: {error}"))?;
     }
@@ -2692,10 +2794,12 @@ fn run_moat_claim_task(command: &MoatClaimTaskCommand) -> Result<(), String> {
     };
 
     store
-        .claim_ready_task_with_agent(
+        .claim_ready_task_with_agent_and_lease(
             command.round_id.as_deref(),
             &command.node_id,
             command.agent_id.as_deref(),
+            command.lease_seconds,
+            Utc::now(),
         )
         .map_err(|error| format!("failed to claim moat task: {error}"))?;
 
@@ -2712,8 +2816,53 @@ fn run_moat_claim_task(command: &MoatClaimTaskCommand) -> Result<(), String> {
     );
     println!("previous_state=ready");
     println!("new_state=in_progress");
+    println!("lease_seconds={}", command.lease_seconds);
     println!("history_path={}", command.history_path);
 
+    Ok(())
+}
+
+fn run_moat_heartbeat_task(command: &MoatHeartbeatTaskCommand) -> Result<(), String> {
+    let mut store = LocalMoatHistoryStore::open_existing(&command.history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let now = Utc::now();
+    let selected_round_id = store
+        .heartbeat_in_progress_task(
+            command.round_id.as_deref(),
+            &command.node_id,
+            command.agent_id.as_deref(),
+            command.lease_seconds,
+            now,
+        )
+        .map_err(|error| format!("failed to heartbeat moat task: {error}"))?;
+    println!("moat task heartbeat recorded");
+    println!("round_id={selected_round_id}");
+    println!("node_id={}", command.node_id);
+    println!(
+        "lease_expires_at={}",
+        now + chrono::Duration::seconds(command.lease_seconds)
+    );
+    println!("history_path={}", command.history_path);
+    Ok(())
+}
+
+fn run_moat_reap_stale_tasks(command: &MoatReapStaleTasksCommand) -> Result<(), String> {
+    let mut store = LocalMoatHistoryStore::open_existing(&command.history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    let now = command
+        .now
+        .as_deref()
+        .map(|value| value.parse())
+        .transpose()
+        .map_err(|_| "invalid --now RFC3339 timestamp".to_string())?
+        .unwrap_or_else(Utc::now);
+    let reaped = store
+        .reap_expired_task_leases(command.round_id.as_deref(), now)
+        .map_err(|error| format!("failed to reap stale moat tasks: {error}"))?;
+    println!("moat stale tasks reaped");
+    println!("reaped_count={}", reaped.len());
+    println!("reaped_node_ids={}", reaped.join(","));
+    println!("history_path={}", command.history_path);
     Ok(())
 }
 

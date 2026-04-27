@@ -510,6 +510,12 @@ pub struct MoatTaskNode {
     #[serde(default)]
     pub assigned_agent_id: Option<String>,
     #[serde(default)]
+    pub claimed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub artifacts: Vec<MoatTaskArtifact>,
 }
 
@@ -532,6 +538,9 @@ impl MoatTaskNode {
             depends_on,
             spec_ref,
             assigned_agent_id: None,
+            claimed_at: None,
+            lease_expires_at: None,
+            last_heartbeat_at: None,
             artifacts: Vec::new(),
         }
     }

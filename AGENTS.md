@@ -36,3 +36,5 @@ As soon as the scaffold is runnable, return to strict TDD immediately.
 - Desktop app is the sensitive workstation surface.
 - CLI is the automation surface.
 - Shared domain/application/runtime semantics must stay consistent across surfaces.
+
+Moat task leases are local deterministic history-file coordination for external controllers only; heartbeat/reap commands must not be treated as daemon, crawler, or PR automation.
