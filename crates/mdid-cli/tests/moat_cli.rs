@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--dry-run] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--artifact-ref TEXT --artifact-summary TEXT] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -3524,6 +3524,229 @@ fn cli_ready_tasks_title_filter_succeeds_with_no_matches() {
         String::from_utf8_lossy(&output.stdout),
         concat!("moat ready tasks\n", "ready_task_entries=0\n")
     );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_dispatch_next_dry_run_prints_first_ready_task_without_mutating_history() {
+    let history_path = unique_history_path("dispatch-next-dry-run");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed dispatch-next history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    make_workflow_audit_spec_task_ready(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--dry-run",
+        ])
+        .output()
+        .expect("failed to dry-run dispatch-next");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("moat dispatch next\n"));
+    assert!(stdout.contains("dry_run=true\n"));
+    assert!(stdout.contains("claimed=false\n"));
+    assert!(stdout.contains("node_id=spec-workflow-audit\n"));
+    assert!(stdout.contains("role=planner\n"));
+    assert!(stdout.contains("kind=spec_planning\n"));
+    assert!(stdout.contains("title=Create spec for workflow audit\n"));
+    assert!(stdout.contains("dependencies=<none>\n"));
+    assert!(stdout.contains("spec_ref=moat-spec/workflow-audit\n"));
+    assert!(stdout.contains(&format!("complete_command=mdid-cli moat complete-task --history-path {} --node-id spec-workflow-audit --artifact-ref <artifact-ref> --artifact-summary <artifact-summary>\n", history_path.display())));
+
+    let ready_after = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "ready-tasks", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect ready tasks after dry-run dispatch");
+    assert!(
+        ready_after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ready_after.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ready_after.stdout).contains("ready_task=planner|spec_planning|spec-workflow-audit|Create spec for workflow audit|moat-spec/workflow-audit\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_dispatch_next_claims_selected_ready_task() {
+    let history_path = unique_history_path("dispatch-next-claim");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed dispatch-next claim history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    make_workflow_audit_spec_task_ready(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "dispatch-next", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to dispatch and claim next task");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dry_run=false\n"));
+    assert!(stdout.contains("claimed=true\n"));
+    assert!(stdout.contains("previous_state=ready\n"));
+    assert!(stdout.contains("new_state=in_progress\n"));
+    assert!(stdout.contains("node_id=spec-workflow-audit\n"));
+
+    let ready_after = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "ready-tasks", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect ready tasks after dispatch claim");
+    assert!(
+        ready_after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ready_after.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ready_after.stdout).contains("ready_task_entries=0\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_dispatch_next_filters_by_role_and_kind() {
+    let history_path = unique_history_path("dispatch-next-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed dispatch-next filter history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    make_workflow_audit_spec_task_ready(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "planner",
+            "--kind",
+            "spec_planning",
+            "--dry-run",
+        ])
+        .output()
+        .expect("failed to dispatch next task with role/kind filters");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("node_id=spec-workflow-audit\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_dispatch_next_fails_when_no_ready_task_matches() {
+    let history_path = unique_history_path("dispatch-next-no-match");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed dispatch-next no-match history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+        ])
+        .output()
+        .expect("failed to run dispatch-next no-match case");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "no ready moat task matched dispatch filters\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_dispatch_next_rejects_duplicate_dry_run_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            "history.json",
+            "--dry-run",
+            "--dry-run",
+        ])
+        .output()
+        .expect("failed to run dispatch-next with duplicate dry-run");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --dry-run\n{USAGE}\n")
+    );
+}
+
+#[test]
+fn moat_dispatch_next_rejects_missing_history_without_creating_it() {
+    let history_path = unique_history_path("dispatch-next-missing");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "dispatch-next",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--dry-run",
+        ])
+        .output()
+        .expect("failed to run dispatch-next with missing history");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to open moat history store"));
+    assert!(stderr.contains("moat history file does not exist"));
+    assert!(!history_path.exists());
 
     cleanup_history_path(&history_path);
 }
