@@ -4926,7 +4926,7 @@ fn cli_exports_latest_handoff_specs_to_output_directory() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         concat!(
-            "moat spec export\n",
+            "moat spec export complete\n",
             "round_id={latest_round_id}\n",
             "exported_specs=moat-spec/workflow-audit\n",
             "written_files=workflow-audit.md\n",
@@ -4981,7 +4981,7 @@ fn cli_export_specs_rejects_latest_round_without_handoffs() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("latest moat round does not contain implemented_specs handoffs"));
+        .contains("selected moat round does not contain implemented_specs handoffs"));
     assert!(!output_dir.join("workflow-audit.md").exists());
 
     cleanup_history_path(&history_path);
@@ -8420,7 +8420,7 @@ fn moat_export_specs_can_select_persisted_round_by_exact_round_id() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("moat spec export\n"));
+    assert!(stdout.contains("moat spec export complete\n"));
     assert!(stdout.contains(&format!("round_id={first_round_id}\n")));
     assert!(stdout.contains("exported_specs=moat-spec/workflow-audit\n"));
     assert!(output_dir.join("workflow-audit.md").exists());
@@ -8502,6 +8502,80 @@ fn moat_export_plans_can_select_persisted_round_by_exact_round_id() {
 
     cleanup_history_path(&history_path);
     cleanup_history_path(&output_dir);
+}
+
+#[test]
+fn moat_exports_report_selected_round_without_handoffs_for_round_id_selection() {
+    let history_path = unique_history_path("export-selected-empty-round-id");
+    let specs_output_dir = unique_history_path("export-selected-empty-specs-output");
+    let plans_output_dir = unique_history_path("export-selected-empty-plans-output");
+    for path in [&specs_output_dir, &plans_output_dir] {
+        if path.exists() {
+            std::fs::remove_file(path).expect("remove placeholder path");
+        }
+    }
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--spec-generations",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed empty first round");
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let first_round_id = LocalMoatHistoryStore::open(&history_path)
+        .expect("history store should open")
+        .summary()
+        .latest_round_id
+        .expect("first persisted round id should exist");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed second round");
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    for (subcommand, output_dir) in [
+        ("export-specs", &specs_output_dir),
+        ("export-plans", &plans_output_dir),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+            .args([
+                "moat",
+                subcommand,
+                "--history-path",
+                history_path_arg,
+                "--round-id",
+                &first_round_id,
+                "--output-dir",
+                output_dir.to_str().expect("output dir should be utf-8"),
+            ])
+            .output()
+            .expect("failed to run selected empty round export");
+
+        assert!(!output.status.success(), "{subcommand} should fail");
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("selected moat round does not contain implemented_specs handoffs"));
+        assert!(!output_dir.exists());
+    }
+
+    cleanup_history_path(&history_path);
+    cleanup_history_path(&specs_output_dir);
+    cleanup_history_path(&plans_output_dir);
 }
 
 #[test]

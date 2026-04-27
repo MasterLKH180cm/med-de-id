@@ -2554,7 +2554,7 @@ fn run_moat_export_specs(
     let latest = select_moat_export_entry(store.entries(), round_id)?;
 
     if latest.report.summary.implemented_specs.is_empty() {
-        return Err("latest moat round does not contain implemented_specs handoffs".to_string());
+        return Err("selected moat round does not contain implemented_specs handoffs".to_string());
     }
 
     std::fs::create_dir_all(output_dir)
@@ -2579,7 +2579,7 @@ fn run_moat_export_specs(
         written_files.push(file_name);
     }
 
-    println!("moat spec export");
+    println!("moat spec export complete");
     println!("round_id={}", latest.report.summary.round_id);
     println!(
         "exported_specs={}",
@@ -2600,7 +2600,7 @@ fn run_moat_export_plans(
     let latest = select_moat_export_entry(store.entries(), round_id)?;
 
     if latest.report.summary.implemented_specs.is_empty() {
-        return Err("latest moat round does not contain implemented_specs handoffs".to_string());
+        return Err("selected moat round does not contain implemented_specs handoffs".to_string());
     }
 
     std::fs::create_dir_all(output_dir)
