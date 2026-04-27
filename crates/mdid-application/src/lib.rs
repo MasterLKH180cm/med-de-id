@@ -602,6 +602,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec![],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -612,6 +613,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec![],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -622,6 +624,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec![],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -636,6 +639,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                     "lockin_analysis".into(),
                 ],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -648,6 +652,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 spec_ref: Some(
                     "docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md".into(),
                 ),
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -658,6 +663,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec!["spec_planning".into()],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -668,6 +674,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec!["implementation".into()],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -678,6 +685,7 @@ pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec!["review".into()],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
         ],

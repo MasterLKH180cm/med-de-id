@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use mdid_application::{build_default_moat_task_graph, summarize_round_memory};
 use mdid_domain::{
-    AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary, MoatTaskNodeState,
+    AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary, MoatTaskNode,
+    MoatTaskNodeState,
 };
 use mdid_runtime::{
     moat::{MoatControlPlaneReport, MoatRoundReport},
@@ -608,6 +609,57 @@ fn claim_ready_task_marks_latest_ready_node_in_progress_and_persists() {
 }
 
 #[test]
+fn claim_ready_task_with_agent_marks_latest_ready_node_in_progress_and_persists_assignment() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "latest round has a ready implementation task",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T21:00:00Z"), report)
+        .expect("report should persist");
+
+    store
+        .claim_ready_task_with_agent(None, "implementation", Some("coder-7"))
+        .expect("ready latest task should be claimed by assigned agent");
+    drop(store);
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("reloaded history store should open");
+    let node = moat_node(&reloaded.entries()[0].report, "implementation");
+    assert_eq!(node.state, MoatTaskNodeState::InProgress);
+    assert_eq!(node.assigned_agent_id.as_deref(), Some("coder-7"));
+}
+
+#[test]
+fn moat_task_node_deserializes_legacy_json_without_assigned_agent_id_as_none() {
+    let node: MoatTaskNode = serde_json::from_value(serde_json::json!({
+        "node_id": "implementation",
+        "title": "Implementation",
+        "role": "coder",
+        "kind": "implementation",
+        "state": "ready",
+        "depends_on": ["spec_planning"],
+        "spec_ref": "moat-spec/workflow-audit",
+        "artifacts": []
+    }))
+    .expect("legacy moat task node should deserialize without assigned_agent_id");
+
+    assert_eq!(node.assigned_agent_id, None);
+}
+
+#[test]
 fn claim_ready_task_rejects_stale_second_handle_without_overwriting_claim() {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");
@@ -1089,6 +1141,10 @@ fn set_node_state(report: &mut MoatRoundReport, node_id: &str, state: MoatTaskNo
 }
 
 fn node_state(report: &MoatRoundReport, node_id: &str) -> MoatTaskNodeState {
+    moat_node(report, node_id).state
+}
+
+fn moat_node<'a>(report: &'a MoatRoundReport, node_id: &str) -> &'a MoatTaskNode {
     report
         .control_plane
         .task_graph
@@ -1096,7 +1152,6 @@ fn node_state(report: &MoatRoundReport, node_id: &str) -> MoatTaskNodeState {
         .iter()
         .find(|node| node.node_id == node_id)
         .expect("sample task node should exist")
-        .state
 }
 
 fn recorded_at(value: &str) -> DateTime<Utc> {

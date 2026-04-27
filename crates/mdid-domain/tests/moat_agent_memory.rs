@@ -61,6 +61,7 @@ fn task_graph_reports_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Completed,
                 depends_on: vec![],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -71,6 +72,7 @@ fn task_graph_reports_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec!["market-scan".into()],
                 spec_ref: Some("docs/spec.md".into()),
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
         ],
@@ -92,6 +94,7 @@ fn task_graph_keeps_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Completed,
                 depends_on: vec![],
                 spec_ref: None,
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
             MoatTaskNode {
@@ -102,6 +105,7 @@ fn task_graph_keeps_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Ready,
                 depends_on: vec!["market-scan".into()],
                 spec_ref: Some("docs/spec.md".into()),
+                assigned_agent_id: None,
                 artifacts: Vec::new(),
             },
         ],

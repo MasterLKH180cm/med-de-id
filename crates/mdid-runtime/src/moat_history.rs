@@ -206,6 +206,15 @@ impl LocalMoatHistoryStore {
         round_id: Option<&str>,
         node_id: &str,
     ) -> Result<(), ClaimReadyTaskError> {
+        self.claim_ready_task_with_agent(round_id, node_id, None)
+    }
+
+    pub fn claim_ready_task_with_agent(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<(), ClaimReadyTaskError> {
         if !self.path.exists() {
             return Err(ClaimReadyTaskError::Store(
                 LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
@@ -245,6 +254,7 @@ impl LocalMoatHistoryStore {
         }
 
         node.state = MoatTaskNodeState::InProgress;
+        node.assigned_agent_id = agent_id.map(str::to_string);
         self.persist(&next_entries)?;
         self.entries = next_entries;
         Ok(())

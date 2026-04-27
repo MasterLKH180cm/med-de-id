@@ -508,6 +508,8 @@ pub struct MoatTaskNode {
     pub depends_on: Vec<String>,
     pub spec_ref: Option<String>,
     #[serde(default)]
+    pub assigned_agent_id: Option<String>,
+    #[serde(default)]
     pub artifacts: Vec<MoatTaskArtifact>,
 }
 
