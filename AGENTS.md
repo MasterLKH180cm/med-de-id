@@ -32,7 +32,7 @@ Not allowed under this exception:
 As soon as the scaffold is runnable, return to strict TDD immediately.
 
 ## Product-surface rules
-- Browser tool is the pipeline/orchestration surface.
+- Browser tool is the workflow surface.
 - Desktop app is the sensitive workstation surface.
 - CLI is the automation surface.
 - Shared domain/application/runtime semantics must stay consistent across surfaces.

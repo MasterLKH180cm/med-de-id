@@ -9,7 +9,7 @@ Windows-first, local-first medical de-identification platform with a pure Rust c
 The product has three formal surfaces:
 
 1. **CLI** — automation, batch, integration, headless execution
-2. **Browser tool** — localhost pipeline/orchestration workbench for workflow composition and scheduling
+2. **Browser tool** — localhost workflow workbench for composing and running de-identification flows
 3. **Desktop app** — sensitive workstation for review, vault operations, decode flows, and audit investigation
 
 ## Core workflow
@@ -67,7 +67,7 @@ Implemented so far:
 - Shared domain models for pipeline, review, vault mapping, decode requests, audit events, and tabular workflow state
 - An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, bounded portable artifact import, deterministic duplicate/normalization handling via the shared import contract, and repeated-value token reuse
 - An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
-- Tabular application orchestration that composes the adapters with vault-backed reversible encoding and honest batch summaries
+- Tabular application behavior that composes the adapters with vault-backed reversible encoding and honest batch summaries
 - Bounded PDF support for text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure
 - Current PDF support does not yet perform full OCR, visual redaction, handwriting handling, or final PDF rewrite/export
 - `mdid-runtime` now exposes a bounded local HTTP DICOM de-identification entry that accepts local/base64-transported DICOM bytes, applies the existing private-tag policy service logic, returns rewritten DICOM bytes plus a review summary/review queue, and honestly rejects invalid DICOM payloads
@@ -79,12 +79,12 @@ Implemented so far:
 - `mdid-runtime` also exposes a bounded local HTTP portable artifact import entry that unlocks a local vault with an explicit vault passphrase, imports an encrypted portable artifact into that local vault, skips duplicate record ids and existing semantic duplicates while deterministically normalizing shared-value token reuse through the shared import contract, records the resulting import audit event, and returns bounded imported/duplicate counts rather than artifact contents or generalized transfer state
 - `mdid-cli`, `mdid-browser`, and `mdid-desktop` remain early surface scaffolds
 
-The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event; it does not yet provide generalized transfer orchestration, auth/session handling, remote handoff workflows, full audit search, audit mutation workflows, XLSX upload support, generalized vault browsing, or generalized decode.
+The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event; it does not add auth/session handling or any broader multi-step transfer flow.
 
 Planned next from the design:
 
 - Additional policy and detection crates
-- Deeper application orchestration and surface behavior beyond the current scaffolds
+- Deeper application behavior and surface behavior beyond the current scaffolds
 
 Available docs:
 

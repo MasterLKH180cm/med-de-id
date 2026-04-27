@@ -1,6 +1,6 @@
 # med-de-id Slice 4 DICOM Tag-Level Support Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution note:** Implement this plan task-by-task with small verified commits. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the first DICOM tag-level reversible flow with common PHI tag handling, UID remap, private-tag policy decisions, filename/path sanitization, and honest burned-in-annotation suspicion routing.
 
@@ -17,7 +17,7 @@ This plan covers **Slice 4 — DICOM tag-level support** only. It does not imple
 1. DICOM workflow/domain vocabulary
 2. DICOM adapter extraction for common PHI tags and private-tag policy classification
 3. DICOM write-back with UID remap and filename/path sanitization
-4. Application orchestration + vault-backed reversible mapping + review routing
+4. Application-layer coordination + vault-backed reversible mapping + review routing
 5. Docs, workspace verification, and milestone truth-sync
 
 ## File structure
@@ -432,7 +432,7 @@ git add crates/mdid-adapters/src/dicom.rs crates/mdid-adapters/tests/dicom_adapt
 git commit -m "feat: add dicom rewrite and uid remap"
 ```
 
-### Task 4: Add application orchestration for reversible DICOM de-identification
+### Task 4: Add application-layer coordination for reversible DICOM de-identification
 
 **Files:**
 - Modify: `crates/mdid-adapters/src/lib.rs`

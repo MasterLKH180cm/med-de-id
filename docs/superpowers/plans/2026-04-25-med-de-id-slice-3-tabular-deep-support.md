@@ -1,6 +1,6 @@
 # med-de-id Slice 3 Tabular Deep Support Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution note:** Implement this plan task-by-task with small verified commits. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the first CSV/XLSX tabular adapter path with schema inference, field-level PHI review decisions, vault-backed reversible encoding, and honest batch summaries for partial failures.
 
@@ -17,7 +17,7 @@ This plan covers **Slice 3 — CSV/Excel deep support** only. It does not implem
 1. tabular workflow/domain vocabulary
 2. vault token-reuse support for repeated PHI values while preserving per-cell scope provenance
 3. CSV adapter + schema inference
-4. application orchestration + batch summary flow
+4. application-layer coordination + batch summary flow
 5. XLSX parity on the same tabular engine
 
 ## File structure
@@ -595,7 +595,7 @@ git add Cargo.toml crates/mdid-adapters
 git commit -m "feat: add csv tabular adapter and schema inference"
 ```
 
-### Task 4: Add application-level CSV de-identification orchestration
+### Task 4: Add application-level CSV de-identification coordination
 
 **Files:**
 - Modify: `crates/mdid-application/Cargo.toml`
