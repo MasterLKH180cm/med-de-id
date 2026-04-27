@@ -332,6 +332,65 @@ impl ReviewDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum PdfScanStatus {
+    TextLayerPresent,
+    OcrRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PdfPageRef {
+    pub page_number: usize,
+    pub label: String,
+}
+
+impl PdfPageRef {
+    pub fn new(page_number: usize, label: String) -> Self {
+        Self { page_number, label }
+    }
+
+    pub fn field_path(&self) -> String {
+        format!("pdf/pages/{}/{}", self.page_number, self.label)
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PdfPhiCandidate {
+    pub page: PdfPageRef,
+    pub phi_type: String,
+    pub source_text: String,
+    pub confidence: u8,
+    pub decision: ReviewDecision,
+}
+
+impl std::fmt::Debug for PdfPhiCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PdfPhiCandidate")
+            .field("page", &self.page)
+            .field("phi_type", &self.phi_type)
+            .field("source_text", &"<redacted>")
+            .field("confidence", &self.confidence)
+            .field("decision", &self.decision)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PdfExtractionSummary {
+    pub total_pages: usize,
+    pub text_layer_pages: usize,
+    pub ocr_required_pages: usize,
+    pub extracted_candidates: usize,
+    pub review_required_candidates: usize,
+}
+
+impl PdfExtractionSummary {
+    pub fn requires_review(&self) -> bool {
+        self.ocr_required_pages > 0 || self.review_required_candidates > 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DicomPrivateTagPolicy {
     Keep,
     Remove,
@@ -446,5 +505,3 @@ impl BatchSummary {
         self.failed_rows > 0
     }
 }
-
-
