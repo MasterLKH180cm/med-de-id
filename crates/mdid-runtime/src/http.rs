@@ -13,9 +13,10 @@ use mdid_application::{
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, DecodeRequest, DicomDeidentificationSummary,
-    DicomPhiCandidate, DicomPrivateTagPolicy, PhiCandidate, SurfaceKind,
+    DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PhiCandidate,
+    SurfaceKind,
 };
-use mdid_vault::{LocalVaultStore, VaultError};
+use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -65,6 +66,12 @@ struct VaultAuditEventsRequest {
     actor: Option<SurfaceKind>,
     #[serde(default, deserialize_with = "deserialize_optional_limit")]
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PortableArtifactInspectionRequest {
+    artifact: PortableVaultArtifact,
+    portable_passphrase: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +125,22 @@ struct VaultAuditEventsResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PortableArtifactInspectionResponse {
+    record_count: usize,
+    records: Vec<PortableArtifactInspectionRecordPreview>,
+}
+
+#[derive(Debug, Serialize)]
+struct PortableArtifactInspectionRecordPreview {
+    id: uuid::Uuid,
+    scope: MappingScope,
+    phi_type: String,
+    token: String,
+    original_value: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
 struct TabularDeidentifyResponse {
     csv: String,
     summary: BatchSummary,
@@ -144,6 +167,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/vault/decode", post(vault_decode))
         .route("/vault/export", post(vault_export))
         .route("/vault/audit/events", post(vault_audit_events))
+        .route("/portable-artifacts/inspect", post(portable_artifact_inspect))
         .with_state(state)
 }
 
@@ -309,6 +333,39 @@ async fn vault_audit_events(payload: Result<Json<VaultAuditEventsRequest>, JsonR
     (StatusCode::OK, Json(VaultAuditEventsResponse { events })).into_response()
 }
 
+async fn portable_artifact_inspect(
+    payload: Result<Json<PortableArtifactInspectionRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_portable_artifact_inspection_request_response().into_response(),
+    };
+
+    if payload.portable_passphrase.trim().is_empty() {
+        return invalid_portable_artifact_inspection_request_response().into_response();
+    }
+
+    let snapshot = match payload.artifact.unlock(&payload.portable_passphrase) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return map_portable_artifact_inspection_error(&error).into_response(),
+    };
+
+    let records = snapshot
+        .records
+        .into_iter()
+        .map(PortableArtifactInspectionRecordPreview::from)
+        .collect::<Vec<_>>();
+
+    (
+        StatusCode::OK,
+        Json(PortableArtifactInspectionResponse {
+            record_count: records.len(),
+            records,
+        }),
+    )
+        .into_response()
+}
+
 fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         ApplicationError::DicomAdapter(DicomAdapterError::Parse(_))
@@ -334,6 +391,19 @@ impl From<FieldPolicyRequest> for FieldPolicy {
             header: value.header,
             phi_type: value.phi_type,
             action: value.action.into(),
+        }
+    }
+}
+
+impl From<MappingRecord> for PortableArtifactInspectionRecordPreview {
+    fn from(value: MappingRecord) -> Self {
+        Self {
+            id: value.id,
+            scope: value.scope,
+            phi_type: value.phi_type,
+            token: value.token,
+            original_value: value.original_value,
+            created_at: value.created_at,
         }
     }
 }
@@ -371,6 +441,26 @@ fn map_export_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope
         }
         VaultError::UnknownRecord(_) => unknown_export_record_response(),
         _ => map_vault_error(error),
+    }
+}
+
+fn map_portable_artifact_inspection_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        VaultError::UnlockFailed => portable_artifact_unlock_failed_response(),
+        VaultError::BlankPassphrase => invalid_portable_artifact_inspection_request_response(),
+        VaultError::Io(_)
+        | VaultError::Serde(_)
+        | VaultError::UnsupportedKdfAlgorithm(_)
+        | VaultError::UnsupportedKdfVersion(_)
+        | VaultError::InvalidKdfParameters
+        | VaultError::InvalidNonceLength { .. }
+        | VaultError::KeyDerivation
+        | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
+        VaultError::UnknownRecord(_)
+        | VaultError::EmptyExportScope
+        | VaultError::BlankExportContext
+        | VaultError::AlreadyExists(_)
+        | VaultError::Encrypt => internal_error_response(),
     }
 }
 
@@ -461,6 +551,30 @@ fn invalid_audit_events_request_response() -> (StatusCode, Json<ErrorEnvelope>) 
     )
 }
 
+fn invalid_portable_artifact_inspection_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_portable_artifact_inspection_request",
+                message: "request body did not contain a valid portable artifact inspection request",
+            },
+        }),
+    )
+}
+
+fn invalid_portable_artifact_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_portable_artifact",
+                message: "portable artifact could not be read as a usable portable vault artifact",
+            },
+        }),
+    )
+}
+
 fn invalid_vault_target_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -504,6 +618,18 @@ fn vault_unlock_failed_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "vault_unlock_failed",
                 message: "vault could not be unlocked with the supplied passphrase",
+            },
+        }),
+    )
+}
+
+fn portable_artifact_unlock_failed_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "portable_artifact_unlock_failed",
+                message: "portable artifact could not be unlocked with the supplied passphrase",
             },
         }),
     )

@@ -1090,6 +1090,198 @@ async fn vault_export_endpoint_rejects_wrong_passphrase() {
     assert!(json.get("artifact").is_none());
 }
 
+#[tokio::test]
+async fn portable_artifact_inspect_endpoint_returns_bounded_snapshot_summary() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let first = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let second = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let artifact = vault
+        .export_portable(
+            &[first.id, second.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact": artifact,
+        "portable_passphrase": "portable-passphrase"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/inspect")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["record_count"], 2);
+    let records = json["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["id"], first.id.to_string());
+    assert_eq!(records[0]["scope"]["field_path"], first.scope.field_path);
+    assert_eq!(records[0]["phi_type"], first.phi_type);
+    assert_eq!(records[0]["token"], first.token);
+    assert_eq!(records[0]["original_value"], first.original_value);
+    assert_eq!(
+        records[0]["created_at"].as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
+        first.created_at
+    );
+    assert_eq!(records[1]["id"], second.id.to_string());
+    assert_eq!(records[1]["scope"]["field_path"], second.scope.field_path);
+    assert_eq!(records[1]["phi_type"], second.phi_type);
+    assert_eq!(records[1]["token"], second.token);
+    assert_eq!(records[1]["original_value"], second.original_value);
+    assert_eq!(
+        records[1]["created_at"].as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
+        second.created_at
+    );
+    assert!(records[0].get("audit_events").is_none());
+    assert!(json.get("artifact").is_none());
+    assert!(json.get("audit_event").is_none());
+}
+
+#[tokio::test]
+async fn portable_artifact_inspect_endpoint_rejects_invalid_request_payload() {
+    let app = build_router(RuntimeState::default());
+
+    for request in [
+        json!({"portable_passphrase": "portable-passphrase"}),
+        json!({"artifact": {}, "portable_passphrase": "   "}),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/portable-artifacts/inspect")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_invalid_portable_artifact_inspection_request_response(response).await;
+    }
+}
+
+#[tokio::test]
+async fn portable_artifact_inspect_endpoint_rejects_wrong_portable_passphrase() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.name"),
+                phi_type: "patient_name".into(),
+                original_value: "Alice Smith".into(),
+            },
+            SurfaceKind::Browser,
+        )
+        .unwrap();
+    let artifact = vault
+        .export_portable(
+            &[stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact": artifact,
+        "portable_passphrase": "wrong passphrase"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/inspect")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "portable_artifact_unlock_failed",
+                "message": "portable artifact could not be unlocked with the supplied passphrase"
+            }
+        })
+    );
+    assert!(json.get("records").is_none());
+}
+
+#[tokio::test]
+async fn portable_artifact_inspect_endpoint_rejects_corrupted_artifact() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact": {
+            "salt_b64": "%%%not-base64%%%",
+            "nonce_b64": "still-not-base64",
+            "ciphertext_b64": "broken"
+        },
+        "portable_passphrase": "portable-passphrase"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/portable-artifacts/inspect")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_portable_artifact_response(response).await;
+}
+
 async fn assert_invalid_audit_events_request_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -1183,6 +1375,44 @@ async fn assert_invalid_export_request_response(response: axum::response::Respon
         })
     );
     assert!(json.get("artifact").is_none());
+}
+
+async fn assert_invalid_portable_artifact_inspection_request_response(
+    response: axum::response::Response,
+) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_portable_artifact_inspection_request",
+                "message": "request body did not contain a valid portable artifact inspection request"
+            }
+        })
+    );
+    assert!(json.get("records").is_none());
+}
+
+async fn assert_invalid_portable_artifact_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(
+        json,
+        json!({
+            "error": {
+                "code": "invalid_portable_artifact",
+                "message": "portable artifact could not be read as a usable portable vault artifact"
+            }
+        })
+    );
+    assert!(json.get("records").is_none());
 }
 
 async fn assert_invalid_vault_target_response(response: axum::response::Response) {
