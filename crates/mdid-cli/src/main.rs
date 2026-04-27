@@ -2284,7 +2284,7 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
         .take(limit)
     {
         println!(
-            "node={}|{}|{}|{}|{}|{}|{}|{}",
+            "node={}|{}|{}|{}|{}|{}|{}",
             format_agent_role(node.role),
             escape_assignment_output_field(&node.node_id),
             escape_assignment_output_field(&node.title),
@@ -2295,6 +2295,10 @@ fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
                 .as_deref()
                 .map(escape_assignment_output_field)
                 .unwrap_or_else(|| "<none>".to_string()),
+        );
+        println!(
+            "assigned_agent_id={}|{}",
+            escape_assignment_output_field(&node.node_id),
             node.assigned_agent_id
                 .as_deref()
                 .map(escape_assignment_output_field)
@@ -2442,13 +2446,17 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
             .map_err(|error| format!("failed to claim moat task: {error}"))?;
     }
 
+    let assigned_agent_id = (!command.dry_run)
+        .then(|| command.agent_id.as_deref())
+        .flatten();
+
     if command.output_format == DispatchOutputFormat::Json {
         let mut envelope = serde_json::json!({
             "type": "moat_dispatch_next",
             "dry_run": command.dry_run,
             "claimed": !command.dry_run,
             "agent_id": command.agent_id.as_deref(),
-            "assigned_agent_id": command.agent_id.as_deref(),
+            "assigned_agent_id": assigned_agent_id,
             "round_id": round_id,
             "node_id": selected.node_id,
             "role": format_agent_role(selected.role),
@@ -2474,10 +2482,16 @@ fn run_moat_dispatch_next(command: &MoatDispatchNextCommand) -> Result<(), Strin
     println!("dry_run={}", command.dry_run);
     println!("claimed={}", !command.dry_run);
     println!(
-        "assigned_agent_id={}",
+        "agent_id={}",
         command
             .agent_id
             .as_deref()
+            .map(escape_assignment_output_field)
+            .unwrap_or_else(|| "<none>".to_string())
+    );
+    println!(
+        "assigned_agent_id={}",
+        assigned_agent_id
             .map(escape_assignment_output_field)
             .unwrap_or_else(|| "<none>".to_string())
     );

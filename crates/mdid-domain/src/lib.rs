@@ -513,6 +513,30 @@ pub struct MoatTaskNode {
     pub artifacts: Vec<MoatTaskArtifact>,
 }
 
+impl MoatTaskNode {
+    pub fn new(
+        node_id: impl Into<String>,
+        title: impl Into<String>,
+        role: AgentRole,
+        kind: MoatTaskNodeKind,
+        state: MoatTaskNodeState,
+        depends_on: Vec<String>,
+        spec_ref: Option<String>,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            title: title.into(),
+            role,
+            kind,
+            state,
+            depends_on,
+            spec_ref,
+            assigned_agent_id: None,
+            artifacts: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoatTaskGraph {
     pub round_id: Uuid,

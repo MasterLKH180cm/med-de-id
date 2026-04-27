@@ -1808,19 +1808,17 @@ fn task_graph_prints_latest_persisted_graph() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("moat task graph\n"));
-    assert!(stdout.contains(
-        "node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>|<none>\n"
-    ));
+    assert!(stdout
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
     assert!(stdout
         .contains("node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|"));
     assert!(stdout.contains(
-        "node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md|<none>\n"
+        "node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"
     ));
     assert!(stdout.contains(
-        "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>|<none>\n"
+        "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n"
     ));
-    assert!(stdout
-        .contains("node=reviewer|review|Review|review|completed|implementation|<none>|<none>\n"));
+    assert!(stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -1946,7 +1944,7 @@ fn claim_task_marks_latest_ready_node_in_progress() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|in_progress|implementation|<none>|<none>\n"));
+        .contains("node=reviewer|review|Review|review|in_progress|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -2146,7 +2144,7 @@ fn cli_completes_claimed_moat_task() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|completed|implementation|<none>|<none>\n"));
+        .contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -2773,7 +2771,7 @@ fn cli_releases_claimed_moat_task() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n"));
+        .contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -2908,7 +2906,7 @@ fn cli_blocks_claimed_moat_task() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|blocked|implementation|<none>|<none>\n"));
+        .contains("node=reviewer|review|Review|review|blocked|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -3017,7 +3015,7 @@ fn cli_unblocks_blocked_moat_task_to_ready() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(String::from_utf8_lossy(&graph.stdout)
-        .contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n"));
+        .contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -3728,6 +3726,10 @@ fn cli_dispatch_next_text_output_includes_agent_id_attribution() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
+        stdout.contains("agent_id=coder-7\n"),
+        "stdout was: {stdout}"
+    );
+    assert!(
         stdout.contains("assigned_agent_id=coder-7\n"),
         "stdout was: {stdout}"
     );
@@ -3778,6 +3780,7 @@ fn cli_dispatch_next_json_output_includes_agent_id_attribution() {
     let payload: Value =
         serde_json::from_slice(&output.stdout).expect("dispatch output should be json");
     assert_eq!(payload["agent_id"], "coder-7");
+    assert_eq!(payload["assigned_agent_id"], "coder-7");
 
     cleanup_history_path(&history_path);
 }
@@ -3837,7 +3840,15 @@ fn dispatch_next_persists_assigned_agent_id() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&graph.stdout).contains("node=coder|implementation|Implementation|implementation|in_progress|<none>|<none>|coder-7\n"),
+        String::from_utf8_lossy(&graph.stdout).contains(
+            "node=coder|implementation|Implementation|implementation|in_progress|<none>|<none>\n"
+        ),
+        "graph stdout was: {}",
+        String::from_utf8_lossy(&graph.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&graph.stdout)
+            .contains("assigned_agent_id=implementation|coder-7\n"),
         "graph stdout was: {}",
         String::from_utf8_lossy(&graph.stdout)
     );
@@ -3908,7 +3919,15 @@ fn claim_task_persists_assigned_agent_id() {
         String::from_utf8_lossy(&graph.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&graph.stdout).contains("node=coder|implementation|Implementation|implementation|in_progress|<none>|<none>|planner-2\n"),
+        String::from_utf8_lossy(&graph.stdout).contains(
+            "node=coder|implementation|Implementation|implementation|in_progress|<none>|<none>\n"
+        ),
+        "graph stdout was: {}",
+        String::from_utf8_lossy(&graph.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&graph.stdout)
+            .contains("assigned_agent_id=implementation|planner-2\n"),
         "graph stdout was: {}",
         String::from_utf8_lossy(&graph.stdout)
     );
@@ -3938,6 +3957,8 @@ fn moat_dispatch_next_json_dry_run_prints_parseable_envelope() {
             "--history-path",
             history_path_arg,
             "--dry-run",
+            "--agent-id",
+            "coder-7",
             "--format",
             "json",
         ])
@@ -3953,6 +3974,8 @@ fn moat_dispatch_next_json_dry_run_prints_parseable_envelope() {
     assert_eq!(json["type"], "moat_dispatch_next");
     assert_eq!(json["dry_run"], true);
     assert_eq!(json["claimed"], false);
+    assert_eq!(json["agent_id"], "coder-7");
+    assert!(json["assigned_agent_id"].is_null());
     assert_eq!(json["node_id"], "spec-workflow-audit");
     assert_eq!(json["role"], "planner");
     assert_eq!(json["kind"], "spec_planning");
@@ -4197,6 +4220,7 @@ fn cli_dispatch_next_filters_ready_task_by_exact_spec_ref() {
             "moat dispatch next\n\
 dry_run=true\n\
 claimed=false\n\
+agent_id=<none>\n\
 assigned_agent_id=<none>\n\
 round_id={round_id}\n\
 node_id=task-implementation\n\
@@ -4975,11 +4999,10 @@ fn moat_task_graph_filters_nodes_by_exact_round_id() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
     assert!(
-        stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n")
+        !stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n")
     );
-    assert!(!stdout
-        .contains("node=reviewer|review|Review|review|completed|implementation|<none>|<none>\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -5023,9 +5046,7 @@ fn moat_task_graph_filters_nodes_by_dependency() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n")
-    );
+    assert!(stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
     assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
     assert!(!stdout.contains("node=reviewer|evaluation|Evaluation|evaluation"));
 
@@ -5110,14 +5131,13 @@ fn moat_task_graph_filters_nodes_with_no_dependencies() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
     assert!(stdout.contains(
-        "node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>|<none>\n"
+        "node=planner|independent_spec_planning|Independent Spec Planning|spec_planning|completed|<none>|<none>\n"
     ));
     assert!(stdout.contains(
-        "node=planner|independent_spec_planning|Independent Spec Planning|spec_planning|completed|<none>|<none>|<none>\n"
-    ));
-    assert!(stdout.contains(
-        "node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>|<none>\n"
+        "node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"
     ));
     assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
 
@@ -5271,7 +5291,8 @@ fn task_graph_filters_latest_graph_by_role_and_state() {
         String::from_utf8_lossy(&output.stdout),
         concat!(
             "moat task graph\n",
-            "node=reviewer|review|Review|review|ready|implementation|<none>|<none>\n",
+            "node=reviewer|review|Review|review|ready|implementation|<none>\n",
+            "assigned_agent_id=review|<none>\n",
         )
     );
 
@@ -5468,7 +5489,7 @@ fn task_graph_filters_latest_graph_by_spec_ref() {
             .count(),
         1
     );
-    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md|<none>\n"));
+    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"));
 
     cleanup_history_path(&history_path);
 }
@@ -5693,7 +5714,7 @@ fn task_graph_filters_latest_graph_by_kind() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("moat task graph\n"));
     assert!(stdout.contains(
-        "node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|<none>|<none>|<none>\n"
+        "node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|completed|<none>|<none>\n"
     ));
     assert!(!stdout
         .contains("node=planner|strategy_generation|Strategy Generation|strategy_generation|"));
@@ -6189,7 +6210,7 @@ fn task_graph_filters_latest_nodes_by_contains_text() {
     assert!(stdout.contains(
         "node=planner|strategy_generation|Strategy Generation|strategy_generation|completed|"
     ));
-    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md|<none>\n"));
+    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"));
     assert!(!stdout.contains("node=planner|market_scan|"));
 
     cleanup_history_path(&history_path);
@@ -6266,7 +6287,11 @@ fn task_graph_contains_filter_combines_with_role_filter() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "moat task graph\nnode=coder|implementation|Implementation|implementation|completed|spec_planning|<none>|<none>\n"
+        concat!(
+            "moat task graph\n",
+            "node=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n",
+            "assigned_agent_id=implementation|<none>\n",
+        )
     );
 
     cleanup_history_path(&history_path);
@@ -6379,10 +6404,9 @@ fn task_graph_limit_bounds_rendered_nodes_after_filters() {
             .count(),
         2
     );
-    assert!(stdout.contains(
-        "node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>|<none>\n"
-    ));
-    assert!(stdout.contains("node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>|<none>\n"));
+    assert!(stdout
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout.contains("node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"));
     assert!(!stdout.contains("node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|"));
 
     cleanup_history_path(&history_path);
