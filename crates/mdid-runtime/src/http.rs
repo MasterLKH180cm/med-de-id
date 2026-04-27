@@ -900,8 +900,23 @@ fn rewrite_xlsx_workbook_bytes(
     rows: &[Vec<&str>],
 ) -> Result<Vec<u8>, XlsxRewriteError> {
     let worksheet_path = find_first_non_empty_worksheet_path(original_workbook)?;
+    let original_sheet = XlsxTabularAdapter::new(Vec::new())
+        .extract(original_workbook)
+        .map_err(|_| XlsxRewriteError::MissingPart("worksheet range"))?;
+    let original_headers = original_sheet
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    let original_rows = original_sheet
+        .rows
+        .iter()
+        .map(|row| row.iter().map(|value| value.as_str()).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
     let rewritten_sheet_xml = rewrite_sheet_xml(
         read_zip_entry(original_workbook, &worksheet_path)?.as_slice(),
+        &original_headers,
+        &original_rows,
         headers,
         rows,
     )?;
@@ -1014,65 +1029,86 @@ fn select_first_non_empty_sheet_name(workbook_bytes: &[u8]) -> Result<String, Xl
 
 fn rewrite_sheet_xml(
     worksheet_xml: &[u8],
+    original_headers: &[&str],
+    original_rows: &[Vec<&str>],
     headers: &[&str],
     rows: &[Vec<&str>],
 ) -> Result<Vec<u8>, XlsxRewriteError> {
     let mut worksheet = Element::parse(worksheet_xml)?;
-    if let Some(dimension) = worksheet.get_mut_child("dimension") {
-        dimension
-            .attributes
-            .insert("ref".into(), worksheet_dimension(headers.len(), rows.len()).to_string());
-    }
-
-    let sheet_data_index = worksheet
-        .children
-        .iter()
-        .position(|node| matches!(node, XMLNode::Element(element) if element.name == "sheetData"))
+    let sheet_data = worksheet
+        .get_mut_child("sheetData")
         .ok_or(XlsxRewriteError::MissingPart("sheetData"))?;
-    worksheet.children[sheet_data_index] = XMLNode::Element(build_sheet_data_element(headers, rows));
+
+    for (row_index, (original_row, rewritten_row)) in std::iter::once((original_headers, headers))
+        .chain(original_rows.iter().zip(rows.iter()).map(|(original, rewritten)| {
+            (original.as_slice(), rewritten.as_slice())
+        }))
+        .enumerate()
+    {
+        for (column_index, (original_value, rewritten_value)) in original_row.iter().zip(rewritten_row.iter()).enumerate() {
+            if original_value == rewritten_value {
+                continue;
+            }
+            let reference = format!("{}{}", excel_column_name(column_index), row_index + 1);
+            upsert_inline_string_cell(sheet_data, row_index + 1, &reference, rewritten_value);
+        }
+    }
 
     let mut rewritten = Vec::new();
     worksheet.write(&mut rewritten)?;
     Ok(rewritten)
 }
 
-fn build_sheet_data_element(headers: &[&str], rows: &[Vec<&str>]) -> Element {
-    let mut sheet_data = Element::new("sheetData");
+fn upsert_inline_string_cell(sheet_data: &mut Element, row_number: usize, reference: &str, value: &str) {
+    let row = get_or_create_row(sheet_data, row_number);
+    let cell = get_or_create_cell(row, reference);
+    cell.attributes.insert("r".into(), reference.into());
+    cell.attributes.insert("t".into(), "inlineStr".into());
+    cell.children.clear();
 
-    for (row_index, row) in std::iter::once(headers.to_vec()).chain(rows.iter().cloned()).enumerate() {
-        let mut row_element = Element::new("row");
-        row_element
-            .attributes
-            .insert("r".into(), (row_index + 1).to_string());
-
-        for (column_index, value) in row.iter().enumerate() {
-            let mut cell = Element::new("c");
-            cell.attributes.insert(
-                "r".into(),
-                format!("{}{}", excel_column_name(column_index), row_index + 1),
-            );
-            cell.attributes.insert("t".into(), "inlineStr".into());
-
-            let mut inline_string = Element::new("is");
-            let mut text = Element::new("t");
-            text.children.push(XMLNode::Text(value.to_string()));
-            inline_string.children.push(XMLNode::Element(text));
-            cell.children.push(XMLNode::Element(inline_string));
-            row_element.children.push(XMLNode::Element(cell));
-        }
-
-        sheet_data.children.push(XMLNode::Element(row_element));
-    }
-
-    sheet_data
+    let mut inline_string = Element::new("is");
+    let mut text = Element::new("t");
+    text.children.push(XMLNode::Text(value.to_string()));
+    inline_string.children.push(XMLNode::Element(text));
+    cell.children.push(XMLNode::Element(inline_string));
 }
 
-fn worksheet_dimension(column_count: usize, row_count: usize) -> String {
-    if column_count == 0 {
-        return "A1".into();
+fn get_or_create_row(sheet_data: &mut Element, row_number: usize) -> &mut Element {
+    if let Some(index) = sheet_data.children.iter().position(|node| {
+        matches!(node, XMLNode::Element(row)
+            if row.name == "row"
+                && row.attributes.get("r").and_then(|value| value.parse::<usize>().ok()) == Some(row_number))
+    }) {
+        return element_mut(&mut sheet_data.children[index]);
     }
 
-    format!("A1:{}{}", excel_column_name(column_count - 1), row_count + 1)
+    let mut row = Element::new("row");
+    row.attributes.insert("r".into(), row_number.to_string());
+    sheet_data.children.push(XMLNode::Element(row));
+    let last_index = sheet_data.children.len() - 1;
+    element_mut(&mut sheet_data.children[last_index])
+}
+
+fn get_or_create_cell<'a>(row: &'a mut Element, reference: &str) -> &'a mut Element {
+    if let Some(index) = row.children.iter().position(|node| {
+        matches!(node, XMLNode::Element(cell)
+            if cell.name == "c" && cell.attributes.get("r").map(|value| value.as_str()) == Some(reference))
+    }) {
+        return element_mut(&mut row.children[index]);
+    }
+
+    let mut cell = Element::new("c");
+    cell.attributes.insert("r".into(), reference.into());
+    row.children.push(XMLNode::Element(cell));
+    let last_index = row.children.len() - 1;
+    element_mut(&mut row.children[last_index])
+}
+
+fn element_mut(node: &mut XMLNode) -> &mut Element {
+    match node {
+        XMLNode::Element(element) => element,
+        _ => unreachable!("selected xml node should always be an element"),
+    }
 }
 
 fn normalize_workbook_target(target: &str) -> String {

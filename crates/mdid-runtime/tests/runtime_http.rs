@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read, Write};
 
 use axum::{
     body::{to_bytes, Body},
@@ -20,6 +20,8 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
 use uuid::Uuid;
+use xmltree::{Element, XMLNode};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 const SAMPLE_XLSX_WORKBOOK_BASE64: &str = "UEsDBBQAAAAAAHmpm1y2+9qcrgIAAK4CAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbDw/eG1sIHZlcnNpb249IjEuMCIgZW5jb2Rpbmc9IlVURi04IiBzdGFuZGFsb25lPSJ5ZXMiPz4KPFR5cGVzIHhtbG5zPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvcGFja2FnZS8yMDA2L2NvbnRlbnQtdHlwZXMiPgo8RGVmYXVsdCBFeHRlbnNpb249InJlbHMiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtcGFja2FnZS5yZWxhdGlvbnNoaXBzK3htbCIvPgo8RGVmYXVsdCBFeHRlbnNpb249InhtbCIgQ29udGVudFR5cGU9ImFwcGxpY2F0aW9uL3htbCIvPgo8T3ZlcnJpZGUgUGFydE5hbWU9Ii94bC93b3JrYm9vay54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC5zaGVldC5tYWluK3htbCIvPgo8T3ZlcnJpZGUgUGFydE5hbWU9Ii94bC93b3Jrc2hlZXRzL3NoZWV0MS54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC53b3Jrc2hlZXQreG1sIi8+CjxPdmVycmlkZSBQYXJ0TmFtZT0iL3hsL3N0eWxlcy54bWwiIENvbnRlbnRUeXBlPSJhcHBsaWNhdGlvbi92bmQub3BlbnhtbGZvcm1hdHMtb2ZmaWNlZG9jdW1lbnQuc3ByZWFkc2hlZXRtbC5zdHlsZXMreG1sIi8+CjwvVHlwZXM+UEsDBBQAAAAAAHmpm1x+b8CFKgEAACoBAAALAAAAX3JlbHMvLnJlbHM8P3htbCB2ZXJzaW9uPSIxLjAiIGVuY29kaW5nPSJVVEYtOCIgc3RhbmRhbG9uZT0ieWVzIj8+CjxSZWxhdGlvbnNoaXBzIHhtbG5zPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvcGFja2FnZS8yMDA2L3JlbGF0aW9uc2hpcHMiPgo8UmVsYXRpb25zaGlwIElkPSJySWQxIiBUeXBlPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvb2ZmaWNlRG9jdW1lbnQvMjAwNi9yZWxhdGlvbnNoaXBzL29mZmljZURvY3VtZW50IiBUYXJnZXQ9InhsL3dvcmtib29rLnhtbCIvPgo8L1JlbGF0aW9uc2hpcHM+UEsDBBQAAAAAAHmpm1x3QP7EHAEAABwBAAAPAAAAeGwvd29ya2Jvb2sueG1sPD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9InllcyI/Pgo8d29ya2Jvb2sgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9zcHJlYWRzaGVldG1sLzIwMDYvbWFpbiIgeG1sbnM6cj0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL29mZmljZURvY3VtZW50LzIwMDYvcmVsYXRpb25zaGlwcyI+PHNoZWV0cz48c2hlZXQgbmFtZT0iU2hlZXQxIiBzaGVldElkPSIxIiByOmlkPSJySWQxIi8+PC9zaGVldHM+PC93b3JrYm9vaz5QSwMEFAAAAAAAeambXB+qsIOrAQAAqwEAABoAAAB4bC9fcmVscy93b3JrYm9vay54bWwucmVsczw/eG1sIHZlcnNpb249IjEuMCIgZW5jb2Rpbmc9IlVURi04IiBzdGFuZGFsb25lPSJ5ZXMiPz4KPFJlbGF0aW9uc2hpcHMgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9wYWNrYWdlLzIwMDYvcmVsYXRpb25zaGlwcyI+CjxSZWxhdGlvbnNoaXAgSWQ9InJJZDEiIFR5cGU9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9vZmZpY2VEb2N1bWVudC8yMDA2L3JlbGF0aW9uc2hpcHMvd29ya3NoZWV0IiBUYXJnZXQ9IndvcmtzaGVldHMvc2hlZXQxLnhtbCIvPgo8UmVsYXRpb25zaGlwIElkPSJySWQyIiBUeXBlPSJodHRwOi8vc2NoZW1hcy5vcGVueG1sZm9ybWF0cy5vcmcvb2ZmaWNlRG9jdW1lbnQvMjAwNi9yZWxhdGlvbnNoaXBzL3N0eWxlcyIgVGFyZ2V0PSJzdHlsZXMueG1sIi8+CjwvUmVsYXRpb25zaGlwcz5QSwMEFAAAAAAAeambXL2k1bb0AQAA9AEAAA0AAAB4bC9zdHlsZXMueG1sPD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9InllcyI/Pgo8c3R5bGVTaGVldCB4bWxucz0iaHR0cDovL3NjaGVtYXMub3BlbnhtbGZvcm1hdHMub3JnL3NwcmVhZHNoZWV0bWwvMjAwNi9tYWluIj48Zm9udHMgY291bnQ9IjEiPjxmb250PjxzeiB2YWw9IjExIi8+PG5hbWUgdmFsPSJDYWxpYnJpIi8+PC9mb250PjwvZm9udHM+PGZpbGxzIGNvdW50PSIxIj48ZmlsbD48cGF0dGVybkZpbGwgcGF0dGVyblR5cGU9Im5vbmUiLz48L2ZpbGw+PC9maWxscz48Ym9yZGVycyBjb3VudD0iMSI+PGJvcmRlci8+PC9ib3JkZXJzPjxjZWxsU3R5bGVYZnMgY291bnQ9IjEiPjx4Zi8+PC9jZWxsU3R5bGVYZnM+PGNlbGxYZnMgY291bnQ9IjEiPjx4ZiB4ZklkPSIwIi8+PC9jZWxsWGZzPjxjZWxsU3R5bGVzIGNvdW50PSIxIj48Y2VsbFN0eWxlIG5hbWU9Ik5vcm1hbCIgeGZJZD0iMCIgYnVpbHRpbklkPSIwIi8+PC9jZWxsU3R5bGVzPjwvc3R5bGVTaGVldD5QSwMEFAAAAAAAeambXJyibJUdAgAAHQIAABgAAAB4bC93b3Jrc2hlZXRzL3NoZWV0MS54bWw8P3htbCB2ZXJzaW9uPSIxLjAiIGVuY29kaW5nPSJVVEYtOCIgc3RhbmRhbG9uZT0ieWVzIj8+Cjx3b3Jrc2hlZXQgeG1sbnM9Imh0dHA6Ly9zY2hlbWFzLm9wZW54bWxmb3JtYXRzLm9yZy9zcHJlYWRzaGVldG1sLzIwMDYvbWFpbiI+PHNoZWV0RGF0YT48cm93IHI9IjEiPjxjIHI9IkExIiB0PSJpbmxpbmVTdHIiPjxpcz48dD5wYXRpZW50X2lkPC90PjwvaXM+PC9jPjxjIHI9IkIxIiB0PSJpbmxpbmVTdHIiPjxpcz48dD5wYXRpZW50X25hbWU8L3Q+PC9pcz48L2M+PC9yb3c+PHJvdyByPSIyIj48YyByPSJBMiIgdD0iaW5saW5lU3RyIj48aXM+PHQ+TVJOLTAwMTwvdD48L2lzPjwvYz48YyByPSJCMiIgdD0iaW5saW5lU3RyIj48aXM+PHQ+QWxpY2UgU21pdGg8L3Q+PC9pcz48L2M+PC9yb3c+PHJvdyByPSIzIj48YyByPSJBMyIgdD0iaW5saW5lU3RyIj48aXM+PHQ+TVJOLTAwMTwvdD48L2lzPjwvYz48YyByPSJCMyIgdD0iaW5saW5lU3RyIj48aXM+PHQ+QWxpY2UgU21pdGg8L3Q+PC9pcz48L2M+PC9yb3c+PC9zaGVldERhdGE+PC93b3Jrc2hlZXQ+UEsBAhQDFAAAAAAAeambXLb72pyuAgAArgIAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAMUAAAAAAB5qZtcfm/AhSoBAAAqAQAACwAAAAAAAAAAAAAAgAHfAgAAX3JlbHMvLnJlbHNQSwECFAMUAAAAAAB5qZtcd0D+xBwBAAAcAQAADwAAAAAAAAAAAAAAgAEyBAAAeGwvd29ya2Jvb2sueG1sUEsBAhQDFAAAAAAAeambXB+qsIOrAQAAqwEAABoAAAAAAAAAAAAAAIABewUAAHhsL19yZWxzL3dvcmtib29rLnhtbC5yZWxzUEsBAhQDFAAAAAAAeambXL2k1bb0AQAA9AEAAA0AAAAAAAAAAAAAAIABXgcAAHhsL3N0eWxlcy54bWxQSwECFAMUAAAAAAB5qZtcnKJslR0CAAAdAgAAGAAAAAAAAAAAAAAAgAF9CQAAeGwvd29ya3NoZWV0cy9zaGVldDEueG1sUEsFBgAAAAAGAAYAgAEAANALAAAAAA==";
 
@@ -248,6 +250,63 @@ async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary
     assert_eq!(json["summary"]["review_required_cells"], 2);
     assert_eq!(json["summary"]["failed_rows"], 0);
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn tabular_xlsx_deidentify_endpoint_preserves_selected_sheet_fidelity() {
+    let app = build_router(RuntimeState::default());
+    let workbook = workbook_with_selected_sheet_extras();
+    let original_notes_xml = read_workbook_entry(&workbook, "xl/worksheets/sheet3.xml");
+    let original_patients_xml = read_workbook_entry(&workbook, "xl/worksheets/sheet2.xml");
+    assert!(original_patients_xml.contains("<v>42</v>"), "{original_patients_xml}");
+
+    let request = json!({
+        "workbook_base64": STANDARD.encode(&workbook),
+        "field_policies": [
+            {
+                "header": "patient_id",
+                "phi_type": "patient_id",
+                "action": "encode"
+            }
+        ]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/tabular/deidentify/xlsx")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let rewritten_workbook = STANDARD
+        .decode(json["rewritten_workbook_base64"].as_str().unwrap())
+        .unwrap();
+
+    let patients_xml = read_workbook_entry(&rewritten_workbook, "xl/worksheets/sheet2.xml");
+    assert!(patients_xml.contains("r=\"C2\""), "{patients_xml}");
+    assert!(patients_xml.contains("<v>42</v>"), "{patients_xml}");
+    assert!(patients_xml.contains("s=\"0\""), "{patients_xml}");
+    assert!(patients_xml.contains("r=\"D5\""), "{patients_xml}");
+    assert!(patients_xml.contains("<f>SUM(C2,8)</f>"), "{patients_xml}");
+    assert!(patients_xml.contains("<v>50</v>"), "{patients_xml}");
+    assert!(patients_xml.contains("status note"), "{patients_xml}");
+
+    let notes_xml = read_workbook_entry(&rewritten_workbook, "xl/worksheets/sheet3.xml");
+    assert_eq!(notes_xml, original_notes_xml);
+
+    let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(&rewritten_workbook)).unwrap();
+    let patient_rows = worksheet_rows(workbook.worksheet_range("Patients").unwrap());
+    assert_eq!(patient_rows[1][2], "42");
+    assert_eq!(patient_rows[4][3], "50");
 }
 
 #[tokio::test]
@@ -1846,6 +1905,40 @@ async fn portable_artifact_import_endpoint_rejects_invalid_vault_target() {
     assert_invalid_vault_target_response(response).await;
 }
 
+fn workbook_with_selected_sheet_extras() -> Vec<u8> {
+    let workbook = workbook_with_named_sheets(
+        "Cover",
+        vec![],
+        "Patients",
+        vec![
+            vec!["patient_id", "patient_name"],
+            vec!["MRN-001", "Alice Smith"],
+            vec!["MRN-002", "Bob Jones"],
+        ],
+        Some(("Notes", vec![vec!["status"], vec!["keep me"]])),
+    );
+
+    rewrite_workbook_entry(&workbook, "xl/worksheets/sheet2.xml", |sheet_xml| {
+        let mut worksheet = Element::parse(sheet_xml.as_bytes()).unwrap();
+        let sheet_data = worksheet.get_mut_child("sheetData").unwrap();
+
+        let row_two = find_row_mut(sheet_data, 2).unwrap();
+        row_two.children.push(XMLNode::Element(number_cell("C2", "42", Some("0"))));
+        row_two.children.push(XMLNode::Element(inline_string_cell("D2", "status note", None)));
+
+        let mut row_five = Element::new("row");
+        row_five.attributes.insert("r".into(), "5".into());
+        row_five
+            .children
+            .push(XMLNode::Element(formula_cell("D5", "SUM(C2,8)", "50")));
+        sheet_data.children.push(XMLNode::Element(row_five));
+
+        let mut rewritten = Vec::new();
+        worksheet.write(&mut rewritten).unwrap();
+        String::from_utf8(rewritten).unwrap()
+    })
+}
+
 fn workbook_with_named_sheets(
     cover_sheet_name: &str,
     cover_rows: Vec<Vec<&str>>,
@@ -1880,6 +1973,94 @@ fn write_worksheet_rows(worksheet: &mut rust_xlsxwriter::Worksheet, rows: &[Vec<
                 .unwrap();
         }
     }
+}
+
+fn read_workbook_entry(workbook: &[u8], path: &str) -> String {
+    let mut archive = ZipArchive::new(Cursor::new(workbook)).unwrap();
+    let mut file = archive.by_name(path).unwrap();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    contents
+}
+
+fn rewrite_workbook_entry(
+    workbook: &[u8],
+    path: &str,
+    rewrite: impl FnOnce(String) -> String,
+) -> Vec<u8> {
+    let mut archive = ZipArchive::new(Cursor::new(workbook)).unwrap();
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut rewrite = Some(rewrite);
+
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).unwrap();
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).unwrap();
+        let options = SimpleFileOptions::default().compression_method(file.compression());
+        writer.start_file(file.name(), options).unwrap();
+        if file.name() == path {
+            let rewritten = rewrite.take().unwrap()(String::from_utf8(contents).unwrap());
+            writer.write_all(rewritten.as_bytes()).unwrap();
+        } else {
+            writer.write_all(&contents).unwrap();
+        }
+    }
+
+    writer.finish().unwrap().into_inner()
+}
+
+fn find_row_mut(sheet_data: &mut Element, row_number: u32) -> Option<&mut Element> {
+    sheet_data.children.iter_mut().find_map(|node| match node {
+        XMLNode::Element(row)
+            if row.name == "row"
+                && row.attributes.get("r").and_then(|value| value.parse::<u32>().ok()) == Some(row_number) =>
+        {
+            Some(row)
+        }
+        _ => None,
+    })
+}
+
+fn inline_string_cell(reference: &str, value: &str, style: Option<&str>) -> Element {
+    let mut cell = Element::new("c");
+    cell.attributes.insert("r".into(), reference.into());
+    cell.attributes.insert("t".into(), "inlineStr".into());
+    if let Some(style) = style {
+        cell.attributes.insert("s".into(), style.into());
+    }
+
+    let mut text = Element::new("t");
+    text.children.push(XMLNode::Text(value.into()));
+    let mut inline_string = Element::new("is");
+    inline_string.children.push(XMLNode::Element(text));
+    cell.children.push(XMLNode::Element(inline_string));
+    cell
+}
+
+fn number_cell(reference: &str, value: &str, style: Option<&str>) -> Element {
+    let mut cell = Element::new("c");
+    cell.attributes.insert("r".into(), reference.into());
+    if let Some(style) = style {
+        cell.attributes.insert("s".into(), style.into());
+    }
+    let mut cell_value = Element::new("v");
+    cell_value.children.push(XMLNode::Text(value.into()));
+    cell.children.push(XMLNode::Element(cell_value));
+    cell
+}
+
+fn formula_cell(reference: &str, formula: &str, value: &str) -> Element {
+    let mut cell = Element::new("c");
+    cell.attributes.insert("r".into(), reference.into());
+
+    let mut formula_element = Element::new("f");
+    formula_element.children.push(XMLNode::Text(formula.into()));
+    cell.children.push(XMLNode::Element(formula_element));
+
+    let mut value_element = Element::new("v");
+    value_element.children.push(XMLNode::Text(value.into()));
+    cell.children.push(XMLNode::Element(value_element));
+    cell
 }
 
 fn worksheet_rows(range: calamine::Range<Data>) -> Vec<Vec<String>> {
