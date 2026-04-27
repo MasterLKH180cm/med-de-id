@@ -1,11 +1,17 @@
 use chrono::{DateTime, Utc};
 use mdid_application::{build_default_moat_task_graph, summarize_round_memory};
-use mdid_domain::{AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary};
+use mdid_domain::{
+    AgentRole, ContinueDecision, DecisionLogEntry, MoatRoundSummary, MoatTaskNodeState,
+};
 use mdid_runtime::{
     moat::{MoatControlPlaneReport, MoatRoundReport},
     moat_history::{LocalMoatHistoryStore, MoatHistorySummary},
 };
-use std::fs;
+use std::{
+    fs,
+    sync::{Arc, Barrier},
+    thread,
+};
 use tempfile::tempdir;
 use uuid::Uuid;
 
@@ -530,6 +536,446 @@ fn continuation_gate_blocks_when_latest_round_improvement_is_below_threshold() {
 }
 
 #[test]
+fn claim_ready_task_marks_latest_ready_node_in_progress_and_persists() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let earlier_round_id = Uuid::new_v4();
+    let latest_round_id = Uuid::new_v4();
+    let mut earlier_report = sample_report(
+        earlier_round_id,
+        ContinueDecision::Continue,
+        None,
+        "earlier round remains untouched",
+        80,
+        88,
+        true,
+        &[],
+    );
+    let mut latest_report = sample_report(
+        latest_round_id,
+        ContinueDecision::Continue,
+        None,
+        "latest round has a ready implementation task",
+        90,
+        98,
+        true,
+        &[
+            "market_scan",
+            "competitor_analysis",
+            "lockin_analysis",
+            "strategy_generation",
+            "spec_planning",
+        ],
+    );
+    set_node_state(
+        &mut earlier_report,
+        "implementation",
+        MoatTaskNodeState::Ready,
+    );
+    set_node_state(
+        &mut latest_report,
+        "implementation",
+        MoatTaskNodeState::Ready,
+    );
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), earlier_report)
+        .expect("earlier report should persist");
+    store
+        .append(recorded_at("2026-04-25T21:00:00Z"), latest_report)
+        .expect("latest report should persist");
+
+    store
+        .claim_ready_task(None, "implementation")
+        .expect("ready latest task should be claimed");
+    drop(store);
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("reloaded history store should open");
+    let entries = reloaded.entries();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        node_state(&entries[0].report, "implementation"),
+        MoatTaskNodeState::Ready
+    );
+    assert_eq!(
+        node_state(&entries[1].report, "implementation"),
+        MoatTaskNodeState::InProgress
+    );
+    assert_eq!(entries[1].report.summary.round_id, latest_round_id);
+    assert_eq!(entries[1].report.summary.moat_score_after, 98);
+}
+
+#[test]
+fn claim_ready_task_rejects_stale_second_handle_without_overwriting_claim() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "ready node can only be claimed once",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+
+    let mut seed_store =
+        LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    seed_store
+        .append(recorded_at("2026-04-25T21:00:00Z"), report)
+        .expect("ready report should persist");
+    drop(seed_store);
+
+    let mut first_handle = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("first handle should open ready history");
+    let mut stale_second_handle = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("second handle should open same ready history");
+
+    first_handle
+        .claim_ready_task(None, "implementation")
+        .expect("first handle should claim ready task");
+
+    let error = stale_second_handle
+        .claim_ready_task(None, "implementation")
+        .expect_err("stale second handle must not claim already in-progress task");
+    assert!(
+        error.to_string().contains("moat task node is not ready"),
+        "unexpected error: {error}"
+    );
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path).expect("reload should open");
+    assert_eq!(
+        node_state(&reloaded.entries()[0].report, "implementation"),
+        MoatTaskNodeState::InProgress,
+        "stale failed claim must not overwrite persisted in-progress state"
+    );
+}
+
+#[test]
+fn concurrent_claim_ready_task_allows_exactly_one_claimer() {
+    for attempt in 0..100 {
+        let dir = tempdir().expect("temp dir should exist");
+        let history_path = dir.path().join("moat-history.json");
+        let round_id = Uuid::new_v4();
+        let mut report = sample_report(
+            round_id,
+            ContinueDecision::Continue,
+            None,
+            "concurrent ready node can only be claimed once",
+            90,
+            98,
+            true,
+            &[],
+        );
+        set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+
+        let mut seed_store =
+            LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+        seed_store
+            .append(recorded_at("2026-04-25T21:00:00Z"), report)
+            .expect("ready report should persist");
+        drop(seed_store);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let history_path = history_path.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let mut store = LocalMoatHistoryStore::open_existing(&history_path)
+                        .expect("claimer should open existing history");
+                    barrier.wait();
+                    store.claim_ready_task(None, "implementation")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claimer thread should not panic"))
+            .collect::<Vec<_>>();
+        let success_count = results.iter().filter(|result| result.is_ok()).count();
+        let not_ready_count = results
+            .iter()
+            .filter(|result| {
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.to_string().contains("moat task node is not ready"))
+            })
+            .count();
+
+        assert_eq!(success_count, 1, "attempt {attempt}: {results:?}");
+        assert_eq!(not_ready_count, 1, "attempt {attempt}: {results:?}");
+
+        let reloaded =
+            LocalMoatHistoryStore::open_existing(&history_path).expect("reload should open");
+        assert_eq!(
+            node_state(&reloaded.entries()[0].report, "implementation"),
+            MoatTaskNodeState::InProgress,
+            "attempt {attempt}: persisted node must remain in progress"
+        );
+    }
+}
+
+#[test]
+fn claim_ready_task_uses_exact_round_id_when_provided() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let earlier_round_id = Uuid::new_v4();
+    let latest_round_id = Uuid::new_v4();
+    let mut earlier_report = sample_report(
+        earlier_round_id,
+        ContinueDecision::Continue,
+        None,
+        "claim exact earlier round",
+        80,
+        88,
+        true,
+        &[],
+    );
+    let mut latest_report = sample_report(
+        latest_round_id,
+        ContinueDecision::Continue,
+        None,
+        "latest remains untouched",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut earlier_report, "market_scan", MoatTaskNodeState::Ready);
+    set_node_state(&mut latest_report, "market_scan", MoatTaskNodeState::Ready);
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), earlier_report)
+        .expect("earlier persist");
+    store
+        .append(recorded_at("2026-04-25T21:00:00Z"), latest_report)
+        .expect("latest persist");
+
+    store
+        .claim_ready_task(Some(&earlier_round_id.to_string()), "market_scan")
+        .expect("exact earlier ready task should be claimed");
+    drop(store);
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path).expect("reload should open");
+    assert_eq!(
+        node_state(&reloaded.entries()[0].report, "market_scan"),
+        MoatTaskNodeState::InProgress
+    );
+    assert_eq!(
+        node_state(&reloaded.entries()[1].report, "market_scan"),
+        MoatTaskNodeState::Ready
+    );
+}
+
+#[test]
+fn claim_ready_task_rejects_unknown_nodes() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(
+            recorded_at("2026-04-25T20:00:00Z"),
+            sample_report(
+                round_id,
+                ContinueDecision::Continue,
+                None,
+                "ready round",
+                90,
+                98,
+                true,
+                &[],
+            ),
+        )
+        .expect("report should persist");
+
+    let error = store
+        .claim_ready_task(None, "missing_node")
+        .expect_err("unknown node should fail");
+
+    assert!(
+        error.to_string().contains("moat task node not found"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn claim_ready_task_rejects_non_ready_nodes() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "completed node cannot be claimed",
+        90,
+        98,
+        true,
+        &["market_scan"],
+    );
+    set_node_state(&mut report, "market_scan", MoatTaskNodeState::Completed);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("report should persist");
+
+    let error = store
+        .claim_ready_task(None, "market_scan")
+        .expect_err("non-ready node should fail");
+
+    assert!(
+        error.to_string().contains("moat task node is not ready"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn claim_then_complete_task_persists_completed_state() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "claimed node can be completed",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("report should persist");
+    store
+        .claim_ready_task(None, "implementation")
+        .expect("ready task should be claimed");
+    store
+        .complete_in_progress_task(None, "implementation")
+        .expect("in-progress task should be completed");
+    drop(store);
+
+    let reloaded = LocalMoatHistoryStore::open_existing(&history_path).expect("reload should open");
+    assert_eq!(
+        node_state(&reloaded.entries()[0].report, "implementation"),
+        MoatTaskNodeState::Completed
+    );
+}
+
+#[test]
+fn block_task_returns_reloaded_latest_round_id_for_implicit_round_selection() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let first_round_id = Uuid::new_v4();
+    let latest_round_id = Uuid::new_v4();
+    let mut first_report = sample_report(
+        first_round_id,
+        ContinueDecision::Continue,
+        None,
+        "older round should not be reported",
+        90,
+        98,
+        true,
+        &[],
+    );
+    let mut latest_report = sample_report(
+        latest_round_id,
+        ContinueDecision::Continue,
+        None,
+        "reloaded latest round should be reported",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(
+        &mut first_report,
+        "implementation",
+        MoatTaskNodeState::InProgress,
+    );
+    set_node_state(
+        &mut latest_report,
+        "implementation",
+        MoatTaskNodeState::InProgress,
+    );
+
+    let mut stale_store =
+        LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    stale_store
+        .append(recorded_at("2026-04-25T20:00:00Z"), first_report)
+        .expect("first report should persist");
+    let mut concurrent_store = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("concurrent history store should open");
+    concurrent_store
+        .append(recorded_at("2026-04-25T20:01:00Z"), latest_report)
+        .expect("latest report should persist");
+    drop(concurrent_store);
+
+    let mutated_round_id = stale_store
+        .block_in_progress_task(None, "implementation")
+        .expect("in-progress task should be blocked");
+
+    assert_eq!(mutated_round_id, latest_round_id.to_string());
+    assert_eq!(
+        node_state(&stale_store.entries()[0].report, "implementation"),
+        MoatTaskNodeState::InProgress
+    );
+    assert_eq!(
+        node_state(&stale_store.entries()[1].report, "implementation"),
+        MoatTaskNodeState::Blocked
+    );
+}
+
+#[test]
+fn complete_task_rejects_non_in_progress_node() {
+    let dir = tempdir().expect("temp dir should exist");
+    let history_path = dir.path().join("moat-history.json");
+    let round_id = Uuid::new_v4();
+    let mut report = sample_report(
+        round_id,
+        ContinueDecision::Continue,
+        None,
+        "ready node cannot be completed before claim",
+        90,
+        98,
+        true,
+        &[],
+    );
+    set_node_state(&mut report, "implementation", MoatTaskNodeState::Ready);
+    let mut store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    store
+        .append(recorded_at("2026-04-25T20:00:00Z"), report)
+        .expect("report should persist");
+
+    let error = store
+        .complete_in_progress_task(None, "implementation")
+        .expect_err("non-in-progress node should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("moat task node is not in progress"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        node_state(&store.entries()[0].report, "implementation"),
+        MoatTaskNodeState::Ready
+    );
+}
+
+#[test]
 fn continuation_gate_uses_reloaded_persisted_history() {
     let dir = tempdir().expect("temp dir should exist");
     let history_path = dir.path().join("moat-history.json");
@@ -629,6 +1075,28 @@ fn sample_report(
         stop_reason: stop_reason.map(str::to_string),
         control_plane,
     }
+}
+
+fn set_node_state(report: &mut MoatRoundReport, node_id: &str, state: MoatTaskNodeState) {
+    let node = report
+        .control_plane
+        .task_graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.node_id == node_id)
+        .expect("sample task node should exist");
+    node.state = state;
+}
+
+fn node_state(report: &MoatRoundReport, node_id: &str) -> MoatTaskNodeState {
+    report
+        .control_plane
+        .task_graph
+        .nodes
+        .iter()
+        .find(|node| node.node_id == node_id)
+        .expect("sample task node should exist")
+        .state
 }
 
 fn recorded_at(value: &str) -> DateTime<Utc> {

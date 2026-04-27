@@ -1,11 +1,14 @@
 use crate::moat::MoatRoundReport;
 use chrono::{DateTime, Utc};
-use mdid_domain::ContinueDecision;
+use mdid_domain::{ContinueDecision, MoatTaskNodeState};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io::Write,
+    ffi::OsString,
+    fs::{self, OpenOptions},
+    io::{self, Write},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -19,6 +22,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 const EVALUATION_TASK_ID: &str = "evaluation";
+const CLAIM_LOCK_RETRY_ATTEMPTS: usize = 200;
+const CLAIM_LOCK_RETRY_SLEEP: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoatHistoryEntry {
@@ -189,11 +194,229 @@ impl LocalMoatHistoryStore {
         }
     }
 
+    pub fn claim_ready_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<(), ClaimReadyTaskError> {
+        if !self.path.exists() {
+            return Err(ClaimReadyTaskError::Store(
+                LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
+            ));
+        }
+
+        let _claim_lock = ClaimReadyTaskLock::acquire(&self.path)?;
+        let mut next_entries = load_entries(&self.path)?;
+        let entry = match round_id {
+            Some(round_id) => next_entries
+                .iter_mut()
+                .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+                .ok_or_else(|| ClaimReadyTaskError::RoundNotFound(round_id.to_string()))?,
+            None => next_entries
+                .last_mut()
+                .ok_or(ClaimReadyTaskError::NoHistoryEntries)?,
+        };
+
+        let node = entry
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| ClaimReadyTaskError::NodeNotFound {
+                round_id: entry.report.summary.round_id.to_string(),
+                node_id: node_id.to_string(),
+            })?;
+
+        if node.state != MoatTaskNodeState::Ready {
+            return Err(ClaimReadyTaskError::NodeNotReady {
+                round_id: entry.report.summary.round_id.to_string(),
+                node_id: node_id.to_string(),
+                state: node.state,
+            });
+        }
+
+        node.state = MoatTaskNodeState::InProgress;
+        self.persist(&next_entries)?;
+        self.entries = next_entries;
+        Ok(())
+    }
+
+    pub fn complete_in_progress_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::InProgress,
+            MoatTaskNodeState::Completed,
+        )
+    }
+
+    pub fn block_in_progress_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::InProgress,
+            MoatTaskNodeState::Blocked,
+        )
+    }
+
+    pub fn release_in_progress_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::InProgress,
+            MoatTaskNodeState::Ready,
+        )
+    }
+
+    pub fn unblock_blocked_task(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state(
+            round_id,
+            node_id,
+            MoatTaskNodeState::Blocked,
+            MoatTaskNodeState::Ready,
+        )
+    }
+
+    fn transition_task_state(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+        expected_state: MoatTaskNodeState,
+        next_state: MoatTaskNodeState,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        if !self.path.exists() {
+            return Err(CompleteInProgressTaskError::Store(
+                LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
+            ));
+        }
+
+        let _claim_lock = ClaimReadyTaskLock::acquire(&self.path)?;
+        let mut next_entries = load_entries(&self.path)?;
+        let entry = match round_id {
+            Some(round_id) => next_entries
+                .iter_mut()
+                .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+                .ok_or_else(|| CompleteInProgressTaskError::RoundNotFound(round_id.to_string()))?,
+            None => next_entries
+                .last_mut()
+                .ok_or(CompleteInProgressTaskError::NoHistoryEntries)?,
+        };
+
+        let selected_round_id = entry.report.summary.round_id.to_string();
+        let node = entry
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| CompleteInProgressTaskError::NodeNotFound {
+                round_id: selected_round_id.clone(),
+                node_id: node_id.to_string(),
+            })?;
+
+        if node.state != expected_state {
+            if expected_state == MoatTaskNodeState::InProgress {
+                return Err(CompleteInProgressTaskError::NodeNotInProgress {
+                    round_id: selected_round_id.clone(),
+                    node_id: node_id.to_string(),
+                    state: node.state,
+                });
+            }
+            return Err(CompleteInProgressTaskError::NodeNotInExpectedState {
+                round_id: selected_round_id.clone(),
+                node_id: node_id.to_string(),
+                state: node.state,
+                expected_state,
+            });
+        }
+
+        node.state = next_state;
+        self.persist(&next_entries)?;
+        self.entries = next_entries;
+        Ok(selected_round_id)
+    }
+
     fn persist(&self, entries: &[MoatHistoryEntry]) -> Result<(), LocalMoatHistoryStoreError> {
         let contents = serde_json::to_vec_pretty(entries)?;
         atomic_write(&self.path, &contents)?;
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct ClaimReadyTaskLock {
+    path: PathBuf,
+}
+
+impl ClaimReadyTaskLock {
+    fn acquire(history_path: &Path) -> Result<Self, LocalMoatHistoryStoreError> {
+        let path = claim_lock_path(history_path);
+        for attempt in 0..CLAIM_LOCK_RETRY_ATTEMPTS {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    if attempt + 1 == CLAIM_LOCK_RETRY_ATTEMPTS {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "timed out acquiring moat history claim lock: {}",
+                                path.display()
+                            ),
+                        )
+                        .into());
+                    }
+                    thread::sleep(CLAIM_LOCK_RETRY_SLEEP);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "timed out acquiring moat history claim lock: {}",
+                path.display()
+            ),
+        )
+        .into())
+    }
+}
+
+impl Drop for ClaimReadyTaskLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn claim_lock_path(history_path: &Path) -> PathBuf {
+    let mut lock_file_name = history_path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| OsString::from("moat-history.json"));
+    lock_file_name.push(".lock");
+    history_path.with_file_name(lock_file_name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +516,49 @@ fn encode_wide_path(path: &Path) -> Vec<u16> {
 }
 
 #[derive(Debug, Error)]
+pub enum ClaimReadyTaskError {
+    #[error(transparent)]
+    Store(#[from] LocalMoatHistoryStoreError),
+    #[error("no moat history entries exist")]
+    NoHistoryEntries,
+    #[error("moat round not found: {0}")]
+    RoundNotFound(String),
+    #[error("moat task node not found in round {round_id}: {node_id}")]
+    NodeNotFound { round_id: String, node_id: String },
+    #[error("moat task node is not ready in round {round_id}: {node_id} is {state:?}")]
+    NodeNotReady {
+        round_id: String,
+        node_id: String,
+        state: MoatTaskNodeState,
+    },
+}
+
+#[derive(Debug, Error)]
+pub enum CompleteInProgressTaskError {
+    #[error(transparent)]
+    Store(#[from] LocalMoatHistoryStoreError),
+    #[error("no moat history entries exist")]
+    NoHistoryEntries,
+    #[error("moat round not found: {0}")]
+    RoundNotFound(String),
+    #[error("moat task node not found in round {round_id}: {node_id}")]
+    NodeNotFound { round_id: String, node_id: String },
+    #[error("moat task node is not in progress in round {round_id}: {node_id} is {state:?}")]
+    NodeNotInProgress {
+        round_id: String,
+        node_id: String,
+        state: MoatTaskNodeState,
+    },
+    #[error("moat task node is not in expected state in round {round_id}: {node_id} is {state:?}, expected {expected_state:?}")]
+    NodeNotInExpectedState {
+        round_id: String,
+        node_id: String,
+        state: MoatTaskNodeState,
+        expected_state: MoatTaskNodeState,
+    },
+}
+
+#[derive(Debug, Error)]
 pub enum LocalMoatHistoryStoreError {
     #[error("failed to access moat history file")]
     Io(#[from] std::io::Error),
@@ -300,4 +566,96 @@ pub enum LocalMoatHistoryStoreError {
     Json(#[from] serde_json::Error),
     #[error("moat history file does not exist: {0}")]
     MissingFile(PathBuf),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::moat::{run_bounded_round, MoatRoundInput};
+    use chrono::Utc;
+    use mdid_domain::{
+        CompetitorProfile, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType, ResourceBudget,
+    };
+    use tempfile::TempDir;
+
+    #[test]
+    fn release_in_progress_task_returns_node_to_ready() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let history_path = temp_dir.path().join("moat-history.json");
+        let mut report = run_bounded_round(sample_round_input());
+        let round_id = report.summary.round_id;
+        report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist")
+            .state = MoatTaskNodeState::InProgress;
+        fs::write(
+            &history_path,
+            serde_json::to_vec_pretty(&vec![MoatHistoryEntry {
+                recorded_at: Utc::now(),
+                report,
+            }])
+            .expect("failed to serialize history"),
+        )
+        .expect("failed to write history");
+
+        let mut store =
+            LocalMoatHistoryStore::open(history_path.clone()).expect("failed to open history");
+        let selected_round_id = store
+            .release_in_progress_task(None, "strategy_generation")
+            .expect("failed to release task");
+
+        assert_eq!(selected_round_id, round_id.to_string());
+        let entries = load_entries(&history_path).expect("failed to reload entries");
+        let strategy_node = entries[0]
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist");
+        assert_eq!(strategy_node.state, MoatTaskNodeState::Ready);
+    }
+
+    fn sample_round_input() -> MoatRoundInput {
+        MoatRoundInput {
+            market: MarketMoatSnapshot {
+                market_id: "healthcare-deid".into(),
+                moat_score: 45,
+                ..MarketMoatSnapshot::default()
+            },
+            competitor: CompetitorProfile {
+                competitor_id: "comp-1".into(),
+                threat_score: 30,
+                ..CompetitorProfile::default()
+            },
+            lock_in: LockInReport {
+                lockin_score: 60,
+                workflow_dependency_strength: 72,
+                ..LockInReport::default()
+            },
+            strategies: vec![MoatStrategy {
+                strategy_id: "workflow-audit".into(),
+                title: "Workflow audit moat".into(),
+                target_moat_type: MoatType::WorkflowLockIn,
+                implementation_cost: 2,
+                expected_moat_gain: 8,
+                ..MoatStrategy::default()
+            }],
+            budget: ResourceBudget {
+                max_round_minutes: 30,
+                max_parallel_tasks: 3,
+                max_strategy_candidates: 2,
+                max_spec_generations: 1,
+                max_implementation_tasks: 1,
+                max_review_loops: 1,
+            },
+            improvement_threshold: 3,
+            tests_passed: true,
+        }
+    }
 }

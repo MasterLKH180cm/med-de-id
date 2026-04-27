@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH | moat decision-log --history-path PATH [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] | moat task-graph --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
+const USAGE: &str = "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]";
 
 #[test]
 fn cli_runs_moat_round_and_prints_deterministic_report() {
@@ -171,6 +171,806 @@ fn cli_reports_history_summary_for_two_persisted_rounds() {
     );
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_limited_recent_moat_history_rounds() {
+    let history_path = unique_history_path("history-limit");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let first_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run first mdid-cli moat round with history path");
+    assert!(
+        first_output.status.success(),
+        "expected first round success, stderr was: {}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+
+    let second_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run second mdid-cli moat round with history path");
+    assert!(
+        second_output.status.success(),
+        "expected second round success, stderr was: {}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let summary = store.summary();
+    let latest_round_id = summary
+        .latest_round_id
+        .clone()
+        .expect("summary should expose latest round id");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with limit");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat history summary\n",
+            "entries=2\n",
+            "latest_round_id={latest_round_id}\n",
+            "latest_continue_decision=Stop\n",
+            "latest_stop_reason=review budget exhausted\n",
+            "latest_decision_summary=implementation stopped before review\n",
+            "latest_implemented_specs=moat-spec/workflow-audit\n",
+            "latest_moat_score_after=90\n",
+            "best_moat_score_after=98\n",
+            "improvement_deltas=8,0\n",
+            "history_rounds=1\n",
+            "round={latest_round_id}|Stop|90|review budget exhausted\n",
+        )
+        .replace("{latest_round_id}", &latest_round_id)
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_recent_moat_history_rounds_by_exact_round_id() {
+    let history_path = unique_history_path("history-round-id-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let first_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run first mdid-cli moat round with history path");
+    assert!(
+        first_output.status.success(),
+        "expected first round success, stderr was: {}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+
+    let second_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run second mdid-cli moat round with history path");
+    assert!(
+        second_output.status.success(),
+        "expected second round success, stderr was: {}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let summary = store.summary();
+    let latest_round_id = summary
+        .latest_round_id
+        .clone()
+        .expect("summary should expose latest round id");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &latest_round_id,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with round-id filter");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat history summary\n",
+            "entries=2\n",
+            "latest_round_id={latest_round_id}\n",
+            "latest_continue_decision=Stop\n",
+            "latest_stop_reason=review budget exhausted\n",
+            "latest_decision_summary=implementation stopped before review\n",
+            "latest_implemented_specs=moat-spec/workflow-audit\n",
+            "latest_moat_score_after=90\n",
+            "best_moat_score_after=98\n",
+            "improvement_deltas=8,0\n",
+            "history_rounds=1\n",
+            "round={latest_round_id}|Stop|90|review budget exhausted\n",
+        )
+        .replace("{latest_round_id}", &latest_round_id)
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_zero_recent_moat_history_rounds_for_unknown_round_id() {
+    let history_path = unique_history_path("history-round-id-no-match");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        round_output.status.success(),
+        "expected round success, stderr was: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let summary = store.summary();
+    let latest_round_id = summary
+        .latest_round_id
+        .clone()
+        .expect("summary should expose latest round id");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            "missing-round",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with missing round-id filter");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat history summary\n",
+            "entries=1\n",
+            "latest_round_id={latest_round_id}\n",
+            "latest_continue_decision=Continue\n",
+            "latest_stop_reason=<none>\n",
+            "latest_decision_summary=review approved bounded moat round\n",
+            "latest_implemented_specs=moat-spec/workflow-audit\n",
+            "latest_moat_score_after=98\n",
+            "best_moat_score_after=98\n",
+            "improvement_deltas=8\n",
+            "history_rounds=0\n",
+        )
+        .replace("{latest_round_id}", &latest_round_id)
+    );
+
+    let after_summary = LocalMoatHistoryStore::open(&history_path)
+        .expect("history store should reopen")
+        .summary();
+    assert_eq!(
+        after_summary.entry_count, 1,
+        "read-only filter must not append or mutate history"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_recent_moat_history_rounds_by_continue_decision() {
+    let history_path = unique_history_path("history-decision-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let continue_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run continuing mdid-cli moat round");
+    assert!(
+        continue_output.status.success(),
+        "expected continuing round success, stderr was: {}",
+        String::from_utf8_lossy(&continue_output.stderr)
+    );
+
+    let stop_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run stopping mdid-cli moat round");
+    assert!(
+        stop_output.status.success(),
+        "expected stopping round success, stderr was: {}",
+        String::from_utf8_lossy(&stop_output.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let latest_round_id = store
+        .summary()
+        .latest_round_id
+        .clone()
+        .expect("summary should expose latest round id");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--decision",
+            "Stop",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with decision filter");
+
+    assert!(
+        output.status.success(),
+        "expected history filter success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat history summary\n",
+            "entries=2\n",
+            "latest_round_id={latest_round_id}\n",
+            "latest_continue_decision=Stop\n",
+            "latest_stop_reason=review budget exhausted\n",
+            "latest_decision_summary=implementation stopped before review\n",
+            "latest_implemented_specs=moat-spec/workflow-audit\n",
+            "latest_moat_score_after=90\n",
+            "best_moat_score_after=98\n",
+            "improvement_deltas=8,0\n",
+            "history_rounds=1\n",
+            "round={latest_round_id}|Stop|90|review budget exhausted\n",
+        )
+        .replace("{latest_round_id}", &latest_round_id)
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_moat_history_rounds_by_stop_reason_text() {
+    let history_path = unique_history_path("history-stop-reason-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let continue_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run continuing mdid-cli moat round");
+    assert!(
+        continue_output.status.success(),
+        "expected continuing round success, stderr was: {}",
+        String::from_utf8_lossy(&continue_output.stderr)
+    );
+
+    let stop_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run stopping mdid-cli moat round");
+    assert!(
+        stop_output.status.success(),
+        "expected stopping round success, stderr was: {}",
+        String::from_utf8_lossy(&stop_output.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let latest_round_id = store
+        .summary()
+        .latest_round_id
+        .clone()
+        .expect("summary should expose latest round id");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--stop-reason-contains",
+            "budget",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with stop reason filter");
+
+    assert!(
+        output.status.success(),
+        "expected history stop reason filter success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat history summary\n",
+            "entries=1\n",
+            "latest_round_id={latest_round_id}\n",
+            "latest_continue_decision=Stop\n",
+            "latest_stop_reason=review budget exhausted\n",
+            "latest_decision_summary=implementation stopped before review\n",
+            "latest_implemented_specs=moat-spec/workflow-audit\n",
+            "latest_moat_score_after=90\n",
+            "best_moat_score_after=90\n",
+            "improvement_deltas=0\n",
+            "history_rounds=1\n",
+            "round={latest_round_id}|Stop|90|review budget exhausted\n",
+        )
+        .replace("{latest_round_id}", &latest_round_id)
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_history_filters_rounds_by_text_fragment() {
+    let history_path = unique_history_path("history-contains-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let continue_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run continuing mdid-cli moat round");
+    assert!(
+        continue_output.status.success(),
+        "expected continuing round success, stderr was: {}",
+        String::from_utf8_lossy(&continue_output.stderr)
+    );
+
+    let stop_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--tests-passed",
+            "false",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run stopping mdid-cli moat round");
+    assert!(
+        stop_output.status.success(),
+        "expected stopping round success, stderr was: {}",
+        String::from_utf8_lossy(&stop_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--contains",
+            "Continue",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with contains filter");
+
+    assert!(
+        output.status.success(),
+        "expected history contains filter success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("entries=1\n"), "stdout was: {stdout}");
+    assert!(stdout.contains("Continue"), "stdout was: {stdout}");
+    assert!(!stdout.contains("decision=Stop"), "stdout was: {stdout}");
+    assert!(!stdout.contains("|Stop|"), "stdout was: {stdout}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_history_contains_filter_can_return_empty_summary() {
+    let history_path = unique_history_path("history-contains-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--contains",
+            "text that is absent from every moat round",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with absent contains filter");
+
+    assert!(
+        output.status.success(),
+        "expected history contains filter success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat history summary\nentries=0\nlatest_round_id=none\nlatest_decision=none\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_recent_moat_history_rounds_by_min_score() {
+    let history_path = unique_history_path("history-min-score");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run stop round");
+    Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run continue round");
+
+    let before = fs::read_to_string(&history_path).expect("history should exist before inspection");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--min-score",
+            "95",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with min score");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("moat history summary\nentries=1\n"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("history_rounds=1\n"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("|Continue|98|<none>\n"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        !stdout.contains("|Stop|90|review budget exhausted\n"),
+        "stdout was: {stdout}"
+    );
+    assert_eq!(fs::read_to_string(&history_path).unwrap(), before);
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_empty_moat_history_summary_when_min_score_matches_no_rounds() {
+    let history_path = unique_history_path("history-min-score-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run round");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--min-score",
+            "101",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with impossible min score");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat history summary\nentries=0\nlatest_round_id=none\nlatest_decision=none\nhistory_rounds=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_recent_moat_history_rounds_by_tests_passed() {
+    let history_path = unique_history_path("history-tests-passed-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed_success = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed successful history round");
+    assert!(
+        seed_success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed_success.stderr)
+    );
+    let seed_failed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--history-path",
+            history_path_arg,
+            "--tests-passed",
+            "false",
+        ])
+        .output()
+        .expect("failed to seed failed history round");
+    assert!(
+        seed_failed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed_failed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--tests-passed",
+            "false",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to inspect history by tests-passed filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("moat history summary\n"));
+    assert!(stdout.contains("entries=1\n"));
+    assert!(stdout.contains("latest_continue_decision=Stop\n"));
+    assert!(stdout.contains("latest_stop_reason=tests failed\n"));
+    assert!(stdout.contains("latest_moat_score_after=90\n"));
+    assert!(stdout.contains("history_rounds=1\n"));
+    assert!(stdout.contains("|Stop|90|tests failed\n"));
+    assert!(!stdout.contains("|Continue|98|<none>\n"));
+
+    let verify = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to verify history was not mutated");
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    assert!(String::from_utf8_lossy(&verify.stdout).contains("history_rounds=2\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_empty_moat_history_summary_when_tests_passed_filter_matches_no_rounds() {
+    let history_path = unique_history_path("history-tests-passed-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed successful history round");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path_arg,
+            "--tests-passed",
+            "false",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("failed to inspect history by unmatched tests-passed filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat history summary\nentries=0\nlatest_round_id=none\nlatest_decision=none\nhistory_rounds=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_history_rejects_duplicate_tests_passed_filter() {
+    let history_path = unique_history_path("history-tests-passed-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--tests-passed",
+            "true",
+            "--tests-passed",
+            "false",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with duplicate tests-passed filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --tests-passed"));
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_history_rejects_duplicate_min_score() {
+    let missing_path = unique_history_path("history-duplicate-min-score");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            missing_path.to_str().expect("history path should be utf-8"),
+            "--min-score",
+            "90",
+            "--min-score",
+            "95",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with duplicate min score");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --min-score\n{}\n", USAGE)
+    );
+    assert!(!missing_path.exists());
+}
+
+#[test]
+fn cli_history_rejects_invalid_min_score() {
+    let missing_path = unique_history_path("history-invalid-min-score");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            missing_path.to_str().expect("history path should be utf-8"),
+            "--min-score",
+            "not-a-number",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with invalid min score");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "invalid value for --min-score: expected non-negative integer, got not-a-number\n{}\n",
+            USAGE
+        )
+    );
+    assert!(!missing_path.exists());
+}
+
+#[test]
+fn moat_history_contains_requires_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            "history.jsonl",
+            "--contains",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with missing contains value");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--contains requires a value"),
+        "stderr was: {stderr}"
+    );
 }
 
 #[test]
@@ -724,6 +1524,27 @@ fn cli_rejects_non_numeric_override_values() {
 }
 
 #[test]
+fn cli_rejects_invalid_moat_history_limit() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            "ignored-history.jsonl",
+            "--limit",
+            "0",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with invalid limit");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("limit must be greater than zero\n{USAGE}\n")
+    );
+}
+
+#[test]
 fn cli_requires_history_path_for_history_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "history"])
@@ -787,6 +1608,83 @@ fn cli_history_rejects_duplicate_history_path_flags() {
 }
 
 #[test]
+fn cli_history_rejects_duplicate_decision_flags() {
+    let history_path = unique_history_path("duplicate-history-decision");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--decision",
+            "Continue",
+            "--decision",
+            "Stop",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with duplicate decisions");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --decision\n{USAGE}\n")
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_history_accepts_pivot_decision_filter_before_opening_history() {
+    let history_path = unique_history_path("pivot-history-decision");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--decision",
+            "Pivot",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with pivot decision");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "failed to open moat history store: moat history file does not exist: {}\n",
+            history_path.display()
+        )
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_history_rejects_unknown_decision_value() {
+    let history_path = unique_history_path("unknown-history-decision");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "history",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--decision",
+            "Pause",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat history with unknown decision");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("unknown moat history decision: Pause\n{USAGE}\n")
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
 fn task_graph_requires_history_path() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "task-graph"])
@@ -840,6 +1738,50 @@ fn task_graph_rejects_unknown_state() {
 }
 
 #[test]
+fn moat_task_graph_rejects_empty_history_without_round_id() {
+    let history_path = unique_history_path("task-graph-empty-history-without-round-id");
+    LocalMoatHistoryStore::open(&history_path).expect("empty history should be created");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+        ])
+        .output()
+        .expect("failed to inspect empty task graph history without round-id");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("moat history is empty; run"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_task_graph_rejects_empty_history_with_round_id() {
+    let history_path = unique_history_path("task-graph-empty-history-with-round-id");
+    LocalMoatHistoryStore::open(&history_path).expect("empty history should be created");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--round-id",
+            "00000000-0000-4000-8000-000000000000",
+        ])
+        .output()
+        .expect("failed to inspect empty task graph history with round-id");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("moat history is empty; run"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn task_graph_prints_latest_persisted_graph() {
     let history_path = unique_history_path("task-graph-success");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -878,6 +1820,1219 @@ fn task_graph_prints_latest_persisted_graph() {
     assert!(stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_ready_moat_tasks_for_latest_round() {
+    let history_path = unique_history_path("ready-tasks-latest");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        output.status.success(),
+        "expected setup round success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "ready-tasks", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat ready tasks\n",
+            "ready_task_entries=1\n",
+            "ready_task=reviewer|review|review|Review|<none>\n",
+        )
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn claim_task_marks_latest_ready_node_in_progress() {
+    let history_path = unique_history_path("claim-task-latest");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed claim-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat claim-task");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("moat task claimed\n"));
+    assert!(stdout.contains("node_id=review\n"));
+    assert!(stdout.contains("previous_state=ready\n"));
+    assert!(stdout.contains("new_state=in_progress\n"));
+    assert!(stdout.contains(&format!("history_path={history_path_arg}\n")));
+
+    let ready = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "ready-tasks", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect ready tasks after claim");
+    assert!(
+        ready.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ready.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&ready.stdout),
+        concat!("moat ready tasks\n", "ready_task_entries=0\n")
+    );
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to inspect task graph after claim");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(String::from_utf8_lossy(&graph.stdout)
+        .contains("node=reviewer|review|Review|review|in_progress|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn claim_task_rejects_non_ready_node() {
+    let history_path = unique_history_path("claim-task-non-ready");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed claim-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat claim-task for non-ready node");
+
+    assert!(
+        !output.status.success(),
+        "claiming completed node should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("moat task node is not ready"), "{stderr}");
+    assert!(stderr.contains("review"), "{stderr}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_complete_task_reports_newly_ready_downstream_tasks() {
+    let history_path = unique_history_path("complete-task-next-ready");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--strategy-candidates",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed complete-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "strategy_generation",
+        ])
+        .output()
+        .expect("failed to claim strategy_generation before completion");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "strategy_generation",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat complete-task");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("next_ready_task_entries=1\n"),
+        "expected one newly ready downstream task, stdout was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("next_ready_task=planner|spec_planning|Spec Planning|spec_planning|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"),
+        "expected spec_planning to become ready, stdout was:\n{stdout}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_completes_claimed_moat_task() {
+    let history_path = unique_history_path("complete-task-claimed");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed complete-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to claim task before completion");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let round_id = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("history should reload")
+        .entries()[0]
+        .report
+        .summary
+        .round_id
+        .to_string();
+
+    let complete_review = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to complete review task");
+    assert!(
+        complete_review.status.success(),
+        "{}",
+        String::from_utf8_lossy(&complete_review.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&complete_review.stdout),
+        format!(
+            "moat task completed\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=completed\nhistory_path={history_path_arg}\nnext_ready_task_entries=1\nnext_ready_task=reviewer|evaluation|Evaluation|evaluation|<none>\n"
+        )
+    );
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to inspect task graph after completion");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(String::from_utf8_lossy(&graph.stdout)
+        .contains("node=reviewer|review|Review|review|completed|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_releases_claimed_moat_task() {
+    let history_path = unique_history_path("release-task-claimed");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed release-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to claim task before release");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "release-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat release-task");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("moat task released\n"));
+    assert!(stdout.contains("round_id="));
+    assert!(stdout.contains("node_id=review\n"));
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to inspect task graph after release");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(String::from_utf8_lossy(&graph.stdout)
+        .contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn release_task_rejects_ready_node() {
+    let history_path = unique_history_path("release-task-ready");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed release-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "release-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat release-task for ready node");
+
+    assert!(!output.status.success(), "releasing ready node should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to release moat task"));
+    assert!(stderr.contains("expected in_progress"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_blocks_claimed_moat_task() {
+    let history_path = unique_history_path("block-task-claimed");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed block-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to claim task before blocking");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let round_id = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("history should reload")
+        .entries()[0]
+        .report
+        .summary
+        .round_id
+        .to_string();
+
+    let block_review = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "block-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to block review task");
+    assert!(
+        block_review.status.success(),
+        "{}",
+        String::from_utf8_lossy(&block_review.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&block_review.stdout),
+        format!(
+            "moat task blocked\nround_id={round_id}\nnode_id=review\nprevious_state=in_progress\nnew_state=blocked\nhistory_path={history_path_arg}\n"
+        )
+    );
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to inspect task graph after blocking");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(String::from_utf8_lossy(&graph.stdout)
+        .contains("node=reviewer|review|Review|review|blocked|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_unblocks_blocked_moat_task_to_ready() {
+    let history_path = unique_history_path("unblock-task-blocked");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed unblock-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to claim task before unblocking");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let round_id = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("history should reload")
+        .entries()[0]
+        .report
+        .summary
+        .round_id
+        .to_string();
+
+    let block = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "block-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to block task before unblocking");
+    assert!(
+        block.status.success(),
+        "{}",
+        String::from_utf8_lossy(&block.stderr)
+    );
+
+    let unblock = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "unblock-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to unblock review task");
+    assert!(
+        unblock.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unblock.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&unblock.stdout),
+        format!(
+            "moat task unblocked\nround_id={round_id}\nnode_id=review\nprevious_state=blocked\nnew_state=ready\nhistory_path={history_path_arg}\n"
+        )
+    );
+
+    let graph = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to inspect task graph after unblocking");
+    assert!(
+        graph.status.success(),
+        "{}",
+        String::from_utf8_lossy(&graph.stderr)
+    );
+    assert!(String::from_utf8_lossy(&graph.stdout)
+        .contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_rejects_unblock_task_when_task_is_not_blocked() {
+    let history_path = unique_history_path("unblock-task-ready");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed unblock-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "unblock-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat unblock-task for ready node");
+
+    assert!(
+        !output.status.success(),
+        "unblocking ready node should fail"
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "error: node 'review' is ready, expected blocked\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_block_task_rejects_unclaimed_ready_task() {
+    let history_path = unique_history_path("block-task-unclaimed");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed block-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "block-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat block-task for ready node");
+
+    assert!(!output.status.success(), "blocking ready node should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("moat task node is not in progress"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("review"), "{stderr}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_complete_task_rejects_unclaimed_ready_task() {
+    let history_path = unique_history_path("complete-task-unclaimed");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed complete-task history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "complete-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat complete-task for ready node");
+
+    assert!(
+        !output.status.success(),
+        "completing ready node should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("moat task node is not in progress"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("review"), "{stderr}");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_ready_tasks_by_role_kind_and_limit() {
+    let history_path = unique_history_path("ready-tasks-filters");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        output.status.success(),
+        "expected setup round success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "reviewer",
+            "--kind",
+            "review",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with filters");
+
+    assert!(
+        output.status.success(),
+        "expected filtered ready tasks success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat ready tasks\n",
+            "ready_task_entries=1\n",
+            "ready_task=reviewer|review|review|Review|<none>\n",
+        )
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with non-matching role filter");
+
+    assert!(
+        output.status.success(),
+        "expected non-matching filtered ready tasks success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!("moat ready tasks\n", "ready_task_entries=0\n")
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_reports_zero_ready_tasks_for_unknown_round_id() {
+    let history_path = unique_history_path("ready-tasks-unknown-round");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        output.status.success(),
+        "expected setup round success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "ready-tasks",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            "00000000-0000-0000-0000-000000000000",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat ready-tasks with unknown round id");
+
+    assert!(
+        output.status.success(),
+        "expected unknown round ready tasks success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!("moat ready tasks\n", "ready_task_entries=0\n")
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_task_graph_filters_nodes_by_exact_round_id() {
+    let history_path = unique_history_path("task-graph-round-id");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let first_seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed first task graph history round");
+    assert!(
+        first_seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first_seed.stderr)
+    );
+
+    let second_seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed second task graph history round");
+    assert!(
+        second_seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second_seed.stderr)
+    );
+
+    let first_round_id = LocalMoatHistoryStore::open_existing(&history_path)
+        .expect("history should exist")
+        .entries()
+        .first()
+        .expect("first entry should exist")
+        .report
+        .summary
+        .round_id
+        .to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &first_round_id,
+        ])
+        .output()
+        .expect("failed to inspect task graph by round id");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+    assert!(
+        !stdout.contains("node=reviewer|review|Review|review|completed|implementation|<none>\n")
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_task_graph_filters_nodes_by_dependency() {
+    let history_path = unique_history_path("task-graph-depends-on");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed task graph history for dependency filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--depends-on",
+            "implementation",
+        ])
+        .output()
+        .expect("failed to inspect task graph by dependency");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("node=reviewer|review|Review|review|ready|implementation|<none>\n"));
+    assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
+    assert!(!stdout.contains("node=reviewer|evaluation|Evaluation|evaluation"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_task_graph_filters_nodes_with_no_dependencies() {
+    let history_path = unique_history_path("task-graph-no-dependencies");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed task graph history for no-dependencies filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let history = fs::read_to_string(&history_path)
+        .expect("seeded history should be readable for no-dependencies regression setup");
+    let mutated_history = history.replace(
+        concat!(
+            "            {\n",
+            "              \"node_id\": \"market_scan\",\n",
+            "              \"title\": \"Market Scan\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"market_scan\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n"
+        ),
+        concat!(
+            "            {\n",
+            "              \"node_id\": \"market_scan\",\n",
+            "              \"title\": \"Market Scan\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"market_scan\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n",
+            "            {\n",
+            "              \"node_id\": \"independent_spec_planning\",\n",
+            "              \"title\": \"Independent Spec Planning\",\n",
+            "              \"role\": \"planner\",\n",
+            "              \"kind\": \"spec_planning\",\n",
+            "              \"state\": \"completed\",\n",
+            "              \"depends_on\": [],\n",
+            "              \"spec_ref\": null\n",
+            "            },\n"
+        ),
+    );
+    assert_ne!(
+        history, mutated_history,
+        "regression setup should add a second root node"
+    );
+    fs::write(&history_path, mutated_history)
+        .expect("mutated no-dependencies regression history should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to inspect task graph by no-dependencies filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout.contains(
+        "node=planner|independent_spec_planning|Independent Spec Planning|spec_planning|completed|<none>|<none>\n"
+    ));
+    assert!(stdout.contains(
+        "node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"
+    ));
+    assert!(!stdout.contains("node=coder|implementation|Implementation|implementation"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_task_graph_reports_no_nodes_for_unknown_round_id() {
+    let history_path = unique_history_path("task-graph-round-id-unknown");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed task graph history for unknown round id");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            "unknown-round-id",
+        ])
+        .output()
+        .expect("failed to inspect task graph by unknown round id");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "moat task graph\n");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_task_graph_rejects_duplicate_round_id_filter() {
+    let history_path = unique_history_path("task-graph-round-id-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--round-id",
+            "first",
+            "--round-id",
+            "second",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with duplicate round-id filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --round-id"));
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn moat_task_graph_rejects_duplicate_depends_on_filter() {
+    let history_path = unique_history_path("task-graph-depends-on-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--depends-on",
+            "implementation",
+            "--depends-on",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with duplicate depends-on filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --depends-on"));
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn moat_task_graph_rejects_duplicate_no_dependencies_filter() {
+    let history_path = unique_history_path("task-graph-no-dependencies-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--no-dependencies",
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with duplicate no-dependencies filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --no-dependencies"));
+    assert!(!history_path.exists());
 }
 
 #[test]
@@ -1808,6 +3963,352 @@ fn task_graph_title_filter_does_not_append_history() {
 }
 
 #[test]
+fn task_graph_filters_latest_nodes_by_contains_text() {
+    let history_path = unique_history_path("task-graph-contains");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for contains filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--contains",
+            "strategy_generation",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with contains filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("moat task graph\n"));
+    assert!(stdout.contains(
+        "node=planner|strategy_generation|Strategy Generation|strategy_generation|completed|"
+    ));
+    assert!(stdout.contains("node=planner|spec_planning|Spec Planning|spec_planning|completed|strategy_generation|docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md\n"));
+    assert!(!stdout.contains("node=planner|market_scan|"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn task_graph_contains_filter_returns_zero_matches_without_error() {
+    let history_path = unique_history_path("task-graph-contains-zero");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for empty contains filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--contains",
+            "not-present-in-any-node",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with unmatched contains filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "moat task graph\n");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn task_graph_contains_filter_combines_with_role_filter() {
+    let history_path = unique_history_path("task-graph-contains-role");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for role and contains filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "coder",
+            "--contains",
+            "Implementation",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with role and contains filters");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat task graph\nnode=coder|implementation|Implementation|implementation|completed|spec_planning|<none>\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn task_graph_contains_filter_rejects_missing_flag_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--contains",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with missing contains value");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("missing value for --contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn task_graph_contains_filter_rejects_flag_like_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--contains",
+            "--role",
+            "planner",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with flag-like contains value");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("missing value for --contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn task_graph_contains_filter_rejects_duplicate_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--contains",
+            "one",
+            "--contains",
+            "two",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with duplicate contains filter");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --contains\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn task_graph_limit_bounds_rendered_nodes_after_filters() {
+    let history_path = unique_history_path("task-graph-limit");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for task graph limit");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "planner",
+            "--limit",
+            "2",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with limit");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("moat task graph\n"));
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("node="))
+            .count(),
+        2
+    );
+    assert!(stdout
+        .contains("node=planner|market_scan|Market Scan|market_scan|completed|<none>|<none>\n"));
+    assert!(stdout.contains("node=planner|competitor_analysis|Competitor Analysis|competitor_analysis|completed|<none>|<none>\n"));
+    assert!(!stdout.contains("node=planner|lockin_analysis|Lock-In Analysis|lock_in_analysis|"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn task_graph_rejects_zero_limit() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--limit",
+            "0",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with zero limit");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "invalid value for --limit: expected positive integer, got 0\n{}\n",
+            USAGE
+        )
+    );
+}
+
+#[test]
+fn task_graph_rejects_duplicate_limit() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--limit",
+            "1",
+            "--limit",
+            "2",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with duplicate limit");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("duplicate flag: --limit\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn task_graph_rejects_missing_limit_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            "/tmp/mdid-unused-history.json",
+            "--limit",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat task-graph with missing limit value");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("missing value for --limit\n{}\n", USAGE)
+    );
+}
+
+#[test]
+fn task_graph_limit_does_not_append_history() {
+    let history_path = unique_history_path("task-graph-limit-read-only");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for task graph limit read-only check");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let inspect = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-graph",
+            "--history-path",
+            history_path_arg,
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to inspect moat task graph with limit");
+    assert!(
+        inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+
+    let history = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "history", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect moat history after task graph limit");
+    assert!(
+        history.status.success(),
+        "{}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    assert!(String::from_utf8_lossy(&history.stdout).contains("entries=1\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn task_graph_rejects_missing_history_file_without_creating_it() {
     let history_path = unique_history_path("task-graph-missing");
 
@@ -2243,6 +4744,112 @@ fn decision_log_filters_before_escaping_output_fields() {
 }
 
 #[test]
+fn cli_filters_moat_decision_log_by_exact_round_id() {
+    let history_path = unique_history_path("decision-log-round-id-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let first_seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed first moat history round");
+    assert!(
+        first_seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first_seed.stderr)
+    );
+    let second_seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed second moat history round");
+    assert!(
+        second_seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second_seed.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path).expect("history should exist");
+    let entries = store.entries();
+    assert_eq!(entries.len(), 2);
+    let older_round_id = entries[0].report.summary.round_id.to_string();
+    let latest_round_id = entries[1].report.summary.round_id.to_string();
+    assert_ne!(older_round_id, latest_round_id);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &older_round_id,
+        ])
+        .output()
+        .expect("failed to run round-id-filtered mdid-cli moat decision-log");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("decision_log_entries=1\n"));
+    assert!(stdout.contains("decision=reviewer|review approved bounded moat round|review approved bounded moat round after evaluation cleared the improvement threshold\n"));
+    assert!(!stdout.contains("implementation stopped before review"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_moat_decision_log_round_id_filter_reports_zero_for_missing_round() {
+    let history_path = unique_history_path("decision-log-missing-round-id-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            "missing-round-id",
+        ])
+        .output()
+        .expect("failed to run missing-round filtered mdid-cli moat decision-log");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "decision_log_entries=0\n"
+    );
+
+    let store = LocalMoatHistoryStore::open_existing(&history_path).expect("history should exist");
+    assert_eq!(store.summary().entry_count, 1);
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn moat_decision_log_inspects_latest_persisted_round_without_appending() {
     let history_path = unique_history_path("decision-log");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -2295,6 +4902,32 @@ fn moat_decision_log_rejects_missing_history_file_without_creating_it() {
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("failed to open moat history"));
+    assert!(!history_path.exists());
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_decision_log_rejects_flag_like_missing_round_id_value() {
+    let history_path = unique_history_path("decision-log-missing-round-id-value");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "decision-log",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--round-id",
+            "--role",
+            "planner",
+        ])
+        .output()
+        .expect("failed to run decision-log with missing round-id value");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing value for --round-id"));
     assert!(!history_path.exists());
 
     cleanup_history_path(&history_path);
@@ -3188,6 +5821,264 @@ fn cli_rejects_unknown_moat_assignments_state() {
 }
 
 #[test]
+fn cli_assignments_limit_bounds_filtered_rows_and_does_not_append_history() {
+    let history_path = unique_history_path("assignments-limit-bounds");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_moat_history_with_assignment_rows(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with limit");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("assignment_entries=1\n"));
+    assert_eq!(stdout.matches("assignment=").count(), 1);
+    assert!(stdout.contains("assignment=planner|strategy_generation|"));
+
+    let history = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "history", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to inspect moat history after limited assignments");
+    assert!(
+        history.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    assert!(String::from_utf8_lossy(&history.stdout).contains("entries=1\n"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_assignments_limit_applies_after_role_filter() {
+    let history_path = unique_history_path("assignments-limit-role");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    seed_moat_history_with_assignment_rows(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--role",
+            "planner",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with role and limit");
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("assignment_entries=1\n"));
+    assert_eq!(stdout.matches("assignment=planner|").count(), 1);
+    assert!(stdout.contains("assignment=planner|strategy_generation|"));
+    assert!(!stdout.contains("assignment=coder|"));
+    assert!(!stdout.contains("assignment=reviewer|"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_rejects_zero_assignments_limit_before_touching_missing_history() {
+    let history_path = unique_history_path("assignments-limit-zero");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--limit",
+            "0",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with zero limit");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--limit must be greater than 0"),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_rejects_duplicate_assignments_limit_before_touching_missing_history() {
+    let history_path = unique_history_path("assignments-limit-duplicate");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--limit",
+            "1",
+            "--limit",
+            "2",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with duplicate limit");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --limit"),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_rejects_missing_assignments_limit_before_touching_missing_history() {
+    let history_path = unique_history_path("assignments-limit-missing");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--limit",
+            "--role",
+            "planner",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with missing limit");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing value for --limit"),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!history_path.exists());
+}
+
+#[test]
+fn cli_filters_moat_assignments_by_exact_round_id() {
+    let history_path = unique_history_path("assignments-round-id-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let first_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed first moat history round for assignments round-id filter");
+    assert!(
+        first_output.status.success(),
+        "expected first round success, stderr was: {}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+
+    let store = LocalMoatHistoryStore::open(&history_path).expect("history store should open");
+    let first_round_id = store
+        .summary()
+        .latest_round_id
+        .expect("first round id should exist");
+    drop(store);
+
+    let second_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed second moat history round for assignments round-id filter");
+    assert!(
+        second_output.status.success(),
+        "expected second round success, stderr was: {}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            &first_round_id,
+            "--role",
+            "reviewer",
+        ])
+        .output()
+        .expect("failed to inspect moat assignments by round id");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat assignments\nassignment_entries=1\nassignment=reviewer|review|Review|review|<none>\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_returns_empty_moat_assignments_for_unknown_round_id() {
+    let history_path = unique_history_path("assignments-round-id-empty");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "round", "--history-path", history_path_arg])
+        .output()
+        .expect("failed to seed moat history for unknown assignments round-id filter");
+    assert!(
+        seed_output.status.success(),
+        "expected seed success, stderr was: {}",
+        String::from_utf8_lossy(&seed_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--round-id",
+            "missing-round-id",
+        ])
+        .output()
+        .expect("failed to inspect moat assignments by unknown round id");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "moat assignments\nassignment_entries=0\n"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn cli_reports_latest_moat_assignments_from_persisted_history() {
     let history_path = unique_history_path("assignments-success");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
@@ -3361,6 +6252,269 @@ fn cli_filters_moat_assignments_by_role() {
     );
 
     cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_filters_moat_assignments_by_task_dependency() {
+    let history_path = unique_history_path("assignments-depends-on-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        round_output.status.success(),
+        "expected round success, stderr was: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--depends-on",
+            "implementation",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with depends-on filter");
+
+    assert!(
+        output.status.success(),
+        "expected assignments success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!(
+            "moat assignments\n",
+            "assignment_entries=1\n",
+            "assignment=reviewer|review|Review|review|<none>\n",
+        )
+    );
+
+    let after_summary = LocalMoatHistoryStore::open(&history_path)
+        .expect("history store should reopen")
+        .summary();
+    assert_eq!(
+        after_summary.entry_count, 1,
+        "read-only assignments dependency filter must not append history"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_assignments_filters_entries_with_no_dependencies() {
+    let history_path = unique_history_path("assignments-no-dependencies");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed assignments history for no-dependencies filter");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    let persisted = fs::read_to_string(&history_path).expect("history should be readable");
+    let original = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"reviewer\",\n",
+        "            \"node_id\": \"review\",\n",
+        "            \"title\": \"Review\",\n",
+        "            \"kind\": \"review\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let replacement = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"market_scan\",\n",
+        "            \"title\": \"Market Scan\",\n",
+        "            \"kind\": \"market_scan\",\n",
+        "            \"spec_ref\": null\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"competitor_analysis\",\n",
+        "            \"title\": \"Competitor Analysis\",\n",
+        "            \"kind\": \"competitor_analysis\",\n",
+        "            \"spec_ref\": null\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"coder\",\n",
+        "            \"node_id\": \"implementation\",\n",
+        "            \"title\": \"Implementation\",\n",
+        "            \"kind\": \"implementation\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let patched = persisted.replacen(original, replacement, 1);
+    assert_ne!(patched, persisted, "seed history assignment block changed");
+    fs::write(&history_path, patched).expect("history should be patchable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to inspect assignments by no-dependencies filter");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("assignment=planner|market_scan|Market Scan|market_scan|<none>\n"));
+    assert!(stdout.contains(
+        "assignment=planner|competitor_analysis|Competitor Analysis|competitor_analysis|<none>\n"
+    ));
+    assert!(!stdout.contains("assignment=coder|implementation|Implementation|implementation"));
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_combines_moat_assignments_depends_on_with_role_filter() {
+    let history_path = unique_history_path("assignments-depends-on-role-filter");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let round_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat round with history path");
+    assert!(
+        round_output.status.success(),
+        "expected round success, stderr was: {}",
+        String::from_utf8_lossy(&round_output.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path_arg,
+            "--depends-on",
+            "implementation",
+            "--role",
+            "coder",
+        ])
+        .output()
+        .expect(
+            "failed to run mdid-cli moat assignments with combined depends-on and role filters",
+        );
+
+    assert!(
+        output.status.success(),
+        "expected assignments success, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        concat!("moat assignments\n", "assignment_entries=0\n")
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn cli_rejects_moat_assignments_depends_on_without_value() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            "history.json",
+            "--depends-on",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with missing depends-on value");
+
+    assert!(!output.status.success(), "expected command failure");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--depends-on requires a value"),
+        "stderr should explain missing depends-on value, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cli_rejects_duplicate_moat_assignments_depends_on_filter() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            "history.json",
+            "--depends-on",
+            "implementation",
+            "--depends-on",
+            "review",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with duplicate depends-on filter");
+
+    assert!(!output.status.success(), "expected command failure");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --depends-on"),
+        "stderr should explain duplicate depends-on filter, stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn moat_assignments_rejects_duplicate_no_dependencies_filter() {
+    let history_path = unique_history_path("assignments-no-dependencies-duplicate");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "assignments",
+            "--history-path",
+            history_path.to_str().expect("history path should be utf-8"),
+            "--no-dependencies",
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat assignments with duplicate no-dependencies filter");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate flag: --no-dependencies"));
+    assert!(!history_path.exists());
 }
 
 #[test]
@@ -4526,6 +7680,74 @@ fn cli_reports_helpful_error_for_unknown_commands() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown command: bogus"));
     assert!(stderr.contains(USAGE));
+}
+
+fn seed_moat_history_with_assignment_rows(history_path: &PathBuf) {
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    let persisted = fs::read_to_string(history_path).expect("history should be readable");
+    let original = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"reviewer\",\n",
+        "            \"node_id\": \"review\",\n",
+        "            \"title\": \"Review\",\n",
+        "            \"kind\": \"review\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let replacement = concat!(
+        "\"agent_assignments\": [\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"strategy_generation\",\n",
+        "            \"title\": \"Strategy generation\",\n",
+        "            \"kind\": \"strategy_generation\",\n",
+        "            \"spec_ref\": null\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"planner\",\n",
+        "            \"node_id\": \"spec_planning\",\n",
+        "            \"title\": \"Spec planning\",\n",
+        "            \"kind\": \"spec_planning\",\n",
+        "            \"spec_ref\": \"docs/superpowers/specs/example.md\"\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"coder\",\n",
+        "            \"node_id\": \"implementation\",\n",
+        "            \"title\": \"Implementation\",\n",
+        "            \"kind\": \"implementation\",\n",
+        "            \"spec_ref\": \"docs/superpowers/specs/example.md\"\n",
+        "          },\n",
+        "          {\n",
+        "            \"role\": \"reviewer\",\n",
+        "            \"node_id\": \"review\",\n",
+        "            \"title\": \"Review\",\n",
+        "            \"kind\": \"review\",\n",
+        "            \"spec_ref\": null\n",
+        "          }\n",
+        "        ]"
+    );
+    let patched = persisted.replacen(original, replacement, 1);
+    assert_ne!(patched, persisted, "seed history assignment block changed");
+    fs::write(history_path, patched).expect("history should be patchable");
 }
 
 fn unique_history_path(label: &str) -> PathBuf {
