@@ -1,3 +1,4 @@
+use mdid_adapters::PdfAdapterError;
 use mdid_application::{ApplicationError, PdfDeidentificationOutput, PdfDeidentificationService};
 use mdid_domain::{PdfScanStatus, ReviewDecision};
 
@@ -79,11 +80,14 @@ fn pdf_deidentification_reports_mixed_page_statuses_honestly() {
     assert_eq!(output.summary.total_pages, 2);
     assert_eq!(output.summary.text_layer_pages, 1);
     assert_eq!(output.summary.ocr_required_pages, 1);
+    assert_eq!(output.summary.extracted_candidates, 1);
+    assert_eq!(output.summary.review_required_candidates, 1);
+    assert!(output.summary.requires_review());
     assert_eq!(output.review_queue.len(), 1);
-    assert!(output
-        .review_queue
-        .iter()
-        .all(|candidate| candidate.page.page_number == 1));
+    let candidate = &output.review_queue[0];
+    assert_eq!(candidate.page.page_number, 1);
+    assert_eq!(candidate.decision, ReviewDecision::NeedsReview);
+    assert_eq!(candidate.source_text, "Alice Smith");
     assert_eq!(output.rewritten_pdf_bytes, None);
 }
 
@@ -95,7 +99,10 @@ fn pdf_deidentification_returns_parse_failure_for_invalid_pdf_bytes() {
         .deidentify_bytes(INVALID_PDF_BYTES, "invalid.pdf")
         .expect_err("invalid bytes should not return a fake partial success object");
 
-    assert!(matches!(error, ApplicationError::PdfAdapter(_)));
+    assert!(matches!(
+        error,
+        ApplicationError::PdfAdapter(PdfAdapterError::Parse(_))
+    ));
 }
 
 #[test]
