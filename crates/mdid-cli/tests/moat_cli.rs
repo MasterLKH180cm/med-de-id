@@ -2626,6 +2626,103 @@ fn claim_task_rejects_non_positive_lease_seconds() {
 }
 
 #[test]
+fn lifecycle_format_claim_task_rejects_missing_value() {
+    let history_path = unique_history_path("lifecycle-format-missing");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--format",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat claim-task with missing format");
+
+    assert!(
+        !output.status.success(),
+        "claim-task should reject missing format"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("missing value for moat lifecycle --format"),
+        "{stderr}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn lifecycle_format_claim_task_rejects_duplicate_value() {
+    let history_path = unique_history_path("lifecycle-format-duplicate");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--format",
+            "text",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat claim-task with duplicate format");
+
+    assert!(
+        !output.status.success(),
+        "claim-task should reject duplicate format"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("duplicate moat lifecycle --format"),
+        "{stderr}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn lifecycle_format_claim_task_rejects_unknown_value() {
+    let history_path = unique_history_path("lifecycle-format-unknown");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "review",
+            "--format",
+            "yaml",
+        ])
+        .output()
+        .expect("failed to run mdid-cli moat claim-task with unknown format");
+
+    assert!(
+        !output.status.success(),
+        "claim-task should reject unknown format"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown moat lifecycle format: yaml"),
+        "{stderr}"
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn dispatch_next_accepts_custom_positive_lease_seconds() {
     let history_path = unique_history_path("dispatch-next-custom-lease");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
