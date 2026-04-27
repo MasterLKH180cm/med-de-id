@@ -5591,7 +5591,7 @@ fn moat_dispatch_next_json_claim_includes_state_transition() {
             "--history-path",
             history_path_arg,
             "--agent-id",
-            "dispatcher-json",
+            "dispatcher json 'quoted'",
             "--format",
             "json",
         ])
@@ -5607,8 +5607,8 @@ fn moat_dispatch_next_json_claim_includes_state_transition() {
     assert_eq!(json["type"], "moat_dispatch_next");
     assert_eq!(json["dry_run"], false);
     assert_eq!(json["claimed"], true);
-    assert_eq!(json["agent_id"], "dispatcher-json");
-    assert_eq!(json["assigned_agent_id"], "dispatcher-json");
+    assert_eq!(json["agent_id"], "dispatcher json 'quoted'");
+    assert_eq!(json["assigned_agent_id"], "dispatcher json 'quoted'");
     assert_eq!(json["node_id"], "spec-workflow-audit");
     assert_eq!(json["role"], "planner");
     assert_eq!(json["kind"], "spec_planning");
@@ -5622,7 +5622,8 @@ fn moat_dispatch_next_json_claim_includes_state_transition() {
         .as_str()
         .expect("complete_command should be string");
     assert!(complete_command.contains("mdid-cli moat complete-task"));
-    assert!(complete_command.contains("--agent-id dispatcher-json"));
+    assert!(complete_command.contains(r#"--agent-id 'dispatcher json '\''quoted'\'''"#));
+    assert!(!complete_command.contains("--agent-id dispatcher json"));
 
     let ready_output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "ready-tasks", "--history-path", history_path_arg])
