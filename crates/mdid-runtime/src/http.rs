@@ -179,8 +179,17 @@ fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         VaultError::UnknownRecord(_) => unknown_record_response(),
         VaultError::Decrypt => vault_unlock_failed_response(),
-        VaultError::BlankPassphrase => invalid_decode_request_response(),
-        _ => internal_error_response(),
+        VaultError::BlankPassphrase | VaultError::EmptyExportScope | VaultError::BlankExportContext => {
+            invalid_decode_request_response()
+        }
+        VaultError::Io(_)
+        | VaultError::Serde(_)
+        | VaultError::UnsupportedKdfAlgorithm(_)
+        | VaultError::UnsupportedKdfVersion(_)
+        | VaultError::InvalidKdfParameters
+        | VaultError::InvalidNonceLength { .. }
+        | VaultError::KeyDerivation => invalid_vault_target_response(),
+        VaultError::AlreadyExists(_) | VaultError::Encrypt => internal_error_response(),
     }
 }
 
@@ -215,6 +224,18 @@ fn invalid_decode_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_decode_request",
                 message: "request body did not contain a valid vault decode request",
+            },
+        }),
+    )
+}
+
+fn invalid_vault_target_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_vault_target",
+                message: "vault target could not be read as a usable vault artifact",
             },
         }),
     )

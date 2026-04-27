@@ -314,6 +314,68 @@ async fn vault_decode_endpoint_rejects_wrong_passphrase() {
     assert!(json.get("audit_event").is_none());
 }
 
+#[tokio::test]
+async fn vault_decode_endpoint_rejects_invalid_decode_request_payload() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_decode_request_response(response).await;
+}
+
+#[tokio::test]
+async fn vault_decode_endpoint_rejects_unusable_vault_target() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("not-a-vault.mdid");
+    std::fs::write(&vault_path, "not valid vault json").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [Uuid::new_v4()],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_vault_target_response(response).await;
+}
+
 async fn assert_invalid_dicom_response(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
@@ -329,6 +391,38 @@ async fn assert_invalid_dicom_response(response: axum::response::Response) {
     assert!(json.get("rewritten_dicom_bytes_base64").is_none());
     assert!(json.get("summary").is_none());
     assert!(json.get("review_queue").is_none());
+}
+
+async fn assert_invalid_decode_request_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json, json!({
+        "error": {
+            "code": "invalid_decode_request",
+            "message": "request body did not contain a valid vault decode request"
+        }
+    }));
+    assert!(json.get("values").is_none());
+    assert!(json.get("audit_event").is_none());
+}
+
+async fn assert_invalid_vault_target_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json, json!({
+        "error": {
+            "code": "invalid_vault_target",
+            "message": "vault target could not be read as a usable vault artifact"
+        }
+    }));
+    assert!(json.get("values").is_none());
+    assert!(json.get("audit_event").is_none());
 }
 
 fn build_dicom_fixture(burned_in_annotation: &str, include_private: bool) -> Vec<u8> {
