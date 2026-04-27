@@ -6,6 +6,7 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use mdid_adapters::DicomAdapterError;
 use mdid_application::{
     ApplicationError, ApplicationService, DicomDeidentificationOutput, DicomDeidentificationService,
 };
@@ -113,17 +114,10 @@ async fn dicom_deidentify(
 
 fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
-        ApplicationError::DicomAdapter(error) if is_invalid_dicom_input_error(error) => {
-            invalid_dicom_response()
-        }
+        ApplicationError::DicomAdapter(DicomAdapterError::Parse(_))
+        | ApplicationError::DicomAdapter(DicomAdapterError::Value(_)) => invalid_dicom_response(),
         _ => internal_error_response(),
     }
-}
-
-fn is_invalid_dicom_input_error(error: &dyn std::error::Error) -> bool {
-    let message = error.to_string();
-    message.starts_with("failed to parse DICOM input:")
-        || message.starts_with("failed to convert DICOM value:")
 }
 
 fn success_response(output: DicomDeidentificationOutput) -> (StatusCode, Json<DicomDeidentifyResponse>) {
@@ -188,12 +182,27 @@ mod tests {
         assert_eq!(map_application_error(&error).0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    #[test]
+    fn classifies_rewrite_write_errors_as_internal_error() {
+        let error = ApplicationError::DicomAdapter(invalid_write_error().into());
+
+        assert!(matches!(error, ApplicationError::DicomAdapter(DicomAdapterError::Write(_))));
+        assert_eq!(map_application_error(&error).0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     fn invalid_meta_error() -> dicom_object::WithMetaError {
         dicom_object::WithMetaError::BuildMetaTable {
             source: dicom_object::meta::Error::MissingElement {
                 alias: "Media Storage SOP Class UID",
                 backtrace: Backtrace::capture(),
             },
+        }
+    }
+
+    fn invalid_write_error() -> dicom_object::WriteError {
+        dicom_object::WriteError::WritePreamble {
+            backtrace: Backtrace::capture(),
+            source: std::io::Error::other("simulated write failure"),
         }
     }
 }
