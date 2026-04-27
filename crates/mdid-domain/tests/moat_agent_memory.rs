@@ -28,6 +28,27 @@ fn agent_role_wire_values_are_stable() {
 }
 
 #[test]
+fn task_graph_deserializes_legacy_nodes_without_artifacts_as_empty() {
+    let graph: MoatTaskGraph = serde_json::from_str(
+        r#"{
+            "round_id": "00000000-0000-0000-0000-000000000000",
+            "nodes": [{
+                "node_id": "legacy-node",
+                "title": "Legacy Node",
+                "role": "planner",
+                "kind": "market_scan",
+                "state": "ready",
+                "depends_on": [],
+                "spec_ref": null
+            }]
+        }"#,
+    )
+    .expect("legacy task graph should deserialize");
+
+    assert!(graph.nodes[0].artifacts.is_empty());
+}
+
+#[test]
 fn task_graph_reports_ready_nodes_when_dependencies_are_satisfied() {
     let graph = MoatTaskGraph {
         round_id: Uuid::nil(),
@@ -40,6 +61,7 @@ fn task_graph_reports_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Completed,
                 depends_on: vec![],
                 spec_ref: None,
+                artifacts: Vec::new(),
             },
             MoatTaskNode {
                 node_id: "strategy-gen".into(),
@@ -49,6 +71,7 @@ fn task_graph_reports_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Pending,
                 depends_on: vec!["market-scan".into()],
                 spec_ref: Some("docs/spec.md".into()),
+                artifacts: Vec::new(),
             },
         ],
     };
@@ -69,6 +92,7 @@ fn task_graph_keeps_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Completed,
                 depends_on: vec![],
                 spec_ref: None,
+                artifacts: Vec::new(),
             },
             MoatTaskNode {
                 node_id: "strategy-gen".into(),
@@ -78,6 +102,7 @@ fn task_graph_keeps_ready_nodes_when_dependencies_are_satisfied() {
                 state: MoatTaskNodeState::Ready,
                 depends_on: vec!["market-scan".into()],
                 spec_ref: Some("docs/spec.md".into()),
+                artifacts: Vec::new(),
             },
         ],
     };

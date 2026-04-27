@@ -492,6 +492,13 @@ pub enum MoatTaskNodeState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoatTaskArtifact {
+    pub artifact_ref: String,
+    pub summary: String,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoatTaskNode {
     pub node_id: String,
     pub title: String,
@@ -500,6 +507,8 @@ pub struct MoatTaskNode {
     pub state: MoatTaskNodeState,
     pub depends_on: Vec<String>,
     pub spec_ref: Option<String>,
+    #[serde(default)]
+    pub artifacts: Vec<MoatTaskArtifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

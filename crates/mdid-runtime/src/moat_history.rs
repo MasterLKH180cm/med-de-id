@@ -1,6 +1,6 @@
 use crate::moat::MoatRoundReport;
 use chrono::{DateTime, Utc};
-use mdid_domain::{ContinueDecision, MoatTaskNodeState};
+use mdid_domain::{ContinueDecision, MoatTaskArtifact, MoatTaskNodeState};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -55,6 +55,13 @@ pub struct MoatContinuationGate {
     pub can_continue: bool,
     pub reason: String,
     pub required_improvement_threshold: i16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompleteTaskArtifact {
+    pub artifact_ref: String,
+    pub artifact_summary: String,
+    pub recorded_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]
@@ -248,11 +255,21 @@ impl LocalMoatHistoryStore {
         round_id: Option<&str>,
         node_id: &str,
     ) -> Result<String, CompleteInProgressTaskError> {
-        self.transition_task_state(
+        self.complete_in_progress_task_with_artifact(round_id, node_id, None)
+    }
+
+    pub fn complete_in_progress_task_with_artifact(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+        artifact: Option<CompleteTaskArtifact>,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state_with_artifact(
             round_id,
             node_id,
             MoatTaskNodeState::InProgress,
             MoatTaskNodeState::Completed,
+            artifact,
         )
     }
 
@@ -302,6 +319,36 @@ impl LocalMoatHistoryStore {
         expected_state: MoatTaskNodeState,
         next_state: MoatTaskNodeState,
     ) -> Result<String, CompleteInProgressTaskError> {
+        self.transition_task_state_with_artifact(
+            round_id,
+            node_id,
+            expected_state,
+            next_state,
+            None,
+        )
+    }
+
+    fn transition_task_state_with_artifact(
+        &mut self,
+        round_id: Option<&str>,
+        node_id: &str,
+        expected_state: MoatTaskNodeState,
+        next_state: MoatTaskNodeState,
+        artifact: Option<CompleteTaskArtifact>,
+    ) -> Result<String, CompleteInProgressTaskError> {
+        if let Some(artifact) = artifact.as_ref() {
+            if artifact.artifact_ref.trim().is_empty() {
+                return Err(CompleteInProgressTaskError::InvalidArtifact {
+                    field: "artifact_ref",
+                });
+            }
+            if artifact.artifact_summary.trim().is_empty() {
+                return Err(CompleteInProgressTaskError::InvalidArtifact {
+                    field: "artifact_summary",
+                });
+            }
+        }
+
         if !self.path.exists() {
             return Err(CompleteInProgressTaskError::Store(
                 LocalMoatHistoryStoreError::MissingFile(self.path.clone()),
@@ -350,6 +397,13 @@ impl LocalMoatHistoryStore {
         }
 
         node.state = next_state;
+        if let Some(artifact) = artifact {
+            node.artifacts.push(MoatTaskArtifact {
+                artifact_ref: artifact.artifact_ref,
+                summary: artifact.artifact_summary,
+                recorded_at: artifact.recorded_at,
+            });
+        }
         self.persist(&next_entries)?;
         self.entries = next_entries;
         Ok(selected_round_id)
@@ -556,6 +610,8 @@ pub enum CompleteInProgressTaskError {
         state: MoatTaskNodeState,
         expected_state: MoatTaskNodeState,
     },
+    #[error("invalid complete task artifact: {field} must not be blank")]
+    InvalidArtifact { field: &'static str },
 }
 
 #[derive(Debug, Error)]
@@ -577,6 +633,217 @@ mod tests {
         CompetitorProfile, LockInReport, MarketMoatSnapshot, MoatStrategy, MoatType, ResourceBudget,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn complete_in_progress_task_with_artifact_persists_completed_state_and_artifact() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let history_path = temp_dir.path().join("moat-history.json");
+        let mut report = run_bounded_round(sample_round_input());
+        report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist")
+            .state = MoatTaskNodeState::InProgress;
+        fs::write(
+            &history_path,
+            serde_json::to_vec_pretty(&vec![MoatHistoryEntry {
+                recorded_at: Utc::now(),
+                report,
+            }])
+            .expect("failed to serialize history"),
+        )
+        .expect("failed to write history");
+
+        let mut store =
+            LocalMoatHistoryStore::open(history_path.clone()).expect("failed to open history");
+        let artifact_recorded_at = Utc::now();
+        store
+            .complete_in_progress_task_with_artifact(
+                None,
+                "strategy_generation",
+                Some(CompleteTaskArtifact {
+                    artifact_ref: "docs/superpowers/plans/artifact.md".to_string(),
+                    artifact_summary: "handoff summary".to_string(),
+                    recorded_at: artifact_recorded_at,
+                }),
+            )
+            .expect("failed to complete task with artifact");
+
+        let entries = load_entries(&history_path).expect("failed to reload entries");
+        let strategy_node = entries[0]
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist");
+        assert_eq!(strategy_node.state, MoatTaskNodeState::Completed);
+        assert_eq!(strategy_node.artifacts.len(), 1);
+        assert_eq!(
+            strategy_node.artifacts[0].artifact_ref,
+            "docs/superpowers/plans/artifact.md"
+        );
+        assert_eq!(strategy_node.artifacts[0].summary, "handoff summary");
+        assert_eq!(strategy_node.artifacts[0].recorded_at, artifact_recorded_at);
+    }
+
+    #[test]
+    fn complete_in_progress_task_with_no_artifact_persists_completed_state_without_artifact() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let history_path = temp_dir.path().join("moat-history.json");
+        let mut report = run_bounded_round(sample_round_input());
+        report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist")
+            .state = MoatTaskNodeState::InProgress;
+        fs::write(
+            &history_path,
+            serde_json::to_vec_pretty(&vec![MoatHistoryEntry {
+                recorded_at: Utc::now(),
+                report,
+            }])
+            .expect("failed to serialize history"),
+        )
+        .expect("failed to write history");
+
+        let mut store =
+            LocalMoatHistoryStore::open(history_path.clone()).expect("failed to open history");
+        store
+            .complete_in_progress_task_with_artifact(None, "strategy_generation", None)
+            .expect("failed to complete task without artifact");
+
+        let entries = load_entries(&history_path).expect("failed to reload entries");
+        let strategy_node = entries[0]
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist");
+        assert_eq!(strategy_node.state, MoatTaskNodeState::Completed);
+        assert!(strategy_node.artifacts.is_empty());
+    }
+
+    #[test]
+    fn complete_in_progress_task_with_blank_artifact_ref_is_rejected() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let history_path = temp_dir.path().join("moat-history.json");
+        let mut report = run_bounded_round(sample_round_input());
+        report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist")
+            .state = MoatTaskNodeState::InProgress;
+        fs::write(
+            &history_path,
+            serde_json::to_vec_pretty(&vec![MoatHistoryEntry {
+                recorded_at: Utc::now(),
+                report,
+            }])
+            .expect("failed to serialize history"),
+        )
+        .expect("failed to write history");
+
+        let mut store =
+            LocalMoatHistoryStore::open(history_path.clone()).expect("failed to open history");
+        let error = store
+            .complete_in_progress_task_with_artifact(
+                None,
+                "strategy_generation",
+                Some(CompleteTaskArtifact {
+                    artifact_ref: " \t\n".to_string(),
+                    artifact_summary: "handoff summary".to_string(),
+                    recorded_at: Utc::now(),
+                }),
+            )
+            .expect_err("blank artifact_ref should be rejected");
+
+        assert!(matches!(
+            error,
+            CompleteInProgressTaskError::InvalidArtifact {
+                field: "artifact_ref"
+            }
+        ));
+        let entries = load_entries(&history_path).expect("failed to reload entries");
+        let strategy_node = entries[0]
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist");
+        assert_eq!(strategy_node.state, MoatTaskNodeState::InProgress);
+        assert!(strategy_node.artifacts.is_empty());
+    }
+
+    #[test]
+    fn complete_in_progress_task_with_blank_artifact_summary_is_rejected() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let history_path = temp_dir.path().join("moat-history.json");
+        let mut report = run_bounded_round(sample_round_input());
+        report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist")
+            .state = MoatTaskNodeState::InProgress;
+        fs::write(
+            &history_path,
+            serde_json::to_vec_pretty(&vec![MoatHistoryEntry {
+                recorded_at: Utc::now(),
+                report,
+            }])
+            .expect("failed to serialize history"),
+        )
+        .expect("failed to write history");
+
+        let mut store =
+            LocalMoatHistoryStore::open(history_path.clone()).expect("failed to open history");
+        let error = store
+            .complete_in_progress_task_with_artifact(
+                None,
+                "strategy_generation",
+                Some(CompleteTaskArtifact {
+                    artifact_ref: "docs/superpowers/plans/artifact.md".to_string(),
+                    artifact_summary: " \t\n".to_string(),
+                    recorded_at: Utc::now(),
+                }),
+            )
+            .expect_err("blank artifact summary should be rejected");
+
+        assert!(matches!(
+            error,
+            CompleteInProgressTaskError::InvalidArtifact {
+                field: "artifact_summary"
+            }
+        ));
+        let entries = load_entries(&history_path).expect("failed to reload entries");
+        let strategy_node = entries[0]
+            .report
+            .control_plane
+            .task_graph
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "strategy_generation")
+            .expect("strategy_generation node should exist");
+        assert_eq!(strategy_node.state, MoatTaskNodeState::InProgress);
+        assert!(strategy_node.artifacts.is_empty());
+    }
 
     #[test]
     fn release_in_progress_task_returns_node_to_ready() {
