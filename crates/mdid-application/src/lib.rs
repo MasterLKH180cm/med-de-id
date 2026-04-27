@@ -1,13 +1,13 @@
 use chrono::Utc;
 use mdid_adapters::{
     sanitize_output_name, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
-    DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy,
-    TabularAdapterError,
+    DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy, PdfAdapter,
+    PdfAdapterError, PdfPageExtraction, TabularAdapterError,
 };
 use mdid_domain::{
     BatchSummary, BurnedInAnnotationStatus, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, MappingScope, PhiCandidate, PipelineDefinition, PipelineRun,
-    PipelineRunState, SurfaceKind, TabularColumn,
+    DicomPrivateTagPolicy, MappingScope, PdfExtractionSummary, PdfPhiCandidate, PhiCandidate,
+    PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -22,6 +22,8 @@ pub enum ApplicationError {
     PipelineNotFound(Uuid),
     #[error(transparent)]
     DicomAdapter(#[from] DicomAdapterError),
+    #[error(transparent)]
+    PdfAdapter(#[from] PdfAdapterError),
     #[error(transparent)]
     TabularAdapter(#[from] TabularAdapterError),
     #[error(transparent)]
@@ -114,11 +116,54 @@ impl fmt::Debug for DicomDeidentificationOutput {
     }
 }
 
+#[derive(Clone)]
+pub struct PdfDeidentificationOutput {
+    pub summary: PdfExtractionSummary,
+    pub page_statuses: Vec<PdfPageExtraction>,
+    pub review_queue: Vec<PdfPhiCandidate>,
+    pub rewritten_pdf_bytes: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for PdfDeidentificationOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PdfDeidentificationOutput")
+            .field("summary", &self.summary)
+            .field("page_statuses", &self.page_statuses)
+            .field("review_queue", &"[REDACTED]")
+            .field("review_queue_len", &self.review_queue.len())
+            .field(
+                "rewritten_pdf_bytes",
+                &self.rewritten_pdf_bytes.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TabularDeidentificationService;
 
 #[derive(Clone, Default)]
 pub struct DicomDeidentificationService;
+
+#[derive(Clone, Default)]
+pub struct PdfDeidentificationService;
+
+impl PdfDeidentificationService {
+    pub fn deidentify_bytes(
+        &self,
+        bytes: &[u8],
+        source_name: &str,
+    ) -> Result<PdfDeidentificationOutput, ApplicationError> {
+        let extracted = PdfAdapter::new().extract(bytes, source_name)?;
+
+        Ok(PdfDeidentificationOutput {
+            summary: extracted.summary,
+            page_statuses: extracted.pages,
+            review_queue: extracted.candidates,
+            rewritten_pdf_bytes: None,
+        })
+    }
+}
 
 impl DicomDeidentificationService {
     pub fn deidentify_bytes(
