@@ -11102,6 +11102,128 @@ fn task_events_reports_generated_lifecycle_events_for_latest_round() {
 }
 
 #[test]
+fn task_events_json_format_emits_filtered_event_envelope() {
+    let history_path = unique_history_path("task-events-json");
+    let history_path_arg = history_path.to_str().expect("history path should be utf-8");
+
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
+        .output()
+        .expect("failed to seed moat history");
+    assert!(
+        seed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    make_workflow_audit_spec_task_ready(&history_path);
+
+    let claim = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "claim-task",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "spec-workflow-audit",
+            "--agent-id",
+            "planner-json",
+        ])
+        .output()
+        .expect("failed to claim moat task");
+    assert!(
+        claim.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-events",
+            "--history-path",
+            history_path_arg,
+            "--node-id",
+            "spec-workflow-audit",
+            "--action",
+            "claim",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to inspect json task events");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout should be json");
+    assert_eq!(json["type"], "moat_task_events");
+    assert_eq!(json["history_path"], history_path_arg);
+    assert_eq!(json["task_event_entries"], 1);
+    let events = json["events"].as_array().expect("events should be array");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["node_id"], "spec-workflow-audit");
+    assert_eq!(events[0]["action"], "claim");
+    assert_eq!(events[0]["agent_id"], "planner-json");
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn task_events_rejects_unknown_format() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-events",
+            "--history-path",
+            "unused.json",
+            "--format",
+            "yaml",
+        ])
+        .output()
+        .expect("failed to run task-events with unknown format");
+
+    assert!(
+        !output.status.success(),
+        "task-events should reject unknown format"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unknown moat task-events format: yaml")
+    );
+}
+
+#[test]
+fn task_events_rejects_duplicate_format() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "task-events",
+            "--history-path",
+            "unused.json",
+            "--format",
+            "json",
+            "--format",
+            "text",
+        ])
+        .output()
+        .expect("failed to run task-events with duplicate format");
+
+    assert!(
+        !output.status.success(),
+        "task-events should reject duplicate format"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate moat task-events --format"));
+}
+
+#[test]
 fn task_events_filters_conjunctively_and_limits_after_filtering() {
     let history_path = unique_history_path("task-events-filters");
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");

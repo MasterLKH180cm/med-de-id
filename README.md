@@ -278,4 +278,6 @@ Moat task leases: local external controllers coordinate claims via history-file 
 
 ### Moat task event inspection
 
-`mdid-cli moat task-events --history-path PATH` opens an existing moat history file without mutating it and prints the latest round task lifecycle events. Use `--round-id` for exact round selection, and combine `--node-id`, `--action claim|heartbeat|reap|complete|release|block|unblock`, `--agent-id`, `--contains`, and positive `--limit` filters. Rows are emitted as `task_event=<action>|<node_id>|<agent-or-<none>>|<summary>`.
+`mdid-cli moat task-events --history-path PATH` opens an existing moat history file without mutating it and prints the latest round task lifecycle events. Use `--round-id` for exact round selection, and combine `--node-id`, `--action claim|heartbeat|reap|complete|release|block|unblock`, `--agent-id`, `--contains`, and positive `--limit` filters. Text output remains the default (`--format text`) and emits rows as `task_event=<action>|<node_id>|<agent-or-<none>>|<summary>`.
+
+Use `--format json` for machine-readable output after the same selection, filters, and limit are applied. The pretty JSON envelope has `type: "moat_task_events"`, `round_id`, `history_path`, `task_event_entries`, and an `events` array. Each event object includes `recorded_at`, `node_id`, `action`, `previous_state`, `new_state`, `agent_id`, `lease_expires_at`, `artifact_ref`, `artifact_summary`, and `reason`, with unavailable optional fields emitted as `null`.
