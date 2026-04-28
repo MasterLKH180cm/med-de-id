@@ -132,6 +132,7 @@ Inspect the bounded control-plane snapshot with:
 
 ```bash
 cargo run -p mdid-cli -- moat control-plane
+cargo run -p mdid-cli -- moat control-plane --format json
 ```
 
 Inspect a dry-run control-plane snapshot from a local `MoatRoundInput` JSON file without saving history:
@@ -154,13 +155,15 @@ The control-plane command prints a deterministic snapshot containing:
 - `agent_assignments=<none>|planner:<node_id>|coder:<node_id>|reviewer:<node_id>[,...]`
 - `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
 
+Text output remains the default. `--format json` emits a pretty deterministic `moat_control_plane` envelope for external controllers with `type`, nullable `history_path`, `source`, `round_id`, `score`, `improvement_delta`, `can_continue`, `ready_tasks`, `assignments`, `task_states`, `decision_summary`, and local-only constraints such as `local_only`, `read_only`, `no_agent_launch`, `no_daemon`, `no_pr_creation`, and `no_cron_creation`.
+
 Inspect the latest persisted moat control-plane snapshot with:
 
 ```bash
 cargo run -p mdid-cli -- moat control-plane --history-path .mdid/moat-history.json
 ```
 
-This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, improvement delta, and inspection-only agent assignment projection for ready nodes. `agent_assignments` is a projection only: it does not launch agents, start a daemon, dispatch Planner/Coder/Reviewer work, write code, schedule work, append rounds, crawl the web, or automate code changes.
+This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, improvement delta, and inspection-only agent assignment projection for ready nodes. `agent_assignments` / JSON `assignments` are projections only: they do not launch agents, start a daemon, dispatch Planner/Coder/Reviewer work, write code, schedule work, append rounds, crawl the web, create cron jobs, open PRs, or automate code changes.
 
 External controllers can inspect ready tasks in parseable JSON without mutating local history:
 
