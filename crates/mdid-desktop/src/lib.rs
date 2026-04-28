@@ -163,6 +163,207 @@ pub struct DesktopWorkflowRequestState {
 pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, and does not add controller, agent, or orchestration behavior.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopPortableMode {
+    VaultExport,
+    InspectArtifact,
+    ImportArtifact,
+}
+
+impl DesktopPortableMode {
+    pub fn route(self) -> &'static str {
+        match self {
+            Self::VaultExport => "/vault/export",
+            Self::InspectArtifact => "/portable-artifacts/inspect",
+            Self::ImportArtifact => "/portable-artifacts/import",
+        }
+    }
+
+    pub fn disclosure(self) -> &'static str {
+        match self {
+            Self::VaultExport => "bounded desktop portable export request preparation for the existing local /vault/export runtime route; no generalized workflow orchestration behavior is included.",
+            Self::InspectArtifact => "bounded desktop portable artifact inspection request preparation for the existing local /portable-artifacts/inspect runtime route; no generalized workflow orchestration behavior is included.",
+            Self::ImportArtifact => "bounded desktop portable artifact import request preparation for the existing local /portable-artifacts/import runtime route; no generalized workflow orchestration behavior is included.",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopPortableRequestState {
+    pub mode: DesktopPortableMode,
+    pub vault_path: String,
+    pub vault_passphrase: String,
+    pub record_ids_json: String,
+    pub export_passphrase: String,
+    pub export_context: String,
+    pub artifact_json: String,
+    pub portable_passphrase: String,
+    pub destination_vault_path: String,
+    pub destination_vault_passphrase: String,
+    pub import_context: String,
+}
+
+impl std::fmt::Debug for DesktopPortableRequestState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopPortableRequestState")
+            .field("mode", &self.mode)
+            .field("vault_path", &self.vault_path)
+            .field("vault_passphrase", &"<redacted>")
+            .field("record_ids_json", &self.record_ids_json)
+            .field("export_passphrase", &"<redacted>")
+            .field("export_context", &self.export_context)
+            .field("artifact_json", &"<redacted>")
+            .field("portable_passphrase", &"<redacted>")
+            .field("destination_vault_path", &self.destination_vault_path)
+            .field("destination_vault_passphrase", &"<redacted>")
+            .field("import_context", &self.import_context)
+            .finish()
+    }
+}
+
+impl Default for DesktopPortableRequestState {
+    fn default() -> Self {
+        Self {
+            mode: DesktopPortableMode::VaultExport,
+            vault_path: String::new(),
+            vault_passphrase: String::new(),
+            record_ids_json: "[]".to_string(),
+            export_passphrase: String::new(),
+            export_context: "desktop portable export".to_string(),
+            artifact_json: String::new(),
+            portable_passphrase: String::new(),
+            destination_vault_path: String::new(),
+            destination_vault_passphrase: String::new(),
+            import_context: "desktop portable import".to_string(),
+        }
+    }
+}
+
+impl DesktopPortableRequestState {
+    pub fn try_build_request(
+        &self,
+    ) -> Result<DesktopWorkflowRequest, DesktopPortableValidationError> {
+        let body = match self.mode {
+            DesktopPortableMode::VaultExport => {
+                let vault_path = require_nonblank(
+                    &self.vault_path,
+                    DesktopPortableValidationError::BlankVaultPath,
+                )?;
+                if self.vault_passphrase.trim().is_empty() {
+                    return Err(DesktopPortableValidationError::BlankVaultPassphrase);
+                }
+                let record_ids_json = require_nonblank(
+                    &self.record_ids_json,
+                    DesktopPortableValidationError::BlankRecordIdsJson,
+                )?;
+                if self.export_passphrase.trim().is_empty() {
+                    return Err(DesktopPortableValidationError::BlankExportPassphrase);
+                }
+                let export_context = require_nonblank(
+                    &self.export_context,
+                    DesktopPortableValidationError::BlankExportContext,
+                )?;
+                let record_ids = parse_portable_json(
+                    record_ids_json,
+                    DesktopPortableValidationError::InvalidRecordIdsJson,
+                )?;
+                serde_json::json!({
+                    "vault_path": vault_path,
+                    "vault_passphrase": self.vault_passphrase.clone(),
+                    "record_ids": record_ids,
+                    "export_passphrase": self.export_passphrase.clone(),
+                    "export_context": export_context,
+                })
+            }
+            DesktopPortableMode::InspectArtifact => {
+                let artifact_json = require_nonblank(
+                    &self.artifact_json,
+                    DesktopPortableValidationError::BlankArtifactJson,
+                )?;
+                if self.portable_passphrase.trim().is_empty() {
+                    return Err(DesktopPortableValidationError::BlankPortablePassphrase);
+                }
+                let artifact = parse_portable_json(
+                    artifact_json,
+                    DesktopPortableValidationError::InvalidArtifactJson,
+                )?;
+                serde_json::json!({
+                    "artifact": artifact,
+                    "portable_passphrase": self.portable_passphrase.clone(),
+                })
+            }
+            DesktopPortableMode::ImportArtifact => {
+                let vault_path = require_nonblank(
+                    &self.destination_vault_path,
+                    DesktopPortableValidationError::BlankDestinationVaultPath,
+                )?;
+                if self.destination_vault_passphrase.trim().is_empty() {
+                    return Err(DesktopPortableValidationError::BlankDestinationVaultPassphrase);
+                }
+                let artifact_json = require_nonblank(
+                    &self.artifact_json,
+                    DesktopPortableValidationError::BlankArtifactJson,
+                )?;
+                if self.portable_passphrase.trim().is_empty() {
+                    return Err(DesktopPortableValidationError::BlankPortablePassphrase);
+                }
+                let import_context = require_nonblank(
+                    &self.import_context,
+                    DesktopPortableValidationError::BlankImportContext,
+                )?;
+                let artifact = parse_portable_json(
+                    artifact_json,
+                    DesktopPortableValidationError::InvalidArtifactJson,
+                )?;
+                serde_json::json!({
+                    "vault_path": vault_path,
+                    "vault_passphrase": self.destination_vault_passphrase.clone(),
+                    "artifact": artifact,
+                    "portable_passphrase": self.portable_passphrase.clone(),
+                    "import_context": import_context,
+                })
+            }
+        };
+
+        Ok(DesktopWorkflowRequest {
+            route: self.mode.route(),
+            body,
+        })
+    }
+}
+
+fn require_nonblank<'a, E>(value: &'a str, error: E) -> Result<&'a str, E> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(error)
+    } else {
+        Ok(value)
+    }
+}
+
+fn parse_portable_json(
+    value: &str,
+    error: fn(String) -> DesktopPortableValidationError,
+) -> Result<serde_json::Value, DesktopPortableValidationError> {
+    serde_json::from_str(value).map_err(|parse_error| error(parse_error.to_string()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopPortableValidationError {
+    BlankVaultPath,
+    BlankVaultPassphrase,
+    BlankRecordIdsJson,
+    BlankExportPassphrase,
+    BlankExportContext,
+    BlankArtifactJson,
+    BlankPortablePassphrase,
+    BlankDestinationVaultPath,
+    BlankDestinationVaultPassphrase,
+    BlankImportContext,
+    InvalidRecordIdsJson(String),
+    InvalidArtifactJson(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopVaultMode {
     Decode,
     AuditEvents,
@@ -782,6 +983,133 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn portable_mode_routes_match_existing_runtime_routes() {
+        assert_eq!(DesktopPortableMode::VaultExport.route(), "/vault/export");
+        assert_eq!(
+            DesktopPortableMode::InspectArtifact.route(),
+            "/portable-artifacts/inspect"
+        );
+        assert_eq!(
+            DesktopPortableMode::ImportArtifact.route(),
+            "/portable-artifacts/import"
+        );
+        assert!(DesktopPortableMode::VaultExport
+            .disclosure()
+            .contains("bounded"));
+        assert!(!DesktopPortableMode::VaultExport
+            .disclosure()
+            .contains("controller"));
+    }
+
+    #[test]
+    fn portable_export_request_builds_runtime_envelope() {
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::VaultExport,
+            vault_path: "/safe/local.vault".to_string(),
+            vault_passphrase: "vault-secret".to_string(),
+            record_ids_json: "[\"record-1\",\"record-2\"]".to_string(),
+            export_passphrase: "portable-secret".to_string(),
+            export_context: "handoff to privacy office".to_string(),
+            artifact_json: String::new(),
+            portable_passphrase: String::new(),
+            destination_vault_path: String::new(),
+            destination_vault_passphrase: String::new(),
+            import_context: String::new(),
+        };
+
+        let request = state.try_build_request().unwrap();
+
+        assert_eq!(request.route, "/vault/export");
+        assert_eq!(request.body["vault_path"], "/safe/local.vault");
+        assert_eq!(request.body["vault_passphrase"], "vault-secret");
+        assert_eq!(request.body["record_ids"], json!(["record-1", "record-2"]));
+        assert_eq!(request.body["export_passphrase"], "portable-secret");
+        assert_eq!(request.body["export_context"], "handoff to privacy office");
+    }
+
+    #[test]
+    fn portable_inspect_request_builds_runtime_envelope() {
+        let mut state = DesktopPortableRequestState::default();
+        state.mode = DesktopPortableMode::InspectArtifact;
+        state.artifact_json = "{\"version\":1}".to_string();
+        state.portable_passphrase = "portable-secret".to_string();
+
+        let request = state.try_build_request().unwrap();
+
+        assert_eq!(request.route, "/portable-artifacts/inspect");
+        assert_eq!(
+            request.body,
+            json!({"artifact":{"version":1},"portable_passphrase":"portable-secret"})
+        );
+    }
+
+    #[test]
+    fn portable_import_request_builds_runtime_envelope() {
+        let mut state = DesktopPortableRequestState::default();
+        state.mode = DesktopPortableMode::ImportArtifact;
+        state.destination_vault_path = "/safe/target.vault".to_string();
+        state.destination_vault_passphrase = "target-secret".to_string();
+        state.artifact_json = "{\"version\":1}".to_string();
+        state.portable_passphrase = "portable-secret".to_string();
+        state.import_context = "restore approved records".to_string();
+
+        let request = state.try_build_request().unwrap();
+
+        assert_eq!(request.route, "/portable-artifacts/import");
+        assert_eq!(request.body["vault_path"], "/safe/target.vault");
+        assert_eq!(request.body["vault_passphrase"], "target-secret");
+        assert_eq!(request.body["artifact"], json!({"version":1}));
+        assert_eq!(request.body["portable_passphrase"], "portable-secret");
+        assert_eq!(request.body["import_context"], "restore approved records");
+    }
+
+    #[test]
+    fn portable_request_validation_rejects_blank_required_fields() {
+        let state = DesktopPortableRequestState::default();
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopPortableValidationError::BlankVaultPath)
+        );
+
+        let mut inspect = DesktopPortableRequestState::default();
+        inspect.mode = DesktopPortableMode::InspectArtifact;
+        inspect.artifact_json = "{\"version\":1}".to_string();
+        assert_eq!(
+            inspect.try_build_request(),
+            Err(DesktopPortableValidationError::BlankPortablePassphrase)
+        );
+
+        let mut import = DesktopPortableRequestState::default();
+        import.mode = DesktopPortableMode::ImportArtifact;
+        import.destination_vault_path = "/safe/target.vault".to_string();
+        import.destination_vault_passphrase = "target-secret".to_string();
+        import.portable_passphrase = "portable-secret".to_string();
+        assert_eq!(
+            import.try_build_request(),
+            Err(DesktopPortableValidationError::BlankArtifactJson)
+        );
+    }
+
+    #[test]
+    fn portable_request_debug_redacts_passphrases_and_artifact() {
+        let state = DesktopPortableRequestState {
+            vault_passphrase: "vault-secret".to_string(),
+            export_passphrase: "portable-export-secret".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            artifact_json: "{\"patient\":\"Alice\"}".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
+
+        let debug = format!("{state:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("vault-secret"));
+        assert!(!debug.contains("portable-export-secret"));
+        assert!(!debug.contains("portable-secret"));
+        assert!(!debug.contains("Alice"));
+    }
 
     #[test]
     fn desktop_vault_decode_request_builds_existing_runtime_contract() {
