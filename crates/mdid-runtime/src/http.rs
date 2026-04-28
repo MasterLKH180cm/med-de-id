@@ -103,7 +103,7 @@ struct TabularXlsxDeidentifyRequest {
     field_policies: Vec<FieldPolicyRequest>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct ConservativeMediaDeidentifyRequest {
     artifact_label: String,
     format: ConservativeMediaFormat,
@@ -114,7 +114,7 @@ struct ConservativeMediaDeidentifyRequest {
     unsupported_payload: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct ConservativeMediaMetadataEntryRequest {
     key: String,
     value: String,
