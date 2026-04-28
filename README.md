@@ -191,6 +191,15 @@ cargo run -p mdid-cli -- moat complete-task --history-path .mdid/moat-history.js
 
 `mdid-cli moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json]` exports a deterministic read-only work packet for an external Planner/Coder/Reviewer controller. It includes task metadata, dependency IDs, completed upstream artifact handoffs, acceptance criteria, and the recommended `complete-task` command. It never launches agents, mutates history, schedules work, crawls data, opens PRs, creates cron jobs, or writes artifact files.
 
+Run one bounded local external-controller handoff step with:
+
+```bash
+cargo run -p mdid-cli -- moat controller-step --history-path .mdid/moat-history.json --agent-id reviewer-1
+cargo run -p mdid-cli -- moat controller-step --history-path .mdid/moat-history.json --dry-run --format json
+```
+
+`mdid-cli moat controller-step --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind KIND] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json]` is a bounded local handoff command for external controllers. It selects at most one ready task using the dispatch-next routing filters, optionally claims that single task with local lease metadata when not in `--dry-run`, and emits work-packet context plus the recommended `complete-task` command. Text remains the default; `--format json` emits a deterministic `moat_controller_step` envelope with selected task metadata, claim metadata, an embedded `moat_work_packet`, complete command, and local-only constraints. It is not an agent launcher, daemon, crawler, PR automation, cron job, background scheduler, code writer, or artifact generator: it does not launch agents, supervise processes, schedule background work, crawl data, open PRs, create cron jobs, write code, or generate artifact files.
+
 Inspect completed artifact handoffs as parseable JSON without mutating local history:
 
 ```bash

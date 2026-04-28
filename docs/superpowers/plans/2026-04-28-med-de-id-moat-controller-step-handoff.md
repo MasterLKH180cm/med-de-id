@@ -495,7 +495,7 @@ git commit -m "feat(cli): add moat controller-step handoff"
 - Modify: `AGENTS.md`
 - Modify: `docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md`
 
-- [ ] **Step 1: Update README controller-step section**
+- [x] **Step 1: Update README controller-step section**
 
 Add near the existing dispatch/work-packet docs in `README.md`:
 
