@@ -202,7 +202,10 @@ fn moat_controller_plan_filters_requires_artifacts_and_spec_ref() {
                                         "state": "ready",
                                         "spec_ref": null,
                                         "depends_on": [],
-                                        "artifacts": [{ "path": "reports/market-scan.md" }]
+                                        "artifacts": [{
+                                            "artifact_ref": "plan://market-scan",
+                                            "summary": "Market scan export"
+                                        }]
                                     },
                                     {
                                         "node_id": "competitor_analysis",
@@ -211,7 +214,8 @@ fn moat_controller_plan_filters_requires_artifacts_and_spec_ref() {
                                         "kind": "competitor_analysis",
                                         "state": "ready",
                                         "spec_ref": null,
-                                        "depends_on": []
+                                        "depends_on": [],
+                                        "artifacts": [{ "artifact_summary": "only summary" }]
                                     },
                                     {
                                         "node_id": "artifact_ready_implementation",
@@ -629,6 +633,51 @@ fn moat_controller_step_requires_artifacts_ignores_top_level_summary_without_ref
         String::from_utf8_lossy(&output.stderr)
             .contains("no ready moat task matched dispatch filters"),
         "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let after = fs::read_to_string(&history_path).expect("failed to read dry-run history");
+    assert_eq!(after, before, "dry-run controller-step mutated history");
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_controller_step_requires_artifacts_ignores_nested_summary_without_ref() {
+    let history_path = unique_history_path("controller-step-nested-summary-without-ref");
+    let mut history = controller_step_history_fixture();
+    let implementation =
+        &mut history["entries"][0]["report"]["control_plane"]["task_graph"]["nodes"][0];
+    implementation["artifacts"] = json!([{ "artifact_summary": "only summary" }]);
+    write_history_fixture_with_value(&history_path, history);
+
+    let before = fs::read_to_string(&history_path).expect("failed to read seeded history");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-step",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--requires-artifacts",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run controller-step with nested summary-only dependency artifact");
+
+    assert!(
+        !output.status.success(),
+        "nested summary-only artifact dependency should not match requires-artifacts: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("no ready moat task matched dispatch filters"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("artifact_ref must be a string"),
+        "nested summary-only artifact should be filtered before collection: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let after = fs::read_to_string(&history_path).expect("failed to read dry-run history");

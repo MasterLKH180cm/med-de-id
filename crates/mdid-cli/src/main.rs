@@ -929,7 +929,14 @@ fn dependencies_have_artifacts(nodes: &[Value], packet: &WorkPacket) -> bool {
 fn node_has_artifacts(node: &Value) -> bool {
     node.get("artifacts")
         .and_then(Value::as_array)
-        .map(|artifacts| !artifacts.is_empty())
+        .map(|artifacts| {
+            artifacts.iter().any(|artifact| {
+                artifact
+                    .get("artifact_ref")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
+        })
         .unwrap_or_else(|| node.get("artifact_ref").and_then(Value::as_str).is_some())
 }
 
