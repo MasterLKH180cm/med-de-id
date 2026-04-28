@@ -8,6 +8,10 @@ license.workspace = true
 mdid-application = { path = "../mdid-application" }
 mdid-domain = { path = "../mdid-domain" }
 mdid-runtime = { path = "../mdid-runtime" }
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [[bin]]
 name = "mdid-cli"
