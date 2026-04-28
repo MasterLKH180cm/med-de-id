@@ -15,6 +15,20 @@ enum InputMode {
 }
 
 impl InputMode {
+    fn from_file_name(file_name: &str) -> Option<Self> {
+        let file_name = file_name.to_lowercase();
+
+        if file_name.ends_with(".csv") {
+            Some(Self::CsvText)
+        } else if file_name.ends_with(".xlsx") {
+            Some(Self::XlsxBase64)
+        } else if file_name.ends_with(".pdf") {
+            Some(Self::PdfBase64)
+        } else {
+            None
+        }
+    }
+
     fn from_select_value(value: &str) -> Self {
         match value {
             "xlsx-base64" => Self::XlsxBase64,
@@ -75,6 +89,7 @@ struct BrowserFlowState {
     input_mode: InputMode,
     payload: String,
     source_name: String,
+    imported_file_name: Option<String>,
     field_policy_json: String,
     result_output: String,
     summary: String,
@@ -92,6 +107,7 @@ impl Default for BrowserFlowState {
             input_mode: InputMode::CsvText,
             payload: String::new(),
             source_name: "local-review.pdf".to_string(),
+            imported_file_name: None,
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
             summary: IDLE_SUMMARY.to_string(),
@@ -106,6 +122,26 @@ impl Default for BrowserFlowState {
 }
 
 impl BrowserFlowState {
+    fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
+        self.input_mode = mode;
+        self.source_name = file_name.to_string();
+        self.imported_file_name = Some(file_name.to_string());
+        self.invalidate_generated_state();
+        self.payload = payload.to_string();
+    }
+
+    fn suggested_export_file_name(&self) -> &'static str {
+        match self.input_mode {
+            InputMode::CsvText => "mdid-browser-output.csv",
+            InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
+            InputMode::PdfBase64 => "mdid-browser-review-report.txt",
+        }
+    }
+
+    fn can_export_output(&self) -> bool {
+        !self.result_output.trim().is_empty()
+    }
+
     fn clear_generated_state(&mut self) {
         self.result_output.clear();
         self.summary = IDLE_SUMMARY.to_string();
@@ -753,6 +789,61 @@ mod tests {
         assert_eq!(state.state_revision, 0);
         assert_eq!(state.next_submission_token, 1);
         assert!(state.active_submission_token.is_none());
+    }
+
+    #[test]
+    fn file_import_metadata_updates_payload_source_and_clears_generated_state() {
+        let mut state = BrowserFlowState::default();
+        state.result_output = "old output".to_string();
+        state.summary = "old summary".to_string();
+        state.review_queue = "old review".to_string();
+        state.error_banner = Some("old error".to_string());
+
+        state.apply_imported_file("report.pdf", "UERG", InputMode::PdfBase64);
+
+        assert_eq!(state.input_mode, InputMode::PdfBase64);
+        assert_eq!(state.payload, "UERG");
+        assert_eq!(state.source_name, "report.pdf");
+        assert_eq!(state.result_output, "");
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+        assert!(state.error_banner.is_none());
+        assert_eq!(state.imported_file_name.as_deref(), Some("report.pdf"));
+    }
+
+    #[test]
+    fn imported_file_name_selects_mode_from_safe_extension() {
+        assert_eq!(InputMode::from_file_name("patients.csv"), Some(InputMode::CsvText));
+        assert_eq!(InputMode::from_file_name("workbook.XLSX"), Some(InputMode::XlsxBase64));
+        assert_eq!(InputMode::from_file_name("scan.PDF"), Some(InputMode::PdfBase64));
+        assert_eq!(InputMode::from_file_name("archive.zip"), None);
+    }
+
+    #[test]
+    fn export_filename_is_safe_and_mode_specific() {
+        let mut state = BrowserFlowState::default();
+        state.imported_file_name = Some("Jane Patient.csv".to_string());
+        assert_eq!(state.suggested_export_file_name(), "mdid-browser-output.csv");
+
+        state.input_mode = InputMode::XlsxBase64;
+        state.imported_file_name = Some("clinic workbook.xlsx".to_string());
+        assert_eq!(state.suggested_export_file_name(), "mdid-browser-output.xlsx.base64.txt");
+
+        state.input_mode = InputMode::PdfBase64;
+        state.imported_file_name = Some("scan.pdf".to_string());
+        assert_eq!(state.suggested_export_file_name(), "mdid-browser-review-report.txt");
+    }
+
+    #[test]
+    fn export_is_available_only_after_runtime_output_exists() {
+        let mut state = BrowserFlowState::default();
+        assert!(!state.can_export_output());
+
+        state.result_output = "rewritten".to_string();
+        assert!(state.can_export_output());
+
+        state.result_output = "   ".to_string();
+        assert!(!state.can_export_output());
     }
 
     #[test]
