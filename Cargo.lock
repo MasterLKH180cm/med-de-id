@@ -3062,9 +3062,12 @@ name = "mdid-browser"
 version = "0.1.0"
 dependencies = [
  "gloo-net",
+ "js-sys",
  "leptos",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

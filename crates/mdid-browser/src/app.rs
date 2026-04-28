@@ -1,9 +1,14 @@
 use leptos::*;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 const DEFAULT_FIELD_POLICY_JSON: &str = "[\n  {\n    \"header\": \"patient_id\",\n    \"phi_type\": \"patient_id\",\n    \"action\": \"encode\"\n  },\n  {\n    \"header\": \"patient_name\",\n    \"phi_type\": \"patient_name\",\n    \"action\": \"review\"\n  }\n]";
 const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
+const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FETCH_UNAVAILABLE_MESSAGE: &str =
     "Runtime submission is only available from a wasm32 browser build.";
 
@@ -14,7 +19,29 @@ enum InputMode {
     PdfBase64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+enum BrowserFileReadMode {
+    Text,
+    DataUrlBase64,
+}
+
 impl InputMode {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn from_file_name(file_name: &str) -> Option<Self> {
+        let file_name = file_name.to_lowercase();
+
+        if file_name.ends_with(".csv") {
+            Some(Self::CsvText)
+        } else if file_name.ends_with(".xlsx") {
+            Some(Self::XlsxBase64)
+        } else if file_name.ends_with(".pdf") {
+            Some(Self::PdfBase64)
+        } else {
+            None
+        }
+    }
+
     fn from_select_value(value: &str) -> Self {
         match value {
             "xlsx-base64" => Self::XlsxBase64,
@@ -68,13 +95,40 @@ impl InputMode {
     fn is_pdf(self) -> bool {
         matches!(self, Self::PdfBase64)
     }
+
+    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+    fn browser_file_read_mode(self) -> BrowserFileReadMode {
+        match self {
+            Self::CsvText => BrowserFileReadMode::Text,
+            Self::XlsxBase64 | Self::PdfBase64 => BrowserFileReadMode::DataUrlBase64,
+        }
+    }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn file_import_payload_from_data_url(data_url: &str) -> String {
+    data_url
+        .split_once(',')
+        .map(|(_, payload)| payload)
+        .unwrap_or(data_url)
+        .to_string()
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn validate_browser_import_size(file_size_bytes: u64) -> Result<(), String> {
+    if file_size_bytes > MAX_BROWSER_IMPORT_BYTES {
+        Err("Browser import file is too large for the bounded local browser flow.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 struct BrowserFlowState {
     input_mode: InputMode,
     payload: String,
     source_name: String,
+    imported_file_name: Option<String>,
     field_policy_json: String,
     result_output: String,
     summary: String,
@@ -86,12 +140,36 @@ struct BrowserFlowState {
     active_submission_token: Option<u64>,
 }
 
+// BrowserFlowState may carry PHI-bearing local payloads, file names, and runtime text;
+// keep this Debug implementation redacted for those fields.
+impl fmt::Debug for BrowserFlowState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BrowserFlowState")
+            .field("input_mode", &self.input_mode)
+            .field("payload", &"<redacted>")
+            .field("source_name", &"<redacted>")
+            .field("imported_file_name", &self.imported_file_name.as_ref().map(|_| "<redacted>"))
+            .field("field_policy_json", &"<redacted>")
+            .field("result_output", &"<redacted>")
+            .field("summary", &"<redacted>")
+            .field("review_queue", &"<redacted>")
+            .field("error_banner", &self.error_banner.as_ref().map(|_| "<redacted>"))
+            .field("is_submitting", &self.is_submitting)
+            .field("state_revision", &self.state_revision)
+            .field("next_submission_token", &self.next_submission_token)
+            .field("active_submission_token", &self.active_submission_token)
+            .finish()
+    }
+}
+
 impl Default for BrowserFlowState {
     fn default() -> Self {
         Self {
             input_mode: InputMode::CsvText,
             payload: String::new(),
             source_name: "local-review.pdf".to_string(),
+            imported_file_name: None,
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
             summary: IDLE_SUMMARY.to_string(),
@@ -106,6 +184,37 @@ impl Default for BrowserFlowState {
 }
 
 impl BrowserFlowState {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
+        self.input_mode = mode;
+        self.source_name = file_name.to_string();
+        self.imported_file_name = Some(file_name.to_string());
+        self.invalidate_generated_state();
+        self.payload = payload.to_string();
+    }
+
+    fn reject_imported_file(&mut self, file_name: &str) {
+        self.imported_file_name = Some(file_name.to_string());
+        self.invalidate_generated_state();
+        self.error_banner = Some(
+            "Unsupported browser import file type. Use .csv, .xlsx, or .pdf.".to_string(),
+        );
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn suggested_export_file_name(&self) -> &'static str {
+        match self.input_mode {
+            InputMode::CsvText => "mdid-browser-output.csv",
+            InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
+            InputMode::PdfBase64 => "mdid-browser-review-report.txt",
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn can_export_output(&self) -> bool {
+        !self.result_output.trim().is_empty()
+    }
+
     fn clear_generated_state(&mut self) {
         self.result_output.clear();
         self.summary = IDLE_SUMMARY.to_string();
@@ -569,6 +678,175 @@ async fn perform_runtime_request(_request: RuntimeSubmitRequest) -> Result<Strin
     Err(FETCH_UNAVAILABLE_MESSAGE.to_string())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn trigger_browser_text_download(file_name: &str, text: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(text));
+
+    let options = BlobPropertyBag::new();
+    options.set_type("text/plain;charset=utf-8");
+
+    let blob = Blob::new_with_str_sequence_and_options(&parts, &options)
+        .map_err(|_| "Failed to create browser export blob.".to_string())?;
+    let url = Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "Failed to create browser export URL.".to_string())?;
+
+    let window = web_sys::window().ok_or("Browser window is unavailable for export.".to_string())?;
+    let document = window
+        .document()
+        .ok_or("Browser document is unavailable for export.".to_string())?;
+    let anchor = document
+        .create_element("a")
+        .map_err(|_| "Failed to create browser export anchor.".to_string())?
+        .dyn_into::<HtmlAnchorElement>()
+        .map_err(|_| "Failed to prepare browser export anchor.".to_string())?;
+
+    anchor.set_href(&url);
+    anchor.set_download(file_name);
+    anchor.click();
+    Url::revoke_object_url(&url).ok();
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn trigger_browser_text_download(_file_name: &str, _text: &str) -> Result<(), String> {
+    Err("Browser export is only available from a wasm32 browser build.".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlowState>) {
+    use std::{cell::RefCell, rc::Rc};
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+    use web_sys::{FileReader, HtmlInputElement};
+
+    let Some(input) = event
+        .target()
+        .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
+    else {
+        state.update(|state| {
+            state.error_banner = Some("Browser import input is unavailable.".to_string());
+        });
+        return;
+    };
+
+    let Some(file) = input.files().and_then(|files| files.get(0)) else {
+        return;
+    };
+
+    let file_name = file.name();
+    let Some(input_mode) = InputMode::from_file_name(&file_name) else {
+        state.update(|state| state.reject_imported_file(&file_name));
+        return;
+    };
+
+    if let Err(message) = validate_browser_import_size(file.size() as u64) {
+        state.update(|state| {
+            state.invalidate_generated_state();
+            state.error_banner = Some(message);
+        });
+        return;
+    }
+
+    let Ok(reader) = FileReader::new() else {
+        state.update(|state| {
+            state.error_banner = Some("Failed to prepare browser file reader.".to_string());
+        });
+        return;
+    };
+
+    let onload_slot: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let onerror_slot: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+
+    let load_state = state;
+    let load_file_name = file_name.clone();
+    let load_reader = reader.clone();
+    let load_cleanup_reader = reader.clone();
+    let load_onload_slot = Rc::clone(&onload_slot);
+    let load_onerror_slot = Rc::clone(&onerror_slot);
+    let onload = Closure::wrap(Box::new(move || {
+        load_cleanup_reader.set_onload(None);
+        load_cleanup_reader.set_onerror(None);
+
+        let payload = load_reader
+            .result()
+            .ok()
+            .and_then(|value| value.as_string())
+            .map(|value| match input_mode.browser_file_read_mode() {
+                BrowserFileReadMode::Text => value,
+                BrowserFileReadMode::DataUrlBase64 => file_import_payload_from_data_url(&value),
+            });
+
+        match payload {
+            Some(payload) => load_state.update(|state| {
+                state.apply_imported_file(&load_file_name, &payload, input_mode);
+            }),
+            None => load_state.update(|state| {
+                state.error_banner = Some("Failed to read browser import payload.".to_string());
+            }),
+        }
+
+        load_onload_slot.borrow_mut().take();
+        load_onerror_slot.borrow_mut().take();
+    }) as Box<dyn FnMut()>);
+
+    let error_state = state;
+    let error_cleanup_reader = reader.clone();
+    let error_onload_slot = Rc::clone(&onload_slot);
+    let error_onerror_slot = Rc::clone(&onerror_slot);
+    let onerror = Closure::wrap(Box::new(move || {
+        error_cleanup_reader.set_onload(None);
+        error_cleanup_reader.set_onerror(None);
+        error_state.update(|state| {
+            state.error_banner = Some("Failed to read selected browser import file.".to_string());
+        });
+        error_onload_slot.borrow_mut().take();
+        error_onerror_slot.borrow_mut().take();
+    }) as Box<dyn FnMut()>);
+
+    reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+    reader.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+    onload_slot.borrow_mut().replace(onload);
+    onerror_slot.borrow_mut().replace(onerror);
+
+    let read_result = match input_mode.browser_file_read_mode() {
+        BrowserFileReadMode::Text => reader.read_as_text(&file),
+        BrowserFileReadMode::DataUrlBase64 => reader.read_as_data_url(&file),
+    };
+
+    if read_result.is_err() {
+        reader.set_onload(None);
+        reader.set_onerror(None);
+        onload_slot.borrow_mut().take();
+        onerror_slot.borrow_mut().take();
+        state.update(|state| {
+            state.error_banner = Some("Failed to start browser import file read.".to_string());
+        });
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlowState>) {
+    let raw_name = event_target_value(&event);
+    let file_name = raw_name
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(raw_name.as_str())
+        .to_string();
+
+    if file_name.is_empty() {
+        return;
+    }
+
+    if InputMode::from_file_name(&file_name).is_none() {
+        state.update(|state| state.reject_imported_file(&file_name));
+    }
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let state = create_rw_signal(BrowserFlowState::default());
@@ -603,6 +881,30 @@ pub fn App() -> impl IntoView {
             state.field_policy_json = next_policy;
             state.invalidate_generated_state();
         });
+    };
+
+    let on_file_import_change = move |event| read_browser_import_file(event, state);
+
+    let export_file_name = move || state.get().suggested_export_file_name();
+    let can_export_output = move || state.get().can_export_output();
+
+    let on_export = move |_| {
+        let export = state.with_untracked(|state| {
+            if state.can_export_output() {
+                Some((
+                    state.suggested_export_file_name().to_string(),
+                    state.result_output.clone(),
+                ))
+            } else {
+                None
+            }
+        });
+
+        if let Some((file_name, text)) = export {
+            if let Err(message) = trigger_browser_text_download(&file_name, &text) {
+                state.update(|state| state.error_banner = Some(message));
+            }
+        }
     };
 
     let on_submit = move |_| {
@@ -652,6 +954,18 @@ pub fn App() -> impl IntoView {
 
             <section>
                 <h2>"Input"</h2>
+                <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
+                <label>
+                    "Import local CSV/XLSX/PDF payload"
+                    <input
+                        accept=".csv,.xlsx,.pdf"
+                        on:change=on_file_import_change
+                        type="file"
+                    />
+                </label>
+                <p class="input-disclosure">
+                    "This bounded control validates CSV/XLSX/PDF selection for the existing payload box. CSV content remains text; XLSX/PDF payloads remain base64 text for localhost runtime routes."
+                </p>
                 <label>
                     "Input mode"
                     <select on:change=on_mode_change prop:value=move || state.get().input_mode.select_value()>
@@ -713,6 +1027,13 @@ pub fn App() -> impl IntoView {
 
             <section>
                 <h2>"Rewritten output"</h2>
+                <p>
+                    "Suggested export file: "
+                    <code>{export_file_name}</code>
+                </p>
+                <button disabled=move || !can_export_output() on:click=on_export type="button">
+                    "Export current result output text"
+                </button>
                 <pre>{move || state.get().result_output}</pre>
             </section>
 
@@ -732,9 +1053,11 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_request, format_review_queue, format_summary, parse_runtime_error,
-        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, BrowserFlowState,
+        build_submit_request, file_import_payload_from_data_url, format_review_queue, format_summary,
+        parse_runtime_error, parse_runtime_success, BrowserFileReadMode, BrowserFlowState,
+        InputMode, RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
+        MAX_BROWSER_IMPORT_BYTES, validate_browser_import_size,
     };
     use serde_json::json;
 
@@ -753,6 +1076,173 @@ mod tests {
         assert_eq!(state.state_revision, 0);
         assert_eq!(state.next_submission_token, 1);
         assert!(state.active_submission_token.is_none());
+    }
+
+    #[test]
+    fn browser_flow_state_debug_redacts_imported_file_metadata() {
+        let state = BrowserFlowState {
+            payload: "name\nJane Patient".to_string(),
+            source_name: "Jane Patient.csv".to_string(),
+            imported_file_name: Some("Jane Patient.csv".to_string()),
+            field_policy_json: r#"{"name":"Jane Patient"}"#.to_string(),
+            result_output: "redacted output for Jane Patient".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let debug_output = format!("{state:?}");
+
+        assert!(!debug_output.contains("Jane Patient.csv"));
+        assert!(!debug_output.contains("Jane Patient"));
+        assert!(!debug_output.contains("redacted output"));
+        assert!(debug_output.contains("input_mode"));
+        assert!(debug_output.contains("is_submitting"));
+    }
+
+    #[test]
+    fn browser_flow_state_debug_redacts_error_banner() {
+        let state = BrowserFlowState {
+            error_banner: Some("Runtime fallback included response body for Jane Patient".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        let debug_output = format!("{state:?}");
+
+        assert!(!debug_output.contains("Jane Patient"));
+        assert!(debug_output.contains("error_banner"));
+    }
+
+    #[test]
+    fn browser_flow_state_debug_redacts_summary_text() {
+        let state = BrowserFlowState {
+            summary: "Jane Patient page label".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let debug_output = format!("{state:?}");
+
+        assert!(!debug_output.contains("Jane Patient page label"));
+        assert!(debug_output.contains("summary: \"<redacted>\""));
+    }
+
+    #[test]
+    fn file_import_metadata_updates_payload_source_and_clears_generated_state() {
+        let mut state = BrowserFlowState {
+            result_output: "old output".to_string(),
+            summary: "old summary".to_string(),
+            review_queue: "old review".to_string(),
+            error_banner: Some("old error".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        state.apply_imported_file("report.pdf", "UERG", InputMode::PdfBase64);
+
+        assert_eq!(state.input_mode, InputMode::PdfBase64);
+        assert_eq!(state.payload, "UERG");
+        assert_eq!(state.source_name, "report.pdf");
+        assert_eq!(state.result_output, "");
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+        assert!(state.error_banner.is_none());
+        assert_eq!(state.imported_file_name.as_deref(), Some("report.pdf"));
+    }
+
+    #[test]
+    fn imported_file_name_selects_mode_from_safe_extension() {
+        assert_eq!(InputMode::from_file_name("patients.csv"), Some(InputMode::CsvText));
+        assert_eq!(InputMode::from_file_name("workbook.XLSX"), Some(InputMode::XlsxBase64));
+        assert_eq!(InputMode::from_file_name("scan.PDF"), Some(InputMode::PdfBase64));
+        assert_eq!(InputMode::from_file_name("archive.zip"), None);
+    }
+
+    #[test]
+    fn file_import_read_mode_matches_input_mode() {
+        assert_eq!(
+            InputMode::CsvText.browser_file_read_mode(),
+            BrowserFileReadMode::Text
+        );
+        assert_eq!(
+            InputMode::XlsxBase64.browser_file_read_mode(),
+            BrowserFileReadMode::DataUrlBase64
+        );
+        assert_eq!(
+            InputMode::PdfBase64.browser_file_read_mode(),
+            BrowserFileReadMode::DataUrlBase64
+        );
+    }
+
+    #[test]
+    fn file_import_payload_from_data_url_strips_base64_prefix() {
+        assert_eq!(
+            file_import_payload_from_data_url(
+                "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBA=="
+            ),
+            "UEsDBA=="
+        );
+        assert_eq!(
+            file_import_payload_from_data_url("data:application/pdf;base64,JVBERi0x"),
+            "JVBERi0x"
+        );
+        assert_eq!(file_import_payload_from_data_url("already-base64"), "already-base64");
+    }
+
+    #[test]
+    fn browser_import_size_bound_rejects_oversized_files_without_phi() {
+        let error = validate_browser_import_size(MAX_BROWSER_IMPORT_BYTES + 1).unwrap_err();
+
+        assert_eq!(
+            error,
+            "Browser import file is too large for the bounded local browser flow."
+        );
+        assert!(validate_browser_import_size(MAX_BROWSER_IMPORT_BYTES).is_ok());
+    }
+
+    #[test]
+    fn import_export_copy_discloses_bounded_browser_file_limits() {
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("CSV files load as text"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("XLSX and PDF files load as base64 payloads"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
+    }
+
+    #[test]
+    fn unsupported_import_extension_error_is_honest() {
+        let mut state = BrowserFlowState::default();
+        state.reject_imported_file("notes.txt");
+
+        assert_eq!(
+            state.error_banner.as_deref(),
+            Some("Unsupported browser import file type. Use .csv, .xlsx, or .pdf.")
+        );
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
+    }
+
+    #[test]
+    fn export_filename_is_safe_and_mode_specific() {
+        let mut state = BrowserFlowState {
+            imported_file_name: Some("Jane Patient.csv".to_string()),
+            ..BrowserFlowState::default()
+        };
+        assert_eq!(state.suggested_export_file_name(), "mdid-browser-output.csv");
+
+        state.input_mode = InputMode::XlsxBase64;
+        state.imported_file_name = Some("clinic workbook.xlsx".to_string());
+        assert_eq!(state.suggested_export_file_name(), "mdid-browser-output.xlsx.base64.txt");
+
+        state.input_mode = InputMode::PdfBase64;
+        state.imported_file_name = Some("scan.pdf".to_string());
+        assert_eq!(state.suggested_export_file_name(), "mdid-browser-review-report.txt");
+    }
+
+    #[test]
+    fn export_is_available_only_after_runtime_output_exists() {
+        let mut state = BrowserFlowState::default();
+        assert!(!state.can_export_output());
+
+        state.result_output = "rewritten".to_string();
+        assert!(state.can_export_output());
+
+        state.result_output = "   ".to_string();
+        assert!(!state.can_export_output());
     }
 
     #[test]
