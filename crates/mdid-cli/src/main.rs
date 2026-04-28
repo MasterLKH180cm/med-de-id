@@ -1,11 +1,13 @@
 use std::{fs, path::PathBuf, process};
 
 use mdid_adapters::{CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter};
-use mdid_application::{DicomDeidentificationService, TabularDeidentificationService};
-use mdid_domain::{BatchSummary, DicomPrivateTagPolicy, SurfaceKind};
+use mdid_application::{
+    DicomDeidentificationService, PdfDeidentificationService, TabularDeidentificationService,
+};
+use mdid_domain::{BatchSummary, DicomPrivateTagPolicy, PdfPageRef, PdfScanStatus, SurfaceKind};
 use mdid_vault::LocalVaultStore;
 use rust_xlsxwriter::Workbook;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 fn main() {
@@ -23,6 +25,7 @@ enum CliCommand {
     DeidentifyCsv(DeidentifyCsvArgs),
     DeidentifyXlsx(DeidentifyXlsxArgs),
     DeidentifyDicom(DeidentifyDicomArgs),
+    DeidentifyPdf(DeidentifyPdfArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -52,6 +55,13 @@ struct DeidentifyDicomArgs {
     output_path: PathBuf,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct DeidentifyPdfArgs {
+    pdf_path: PathBuf,
+    source_name: String,
+    report_path: PathBuf,
+}
+
 #[derive(Debug, Deserialize)]
 struct PolicyRequest {
     header: String,
@@ -79,6 +89,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "deidentify-dicom" => {
             parse_deidentify_dicom_args(rest).map(CliCommand::DeidentifyDicom)
+        }
+        [command, rest @ ..] if command == "deidentify-pdf" => {
+            parse_deidentify_pdf_args(rest).map(CliCommand::DeidentifyPdf)
         }
         _ => Err("unknown command".to_string()),
     }
@@ -184,6 +197,38 @@ fn parse_deidentify_dicom_args(args: &[String]) -> Result<DeidentifyDicomArgs, S
     })
 }
 
+fn parse_deidentify_pdf_args(args: &[String]) -> Result<DeidentifyPdfArgs, String> {
+    let mut pdf_path = None;
+    let mut source_name = None;
+    let mut report_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--pdf-path" => pdf_path = Some(PathBuf::from(value)),
+            "--source-name" => source_name = Some(value.clone()),
+            "--report-path" => report_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    let source_name = source_name.ok_or_else(|| "missing --source-name".to_string())?;
+    if source_name.trim().is_empty() {
+        return Err("missing --source-name".to_string());
+    }
+
+    Ok(DeidentifyPdfArgs {
+        pdf_path: pdf_path.ok_or_else(|| "missing --pdf-path".to_string())?,
+        source_name,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+    })
+}
+
 fn run_command(command: CliCommand) -> Result<(), String> {
     match command {
         CliCommand::Status => {
@@ -193,7 +238,56 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::DeidentifyCsv(args) => run_deidentify_csv(args),
         CliCommand::DeidentifyXlsx(args) => run_deidentify_xlsx(args),
         CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
+        CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
     }
+}
+
+#[derive(Debug, Serialize)]
+struct PdfPageStatusReport {
+    page: PdfPageRef,
+    status: PdfScanStatus,
+}
+
+fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
+    let bytes = fs::read(&args.pdf_path).map_err(|err| format!("failed to read PDF: {err}"))?;
+    let output = PdfDeidentificationService
+        .deidentify_bytes(&bytes, args.source_name.trim())
+        .map_err(|err| format!("failed to review PDF: {err}"))?;
+
+    let review_queue_len = output.review_queue.len();
+    let page_statuses: Vec<PdfPageStatusReport> = output
+        .page_statuses
+        .into_iter()
+        .map(|page_status| PdfPageStatusReport {
+            page: page_status.page,
+            status: page_status.status,
+        })
+        .collect();
+    let report = json!({
+        "summary": output.summary,
+        "page_statuses": page_statuses,
+        "review_queue_len": review_queue_len,
+        "rewrite_available": false,
+        "rewritten_pdf_bytes": serde_json::Value::Null,
+    });
+    fs::write(
+        &args.report_path,
+        serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("failed to render PDF report: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write PDF report: {err}"))?;
+
+    let stdout = json!({
+        "report_path": args.report_path,
+        "summary": report["summary"].clone(),
+        "review_queue_len": report["review_queue_len"].clone(),
+        "rewrite_available": false,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&stdout).map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
 }
 
 fn parse_private_tag_policy(policy: &str) -> Result<DicomPrivateTagPolicy, String> {
@@ -360,7 +454,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary."
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export."
 }
 
 #[cfg(test)]
@@ -421,6 +515,28 @@ mod tests {
                     vault_path: PathBuf::from("vault.mdid"),
                     passphrase: "secret-passphrase".to_string(),
                     output_path: PathBuf::from("output.xlsx"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_deidentify_pdf_command_without_requiring_debug() {
+        let args = vec![
+            "deidentify-pdf".to_string(),
+            "--pdf-path".to_string(),
+            "input.pdf".to_string(),
+            "--source-name".to_string(),
+            "scan.pdf".to_string(),
+            "--report-path".to_string(),
+            "report.json".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyPdf(DeidentifyPdfArgs {
+                    pdf_path: PathBuf::from("input.pdf"),
+                    source_name: "scan.pdf".to_string(),
+                    report_path: PathBuf::from("report.json"),
                 }))
         );
     }
