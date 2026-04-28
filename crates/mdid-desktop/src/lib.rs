@@ -187,11 +187,10 @@ pub enum DesktopWorkflowValidationError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopRuntimeSubmitError {
     InvalidEndpoint(String),
-    SerializeRequest(String),
-    RuntimeIo(String),
+    Io(String),
     InvalidHttpResponse(String),
     RuntimeHttpStatus { status: u16, body: String },
-    InvalidJsonBody(String),
+    InvalidJson(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,16 +220,8 @@ impl DesktopRuntimeClient {
         &self,
         request: &DesktopWorkflowRequest,
     ) -> Result<String, DesktopRuntimeSubmitError> {
-        let body = request
-            .body
-            .get("csv")
-            .and_then(serde_json::Value::as_str)
-            .map(ToString::to_string)
-            .map(Ok)
-            .unwrap_or_else(|| {
-                serde_json::to_string(&request.body)
-                    .map_err(|error| DesktopRuntimeSubmitError::SerializeRequest(error.to_string()))
-            })?;
+        let body = serde_json::to_string(&request.body)
+            .map_err(|error| DesktopRuntimeSubmitError::InvalidJson(error.to_string()))?;
 
         Ok(format!(
             "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -247,18 +238,26 @@ impl DesktopRuntimeClient {
         request: &DesktopWorkflowRequest,
     ) -> Result<serde_json::Value, DesktopRuntimeSubmitError> {
         use std::io::{Read, Write};
+        use std::time::Duration;
 
         let http_request = self.build_http_request(request)?;
         let mut stream = std::net::TcpStream::connect((self.host.as_str(), self.port))
-            .map_err(|error| DesktopRuntimeSubmitError::RuntimeIo(error.to_string()))?;
+            .map_err(|error| DesktopRuntimeSubmitError::Io(error.to_string()))?;
+        let timeout = Some(Duration::from_secs(10));
+        stream
+            .set_read_timeout(timeout)
+            .map_err(|error| DesktopRuntimeSubmitError::Io(error.to_string()))?;
+        stream
+            .set_write_timeout(timeout)
+            .map_err(|error| DesktopRuntimeSubmitError::Io(error.to_string()))?;
         stream
             .write_all(http_request.as_bytes())
-            .map_err(|error| DesktopRuntimeSubmitError::RuntimeIo(error.to_string()))?;
+            .map_err(|error| DesktopRuntimeSubmitError::Io(error.to_string()))?;
 
         let mut response = String::new();
         stream
             .read_to_string(&mut response)
-            .map_err(|error| DesktopRuntimeSubmitError::RuntimeIo(error.to_string()))?;
+            .map_err(|error| DesktopRuntimeSubmitError::Io(error.to_string()))?;
 
         Self::extract_json_body(&response)
     }
@@ -295,7 +294,7 @@ impl DesktopRuntimeClient {
         }
 
         serde_json::from_str(body)
-            .map_err(|error| DesktopRuntimeSubmitError::InvalidJsonBody(error.to_string()))
+            .map_err(|error| DesktopRuntimeSubmitError::InvalidJson(error.to_string()))
     }
 }
 
@@ -565,7 +564,30 @@ mod tests {
         assert!(http.contains("Host: 127.0.0.1:8787\r\n"));
         assert!(http.contains("Content-Type: application/json\r\n"));
         assert!(http.contains("Connection: close\r\n"));
-        assert!(http.ends_with("Jane"));
+        let body = http
+            .split_once("\r\n\r\n")
+            .expect("HTTP request has header/body separator")
+            .1;
+        let body_json: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+        assert_eq!(body_json, request.body);
+        assert_eq!(
+            http.lines()
+                .find(|line| line.starts_with("Content-Length: "))
+                .expect("content length header"),
+            format!("Content-Length: {}", body.len())
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_submit_error_variants_match_runtime_contract() {
+        let _ = DesktopRuntimeSubmitError::InvalidEndpoint("bad endpoint".to_string());
+        let _ = DesktopRuntimeSubmitError::Io("io".to_string());
+        let _ = DesktopRuntimeSubmitError::InvalidHttpResponse("bad response".to_string());
+        let _ = DesktopRuntimeSubmitError::RuntimeHttpStatus {
+            status: 500,
+            body: "fail".to_string(),
+        };
+        let _ = DesktopRuntimeSubmitError::InvalidJson("bad json".to_string());
     }
 
     #[test]
