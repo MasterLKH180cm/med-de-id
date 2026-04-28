@@ -194,6 +194,46 @@ pub enum DesktopRuntimeSubmitError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopRuntimeSubmissionSnapshot {
+    pub in_flight: bool,
+    pub route: Option<&'static str>,
+}
+
+impl DesktopRuntimeSubmissionSnapshot {
+    pub fn idle() -> Self {
+        Self {
+            in_flight: false,
+            route: None,
+        }
+    }
+
+    pub fn started(mode: DesktopWorkflowMode) -> Self {
+        Self {
+            in_flight: true,
+            route: Some(mode.route()),
+        }
+    }
+
+    pub fn submit_button_disabled(&self) -> bool {
+        self.in_flight
+    }
+
+    pub fn submit_button_label(&self) -> &'static str {
+        if self.in_flight {
+            "Submitting to local runtime..."
+        } else {
+            "Submit to local runtime"
+        }
+    }
+
+    pub fn progress_banner(&self) -> Option<String> {
+        self.route
+            .filter(|_| self.in_flight)
+            .map(|route| format!("Submitting {route} to local runtime..."))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopRuntimeSettings {
     pub host: String,
     pub port_text: String,
@@ -626,6 +666,26 @@ mod tests {
         assert!(message.contains("vault/decode/audit workflow"));
         assert!(message.contains("full review workflow"));
         assert!(!message.contains(&["control", "ler workflow"].concat()));
+    }
+
+    #[test]
+    fn runtime_submission_snapshot_drives_button_enabled_state_and_label() {
+        let idle = DesktopRuntimeSubmissionSnapshot::idle();
+        assert!(!idle.submit_button_disabled());
+        assert_eq!(idle.submit_button_label(), "Submit to local runtime");
+        assert_eq!(idle.progress_banner(), None);
+
+        let started =
+            DesktopRuntimeSubmissionSnapshot::started(DesktopWorkflowMode::PdfBase64Review);
+        assert!(started.submit_button_disabled());
+        assert_eq!(
+            started.submit_button_label(),
+            "Submitting to local runtime..."
+        );
+        assert_eq!(
+            started.progress_banner(),
+            Some("Submitting /pdf/deidentify to local runtime...".to_string())
+        );
     }
 
     #[test]
