@@ -293,6 +293,11 @@ fn moat_controller_plan_rejects_invalid_format_limit_duplicate_and_unknown_flags
     );
     assert_stderr_contains(
         &history_path,
+        &["--role", "operator"],
+        "invalid moat controller-plan --role: operator (expected planner|coder|reviewer)",
+    );
+    assert_stderr_contains(
+        &history_path,
         &["--kind", "market_scan", "--kind", "implementation"],
         "duplicate moat controller-plan --kind",
     );

@@ -54,6 +54,8 @@ struct WorkPacket {
     dependencies: Vec<String>,
 }
 
+const CONTROLLER_PLAN_ROLES: [&str; 3] = ["planner", "coder", "reviewer"];
+
 fn parse_command(args: &[String]) -> Result<CliCommand, String> {
     match args {
         [] => Ok(CliCommand::Status),
@@ -110,6 +112,11 @@ fn parse_moat_controller_plan_command(
                 let value = required_flag_value(args, index, "moat controller-plan --role")?;
                 if role.is_some() {
                     return Err("duplicate moat controller-plan --role".to_string());
+                }
+                if !CONTROLLER_PLAN_ROLES.contains(&value) {
+                    return Err(format!(
+                        "invalid moat controller-plan --role: {value} (expected planner|coder|reviewer)"
+                    ));
                 }
                 role = Some(value.to_string());
                 index += 2;
