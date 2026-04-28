@@ -390,6 +390,114 @@ async fn tabular_xlsx_deidentify_endpoint_rejects_invalid_payloads() {
 }
 
 #[tokio::test]
+async fn conservative_media_deidentify_endpoint_routes_image_metadata_to_review() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [
+            {"key": "CameraOwner", "value": "Jane Patient"},
+            {"key": "Description", "value": "MRN-001 face image"}
+        ],
+        "ocr_or_visual_review_required": true
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/media/conservative/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["summary"]["total_items"], 1);
+    assert_eq!(json["summary"]["metadata_only_items"], 0);
+    assert_eq!(json["summary"]["visual_review_required_items"], 1);
+    assert_eq!(json["summary"]["unsupported_items"], 0);
+    assert_eq!(json["summary"]["review_required_candidates"], 2);
+    assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
+    assert_eq!(json["review_queue"][0]["format"], "image");
+    assert_eq!(json["review_queue"][0]["phi_type"], "metadata_identifier");
+    assert_eq!(json["review_queue"][0]["status"], "ocr_or_visual_review_required");
+    assert_eq!(json["rewritten_media_bytes_base64"], Value::Null);
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_reports_unsupported_payload_without_candidates() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-video.mov",
+        "format": "video",
+        "metadata": [
+            {"key": "CameraOwner", "value": "Jane Patient"}
+        ],
+        "ocr_or_visual_review_required": false,
+        "unsupported_payload": true
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/media/conservative/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["summary"]["total_items"], 1);
+    assert_eq!(json["summary"]["unsupported_items"], 1);
+    assert_eq!(json["summary"]["review_required_candidates"], 0);
+    assert!(json["review_queue"].as_array().unwrap().is_empty());
+    assert_eq!(json["rewritten_media_bytes_base64"], Value::Null);
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_blank_artifact_label() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "   ",
+        "format": "image",
+        "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/media/conservative/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
+    assert!(json.get("summary").is_none());
+    assert!(json.get("review_queue").is_none());
+    assert!(json.get("rewritten_media_bytes_base64").is_none());
+}
+
+#[tokio::test]
 async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
     let app = build_router(RuntimeState::default());
     let request = json!({
