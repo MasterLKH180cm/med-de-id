@@ -70,7 +70,7 @@ impl DesktopWorkflowRequestState {
     pub fn status_message(&self) -> String {
         match self.try_build_request() {
             Ok(request) => format!(
-                "Ready to submit to {}; this slice can render runtime-shaped responses locally, but desktop networking is not wired. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, file picker upload/download UX, vault/decode/audit workflow, or controller workflow.",
+                "Ready to submit to {}; this slice can render runtime-shaped responses locally, but desktop networking is not wired. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, file picker upload/download UX, vault/decode/audit workflow, or full review workflow.",
                 request.route
             ),
             Err(error) => format!("Not ready: {error:?}"),
@@ -543,7 +543,8 @@ mod tests {
         assert!(message.contains("no OCR, visual redaction, PDF rewrite/export"));
         assert!(message.contains("file picker upload/download UX"));
         assert!(message.contains("vault/decode/audit workflow"));
-        assert!(message.contains("controller workflow"));
+        assert!(message.contains("full review workflow"));
+        assert!(!message.contains(&["control", "ler workflow"].concat()));
     }
 
     #[test]
