@@ -1,4 +1,6 @@
-use mdid_desktop::{DesktopWorkflowMode, DesktopWorkflowRequestState};
+use mdid_desktop::{
+    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -12,6 +14,7 @@ fn main() -> eframe::Result<()> {
 #[derive(Default)]
 struct DesktopApp {
     request_state: DesktopWorkflowRequestState,
+    response_state: DesktopWorkflowResponseState,
 }
 
 impl eframe::App for DesktopApp {
@@ -59,8 +62,40 @@ impl eframe::App for DesktopApp {
 
             ui.separator();
             ui.label(self.request_state.status_message());
+            ui.separator();
+            ui.heading("Runtime-shaped response workbench");
+            ui.label(&self.response_state.banner);
+
+            if let Some(error) = &self.response_state.error {
+                ui.colored_label(egui::Color32::RED, error);
+            }
+
+            ui.label("Summary");
+            let mut summary = self.response_state.summary.clone();
+            ui.add(
+                egui::TextEdit::multiline(&mut summary)
+                    .desired_rows(6)
+                    .interactive(false),
+            );
+
+            ui.label("Review queue");
+            let mut review_queue = self.response_state.review_queue.clone();
+            ui.add(
+                egui::TextEdit::multiline(&mut review_queue)
+                    .desired_rows(6)
+                    .interactive(false),
+            );
+
+            ui.label("Rewritten output / review notice");
+            let mut output = self.response_state.output.clone();
+            ui.add(
+                egui::TextEdit::multiline(&mut output)
+                    .desired_rows(8)
+                    .interactive(false),
+            );
+
             ui.label(
-                "Not implemented in this desktop slice: runtime networking, file picker upload/download UX, vault browsing, decode, and audit investigation.",
+                "Not implemented in this desktop slice: runtime networking, file picker upload/download UX, vault browsing, decode, audit investigation, OCR, visual redaction, PDF rewrite/export, and controller workflows.",
             );
         });
     }
