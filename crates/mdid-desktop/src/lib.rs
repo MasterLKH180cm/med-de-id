@@ -200,6 +200,7 @@ pub struct DesktopPortableRequestState {
     pub destination_vault_path: String,
     pub destination_vault_passphrase: String,
     pub import_context: String,
+    pub requested_by: String,
 }
 
 impl std::fmt::Debug for DesktopPortableRequestState {
@@ -216,6 +217,7 @@ impl std::fmt::Debug for DesktopPortableRequestState {
             .field("destination_vault_path", &self.destination_vault_path)
             .field("destination_vault_passphrase", &"<redacted>")
             .field("import_context", &self.import_context)
+            .field("requested_by", &self.requested_by)
             .finish()
     }
 }
@@ -234,6 +236,7 @@ impl Default for DesktopPortableRequestState {
             destination_vault_path: String::new(),
             destination_vault_passphrase: String::new(),
             import_context: "desktop portable import".to_string(),
+            requested_by: "desktop".to_string(),
         }
     }
 }
@@ -262,7 +265,11 @@ impl DesktopPortableRequestState {
                     &self.export_context,
                     DesktopPortableValidationError::BlankExportContext,
                 )?;
-                let record_ids = parse_portable_json(
+                let requested_by = require_nonblank(
+                    &self.requested_by,
+                    DesktopPortableValidationError::BlankRequestedBy,
+                )?;
+                let record_ids = parse_portable_record_ids_json(
                     record_ids_json,
                     DesktopPortableValidationError::InvalidRecordIdsJson,
                 )?;
@@ -271,7 +278,8 @@ impl DesktopPortableRequestState {
                     "vault_passphrase": self.vault_passphrase.clone(),
                     "record_ids": record_ids,
                     "export_passphrase": self.export_passphrase.clone(),
-                    "export_context": export_context,
+                    "context": export_context,
+                    "requested_by": requested_by,
                 })
             }
             DesktopPortableMode::InspectArtifact => {
@@ -310,6 +318,10 @@ impl DesktopPortableRequestState {
                     &self.import_context,
                     DesktopPortableValidationError::BlankImportContext,
                 )?;
+                let requested_by = require_nonblank(
+                    &self.requested_by,
+                    DesktopPortableValidationError::BlankRequestedBy,
+                )?;
                 let artifact = parse_portable_json(
                     artifact_json,
                     DesktopPortableValidationError::InvalidArtifactJson,
@@ -319,7 +331,8 @@ impl DesktopPortableRequestState {
                     "vault_passphrase": self.destination_vault_passphrase.clone(),
                     "artifact": artifact,
                     "portable_passphrase": self.portable_passphrase.clone(),
-                    "import_context": import_context,
+                    "context": import_context,
+                    "requested_by": requested_by,
                 })
             }
         };
@@ -347,6 +360,21 @@ fn parse_portable_json(
     serde_json::from_str(value).map_err(|parse_error| error(parse_error.to_string()))
 }
 
+fn parse_portable_record_ids_json(
+    value: &str,
+    error: fn(String) -> DesktopPortableValidationError,
+) -> Result<serde_json::Value, DesktopPortableValidationError> {
+    let record_ids: Vec<String> =
+        serde_json::from_str(value).map_err(|parse_error| error(parse_error.to_string()))?;
+    for record_id in &record_ids {
+        if record_id.trim().is_empty() {
+            return Err(error("record id must not be blank".to_string()));
+        }
+        uuid::Uuid::parse_str(record_id).map_err(|parse_error| error(parse_error.to_string()))?;
+    }
+    Ok(serde_json::json!(record_ids))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopPortableValidationError {
     BlankVaultPath,
@@ -359,6 +387,7 @@ pub enum DesktopPortableValidationError {
     BlankDestinationVaultPath,
     BlankDestinationVaultPassphrase,
     BlankImportContext,
+    BlankRequestedBy,
     InvalidRecordIdsJson(String),
     InvalidArtifactJson(String),
 }
@@ -642,19 +671,26 @@ impl std::fmt::Debug for DesktopWorkflowRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DesktopWorkflowRequest")
             .field("route", &self.route)
-            .field("body", &redact_vault_passphrase_in_body(&self.body))
+            .field("body", &redact_sensitive_request_body_fields(&self.body))
             .finish()
     }
 }
 
-fn redact_vault_passphrase_in_body(body: &serde_json::Value) -> serde_json::Value {
+fn redact_sensitive_request_body_fields(body: &serde_json::Value) -> serde_json::Value {
     let mut redacted = body.clone();
     if let serde_json::Value::Object(object) = &mut redacted {
-        if object.contains_key("vault_passphrase") {
-            object.insert(
-                "vault_passphrase".to_string(),
-                serde_json::Value::String("<redacted>".to_string()),
-            );
+        for key in [
+            "vault_passphrase",
+            "export_passphrase",
+            "portable_passphrase",
+            "artifact",
+        ] {
+            if object.contains_key(key) {
+                object.insert(
+                    key.to_string(),
+                    serde_json::Value::String("<redacted>".to_string()),
+                );
+            }
         }
     }
     redacted
@@ -1009,7 +1045,7 @@ mod tests {
             mode: DesktopPortableMode::VaultExport,
             vault_path: "/safe/local.vault".to_string(),
             vault_passphrase: "vault-secret".to_string(),
-            record_ids_json: "[\"record-1\",\"record-2\"]".to_string(),
+            record_ids_json: "[\"550e8400-e29b-41d4-a716-446655440000\",\"550e8400-e29b-41d4-a716-446655440001\"]".to_string(),
             export_passphrase: "portable-secret".to_string(),
             export_context: "handoff to privacy office".to_string(),
             artifact_json: String::new(),
@@ -1017,6 +1053,7 @@ mod tests {
             destination_vault_path: String::new(),
             destination_vault_passphrase: String::new(),
             import_context: String::new(),
+            requested_by: "desktop".to_string(),
         };
 
         let request = state.try_build_request().unwrap();
@@ -1024,9 +1061,17 @@ mod tests {
         assert_eq!(request.route, "/vault/export");
         assert_eq!(request.body["vault_path"], "/safe/local.vault");
         assert_eq!(request.body["vault_passphrase"], "vault-secret");
-        assert_eq!(request.body["record_ids"], json!(["record-1", "record-2"]));
+        assert_eq!(
+            request.body["record_ids"],
+            json!([
+                "550e8400-e29b-41d4-a716-446655440000",
+                "550e8400-e29b-41d4-a716-446655440001"
+            ])
+        );
         assert_eq!(request.body["export_passphrase"], "portable-secret");
-        assert_eq!(request.body["export_context"], "handoff to privacy office");
+        assert_eq!(request.body["context"], "handoff to privacy office");
+        assert_eq!(request.body["requested_by"], "desktop");
+        assert!(request.body.get("export_context").is_none());
     }
 
     #[test]
@@ -1062,7 +1107,27 @@ mod tests {
         assert_eq!(request.body["vault_passphrase"], "target-secret");
         assert_eq!(request.body["artifact"], json!({"version":1}));
         assert_eq!(request.body["portable_passphrase"], "portable-secret");
-        assert_eq!(request.body["import_context"], "restore approved records");
+        assert_eq!(request.body["context"], "restore approved records");
+        assert_eq!(request.body["requested_by"], "desktop");
+        assert!(request.body.get("import_context").is_none());
+    }
+
+    #[test]
+    fn portable_export_validation_rejects_non_uuid_record_ids() {
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::VaultExport,
+            vault_path: "/safe/local.vault".to_string(),
+            vault_passphrase: "vault-secret".to_string(),
+            record_ids_json: "[\"record-1\"]".to_string(),
+            export_passphrase: "portable-secret".to_string(),
+            export_context: "handoff to privacy office".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
+
+        assert!(matches!(
+            state.try_build_request(),
+            Err(DesktopPortableValidationError::InvalidRecordIdsJson(_))
+        ));
     }
 
     #[test]
@@ -1109,6 +1174,55 @@ mod tests {
         assert!(!debug.contains("portable-export-secret"));
         assert!(!debug.contains("portable-secret"));
         assert!(!debug.contains("Alice"));
+    }
+
+    #[test]
+    fn portable_workflow_request_debug_redacts_sensitive_request_body_fields() {
+        let export = DesktopPortableRequestState {
+            mode: DesktopPortableMode::VaultExport,
+            vault_path: "/safe/local.vault".to_string(),
+            vault_passphrase: "vault-secret".to_string(),
+            record_ids_json: r#"["550e8400-e29b-41d4-a716-446655440000"]"#.to_string(),
+            export_passphrase: "export-secret".to_string(),
+            export_context: "handoff to privacy office".to_string(),
+            ..DesktopPortableRequestState::default()
+        }
+        .try_build_request()
+        .unwrap();
+        let import = DesktopPortableRequestState {
+            mode: DesktopPortableMode::ImportArtifact,
+            destination_vault_path: "/safe/target.vault".to_string(),
+            destination_vault_passphrase: "target-secret".to_string(),
+            artifact_json: "{\"patient\":\"Alice\"}".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            import_context: "restore approved records".to_string(),
+            ..DesktopPortableRequestState::default()
+        }
+        .try_build_request()
+        .unwrap();
+        let inspect = DesktopPortableRequestState {
+            mode: DesktopPortableMode::InspectArtifact,
+            artifact_json: "{\"patient\":\"Bob\"}".to_string(),
+            portable_passphrase: "inspect-secret".to_string(),
+            ..DesktopPortableRequestState::default()
+        }
+        .try_build_request()
+        .unwrap();
+
+        for debug in [
+            format!("{export:?}"),
+            format!("{import:?}"),
+            format!("{inspect:?}"),
+        ] {
+            assert!(debug.contains("<redacted>"));
+            assert!(!debug.contains("export-secret"));
+            assert!(!debug.contains("portable-secret"));
+            assert!(!debug.contains("inspect-secret"));
+            assert!(!debug.contains("vault-secret"));
+            assert!(!debug.contains("target-secret"));
+            assert!(!debug.contains("Alice"));
+            assert!(!debug.contains("Bob"));
+        }
     }
 
     #[test]
