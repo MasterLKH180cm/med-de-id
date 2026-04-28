@@ -61,16 +61,16 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-Completion snapshot, based only on landed repository features:
+Completion snapshot, based only on controller-visible landed repository features and verification state:
 
 | Area | Completion | Status |
 |---|---:|---|
-| CLI | 45% | Early automation surface with bounded local history-file inspection/handoff commands plus existing local workflow entry points; not a complete automation product |
-| Browser/web | 25% | Bounded localhost tabular de-identification page backed by local runtime routes; not a broader browser governance workspace |
-| Desktop app | 10% | Early scaffold only; sensitive-workstation review, vault, decode, and audit flows remain mostly unimplemented |
-| Overall | 38% | Core workspace, vault MVP, tabular path, bounded DICOM/PDF/runtime slices, conservative media/FCS domain models, adapter/application review foundation, and bounded runtime metadata review entry, browser tabular surface, and bounded CLI slices are present, but major workflow depth and surface parity remain missing |
+| CLI | 42% | Early automation surface with local de-identification, vault/decode, audit, and import/export entry points; previously landed moat/controller handoff commands are documented as scope drift and are not counted as product completion. |
+| Browser/web | 25% | Bounded localhost tabular de-identification page backed by local runtime routes; not broader browser governance workspace. |
+| Desktop app | 10% | Early scaffold only; sensitive-workstation review, vault, decode, and audit flows remain mostly unimplemented. |
+| Overall | 37% | Core workspace, vault MVP, tabular path, bounded DICOM/PDF/runtime slices, conservative media/FCS domain models, adapter/application review foundation, bounded runtime metadata review entry, browser tabular surface, and local CLI foundations are present; major workflow depth and surface parity remain missing; scope-drift controller/moat CLI wording is not counted as core product progress. |
 
-Missing items include deeper policy/detection crates, full review/governance workflows, richer browser UX, desktop app behavior, broader import/export and upload flows, OCR, visual redaction, FCS semantic parsing, media rewrite/export, generalized spreadsheet handling, auth/session handling where needed, and production packaging/hardening.
+Missing items include deeper policy/detection crates, full review/governance workflows, richer browser UX, desktop app behavior, broader import/export and upload flows, OCR, visual redaction, FCS semantic parsing, media rewrite/export, generalized spreadsheet handling, auth/session handling where needed, removal or isolation of scope-drift controller/moat CLI surfaces from product-facing documentation and roadmap claims, and production packaging/hardening.
 
 This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV/XLSX de-identification, conservative media metadata review, vault decode, bounded vault audit browsing, bounded portable subset export, bounded portable artifact inspection, and bounded portable artifact import into a local vault.
 
@@ -94,14 +94,15 @@ Implemented so far:
 - `mdid-runtime` also exposes a bounded local HTTP portable artifact import entry that unlocks a local vault with an explicit vault passphrase, imports an encrypted portable artifact into that local vault, skips duplicate record ids and existing semantic duplicates while deterministically normalizing shared-value token reuse through the shared import contract, records the resulting import audit event, and returns bounded imported/duplicate counts rather than artifact contents or generalized transfer state
 - `mdid-browser` is no longer only a scaffold: it now provides a local-first browser page for a bounded tabular de-identification flow that submits CSV text or base64-transported XLSX workbook bytes plus explicit field policies to the local `mdid-runtime` on localhost and renders the bounded rewritten result, summary, and review queue that come back
 - `mdid-browser` still does not provide auth/session handling, a generalized workflow builder, a rich upload UX, or any broader browser governance workspace
-- `mdid-cli` remains an early automation surface, with bounded `moat controller-plan` and `moat controller-step` commands over local history files: `controller-plan` exports read-only work packets as text or JSON, while `controller-step` performs a bounded local handoff/claim update. These commands use local history-file state only and do not launch agents or daemons, open PRs, schedule cron, or generate artifacts; `mdid-desktop` remains an early surface scaffold
+- `mdid-cli` remains an early de-identification automation surface for local workflows such as vault/decode, audit, and import/export entry points. The previously landed `moat controller-plan` and `moat controller-step` commands are scope-drift legacy surfaces, are not part of the de-identification roadmap, and are not counted toward completion; future stop-loss cleanup should remove or isolate them rather than expand them. `mdid-desktop` remains an early surface scaffold
 
 The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, base64-transported XLSX workbook bytes, conservative media metadata review, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The XLSX route is limited to returning rewritten workbook bytes plus a summary/review queue for only the first non-empty worksheet that it extracts and rewrites; it does not let callers choose a worksheet and should not be read as workbook-wide Excel handling. The conservative media route is limited to image/video/FCS metadata JSON review through the application service and returns summary/review queue data with `rewritten_media_bytes_base64: null`; it does not perform OCR, visual redaction, FCS semantic parsing, media rewrite/export, multipart upload, browser/desktop flows, auth/session, or generalized media workflow orchestration. The import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event. These routes do not add multipart upload handling, generalized spreadsheet browsing/import/export APIs, auth/session handling, or any broader multi-step transfer flow.
 
 Planned next from the design:
 
 - Additional policy and detection crates
-- Deeper application behavior and surface behavior beyond the current scaffolds
+- Deeper application behavior and de-identification surface behavior beyond the current scaffolds
+- Stop-loss cleanup to remove or isolate scope-drift CLI surfaces from product-facing documentation and roadmap claims
 
 Available docs:
 
