@@ -41,6 +41,10 @@ Moat task leases are local deterministic history-file coordination for external 
 
 Moat input-file mode is local-only: `mdid-cli moat round --input-path PATH` and `mdid-cli moat control-plane --input-path PATH` read a JSON `MoatRoundInput`, apply explicit override flags, and run the same bounded deterministic pipeline. Input-file mode must not crawl data, launch agents, open PRs, create cron jobs, schedule background work, or write artifacts; `moat round` persists only when `--history-path PATH` is also supplied, while `moat control-plane --input-path` remains an inspection run.
 
+## Moat round JSON envelope
+
+`mdid-cli moat round [--input-path PATH] [--history-path PATH] [--format text|json]` is a bounded local-only one-shot runner. Text is the default and remains the stable human/script output. `--format json` emits a pretty deterministic `moat_round` envelope with `source`, nullable `history_path`, nullable `input_path`, `history_saved`, `round_id`, continuation, score, task, decision-summary, and constraint fields for external controllers. The optional append to `--history-path PATH` is the only write side effect and is completed before JSON is printed. The command must not launch agents, run as a daemon, schedule background work, crawl data, create cron jobs, open PRs, or write artifact files.
+
 ## Moat control plane
 
 `mdid-cli moat control-plane [--input-path PATH] [--history-path PATH] [--format text|json]` is a local read-only inspection surface for external controllers. Text remains the default. `--format json` emits a pretty deterministic `moat_control_plane` envelope with `type`, nullable `history_path`, `source`, `round_id`, `score`, `improvement_delta`, `can_continue`, `ready_tasks`, `assignments`, `task_states`, `decision_summary`, and constraints including `local_only`. It must not launch agents, run as a daemon, schedule background work, crawl data, create cron jobs, open PRs, or write artifacts.

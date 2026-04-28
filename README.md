@@ -100,7 +100,7 @@ cargo run -p mdid-cli -- moat round --input-path moat-input.json
 
 Input-file mode is local-only. The CLI reads the file synchronously, applies the same override flags, prints `input_path=PATH`, and persists history only when `--history-path PATH` is explicitly supplied; it does not crawl data, launch agents, open PRs, create cron jobs, or write artifacts.
 
-The round command prints a deterministic report containing:
+The round command defaults to stable text output and prints a deterministic report containing:
 
 - `continue_decision=Continue|Stop|Pivot`
 - `executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_generation,spec_planning,implementation,review,evaluation`
@@ -108,6 +108,15 @@ The round command prints a deterministic report containing:
 - `moat_score_before`
 - `moat_score_after`
 - `stop_reason=<none>|...`
+
+External controllers can request a pretty deterministic JSON envelope instead of scraping text:
+
+```bash
+cargo run -p mdid-cli -- moat round --format json
+cargo run -p mdid-cli -- moat round --input-path moat-input.json --history-path .mdid/moat-history.json --format json
+```
+
+`--format text` is equivalent to the default. `--format json` emits a `moat_round` envelope with `type`, `source`, nullable `history_path`, nullable `input_path`, `history_saved`, `round_id`, `continue_decision`, `executed_tasks`, `implemented_specs`, `moat_score_before`, `moat_score_after`, `improvement_delta`, nullable `stop_reason`, `ready_tasks`, `assignments`, `task_states`, `decision_summary`, and constraints including `local_only`, `bounded`, `one_shot`, `no_agent_launch`, `no_daemon`, `no_background_work`, `no_crawling`, `no_pr_creation`, `no_cron_creation`, and `no_artifact_writes`. History append via `--history-path PATH` remains the only write side effect; the round runner does not launch agents, run as a daemon, schedule background work, crawl data, open PRs, create cron jobs, or write artifacts.
 
 `implemented_specs` is a bounded handoff surface: it exposes normalized stable IDs derived from selected strategy IDs (for example `moat-spec/workflow-audit`). The CLI can now export markdown spec files for the latest persisted round, but it still does **not** automatically dispatch coding/review agents from the CLI output.
 
