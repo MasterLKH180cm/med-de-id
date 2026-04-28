@@ -38,16 +38,15 @@ Add these tests inside `crates/mdid-desktop/src/lib.rs` `mod tests`:
 ```rust
 #[test]
 fn desktop_file_import_dicom_bytes_map_to_dicom_base64_payload_with_source_name() {
-    let imported = DesktopFileImportPayload::from_bytes("scan.dcm", b"DICM\x00\x01").unwrap();
+    let imported = DesktopFileImportPayload::from_bytes("study.dcm", b"DICM\x00\x01").unwrap();
 
     assert_eq!(imported.mode, DesktopWorkflowMode::DicomBase64);
-    assert_eq!(imported.payload, "RElDTRA=AAE=");
-    assert_eq!(imported.source_name.as_deref(), Some("scan.dcm"));
+    assert_eq!(imported.payload, encode_base64(b"DICM\x00\x01"));
+    assert_eq!(imported.source_name.as_deref(), Some("study.dcm"));
 
-    let imported = DesktopFileImportPayload::from_bytes("scan.dicom", b"DICM").unwrap();
+    let imported = DesktopFileImportPayload::from_bytes("study.DICOM", b"DICM\x00\x01").unwrap();
     assert_eq!(imported.mode, DesktopWorkflowMode::DicomBase64);
-    assert_eq!(imported.payload, "RElDTQ==");
-    assert_eq!(imported.source_name.as_deref(), Some("scan.dicom"));
+    assert_eq!(imported.source_name.as_deref(), Some("study.DICOM"));
 }
 
 #[test]
@@ -225,5 +224,5 @@ git commit -m "docs: truth-sync desktop DICOM completion"
 ## Self-Review
 
 1. **Spec coverage:** This plan covers bounded desktop DICOM request preparation, file import, response rendering, export naming, README completion, and negative scope disclosures. It does not add vault browsing, decode, audit, OCR, PDF rewrite, generalized orchestration, controller, or agent workflow behavior.
-2. **Placeholder scan:** No TBD/TODO/implement-later placeholders are present. Every code-bearing step includes concrete tests or concrete implementation shape.
+2. **Placeholder scan:** No deferred-work placeholder language is present. Every code-bearing step includes concrete tests or concrete implementation shape.
 3. **Type consistency:** The new mode name is consistently `DesktopWorkflowMode::DicomBase64`; runtime fields are consistently `dicom_bytes_base64`, `source_name`, `private_tag_policy`, and `rewritten_dicom_bytes_base64`.
