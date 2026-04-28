@@ -13,6 +13,9 @@ use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
+const MAX_VAULT_AUDIT_LIMIT: usize = 100;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -370,11 +373,14 @@ fn run_vault_audit(args: VaultAuditArgs) -> Result<(), String> {
 
 fn build_vault_audit_report(events: &[AuditEvent], limit: Option<usize>) -> VaultAuditReport {
     let event_count = events.len();
-    let selected = events.iter().rev().take(limit.unwrap_or(event_count));
+    let limit = limit
+        .unwrap_or(DEFAULT_VAULT_AUDIT_LIMIT)
+        .min(MAX_VAULT_AUDIT_LIMIT);
+    let selected = events.iter().rev().take(limit);
     let events = selected
         .map(|event| VaultAuditEventReport {
             id: event.id.to_string(),
-            kind: format!("{:?}", event.kind),
+            kind: event.kind.as_str().to_string(),
             actor: event.actor.clone(),
             detail: sanitized_audit_detail(event),
             recorded_at: event.recorded_at.to_rfc3339(),
@@ -390,7 +396,9 @@ fn build_vault_audit_report(events: &[AuditEvent], limit: Option<usize>) -> Vaul
 fn sanitized_audit_detail(event: &AuditEvent) -> String {
     match event.kind {
         AuditEventKind::Encode => "encoded mapping".to_string(),
-        _ => event.detail.clone(),
+        AuditEventKind::Decode => "decode event".to_string(),
+        AuditEventKind::Export => "portable export event".to_string(),
+        AuditEventKind::Import => "portable import event".to_string(),
     }
 }
 
@@ -668,38 +676,94 @@ mod tests {
     }
 
     #[test]
-    fn vault_audit_report_limits_events_without_exposing_phi_values() {
+    fn rejects_invalid_and_zero_vault_audit_limits() {
+        for limit in ["0", "not-a-number"] {
+            let args = vec![
+                "vault-audit".to_string(),
+                "--vault-path".to_string(),
+                "vault.mdid".to_string(),
+                "--passphrase".to_string(),
+                "secret-passphrase".to_string(),
+                "--limit".to_string(),
+                limit.to_string(),
+            ];
+
+            assert!(parse_command(&args) == Err("invalid --limit".to_string()));
+        }
+    }
+
+    #[test]
+    fn vault_audit_report_applies_default_and_max_limit_bounds() {
+        let events = vault_audit_events(150, AuditEventKind::Encode);
+
+        let default_report = build_vault_audit_report(&events, None);
+        let clamped_report = build_vault_audit_report(&events, Some(150));
+
+        assert_eq!(default_report.event_count, 150);
+        assert_eq!(default_report.returned_event_count, 100);
+        assert_eq!(default_report.events.len(), 100);
+        assert_eq!(clamped_report.returned_event_count, 100);
+        assert_eq!(clamped_report.events.len(), 100);
+    }
+
+    #[test]
+    fn vault_audit_report_returns_multiple_events_in_reverse_chronological_order() {
+        let events = vault_audit_events(4, AuditEventKind::Encode);
+
+        let report = build_vault_audit_report(&events, Some(3));
+
+        assert_eq!(report.returned_event_count, 3);
+        assert_eq!(report.events[0].recorded_at, "2026-04-29T00:03:00+00:00");
+        assert_eq!(report.events[1].recorded_at, "2026-04-29T00:02:00+00:00");
+        assert_eq!(report.events[2].recorded_at, "2026-04-29T00:01:00+00:00");
+    }
+
+    #[test]
+    fn vault_audit_report_uses_stable_kinds_and_sanitizes_all_details() {
         let events: Vec<mdid_domain::AuditEvent> = serde_json::from_value(json!([
-            {
-                "id": "00000000-0000-0000-0000-000000000000",
-                "kind": "encode",
-                "actor": "cli",
-                "detail": "encoded mapping row:1:patient_name containing Alice Example",
-                "recorded_at": "2026-04-29T00:00:00Z"
-            },
-            {
-                "id": "00000000-0000-0000-0000-000000000000",
-                "kind": "decode",
-                "actor": "desktop",
-                "detail": "decode to screen because break-glass decoded 1 record record_ids=[abc]",
-                "recorded_at": "2026-04-29T01:00:00Z"
-            }
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"encode","actor":"cli","detail":"Alice Example encoded","recorded_at":"2026-04-29T00:00:00Z"},
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"decode","actor":"cli","detail":"decoded Bob Example","recorded_at":"2026-04-29T00:01:00Z"},
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"export","actor":"cli","detail":"exported Carol Example","recorded_at":"2026-04-29T00:02:00Z"},
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"import","actor":"cli","detail":"imported Dan Example","recorded_at":"2026-04-29T00:03:00Z"}
         ]))
         .unwrap();
 
-        let report = build_vault_audit_report(&events, Some(1));
+        let report = build_vault_audit_report(&events, Some(4));
         let rendered = serde_json::to_string(&report).unwrap();
 
-        assert!(rendered.contains("event_count"));
-        assert!(rendered.contains("returned_event_count"));
-        assert!(rendered.contains("Decode"));
-        assert!(!rendered.contains("Alice Example"));
-        assert_eq!(report.event_count, 2);
-        assert_eq!(report.returned_event_count, 1);
         assert_eq!(
-            report.events[0].detail,
-            "decode to screen because break-glass decoded 1 record record_ids=[abc]"
+            report
+                .events
+                .iter()
+                .map(|event| (event.kind.as_str(), event.detail.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("import", "portable import event"),
+                ("export", "portable export event"),
+                ("decode", "decode event"),
+                ("encode", "encoded mapping"),
+            ]
         );
+        for phi in [
+            "Alice", "Bob", "Carol", "Dan", "Encode", "Decode", "Export", "Import",
+        ] {
+            assert!(!rendered.contains(phi));
+        }
+    }
+
+    fn vault_audit_events(count: usize, kind: AuditEventKind) -> Vec<mdid_domain::AuditEvent> {
+        (0..count)
+            .map(|index| {
+                serde_json::from_value(json!({
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "kind": kind.as_str(),
+                    "actor": "cli",
+                    "detail": format!("raw detail {index} Alice Example"),
+                    "recorded_at": format!("2026-04-29T00:{:02}:00Z", index % 60)
+                }))
+                .unwrap()
+            })
+            .collect()
     }
 
     #[test]
