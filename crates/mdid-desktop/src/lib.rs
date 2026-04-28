@@ -57,6 +57,11 @@ impl DesktopFileImportPayload {
                 payload: encode_base64(bytes),
                 source_name: Some(source_name),
             }),
+            "dcm" | "dicom" => Ok(Self {
+                mode: DesktopWorkflowMode::DicomBase64,
+                payload: encode_base64(bytes),
+                source_name: Some(source_name),
+            }),
             _ => Err(DesktopFileImportError::UnsupportedFileType),
         }
     }
@@ -93,16 +98,23 @@ pub enum DesktopWorkflowMode {
     CsvText,
     XlsxBase64,
     PdfBase64Review,
+    DicomBase64,
 }
 
 impl DesktopWorkflowMode {
-    pub const ALL: [Self; 3] = [Self::CsvText, Self::XlsxBase64, Self::PdfBase64Review];
+    pub const ALL: [Self; 4] = [
+        Self::CsvText,
+        Self::XlsxBase64,
+        Self::PdfBase64Review,
+        Self::DicomBase64,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::CsvText => "CSV text",
             Self::XlsxBase64 => "XLSX base64",
             Self::PdfBase64Review => "PDF base64 review",
+            Self::DicomBase64 => "DICOM base64",
         }
     }
 
@@ -113,6 +125,7 @@ impl DesktopWorkflowMode {
             Self::PdfBase64Review => {
                 "Paste PDF bytes encoded as base64 for review request preparation"
             }
+            Self::DicomBase64 => "Paste DICOM bytes encoded as base64",
         }
     }
 
@@ -121,6 +134,7 @@ impl DesktopWorkflowMode {
             Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; no generalized workflow orchestrator is included.",
             Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; no generalized workflow orchestrator is included.",
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; no generalized workflow orchestrator and no OCR/PDF rewrite are included.",
+            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; no generalized workflow orchestrator is included.",
         }
     }
 
@@ -129,6 +143,7 @@ impl DesktopWorkflowMode {
             Self::CsvText => "/tabular/deidentify",
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64Review => "/pdf/deidentify",
+            Self::DicomBase64 => "/dicom/deidentify",
         }
     }
 
@@ -200,7 +215,9 @@ impl DesktopWorkflowRequestState {
                         "workbook_base64": payload,
                         "field_policies": field_policies,
                     }),
-                    DesktopWorkflowMode::PdfBase64Review => unreachable!(),
+                    DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::DicomBase64 => {
+                        unreachable!()
+                    }
                 };
 
                 Ok(DesktopWorkflowRequest {
@@ -208,17 +225,29 @@ impl DesktopWorkflowRequestState {
                     body,
                 })
             }
-            DesktopWorkflowMode::PdfBase64Review => {
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::DicomBase64 => {
                 if self.source_name.trim().is_empty() {
                     return Err(DesktopWorkflowValidationError::BlankSourceName);
                 }
 
-                Ok(DesktopWorkflowRequest {
-                    route: self.mode.route(),
-                    body: serde_json::json!({
+                let body = match self.mode {
+                    DesktopWorkflowMode::PdfBase64Review => serde_json::json!({
                         "pdf_bytes_base64": self.payload.trim(),
                         "source_name": self.source_name.trim(),
                     }),
+                    DesktopWorkflowMode::DicomBase64 => serde_json::json!({
+                        "dicom_bytes_base64": self.payload.trim(),
+                        "source_name": self.source_name.trim(),
+                        "private_tag_policy": "review_required",
+                    }),
+                    DesktopWorkflowMode::CsvText | DesktopWorkflowMode::XlsxBase64 => {
+                        unreachable!()
+                    }
+                };
+
+                Ok(DesktopWorkflowRequest {
+                    route: self.mode.route(),
+                    body,
                 })
             }
         }
@@ -529,6 +558,7 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::CsvText => Some("desktop-deidentified.csv"),
             DesktopWorkflowMode::XlsxBase64 => Some("desktop-deidentified.xlsx.base64.txt"),
             DesktopWorkflowMode::PdfBase64Review => None,
+            DesktopWorkflowMode::DicomBase64 => Some("desktop-deidentified.dcm.base64.txt"),
         }
     }
 
@@ -539,6 +569,9 @@ impl DesktopWorkflowResponseState {
                 "XLSX base64 runtime response rendered locally.".to_string()
             }
             DesktopWorkflowMode::PdfBase64Review => "PDF base64 review runtime response rendered locally; no PDF rewrite/export is available.".to_string(),
+            DesktopWorkflowMode::DicomBase64 => {
+                "DICOM base64 runtime response rendered locally.".to_string()
+            }
         };
 
         self.output = match mode {
@@ -559,6 +592,11 @@ impl DesktopWorkflowResponseState {
                 .unwrap_or_else(|| {
                     "No rewritten PDF bytes returned by the bounded review route.".to_string()
                 }),
+            DesktopWorkflowMode::DicomBase64 => envelope
+                .get("rewritten_dicom_bytes_base64")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         };
 
         self.summary = pretty_json_field(&envelope, "summary");
@@ -616,6 +654,20 @@ mod tests {
         assert_eq!(imported.mode, DesktopWorkflowMode::PdfBase64Review);
         assert_eq!(imported.payload, "JVBERi0x");
         assert_eq!(imported.source_name.as_deref(), Some("chart.pdf"));
+    }
+
+    #[test]
+    fn desktop_file_import_dicom_bytes_map_to_dicom_base64_payload_with_source_name() {
+        let imported = DesktopFileImportPayload::from_bytes("study.dcm", b"DICM\x00\x01").unwrap();
+
+        assert_eq!(imported.mode, DesktopWorkflowMode::DicomBase64);
+        assert_eq!(imported.payload, encode_base64(b"DICM\x00\x01"));
+        assert_eq!(imported.source_name.as_deref(), Some("study.dcm"));
+
+        let imported =
+            DesktopFileImportPayload::from_bytes("study.DICOM", b"DICM\x00\x01").unwrap();
+        assert_eq!(imported.mode, DesktopWorkflowMode::DicomBase64);
+        assert_eq!(imported.source_name.as_deref(), Some("study.DICOM"));
     }
 
     #[test]
@@ -702,15 +754,20 @@ mod tests {
 
     #[test]
     fn desktop_runtime_settings_reject_blank_or_invalid_ports() {
-        let mut settings = DesktopRuntimeSettings::default();
-        settings.port_text = "".to_string();
+        let settings = DesktopRuntimeSettings {
+            port_text: "".to_string(),
+            ..DesktopRuntimeSettings::default()
+        };
         assert_eq!(
             settings.parse_port(),
             Err(DesktopRuntimeSubmitError::InvalidEndpoint(
                 "desktop runtime port must be a number between 1 and 65535".to_string()
             ))
         );
-        settings.port_text = "99999".to_string();
+        let settings = DesktopRuntimeSettings {
+            port_text: "99999".to_string(),
+            ..DesktopRuntimeSettings::default()
+        };
         assert_eq!(
             settings.parse_port(),
             Err(DesktopRuntimeSubmitError::InvalidEndpoint(
@@ -792,6 +849,49 @@ mod tests {
         assert!(disclosure.contains("bounded local runtime"));
         assert!(disclosure.contains("no generalized workflow orchestrator"));
         assert!(disclosure.contains("no OCR/PDF rewrite"));
+    }
+
+    #[test]
+    fn dicom_base64_builds_runtime_compatible_dicom_request_body() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::DicomBase64,
+            payload: "  RElDTQAB  ".to_string(),
+            field_policy_json: String::new(),
+            source_name: "  study.dcm  ".to_string(),
+        };
+
+        let request = state.try_build_request().unwrap();
+
+        assert_eq!(request.route, "/dicom/deidentify");
+        assert_eq!(
+            request.body,
+            json!({"dicom_bytes_base64":"RElDTQAB","source_name":"study.dcm","private_tag_policy":"review_required"})
+        );
+
+        assert_eq!(state.mode.label(), "DICOM base64");
+        assert!(state
+            .mode
+            .payload_hint()
+            .contains("DICOM bytes encoded as base64"));
+        let disclosure = state.mode.disclosure();
+        assert!(disclosure.contains("bounded local runtime"));
+        assert!(disclosure.contains("tag-level DICOM de-identification"));
+        assert!(disclosure.contains("no generalized workflow orchestrator"));
+    }
+
+    #[test]
+    fn dicom_submit_requires_source_name_before_runtime_request() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::DicomBase64,
+            payload: "RElDTQAB".to_string(),
+            field_policy_json: String::new(),
+            source_name: "  ".to_string(),
+        };
+
+        assert!(matches!(
+            state.try_build_request(),
+            Err(DesktopWorkflowValidationError::BlankSourceName)
+        ));
     }
 
     #[test]
@@ -1098,6 +1198,33 @@ mod tests {
         assert!(response.summary.contains("encoded_fields"));
         assert!(response.review_queue.contains("patient_id"));
         assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn response_state_renders_dicom_runtime_success_envelope() {
+        let mut response = DesktopWorkflowResponseState::default();
+
+        response.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            json!({
+                "rewritten_dicom_bytes_base64": "RElDTQAB",
+                "summary": {"private_tag_policy": "review_required"},
+                "review_queue": [{"tag":"0010,0010"}]
+            }),
+        );
+
+        assert_eq!(
+            response.banner,
+            "DICOM base64 runtime response rendered locally."
+        );
+        assert_eq!(response.output, "RElDTQAB");
+        assert!(response.summary.contains("private_tag_policy"));
+        assert!(response.review_queue.contains("0010,0010"));
+        assert!(response.error.is_none());
+        assert_eq!(
+            response.suggested_export_file_name(DesktopWorkflowMode::DicomBase64),
+            Some("desktop-deidentified.dcm.base64.txt")
+        );
     }
 
     #[test]
