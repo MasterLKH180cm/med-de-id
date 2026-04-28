@@ -70,7 +70,7 @@ impl DesktopWorkflowRequestState {
     pub fn status_message(&self) -> String {
         match self.try_build_request() {
             Ok(request) => format!(
-                "Ready to submit to {}; this slice can render runtime-shaped responses locally, but desktop networking is not wired. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, file picker upload/download UX, vault/decode/audit workflow, or full review workflow.",
+                "Ready to submit to {}; this slice can submit prepared envelopes to a localhost runtime and render runtime-shaped responses locally. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, file picker upload/download UX, vault/decode/audit workflow, or full review workflow.",
                 request.route
             ),
             Err(error) => format!("Not ready: {error:?}"),
@@ -191,6 +191,42 @@ pub enum DesktopRuntimeSubmitError {
     InvalidHttpResponse(String),
     RuntimeHttpStatus { status: u16, body: String },
     InvalidJson(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopRuntimeSettings {
+    pub host: String,
+    pub port_text: String,
+}
+
+impl Default for DesktopRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port_text: "8787".to_string(),
+        }
+    }
+}
+
+impl DesktopRuntimeSettings {
+    pub fn parse_port(&self) -> Result<u16, DesktopRuntimeSubmitError> {
+        const MESSAGE: &str = "desktop runtime port must be a number between 1 and 65535";
+        let port = self
+            .port_text
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| DesktopRuntimeSubmitError::InvalidEndpoint(MESSAGE.to_string()))?;
+        if port == 0 {
+            return Err(DesktopRuntimeSubmitError::InvalidEndpoint(
+                MESSAGE.to_string(),
+            ));
+        }
+        Ok(port)
+    }
+
+    pub fn client(&self) -> Result<DesktopRuntimeClient, DesktopRuntimeSubmitError> {
+        DesktopRuntimeClient::new(self.host.trim(), self.parse_port()?)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,6 +432,33 @@ mod tests {
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
 
     #[test]
+    fn desktop_runtime_settings_default_to_localhost() {
+        let settings = DesktopRuntimeSettings::default();
+        assert_eq!(settings.host, "127.0.0.1");
+        assert_eq!(settings.port_text, "8787");
+        assert_eq!(settings.parse_port(), Ok(8787));
+    }
+
+    #[test]
+    fn desktop_runtime_settings_reject_blank_or_invalid_ports() {
+        let mut settings = DesktopRuntimeSettings::default();
+        settings.port_text = "".to_string();
+        assert_eq!(
+            settings.parse_port(),
+            Err(DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime port must be a number between 1 and 65535".to_string()
+            ))
+        );
+        settings.port_text = "99999".to_string();
+        assert_eq!(
+            settings.parse_port(),
+            Err(DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime port must be a number between 1 and 65535".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn default_state_is_csv_with_bounded_local_disclosure_and_default_pdf_source() {
         let state = DesktopWorkflowRequestState::default();
 
@@ -545,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn status_message_explains_preview_only_runtime_submit_boundary() {
+    fn status_message_explains_localhost_runtime_submit_boundary() {
         let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::PdfBase64Review,
             payload: "JVBERi0x".to_string(),
@@ -557,7 +620,7 @@ mod tests {
 
         assert!(message.contains("Ready to submit to /pdf/deidentify"));
         assert!(message.contains("render runtime-shaped responses locally"));
-        assert!(message.contains("desktop networking is not wired"));
+        assert!(message.contains("submit prepared envelopes to a localhost runtime"));
         assert!(message.contains("no OCR, visual redaction, PDF rewrite/export"));
         assert!(message.contains("file picker upload/download UX"));
         assert!(message.contains("vault/decode/audit workflow"));

@@ -1,5 +1,6 @@
 use mdid_desktop::{
-    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    DesktopRuntimeSettings, DesktopWorkflowMode, DesktopWorkflowRequestState,
+    DesktopWorkflowResponseState,
 };
 
 fn main() -> eframe::Result<()> {
@@ -14,6 +15,7 @@ fn main() -> eframe::Result<()> {
 #[derive(Default)]
 struct DesktopApp {
     request_state: DesktopWorkflowRequestState,
+    runtime_settings: DesktopRuntimeSettings,
     response_state: DesktopWorkflowResponseState,
 }
 
@@ -62,6 +64,27 @@ impl eframe::App for DesktopApp {
 
             ui.separator();
             ui.label(self.request_state.status_message());
+            ui.horizontal(|ui| {
+                ui.label("Runtime host");
+                ui.text_edit_singleline(&mut self.runtime_settings.host);
+                ui.label("port");
+                ui.text_edit_singleline(&mut self.runtime_settings.port_text);
+            });
+            if ui.button("Submit to local runtime").clicked() {
+                match self.request_state.try_build_request() {
+                    Ok(request) => match self.runtime_settings.client() {
+                        Ok(client) => match client.submit(&request) {
+                            Ok(envelope) => {
+                                self.response_state
+                                    .apply_success_json(self.request_state.mode, envelope);
+                            }
+                            Err(error) => self.response_state.apply_error(format!("{error:?}")),
+                        },
+                        Err(error) => self.response_state.apply_error(format!("{error:?}")),
+                    },
+                    Err(error) => self.response_state.apply_error(format!("{error:?}")),
+                }
+            }
             ui.separator();
             ui.heading("Runtime-shaped response workbench");
             ui.label(&self.response_state.banner);
@@ -95,7 +118,7 @@ impl eframe::App for DesktopApp {
             );
 
             ui.label(
-                "Not implemented in this desktop slice: runtime networking, file picker upload/download UX, vault browsing, decode, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
+                "Not implemented in this desktop slice: file picker upload/download UX, vault browsing, decode, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
             );
         });
     }
