@@ -82,11 +82,122 @@ fn moat_controller_plan_json_exports_multiple_ready_packets_read_only() {
     cleanup_history_path(&history_path);
 }
 
+#[test]
+fn moat_controller_plan_requires_history_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(["moat", "controller-plan"])
+        .output()
+        .expect("failed to run moat controller-plan without history path");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("missing --history-path for moat controller-plan"));
+}
+
+#[test]
+fn moat_controller_plan_rejects_conflicting_dependency_filters() {
+    let history_path = unique_history_path("controller-plan-conflicting-dependency-flags");
+    write_history_fixture(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-plan",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--depends-on",
+            "market_scan",
+            "--no-dependencies",
+        ])
+        .output()
+        .expect("failed to run moat controller-plan with conflicting dependency flags");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("moat controller-plan cannot combine --depends-on and --no-dependencies"));
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_controller_plan_reports_unknown_round_id() {
+    let history_path = unique_history_path("controller-plan-unknown-round-id");
+    write_history_fixture(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-plan",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--round-id",
+            "missing-round",
+        ])
+        .output()
+        .expect("failed to run moat controller-plan with unknown round id");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unknown moat round-id: missing-round")
+    );
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_controller_plan_rejects_malformed_node_data() {
+    let history_path = unique_history_path("controller-plan-malformed-node");
+    write_history_fixture_with_value(
+        &history_path,
+        json!({
+            "entries": [
+                {
+                    "report": {
+                        "summary": { "round_id": "round-123" },
+                        "control_plane": {
+                            "task_graph": {
+                                "nodes": [
+                                    {
+                                        "node_id": "market_scan",
+                                        "title": "Map the local workflow moat",
+                                        "role": "planner",
+                                        "kind": "market_scan",
+                                        "state": "ready",
+                                        "depends_on": [123]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-plan",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+        ])
+        .output()
+        .expect("failed to run moat controller-plan with malformed node data");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "invalid moat history file: node market_scan field depends_on entries must be strings"
+    ));
+    cleanup_history_path(&history_path);
+}
+
 fn write_history_fixture(path: &PathBuf) {
+    write_history_fixture_with_value(path, sample_history_fixture());
+}
+
+fn write_history_fixture_with_value(path: &PathBuf, value: Value) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create parent dir");
     }
-    fs::write(path, sample_history_fixture().to_string()).expect("write history fixture");
+    fs::write(path, value.to_string()).expect("write history fixture");
 }
 
 fn sample_history_fixture() -> Value {

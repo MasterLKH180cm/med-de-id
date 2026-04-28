@@ -252,7 +252,7 @@ fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), S
         entries
             .iter()
             .find(|entry| entry_round_id(entry).as_deref() == Some(round_id))
-            .ok_or_else(|| "no ready moat task matched controller-plan filters".to_string())?
+            .ok_or_else(|| format!("unknown moat round-id: {round_id}"))?
     } else {
         entries.last().expect("entries not empty")
     };
@@ -268,7 +268,9 @@ fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), S
 
     let mut packets = nodes
         .iter()
-        .filter_map(parse_work_packet)
+        .map(parse_work_packet)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|packet| packet.state == "ready")
         .filter(|packet| {
             command
@@ -398,28 +400,59 @@ fn entry_round_id(entry: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn parse_work_packet(node: &Value) -> Option<WorkPacket> {
-    Some(WorkPacket {
-        node_id: node.get("node_id")?.as_str()?.to_string(),
-        title: node.get("title")?.as_str()?.to_string(),
-        role: node.get("role")?.as_str()?.to_string(),
-        kind: node.get("kind")?.as_str()?.to_string(),
-        state: node.get("state")?.as_str()?.to_string(),
-        spec_ref: node
-            .get("spec_ref")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        dependencies: node
-            .get("depends_on")
-            .and_then(Value::as_array)
-            .map(|deps| {
-                deps.iter()
-                    .filter_map(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default(),
+fn parse_work_packet(node: &Value) -> Result<WorkPacket, String> {
+    let node_id = required_node_string(node, "node_id")?.to_string();
+
+    Ok(WorkPacket {
+        node_id: node_id.clone(),
+        title: required_node_string(node, "title")?.to_string(),
+        role: required_node_string(node, "role")?.to_string(),
+        kind: required_node_string(node, "kind")?.to_string(),
+        state: required_node_string(node, "state")?.to_string(),
+        spec_ref: match node.get("spec_ref") {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .ok_or_else(|| {
+                        format!(
+                            "invalid moat history file: node {node_id} field spec_ref must be a string or null"
+                        )
+                    })?
+                    .to_string(),
+            ),
+        },
+        dependencies: parse_dependencies(node, &node_id)?,
     })
+}
+
+fn required_node_string<'a>(node: &'a Value, field: &str) -> Result<&'a str, String> {
+    node.get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("invalid moat history file: node field {field} must be a string"))
+}
+
+fn parse_dependencies(node: &Value, node_id: &str) -> Result<Vec<String>, String> {
+    let Some(value) = node.get("depends_on") else {
+        return Ok(Vec::new());
+    };
+    let dependencies = value.as_array().ok_or_else(|| {
+        format!("invalid moat history file: node {node_id} field depends_on must be an array")
+    })?;
+
+    dependencies
+        .iter()
+        .map(|dependency| {
+            dependency
+                .as_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "invalid moat history file: node {node_id} field depends_on entries must be strings"
+                    )
+                })
+        })
+        .collect()
 }
 
 fn dependencies_have_artifacts(nodes: &[Value], packet: &WorkPacket) -> bool {
