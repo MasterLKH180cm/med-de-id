@@ -92,7 +92,7 @@ Add these tests inside the existing `#[cfg(test)] mod tests` in `crates/mdid-des
         let mut response = DesktopWorkflowResponseState::default();
         response.apply_success_json(
             DesktopWorkflowMode::CsvText,
-            json!({"rewritten_csv":"patient_name\n<NAME-1>","summary":{},"review_queue":[]}),
+            json!({"csv":"patient_name\n<NAME-1>","summary":{},"review_queue":[]}),
         );
 
         response.apply_error("runtime rejected invalid payload");
