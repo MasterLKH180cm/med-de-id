@@ -11,12 +11,14 @@ const FETCH_UNAVAILABLE_MESSAGE: &str =
 enum InputMode {
     CsvText,
     XlsxBase64,
+    PdfBase64,
 }
 
 impl InputMode {
     fn from_select_value(value: &str) -> Self {
         match value {
             "xlsx-base64" => Self::XlsxBase64,
+            "pdf-base64" => Self::PdfBase64,
             _ => Self::CsvText,
         }
     }
@@ -25,6 +27,7 @@ impl InputMode {
         match self {
             Self::CsvText => "csv-text",
             Self::XlsxBase64 => "xlsx-base64",
+            Self::PdfBase64 => "pdf-base64",
         }
     }
 
@@ -32,6 +35,7 @@ impl InputMode {
         match self {
             Self::CsvText => "CSV text",
             Self::XlsxBase64 => "XLSX base64",
+            Self::PdfBase64 => "PDF base64",
         }
     }
 
@@ -39,6 +43,7 @@ impl InputMode {
         match self {
             Self::CsvText => "Paste CSV rows here",
             Self::XlsxBase64 => "Paste base64-encoded XLSX content here",
+            Self::PdfBase64 => "Paste base64-encoded PDF content here",
         }
     }
 
@@ -48,6 +53,7 @@ impl InputMode {
             Self::XlsxBase64 => Some(
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
+            Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
         }
     }
 
@@ -55,14 +61,20 @@ impl InputMode {
         match self {
             Self::CsvText => "/tabular/deidentify",
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
+            Self::PdfBase64 => "/pdf/deidentify",
         }
+    }
+
+    fn is_pdf(self) -> bool {
+        matches!(self, Self::PdfBase64)
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TabularFlowState {
+struct BrowserFlowState {
     input_mode: InputMode,
     payload: String,
+    source_name: String,
     field_policy_json: String,
     result_output: String,
     summary: String,
@@ -74,11 +86,12 @@ struct TabularFlowState {
     active_submission_token: Option<u64>,
 }
 
-impl Default for TabularFlowState {
+impl Default for BrowserFlowState {
     fn default() -> Self {
         Self {
             input_mode: InputMode::CsvText,
             payload: String::new(),
+            source_name: "local-review.pdf".to_string(),
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
             summary: IDLE_SUMMARY.to_string(),
@@ -92,7 +105,7 @@ impl Default for TabularFlowState {
     }
 }
 
-impl TabularFlowState {
+impl BrowserFlowState {
     fn clear_generated_state(&mut self) {
         self.result_output.clear();
         self.summary = IDLE_SUMMARY.to_string();
@@ -105,7 +118,7 @@ impl TabularFlowState {
         self.clear_generated_state();
     }
 
-    fn validate_submission(&self) -> Result<TabularSubmitRequest, String> {
+    fn validate_submission(&self) -> Result<RuntimeSubmitRequest, String> {
         if self.payload.trim().is_empty() {
             return Err(format!(
                 "{} payload is required before submitting.",
@@ -113,11 +126,20 @@ impl TabularFlowState {
             ));
         }
 
-        if self.field_policy_json.trim().is_empty() {
+        if self.input_mode.is_pdf() && self.source_name.trim().is_empty() {
+            return Err("PDF source name is required before submitting.".to_string());
+        }
+
+        if !self.input_mode.is_pdf() && self.field_policy_json.trim().is_empty() {
             return Err("Field policy JSON is required before submitting.".to_string());
         }
 
-        build_submit_request(self.input_mode, &self.payload, &self.field_policy_json)
+        build_submit_request(
+            self.input_mode,
+            &self.payload,
+            &self.source_name,
+            &self.field_policy_json,
+        )
     }
 
     fn begin_submit(&mut self) -> Result<SubmissionHandle, ()> {
@@ -172,8 +194,8 @@ impl TabularFlowState {
         }
 
         self.result_output = response.rewritten_output;
-        self.summary = format_summary(&response.summary);
-        self.review_queue = format_review_queue(&response.review_queue);
+        self.summary = response.summary;
+        self.review_queue = response.review_queue;
         self.error_banner = None;
     }
 
@@ -203,27 +225,33 @@ struct FieldPolicyRequest {
     action: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 struct CsvSubmitRequest {
     csv: String,
     policies: Vec<FieldPolicyRequest>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 struct XlsxSubmitRequest {
     workbook_base64: String,
     field_policies: Vec<FieldPolicyRequest>,
 }
 
+#[derive(Clone, Eq, PartialEq, Serialize)]
+struct PdfSubmitRequest {
+    pdf_bytes_base64: String,
+    source_name: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TabularSubmitRequest {
+struct RuntimeSubmitRequest {
     endpoint: &'static str,
     body_json: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SubmissionHandle {
-    request: TabularSubmitRequest,
+    request: RuntimeSubmitRequest,
     input_mode: InputMode,
     submission_token: u64,
     state_revision: u64,
@@ -259,6 +287,46 @@ struct XlsxRuntimeSuccessResponse {
     review_queue: Vec<RuntimeReviewCandidate>,
 }
 
+#[derive(Clone, PartialEq, Deserialize)]
+struct PdfRuntimeSuccessResponse {
+    summary: PdfExtractionSummary,
+    page_statuses: Vec<PdfPageStatusResponse>,
+    review_queue: Vec<PdfReviewCandidate>,
+    // PDF mode is review-only; rewrite/export bytes are intentionally ignored.
+    #[allow(dead_code)]
+    rewritten_pdf_bytes_base64: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct PdfExtractionSummary {
+    total_pages: usize,
+    text_layer_pages: usize,
+    ocr_required_pages: usize,
+    extracted_candidates: usize,
+    review_required_candidates: usize,
+}
+
+#[derive(Clone, Eq, PartialEq, Deserialize)]
+struct PdfPageStatusResponse {
+    page: PdfPageRef,
+    status: String,
+}
+
+#[derive(Clone, Eq, PartialEq, Deserialize)]
+struct PdfPageRef {
+    label: String,
+    page_number: usize,
+}
+
+#[derive(Clone, PartialEq, Deserialize)]
+struct PdfReviewCandidate {
+    page: PdfPageRef,
+    source_text: String,
+    phi_type: String,
+    confidence: u8,
+    decision: String,
+}
+
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 struct ErrorEnvelope {
@@ -275,15 +343,33 @@ struct ErrorBody {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeResponseEnvelope {
     rewritten_output: String,
-    summary: RuntimeSummary,
-    review_queue: Vec<RuntimeReviewCandidate>,
+    summary: String,
+    review_queue: String,
 }
 
 fn build_submit_request(
     input_mode: InputMode,
     payload: &str,
+    source_name: &str,
     field_policy_json: &str,
-) -> Result<TabularSubmitRequest, String> {
+) -> Result<RuntimeSubmitRequest, String> {
+    if input_mode.is_pdf() {
+        if source_name.trim().is_empty() {
+            return Err("PDF source name is required before submitting.".to_string());
+        }
+
+        let body_json = serde_json::to_string(&PdfSubmitRequest {
+            pdf_bytes_base64: payload.trim().to_string(),
+            source_name: source_name.trim().to_string(),
+        })
+        .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+
+        return Ok(RuntimeSubmitRequest {
+            endpoint: input_mode.endpoint(),
+            body_json,
+        });
+    }
+
     let policies: Vec<FieldPolicyRequest> = serde_json::from_str(field_policy_json)
         .map_err(|error| format!("Field policy JSON must be a JSON array of policies: {error}"))?;
 
@@ -300,10 +386,11 @@ fn build_submit_request(
             workbook_base64: payload.trim().to_string(),
             field_policies: policies,
         }),
+        InputMode::PdfBase64 => unreachable!("PDF requests are handled before policy parsing"),
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
-    Ok(TabularSubmitRequest {
+    Ok(RuntimeSubmitRequest {
         endpoint: input_mode.endpoint(),
         body_json,
     })
@@ -319,8 +406,8 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.csv,
-                summary: parsed.summary,
-                review_queue: parsed.review_queue,
+                summary: format_summary(&parsed.summary),
+                review_queue: format_review_queue(&parsed.review_queue),
             })
         }
         InputMode::XlsxBase64 => {
@@ -328,8 +415,19 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.rewritten_workbook_base64,
-                summary: parsed.summary,
-                review_queue: parsed.review_queue,
+                summary: format_summary(&parsed.summary),
+                review_queue: format_review_queue(&parsed.review_queue),
+            })
+        }
+        InputMode::PdfBase64 => {
+            let parsed: PdfRuntimeSuccessResponse = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output:
+                    "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
+                        .to_string(),
+                summary: format_pdf_summary(&parsed.summary, &parsed.page_statuses),
+                review_queue: format_pdf_review_queue(&parsed.review_queue),
             })
         }
     }
@@ -394,8 +492,55 @@ fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
         .join("\n")
 }
 
+fn format_pdf_summary(
+    summary: &PdfExtractionSummary,
+    page_statuses: &[PdfPageStatusResponse],
+) -> String {
+    let mut lines = vec![
+        format!("total_pages: {}", summary.total_pages),
+        format!("text_layer_pages: {}", summary.text_layer_pages),
+        format!("ocr_required_pages: {}", summary.ocr_required_pages),
+        format!("extracted_candidates: {}", summary.extracted_candidates),
+        format!(
+            "review_required_candidates: {}",
+            summary.review_required_candidates
+        ),
+        "page_statuses:".to_string(),
+    ];
+
+    lines.extend(page_statuses.iter().map(|page_status| {
+        format!(
+            "- page {} ({}): {}",
+            page_status.page.page_number, page_status.page.label, page_status.status
+        )
+    }));
+
+    lines.join("\n")
+}
+
+fn format_pdf_review_queue(review_queue: &[PdfReviewCandidate]) -> String {
+    if review_queue.is_empty() {
+        return "No review items returned.".to_string();
+    }
+
+    review_queue
+        .iter()
+        .map(|candidate| {
+            format!(
+                "- page {} / {} / confidence {} / {}: {}",
+                candidate.page.page_number,
+                candidate.phi_type,
+                candidate.confidence,
+                candidate.decision,
+                candidate.source_text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(target_arch = "wasm32")]
-async fn perform_runtime_request(request: TabularSubmitRequest) -> Result<String, String> {
+async fn perform_runtime_request(request: RuntimeSubmitRequest) -> Result<String, String> {
     use gloo_net::http::Request;
 
     let response = Request::post(request.endpoint)
@@ -420,13 +565,13 @@ async fn perform_runtime_request(request: TabularSubmitRequest) -> Result<String
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn perform_runtime_request(_request: TabularSubmitRequest) -> Result<String, String> {
+async fn perform_runtime_request(_request: RuntimeSubmitRequest) -> Result<String, String> {
     Err(FETCH_UNAVAILABLE_MESSAGE.to_string())
 }
 
 #[component]
 pub fn App() -> impl IntoView {
-    let state = create_rw_signal(TabularFlowState::default());
+    let state = create_rw_signal(BrowserFlowState::default());
 
     let on_mode_change = move |event| {
         let next_mode = InputMode::from_select_value(&event_target_value(&event));
@@ -440,6 +585,14 @@ pub fn App() -> impl IntoView {
         let next_payload = event_target_value(&event);
         state.update(|state| {
             state.payload = next_payload;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_source_name_input = move |event| {
+        let next_source_name = event_target_value(&event);
+        state.update(|state| {
+            state.source_name = next_source_name;
             state.invalidate_generated_state();
         });
     };
@@ -495,7 +648,7 @@ pub fn App() -> impl IntoView {
     view! {
         <main class="tabular-flow-shell">
             <h1>"med-de-id browser tool"</h1>
-            <p>"Bounded tabular deidentification flow"</p>
+            <p>"Bounded tabular de-identification and PDF review flow"</p>
 
             <section>
                 <h2>"Input"</h2>
@@ -504,6 +657,7 @@ pub fn App() -> impl IntoView {
                     <select on:change=on_mode_change prop:value=move || state.get().input_mode.select_value()>
                         <option value="csv-text">"CSV text"</option>
                         <option value="xlsx-base64">"XLSX base64"</option>
+                        <option value="pdf-base64">"PDF base64"</option>
                     </select>
                 </label>
 
@@ -523,14 +677,27 @@ pub fn App() -> impl IntoView {
                     </p>
                 </Show>
 
-                <label>
-                    "Field policy JSON"
-                    <textarea
-                        on:input=on_field_policy_input
-                        prop:value=move || state.get().field_policy_json
-                        rows="10"
-                    />
-                </label>
+                <Show when=move || state.get().input_mode.is_pdf()>
+                    <label>
+                        "Source name"
+                        <input
+                            on:input=on_source_name_input
+                            prop:value=move || state.get().source_name
+                            type="text"
+                        />
+                    </label>
+                </Show>
+
+                <Show when=move || !state.get().input_mode.is_pdf()>
+                    <label>
+                        "Field policy JSON"
+                        <textarea
+                            on:input=on_field_policy_input
+                            prop:value=move || state.get().field_policy_json
+                            rows="10"
+                        />
+                    </label>
+                </Show>
 
                 <button on:click=on_submit disabled=move || state.get().is_submitting type="button">
                     {move || if state.get().is_submitting { "Submitting..." } else { "Submit" }}
@@ -566,14 +733,14 @@ pub fn App() -> impl IntoView {
 mod tests {
     use super::{
         build_submit_request, format_review_queue, format_summary, parse_runtime_error,
-        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, TabularFlowState,
+        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, BrowserFlowState,
         DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
     };
     use serde_json::json;
 
     #[test]
-    fn tabular_flow_state_defaults_to_csv_shell() {
-        let state = TabularFlowState::default();
+    fn browser_flow_state_defaults_to_csv_shell() {
+        let state = BrowserFlowState::default();
 
         assert_eq!(state.input_mode, InputMode::CsvText);
         assert!(state.payload.is_empty());
@@ -590,7 +757,7 @@ mod tests {
 
     #[test]
     fn submit_requires_payload_before_runtime_request() {
-        let mut state = TabularFlowState::default();
+        let mut state = BrowserFlowState::default();
         let result = state.begin_submit();
 
         assert!(result.is_err());
@@ -605,10 +772,10 @@ mod tests {
 
     #[test]
     fn submit_requires_non_blank_field_policy_before_runtime_request() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id,name\n1,Alice".to_string(),
             field_policy_json: "   \n\t".to_string(),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let result = state.begin_submit();
@@ -635,10 +802,110 @@ mod tests {
     }
 
     #[test]
+    fn pdf_mode_disclosure_matches_review_only_runtime_limits() {
+        assert_eq!(
+            InputMode::PdfBase64.payload_hint(),
+            "Paste base64-encoded PDF content here"
+        );
+        assert_eq!(
+            InputMode::PdfBase64.disclosure_copy(),
+            Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export.")
+        );
+        assert_eq!(InputMode::PdfBase64.endpoint(), "/pdf/deidentify");
+    }
+
+    #[test]
+    fn build_submit_request_targets_pdf_endpoint_without_field_policies() {
+        let request = build_submit_request(
+            InputMode::PdfBase64,
+            "JVBERi0xLjQK...\n",
+            "Ignored Report.pdf",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(request.endpoint, "/pdf/deidentify");
+        let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
+        assert_eq!(body["pdf_bytes_base64"], "JVBERi0xLjQK...");
+        assert_eq!(body["source_name"], "Ignored Report.pdf");
+        assert!(body.get("policies").is_none());
+        assert!(body.get("field_policies").is_none());
+    }
+
+    #[test]
+    fn pdf_submit_requires_source_name_before_runtime_request() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            payload: "JVBERi0xLjQK".to_string(),
+            source_name: "   ".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let result = state.begin_submit();
+
+        assert!(result.is_err());
+        assert_eq!(
+            state.error_banner.as_deref(),
+            Some("PDF source name is required before submitting.")
+        );
+    }
+
+    #[test]
+    fn parse_pdf_runtime_success_renders_review_only_summary_and_page_statuses() {
+        let response = parse_runtime_success(
+            InputMode::PdfBase64,
+            &json!({
+                "summary": {
+                    "total_pages": 2,
+                    "text_layer_pages": 1,
+                    "ocr_required_pages": 1,
+                    "extracted_candidates": 1,
+                    "review_required_candidates": 1
+                },
+                "page_statuses": [
+                    {"page": {"label": "radiology/report.pdf", "page_number": 1}, "status": "text_layer_present"},
+                    {"page": {"label": "radiology/report.pdf", "page_number": 2}, "status": "ocr_required"}
+                ],
+                "review_queue": [
+                    {
+                        "page": {"label": "radiology/report.pdf", "page_number": 1},
+                        "source_text": "Alice Smith",
+                        "phi_type": "patient_name",
+                        "confidence": 20,
+                        "decision": "needs_review"
+                    }
+                ],
+                "rewritten_pdf_bytes_base64": null
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.rewritten_output,
+            "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
+        );
+        assert!(response.summary.contains("total_pages: 2"));
+        assert!(response.summary.contains("ocr_required_pages: 1"));
+        assert!(response.summary.contains("page_statuses:"));
+        assert!(response
+            .summary
+            .contains("- page 1 (radiology/report.pdf): text_layer_present"));
+        assert!(response
+            .summary
+            .contains("- page 2 (radiology/report.pdf): ocr_required"));
+        assert_eq!(
+            response.review_queue,
+            "- page 1 / patient_name / confidence 20 / needs_review: Alice Smith"
+        );
+    }
+
+    #[test]
     fn build_submit_request_targets_csv_endpoint() {
         let request = build_submit_request(
             InputMode::CsvText,
             "patient_id,patient_name\nMRN-001,Alice Smith\n",
+            "local-review.pdf",
             DEFAULT_FIELD_POLICY_JSON,
         )
         .unwrap();
@@ -655,6 +922,7 @@ mod tests {
         let request = build_submit_request(
             InputMode::XlsxBase64,
             "UEsDBBQAAAAIA...\n",
+            "local-review.pdf",
             DEFAULT_FIELD_POLICY_JSON,
         )
         .unwrap();
@@ -668,8 +936,13 @@ mod tests {
 
     #[test]
     fn build_submit_request_rejects_non_array_policy_json() {
-        let error = build_submit_request(InputMode::CsvText, "patient_id\n1", "{\"columns\":{}}")
-            .unwrap_err();
+        let error = build_submit_request(
+            InputMode::CsvText,
+            "patient_id\n1",
+            "local-review.pdf",
+            "{\"columns\":{}}",
+        )
+        .unwrap_err();
 
         assert!(error.contains("Field policy JSON must be a JSON array of policies"));
     }
@@ -703,8 +976,11 @@ mod tests {
             response.rewritten_output,
             "patient_id,patient_name\ntok-123,Alice Smith\n"
         );
-        assert_eq!(response.summary.total_rows, 1);
-        assert_eq!(response.review_queue.len(), 1);
+        assert!(response.summary.contains("total_rows: 1"));
+        assert_eq!(
+            response.review_queue,
+            "- row 1 / patient_name / patient_name: Alice Smith"
+        );
     }
 
     #[test]
@@ -726,8 +1002,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.rewritten_output, "UEsDBBQAAAAIA...");
-        assert_eq!(response.summary.encoded_cells, 2);
-        assert!(response.review_queue.is_empty());
+        assert!(response.summary.contains("encoded_cells: 2"));
+        assert_eq!(response.review_queue, "No review items returned.");
     }
 
     #[test]
@@ -775,9 +1051,9 @@ mod tests {
 
     #[test]
     fn runtime_failure_path_keeps_browser_honest() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id\n1".to_string(),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let request = state.begin_submit().unwrap();
@@ -802,9 +1078,9 @@ mod tests {
 
     #[test]
     fn overlapping_submission_attempt_is_blocked_while_request_is_in_flight() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id\n1".to_string(),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let first = state.begin_submit().unwrap();
@@ -817,13 +1093,13 @@ mod tests {
 
     #[test]
     fn editing_during_in_flight_request_invalidates_stale_response_without_clearing_spinner() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
             result_output: "old-result".to_string(),
             summary: "old-summary".to_string(),
             review_queue: "old-review".to_string(),
             error_banner: Some("old-error".to_string()),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let submission = state.begin_submit().unwrap();
