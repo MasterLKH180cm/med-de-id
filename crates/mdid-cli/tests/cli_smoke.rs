@@ -1,4 +1,6 @@
 use assert_cmd::Command;
+use dicom_core::{Tag, VR};
+use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
 use mdid_adapters::XlsxTabularAdapter;
 use predicates::prelude::*;
 use rust_xlsxwriter::Workbook;
@@ -15,6 +17,36 @@ fn write_xlsx(path: &Path) {
     worksheet.write_string(1, 0, "Alice Patient").unwrap();
     worksheet.write_string(1, 1, "needs follow-up").unwrap();
     workbook.save(path).unwrap();
+}
+
+fn dicom_fixture() -> Vec<u8> {
+    let mut obj = InMemDicomObject::new_empty();
+    obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    obj.put_str(
+        Tag(0x0008, 0x0018),
+        VR::UI,
+        "2.25.123456789012345678901234567890123456",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000D),
+        VR::UI,
+        "2.25.123456789012345678901234567890123457",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123458",
+    );
+    obj.put_str(Tag(0x0010, 0x0010), VR::PN, "Alice^Smith");
+    obj.put_str(Tag(0x0010, 0x0020), VR::LO, "MRN-001");
+    obj.put_str(Tag(0x0028, 0x0301), VR::CS, "NO");
+
+    let file_obj = obj
+        .with_meta(FileMetaTableBuilder::new().transfer_syntax("1.2.840.10008.1.2.1"))
+        .unwrap();
+    let mut bytes = Vec::new();
+    file_obj.write_all(&mut bytes).unwrap();
+    bytes
 }
 
 #[test]
@@ -213,6 +245,88 @@ fn cli_deidentify_xlsx_rejects_invalid_workbook_without_scope_drift_terms() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("failed to read XLSX workbook"))
+        .stderr(predicate::str::contains("agent").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("moat").not());
+
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn cli_deidentify_dicom_writes_rewritten_dicom_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("Alice-Smith-source.dcm");
+    let output_path = dir.path().join("output.dcm");
+    let vault_path = dir.path().join("vault.json");
+    fs::write(&input_path, dicom_fixture()).unwrap();
+
+    let stdout = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-dicom",
+            "--dicom-path",
+            input_path.to_str().unwrap(),
+            "--private-tag-policy",
+            "remove",
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice").not())
+        .stdout(predicate::str::contains("MRN-001").not())
+        .stdout(predicate::str::contains(input_path.to_string_lossy().as_ref()).not())
+        .stdout(predicate::str::contains("correct horse battery staple").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    assert!(output_path.exists());
+    let rewritten = fs::read(&output_path).unwrap();
+    assert!(!rewritten.is_empty());
+    assert_ne!(rewritten, fs::read(&input_path).unwrap());
+
+    let payload: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(
+        payload["output_path"],
+        output_path.to_string_lossy().to_string()
+    );
+    assert_eq!(payload["sanitized_file_name"], "dicom-output.dcm");
+    assert_eq!(payload["review_queue_len"], 0);
+    assert!(payload.get("summary").is_some());
+    assert_eq!(payload.as_object().unwrap().len(), 4);
+}
+
+#[test]
+fn cli_deidentify_dicom_rejects_invalid_dicom_without_scope_drift_terms() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("invalid.dcm");
+    let output_path = dir.path().join("output.dcm");
+    let vault_path = dir.path().join("vault.json");
+    fs::write(&input_path, b"not a dicom file").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-dicom",
+            "--dicom-path",
+            input_path.to_str().unwrap(),
+            "--private-tag-policy",
+            "remove",
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to deidentify DICOM"))
         .stderr(predicate::str::contains("agent").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("moat").not());
