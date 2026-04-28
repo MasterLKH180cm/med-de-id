@@ -1,8 +1,20 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::fs;
+use rust_xlsxwriter::Workbook;
+use serde_json::Value;
+use std::{fs, path::Path};
 
 use tempfile::tempdir;
+
+fn write_xlsx(path: &Path) {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.write_string(0, 0, "patient_name").unwrap();
+    worksheet.write_string(0, 1, "note").unwrap();
+    worksheet.write_string(1, 0, "Alice Patient").unwrap();
+    worksheet.write_string(1, 1, "needs follow-up").unwrap();
+    workbook.save(path).unwrap();
+}
 
 #[test]
 fn cli_prints_ready_banner_with_no_args() {
@@ -116,6 +128,82 @@ fn cli_deidentify_csv_rejects_malformed_policy_json_without_scope_drift_terms() 
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());
+}
+
+#[test]
+fn cli_deidentify_xlsx_writes_rewritten_workbook_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("input.xlsx");
+    let output_path = dir.path().join("output.xlsx");
+    let vault_path = dir.path().join("vault.mdid");
+    write_xlsx(&input_path);
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-xlsx",
+            "--xlsx-path",
+            input_path.to_str().unwrap(),
+            "--policies-json",
+            r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"},{"header":"note","phi_type":"NOTE","action":"review"}]"#,
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice Patient").not())
+        .stdout(predicate::str::contains("correct horse battery staple").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    assert!(output_path.exists());
+    let payload: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(
+        payload["output_path"],
+        output_path.to_string_lossy().to_string()
+    );
+    assert_eq!(payload["summary"]["processed_rows"], 1);
+    assert_eq!(payload["summary"]["review_items"], 1);
+    assert_eq!(payload["review_queue_len"], 1);
+    assert!(fs::metadata(output_path).unwrap().len() > 0);
+}
+
+#[test]
+fn cli_deidentify_xlsx_rejects_invalid_workbook_without_scope_drift_terms() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("invalid.xlsx");
+    let output_path = dir.path().join("output.xlsx");
+    let vault_path = dir.path().join("vault.mdid");
+    fs::write(&input_path, b"not an xlsx workbook").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-xlsx",
+            "--xlsx-path",
+            input_path.to_str().unwrap(),
+            "--policies-json",
+            r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"}]"#,
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to read XLSX workbook"))
+        .stderr(predicate::str::contains("agent").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("moat").not());
+
+    assert!(!output_path.exists());
 }
 
 #[test]

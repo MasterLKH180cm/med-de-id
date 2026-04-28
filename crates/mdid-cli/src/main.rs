@@ -1,9 +1,11 @@
 use std::{fs, path::PathBuf, process};
 
-use mdid_adapters::{FieldPolicy, FieldPolicyAction};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use mdid_adapters::{CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter};
 use mdid_application::TabularDeidentificationService;
 use mdid_domain::{BatchSummary, SurfaceKind};
 use mdid_vault::LocalVaultStore;
+use rust_xlsxwriter::Workbook;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -20,11 +22,21 @@ fn main() {
 enum CliCommand {
     Status,
     DeidentifyCsv(DeidentifyCsvArgs),
+    DeidentifyXlsx(DeidentifyXlsxArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
 struct DeidentifyCsvArgs {
     csv_path: PathBuf,
+    policies_json: String,
+    vault_path: PathBuf,
+    passphrase: String,
+    output_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DeidentifyXlsxArgs {
+    xlsx_path: PathBuf,
     policies_json: String,
     vault_path: PathBuf,
     passphrase: String,
@@ -52,6 +64,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [status] if status == "status" => Ok(CliCommand::Status),
         [command, rest @ ..] if command == "deidentify-csv" => {
             parse_deidentify_csv_args(rest).map(CliCommand::DeidentifyCsv)
+        }
+        [command, rest @ ..] if command == "deidentify-xlsx" => {
+            parse_deidentify_xlsx_args(rest).map(CliCommand::DeidentifyXlsx)
         }
         _ => Err("unknown command".to_string()),
     }
@@ -90,6 +105,39 @@ fn parse_deidentify_csv_args(args: &[String]) -> Result<DeidentifyCsvArgs, Strin
     })
 }
 
+fn parse_deidentify_xlsx_args(args: &[String]) -> Result<DeidentifyXlsxArgs, String> {
+    let mut xlsx_path = None;
+    let mut policies_json = None;
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut output_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--xlsx-path" => xlsx_path = Some(PathBuf::from(value)),
+            "--policies-json" => policies_json = Some(value.clone()),
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--output-path" => output_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(DeidentifyXlsxArgs {
+        xlsx_path: xlsx_path.ok_or_else(|| "missing --xlsx-path".to_string())?,
+        policies_json: policies_json.ok_or_else(|| "missing --policies-json".to_string())?,
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        output_path: output_path.ok_or_else(|| "missing --output-path".to_string())?,
+    })
+}
+
 fn run_command(command: CliCommand) -> Result<(), String> {
     match command {
         CliCommand::Status => {
@@ -97,6 +145,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
             Ok(())
         }
         CliCommand::DeidentifyCsv(args) => run_deidentify_csv(args),
+        CliCommand::DeidentifyXlsx(args) => run_deidentify_xlsx(args),
     }
 }
 
@@ -125,6 +174,61 @@ fn run_deidentify_csv(args: DeidentifyCsvArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn run_deidentify_xlsx(args: DeidentifyXlsxArgs) -> Result<(), String> {
+    let policies = parse_policies(&args.policies_json)?;
+    let workbook_bytes =
+        fs::read(&args.xlsx_path).map_err(|err| format!("failed to read XLSX workbook: {err}"))?;
+    let extracted = XlsxTabularAdapter::new(policies)
+        .extract(&workbook_bytes)
+        .map_err(|err| format!("failed to read XLSX workbook: {err}"))?;
+    let mut vault = if args.vault_path.exists() {
+        LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+    } else {
+        LocalVaultStore::create(&args.vault_path, &args.passphrase)
+    }
+    .map_err(|err| format!("failed to open vault: {err}"))?;
+
+    let output = TabularDeidentificationService
+        .deidentify_extracted(extracted, &mut vault, SurfaceKind::Cli)
+        .map_err(|err| format!("failed to deidentify XLSX: {err}"))?;
+    let rendered = render_xlsx_output(&output.csv)
+        .map_err(|err| format!("failed to render XLSX output: {err}"))?;
+    fs::write(&args.output_path, rendered)
+        .map_err(|err| format!("failed to write output XLSX: {err}"))?;
+
+    print_summary(
+        &args.output_path,
+        &output.summary,
+        output.review_queue.len(),
+    )?;
+    Ok(())
+}
+
+fn render_xlsx_output(csv: &str) -> Result<Vec<u8>, String> {
+    if let Ok(bytes) = STANDARD.decode(csv) {
+        return Ok(bytes);
+    }
+
+    let extracted = CsvTabularAdapter::new(Vec::new())
+        .extract(csv.as_bytes())
+        .map_err(|err| err.to_string())?;
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    for (column_index, column) in extracted.columns.iter().enumerate() {
+        worksheet
+            .write_string(0, column_index as u16, &column.name)
+            .map_err(|err| err.to_string())?;
+    }
+    for (row_index, row) in extracted.rows.iter().enumerate() {
+        for (column_index, value) in row.iter().enumerate() {
+            worksheet
+                .write_string((row_index + 1) as u32, column_index as u16, value)
+                .map_err(|err| err.to_string())?;
+        }
+    }
+    workbook.save_to_buffer().map_err(|err| err.to_string())
+}
+
 fn parse_policies(policies_json: &str) -> Result<Vec<FieldPolicy>, String> {
     let requests: Vec<PolicyRequest> = serde_json::from_str(policies_json)
         .map_err(|err| format!("invalid policies JSON: {err}"))?;
@@ -149,7 +253,14 @@ fn print_summary(
 ) -> Result<(), String> {
     let payload = json!({
         "output_path": output_path,
-        "summary": summary,
+        "summary": {
+            "total_rows": summary.total_rows,
+            "processed_rows": summary.total_rows,
+            "encoded_cells": summary.encoded_cells,
+            "review_required_cells": summary.review_required_cells,
+            "review_items": summary.review_required_cells,
+            "failed_rows": summary.failed_rows,
+        },
         "review_queue_len": review_queue_len,
     });
     println!(
@@ -168,7 +279,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status           Print a readiness banner for the local CLI surface.\n  deidentify-csv   Rewrite a local CSV using explicit field policies."
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status            Print a readiness banner for the local CLI surface.\n  deidentify-csv    Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx   Rewrite a bounded local XLSX using explicit field policies."
 }
 
 #[cfg(test)]
@@ -200,6 +311,35 @@ mod tests {
                     vault_path: PathBuf::from("vault.mdid"),
                     passphrase: "secret-passphrase".to_string(),
                     output_path: PathBuf::from("output.csv"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_deidentify_xlsx_command_without_requiring_debug() {
+        let policies_json = r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"}]"#;
+        let args = vec![
+            "deidentify-xlsx".to_string(),
+            "--xlsx-path".to_string(),
+            "input.xlsx".to_string(),
+            "--policies-json".to_string(),
+            policies_json.to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--output-path".to_string(),
+            "output.xlsx".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyXlsx(DeidentifyXlsxArgs {
+                    xlsx_path: PathBuf::from("input.xlsx"),
+                    policies_json: policies_json.to_string(),
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    output_path: PathBuf::from("output.xlsx"),
                 }))
         );
     }
