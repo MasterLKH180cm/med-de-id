@@ -9,21 +9,26 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use calamine::Reader;
 use mdid_adapters::{
     ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter, DicomAdapterError,
-    FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
+    FieldPolicy, FieldPolicyAction, PdfAdapterError, XlsxTabularAdapter,
 };
 use mdid_application::{
     ApplicationError, ApplicationService, ConservativeMediaDeidentificationOutput,
-    ConservativeMediaDeidentificationService, DicomDeidentificationOutput, DicomDeidentificationService,
+    ConservativeMediaDeidentificationService, DicomDeidentificationOutput,
+    DicomDeidentificationService, PdfDeidentificationOutput, PdfDeidentificationService,
     TabularDeidentificationOutput, TabularDeidentificationService,
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
     ConservativeMediaSummary, DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, MappingRecord, MappingScope, PhiCandidate, SurfaceKind,
+    DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary, PdfPageRef,
+    PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
-use std::{io::{Cursor, Read, Write}, path::PathBuf};
+use std::{
+    io::{Cursor, Read, Write},
+    path::PathBuf,
+};
 use tempfile::tempdir;
 use xmltree::{Element, XMLNode};
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
@@ -43,6 +48,12 @@ struct DicomDeidentifyRequest {
     dicom_bytes_base64: String,
     source_name: String,
     private_tag_policy: DicomPrivateTagPolicy,
+}
+
+#[derive(Deserialize)]
+struct PdfDeidentifyRequest {
+    pdf_bytes_base64: String,
+    source_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +160,20 @@ struct DicomDeidentifyResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PdfDeidentifyResponse {
+    summary: PdfExtractionSummary,
+    page_statuses: Vec<PdfPageStatusResponse>,
+    review_queue: Vec<PdfPhiCandidate>,
+    rewritten_pdf_bytes_base64: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PdfPageStatusResponse {
+    page: PdfPageRef,
+    status: PdfScanStatus,
+}
+
+#[derive(Debug, Serialize)]
 struct VaultDecodeResponse {
     values: Vec<mdid_domain::DecodedValue>,
     audit_event: mdid_domain::AuditEvent,
@@ -225,12 +250,19 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/pipelines", post(create_pipeline))
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/tabular/deidentify/xlsx", post(tabular_xlsx_deidentify))
-        .route("/media/conservative/deidentify", post(conservative_media_deidentify))
+        .route(
+            "/media/conservative/deidentify",
+            post(conservative_media_deidentify),
+        )
+        .route("/pdf/deidentify", post(pdf_deidentify))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
         .route("/vault/export", post(vault_export))
         .route("/vault/audit/events", post(vault_audit_events))
-        .route("/portable-artifacts/inspect", post(portable_artifact_inspect))
+        .route(
+            "/portable-artifacts/inspect",
+            post(portable_artifact_inspect),
+        )
         .route("/portable-artifacts/import", post(portable_artifact_import))
         .with_state(state)
 }
@@ -251,7 +283,9 @@ async fn create_pipeline(
     (StatusCode::CREATED, Json(pipeline))
 }
 
-async fn tabular_deidentify(payload: Result<Json<TabularDeidentifyRequest>, JsonRejection>) -> Response {
+async fn tabular_deidentify(
+    payload: Result<Json<TabularDeidentifyRequest>, JsonRejection>,
+) -> Response {
     let Json(payload) = match payload {
         Ok(payload) => payload,
         Err(_) => return invalid_tabular_request_response().into_response(),
@@ -344,13 +378,14 @@ async fn conservative_media_deidentify(
     };
 
     let input = ConservativeMediaInput::from(payload);
-    let output = match ConservativeMediaDeidentificationService::default().deidentify_metadata(input) {
-        Ok(output) => output,
-        Err(ApplicationError::ConservativeMediaAdapter(_)) => {
-            return invalid_conservative_media_request_response().into_response()
-        }
-        Err(_) => return internal_error_response().into_response(),
-    };
+    let output =
+        match ConservativeMediaDeidentificationService::default().deidentify_metadata(input) {
+            Ok(output) => output,
+            Err(ApplicationError::ConservativeMediaAdapter(_)) => {
+                return invalid_conservative_media_request_response().into_response()
+            }
+            Err(_) => return internal_error_response().into_response(),
+        };
 
     conservative_media_success_response(output).into_response()
 }
@@ -383,6 +418,26 @@ async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Respon
     };
 
     success_response(output).into_response()
+}
+
+async fn pdf_deidentify(payload: Result<Json<PdfDeidentifyRequest>, JsonRejection>) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_pdf_response().into_response(),
+    };
+
+    let pdf_bytes = match STANDARD.decode(&payload.pdf_bytes_base64) {
+        Ok(bytes) => bytes,
+        Err(_) => return invalid_pdf_response().into_response(),
+    };
+
+    let output = match PdfDeidentificationService.deidentify_bytes(&pdf_bytes, &payload.source_name)
+    {
+        Ok(output) => output,
+        Err(error) => return map_pdf_application_error(&error).into_response(),
+    };
+
+    pdf_success_response(output).into_response()
 }
 
 async fn vault_decode(payload: Result<Json<VaultDecodeRequest>, JsonRejection>) -> Response {
@@ -441,7 +496,9 @@ async fn vault_export(payload: Result<Json<VaultExportRequest>, JsonRejection>) 
     }
 }
 
-async fn vault_audit_events(payload: Result<Json<VaultAuditEventsRequest>, JsonRejection>) -> Response {
+async fn vault_audit_events(
+    payload: Result<Json<VaultAuditEventsRequest>, JsonRejection>,
+) -> Response {
     let Json(payload) = match payload {
         Ok(payload) => payload,
         Err(_) => return invalid_audit_events_request_response().into_response(),
@@ -547,9 +604,18 @@ fn map_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnv
     }
 }
 
-fn map_tabular_xlsx_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
+fn map_tabular_xlsx_application_error(
+    error: &ApplicationError,
+) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         ApplicationError::TabularAdapter(_) => invalid_tabular_xlsx_request_response(),
+        _ => internal_error_response(),
+    }
+}
+
+fn map_pdf_application_error(error: &ApplicationError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        ApplicationError::PdfAdapter(PdfAdapterError::Parse(_)) => invalid_pdf_response(),
         _ => internal_error_response(),
     }
 }
@@ -637,9 +703,9 @@ fn map_audit_events_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEn
 
 fn map_export_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
-        VaultError::BlankPassphrase | VaultError::EmptyExportScope | VaultError::BlankExportContext => {
-            invalid_export_request_response()
-        }
+        VaultError::BlankPassphrase
+        | VaultError::EmptyExportScope
+        | VaultError::BlankExportContext => invalid_export_request_response(),
         VaultError::UnknownRecord(_) => unknown_export_record_response(),
         _ => map_vault_error(error),
     }
@@ -666,7 +732,9 @@ fn map_portable_artifact_inspection_error(error: &VaultError) -> (StatusCode, Js
     }
 }
 
-fn map_portable_artifact_import_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+fn map_portable_artifact_import_vault_error(
+    error: &VaultError,
+) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         VaultError::BlankPassphrase | VaultError::BlankImportContext => {
             invalid_portable_artifact_import_request_response()
@@ -688,7 +756,9 @@ fn map_portable_artifact_import_vault_error(error: &VaultError) -> (StatusCode, 
     }
 }
 
-fn map_portable_artifact_import_unlock_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
+fn map_portable_artifact_import_unlock_error(
+    error: &VaultError,
+) -> (StatusCode, Json<ErrorEnvelope>) {
     match error {
         VaultError::BlankPassphrase => invalid_portable_artifact_import_request_response(),
         VaultError::UnlockFailed => vault_unlock_failed_response(),
@@ -781,6 +851,29 @@ fn conservative_media_success_response(
     )
 }
 
+fn pdf_success_response(
+    output: PdfDeidentificationOutput,
+) -> (StatusCode, Json<PdfDeidentifyResponse>) {
+    (
+        StatusCode::OK,
+        Json(PdfDeidentifyResponse {
+            summary: output.summary,
+            page_statuses: output
+                .page_statuses
+                .into_iter()
+                .map(|page_status| PdfPageStatusResponse {
+                    page: page_status.page,
+                    status: page_status.status,
+                })
+                .collect(),
+            review_queue: output.review_queue,
+            rewritten_pdf_bytes_base64: output
+                .rewritten_pdf_bytes
+                .map(|bytes| STANDARD.encode(bytes)),
+        }),
+    )
+}
+
 fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -788,6 +881,18 @@ fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_dicom",
                 message: "request body did not contain a valid DICOM payload",
+            },
+        }),
+    )
+}
+
+fn invalid_pdf_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_pdf",
+                message: "request body did not contain a valid PDF payload",
             },
         }),
     )
@@ -811,7 +916,8 @@ fn invalid_tabular_xlsx_request_response() -> (StatusCode, Json<ErrorEnvelope>) 
         Json(ErrorEnvelope {
             error: ErrorBody {
                 code: "invalid_tabular_xlsx_request",
-                message: "request body did not contain a valid XLSX tabular deidentification request",
+                message:
+                    "request body did not contain a valid XLSX tabular deidentification request",
             },
         }),
     )
@@ -871,7 +977,8 @@ fn invalid_portable_artifact_inspection_request_response() -> (StatusCode, Json<
         Json(ErrorEnvelope {
             error: ErrorBody {
                 code: "invalid_portable_artifact_inspection_request",
-                message: "request body did not contain a valid portable artifact inspection request",
+                message:
+                    "request body did not contain a valid portable artifact inspection request",
             },
         }),
     )
@@ -1034,10 +1141,10 @@ fn rewrite_xlsx_workbook_bytes(
 }
 
 fn find_first_non_empty_worksheet_path(workbook_bytes: &[u8]) -> Result<String, XlsxRewriteError> {
-    let workbook_xml = Element::parse(read_zip_entry(workbook_bytes, "xl/workbook.xml")?.as_slice())?;
-    let workbook_rels = Element::parse(
-        read_zip_entry(workbook_bytes, "xl/_rels/workbook.xml.rels")?.as_slice(),
-    )?;
+    let workbook_xml =
+        Element::parse(read_zip_entry(workbook_bytes, "xl/workbook.xml")?.as_slice())?;
+    let workbook_rels =
+        Element::parse(read_zip_entry(workbook_bytes, "xl/_rels/workbook.xml.rels")?.as_slice())?;
 
     let ordered_sheets = workbook_xml
         .get_child("sheets")
@@ -1050,11 +1157,13 @@ fn find_first_non_empty_worksheet_path(workbook_bytes: &[u8]) -> Result<String, 
         })
         .map(|sheet| {
             Ok((
-                sheet.attributes
+                sheet
+                    .attributes
                     .get("name")
                     .cloned()
                     .ok_or(XlsxRewriteError::MissingPart("sheet name"))?,
-                sheet.attributes
+                sheet
+                    .attributes
                     .iter()
                     .find(|(key, _)| key.ends_with("id"))
                     .map(|(_, value)| value.clone())
@@ -1068,16 +1177,22 @@ fn find_first_non_empty_worksheet_path(workbook_bytes: &[u8]) -> Result<String, 
         .iter()
         .find(|(name, _)| name == &sheet_name)
         .map(|(_, relationship_id)| relationship_id.as_str())
-        .ok_or(XlsxRewriteError::MissingPart("selected worksheet relationship"))?;
+        .ok_or(XlsxRewriteError::MissingPart(
+            "selected worksheet relationship",
+        ))?;
 
     let target = workbook_rels
         .children
         .iter()
         .filter_map(|node| match node {
-            XMLNode::Element(relationship) if relationship.name == "Relationship" => Some(relationship),
+            XMLNode::Element(relationship) if relationship.name == "Relationship" => {
+                Some(relationship)
+            }
             _ => None,
         })
-        .find(|relationship| relationship.attributes.get("Id").map(|id| id.as_str()) == Some(relationship_id))
+        .find(|relationship| {
+            relationship.attributes.get("Id").map(|id| id.as_str()) == Some(relationship_id)
+        })
         .and_then(|relationship| relationship.attributes.get("Target"))
         .cloned()
         .ok_or(XlsxRewriteError::MissingPart("worksheet target"))?;
@@ -1086,8 +1201,9 @@ fn find_first_non_empty_worksheet_path(workbook_bytes: &[u8]) -> Result<String, 
 }
 
 fn select_first_non_empty_sheet_name(workbook_bytes: &[u8]) -> Result<String, XlsxRewriteError> {
-    let mut workbook = calamine::open_workbook_from_rs::<calamine::Xlsx<_>, _>(Cursor::new(workbook_bytes))
-        .map_err(|_| XlsxRewriteError::MissingPart("readable worksheet"))?;
+    let mut workbook =
+        calamine::open_workbook_from_rs::<calamine::Xlsx<_>, _>(Cursor::new(workbook_bytes))
+            .map_err(|_| XlsxRewriteError::MissingPart("readable worksheet"))?;
     let sheet_names = workbook.sheet_names().to_owned();
     let mut selected_sheet_name = sheet_names
         .first()
@@ -1133,12 +1249,17 @@ fn rewrite_sheet_xml(
         .ok_or(XlsxRewriteError::MissingPart("sheetData"))?;
 
     for (row_index, (original_row, rewritten_row)) in std::iter::once((original_headers, headers))
-        .chain(original_rows.iter().zip(rows.iter()).map(|(original, rewritten)| {
-            (original.as_slice(), rewritten.as_slice())
-        }))
+        .chain(
+            original_rows
+                .iter()
+                .zip(rows.iter())
+                .map(|(original, rewritten)| (original.as_slice(), rewritten.as_slice())),
+        )
         .enumerate()
     {
-        for (column_index, (original_value, rewritten_value)) in original_row.iter().zip(rewritten_row.iter()).enumerate() {
+        for (column_index, (original_value, rewritten_value)) in
+            original_row.iter().zip(rewritten_row.iter()).enumerate()
+        {
             if original_value == rewritten_value {
                 continue;
             }
@@ -1152,7 +1273,12 @@ fn rewrite_sheet_xml(
     Ok(rewritten)
 }
 
-fn upsert_inline_string_cell(sheet_data: &mut Element, row_number: usize, reference: &str, value: &str) {
+fn upsert_inline_string_cell(
+    sheet_data: &mut Element,
+    row_number: usize,
+    reference: &str,
+    value: &str,
+) {
     let row = get_or_create_row(sheet_data, row_number);
     let cell = get_or_create_cell(row, reference);
     cell.attributes.insert("r".into(), reference.into());

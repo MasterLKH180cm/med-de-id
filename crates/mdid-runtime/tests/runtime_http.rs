@@ -214,17 +214,28 @@ async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary
     let rewritten_workbook = STANDARD
         .decode(json["rewritten_workbook_base64"].as_str().unwrap())
         .unwrap();
-    let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(&rewritten_workbook)).unwrap();
+    let mut workbook =
+        open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(&rewritten_workbook)).unwrap();
     assert_eq!(
         workbook.sheet_names(),
-        vec!["Cover".to_string(), "Patients".to_string(), "Notes".to_string()]
+        vec![
+            "Cover".to_string(),
+            "Patients".to_string(),
+            "Notes".to_string()
+        ]
     );
 
     let notes_rows = worksheet_rows(workbook.worksheet_range("Notes").unwrap());
-    assert_eq!(notes_rows, vec![vec!["status".to_string()], vec!["keep me".to_string()]]);
+    assert_eq!(
+        notes_rows,
+        vec![vec!["status".to_string()], vec!["keep me".to_string()]]
+    );
 
     let patient_rows = worksheet_rows(workbook.worksheet_range("Patients").unwrap());
-    assert_eq!(patient_rows[0], vec!["patient_id".to_string(), "patient_name".to_string()]);
+    assert_eq!(
+        patient_rows[0],
+        vec!["patient_id".to_string(), "patient_name".to_string()]
+    );
     assert_eq!(patient_rows.len(), 3);
     assert_eq!(patient_rows[1], patient_rows[2]);
     assert!(patient_rows[1][0].starts_with("tok-"));
@@ -236,7 +247,11 @@ async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary
         .expect("rewritten workbook should remain parseable");
 
     assert_eq!(
-        extracted.columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
+        extracted
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["patient_id", "patient_name"]
     );
     assert_eq!(extracted.rows.len(), 2);
@@ -258,7 +273,10 @@ async fn tabular_xlsx_deidentify_endpoint_preserves_selected_sheet_fidelity() {
     let workbook = workbook_with_selected_sheet_extras();
     let original_notes_xml = read_workbook_entry(&workbook, "xl/worksheets/sheet3.xml");
     let original_patients_xml = read_workbook_entry(&workbook, "xl/worksheets/sheet2.xml");
-    assert!(original_patients_xml.contains("<v>42</v>"), "{original_patients_xml}");
+    assert!(
+        original_patients_xml.contains("<v>42</v>"),
+        "{original_patients_xml}"
+    );
 
     let request = json!({
         "workbook_base64": STANDARD.encode(&workbook),
@@ -303,7 +321,8 @@ async fn tabular_xlsx_deidentify_endpoint_preserves_selected_sheet_fidelity() {
     let notes_xml = read_workbook_entry(&rewritten_workbook, "xl/worksheets/sheet3.xml");
     assert_eq!(notes_xml, original_notes_xml);
 
-    let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(&rewritten_workbook)).unwrap();
+    let mut workbook =
+        open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(&rewritten_workbook)).unwrap();
     let patient_rows = worksheet_rows(workbook.worksheet_range("Patients").unwrap());
     assert_eq!(patient_rows[1][2], "42");
     assert_eq!(patient_rows[4][3], "50");
@@ -334,7 +353,9 @@ async fn tabular_xlsx_deidentify_endpoint_rejects_invalid_payloads() {
                 .method("POST")
                 .uri("/tabular/deidentify/xlsx")
                 .header("content-type", "application/json")
-                .body(Body::from(json!({"workbook_base64": SAMPLE_XLSX_WORKBOOK_BASE64}).to_string()))
+                .body(Body::from(
+                    json!({"workbook_base64": SAMPLE_XLSX_WORKBOOK_BASE64}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -426,7 +447,10 @@ async fn conservative_media_deidentify_endpoint_routes_image_metadata_to_review(
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
     assert_eq!(json["review_queue"][0]["format"], "image");
     assert_eq!(json["review_queue"][0]["phi_type"], "metadata_identifier");
-    assert_eq!(json["review_queue"][0]["status"], "ocr_or_visual_review_required");
+    assert_eq!(
+        json["review_queue"][0]["status"],
+        "ocr_or_visual_review_required"
+    );
     assert_eq!(json["rewritten_media_bytes_base64"], Value::Null);
 }
 
@@ -495,6 +519,124 @@ async fn conservative_media_deidentify_endpoint_rejects_blank_artifact_label() {
     assert!(json.get("summary").is_none());
     assert!(json.get("review_queue").is_none());
     assert!(json.get("rewritten_media_bytes_base64").is_none());
+}
+
+#[tokio::test]
+async fn pdf_deidentify_endpoint_routes_text_layer_candidates_to_review_without_rewrite() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "pdf_bytes_base64": STANDARD.encode(include_bytes!("../../mdid-adapters/tests/fixtures/pdf/text-layer-minimal.pdf")),
+        "source_name": "Alice Smith MRN-001 intake.pdf"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/pdf/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["summary"]["total_pages"], 1);
+    assert_eq!(json["summary"]["text_layer_pages"], 1);
+    assert_eq!(json["summary"]["ocr_required_pages"], 0);
+    assert_eq!(json["summary"]["extracted_candidates"], 1);
+    assert_eq!(json["summary"]["review_required_candidates"], 1);
+    assert_eq!(json["page_statuses"].as_array().unwrap().len(), 1);
+    assert_eq!(json["page_statuses"][0]["status"], "text_layer_present");
+    assert_eq!(json["review_queue"].as_array().unwrap().len(), 1);
+    assert_eq!(json["review_queue"][0]["phi_type"], "extracted_text");
+    assert_eq!(json["review_queue"][0]["decision"], "needs_review");
+    assert_eq!(json["rewritten_pdf_bytes_base64"], Value::Null);
+}
+
+#[tokio::test]
+async fn pdf_deidentify_endpoint_reports_ocr_required_without_fabricating_candidates() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "pdf_bytes_base64": STANDARD.encode(include_bytes!("../../mdid-adapters/tests/fixtures/pdf/no-text-minimal.pdf")),
+        "source_name": "scan needing OCR.pdf"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/pdf/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["summary"]["total_pages"], 1);
+    assert_eq!(json["summary"]["text_layer_pages"], 0);
+    assert_eq!(json["summary"]["ocr_required_pages"], 1);
+    assert_eq!(json["summary"]["extracted_candidates"], 0);
+    assert_eq!(json["summary"]["review_required_candidates"], 0);
+    assert_eq!(json["page_statuses"].as_array().unwrap().len(), 1);
+    assert_eq!(json["page_statuses"][0]["status"], "ocr_required");
+    assert!(json["review_queue"].as_array().unwrap().is_empty());
+    assert_eq!(json["rewritten_pdf_bytes_base64"], Value::Null);
+}
+
+#[tokio::test]
+async fn pdf_deidentify_endpoint_rejects_invalid_pdf_bytes() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "pdf_bytes_base64": STANDARD.encode(b"not-a-pdf-payload"),
+        "source_name": "broken.pdf"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/pdf/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_pdf_response(response).await;
+}
+
+#[tokio::test]
+async fn pdf_deidentify_endpoint_rejects_malformed_base64_payload() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "pdf_bytes_base64": "%%%not-base64%%%",
+        "source_name": "broken.pdf"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/pdf/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_invalid_pdf_response(response).await;
 }
 
 #[tokio::test]
@@ -955,7 +1097,10 @@ async fn audit_events_endpoint_returns_filtered_events_in_reverse_chronological_
 
     assert_eq!(events[1]["kind"], "decode");
     assert_eq!(events[1]["actor"], "desktop");
-    assert!(events[1]["detail"].as_str().unwrap().contains("incident review"));
+    assert!(events[1]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("incident review"));
     assert!(events[1]["recorded_at"].as_str().is_some());
 
     let first_timestamp = events[0]["recorded_at"].as_str().unwrap();
@@ -1178,7 +1323,10 @@ async fn vault_export_endpoint_returns_portable_artifact_and_records_audit_event
 
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    let artifact_json = json.get("artifact").cloned().expect("artifact should be present");
+    let artifact_json = json
+        .get("artifact")
+        .cloned()
+        .expect("artifact should be present");
     assert!(json.get("audit_event").is_none());
 
     let artifact: PortableVaultArtifact = serde_json::from_value(artifact_json).unwrap();
@@ -1187,14 +1335,21 @@ async fn vault_export_endpoint_returns_portable_artifact_and_records_audit_event
     assert_eq!(snapshot.records[0].id, kept.id);
     assert_eq!(snapshot.records[0].original_value, "Alice Smith");
     assert_eq!(snapshot.records[0].token, kept.token);
-    assert!(snapshot.records.iter().all(|record| record.id != omitted.id));
+    assert!(snapshot
+        .records
+        .iter()
+        .all(|record| record.id != omitted.id));
 
     let reopened = LocalVaultStore::unlock(&vault_path, "correct horse battery staple").unwrap();
     let audit_events = reopened.audit_events();
-    let export_event = audit_events.last().expect("export event should be recorded");
+    let export_event = audit_events
+        .last()
+        .expect("export event should be recorded");
     assert_eq!(export_event.kind.as_str(), "export");
     assert_eq!(export_event.actor, SurfaceKind::Desktop);
-    assert!(export_event.detail.contains("partner-site transfer package"));
+    assert!(export_event
+        .detail
+        .contains("partner-site transfer package"));
     assert!(export_event.detail.contains("1 record"));
     assert!(export_event.detail.contains(&kept.id.to_string()));
     assert!(!export_event.detail.contains(&omitted.id.to_string()));
@@ -1499,7 +1654,11 @@ async fn portable_artifact_inspect_endpoint_returns_bounded_snapshot_summary() {
     assert_eq!(records[0]["token"], first.token);
     assert_eq!(records[0]["original_value"], first.original_value);
     assert_eq!(
-        records[0]["created_at"].as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
+        records[0]["created_at"]
+            .as_str()
+            .unwrap()
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap(),
         first.created_at
     );
     assert_eq!(records[1]["id"], second.id.to_string());
@@ -1508,7 +1667,11 @@ async fn portable_artifact_inspect_endpoint_returns_bounded_snapshot_summary() {
     assert_eq!(records[1]["token"], second.token);
     assert_eq!(records[1]["original_value"], second.original_value);
     assert_eq!(
-        records[1]["created_at"].as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
+        records[1]["created_at"]
+            .as_str()
+            .unwrap()
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap(),
         second.created_at
     );
     assert!(records[0].get("audit_events").is_none());
@@ -1714,9 +1877,12 @@ async fn portable_artifact_import_endpoint_returns_bounded_import_summary_and_au
     assert!(json.get("artifact").is_none());
     assert!(json.get("records").is_none());
 
-    let mut unlocked = LocalVaultStore::unlock(&import_vault_path, "correct horse battery staple").unwrap();
+    let mut unlocked =
+        LocalVaultStore::unlock(&import_vault_path, "correct horse battery staple").unwrap();
     let audit_events = unlocked.audit_events();
-    assert!(audit_events.iter().any(|event| event.kind == mdid_domain::AuditEventKind::Import));
+    assert!(audit_events
+        .iter()
+        .any(|event| event.kind == mdid_domain::AuditEventKind::Import));
     assert_eq!(
         unlocked
             .decode(
@@ -2031,8 +2197,14 @@ fn workbook_with_selected_sheet_extras() -> Vec<u8> {
         let sheet_data = worksheet.get_mut_child("sheetData").unwrap();
 
         let row_two = find_row_mut(sheet_data, 2).unwrap();
-        row_two.children.push(XMLNode::Element(number_cell("C2", "42", Some("0"))));
-        row_two.children.push(XMLNode::Element(inline_string_cell("D2", "status note", None)));
+        row_two
+            .children
+            .push(XMLNode::Element(number_cell("C2", "42", Some("0"))));
+        row_two.children.push(XMLNode::Element(inline_string_cell(
+            "D2",
+            "status note",
+            None,
+        )));
 
         let mut row_five = Element::new("row");
         row_five.attributes.insert("r".into(), "5".into());
@@ -2121,7 +2293,11 @@ fn find_row_mut(sheet_data: &mut Element, row_number: u32) -> Option<&mut Elemen
     sheet_data.children.iter_mut().find_map(|node| match node {
         XMLNode::Element(row)
             if row.name == "row"
-                && row.attributes.get("r").and_then(|value| value.parse::<u32>().ok()) == Some(row_number) =>
+                && row
+                    .attributes
+                    .get("r")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    == Some(row_number) =>
         {
             Some(row)
         }
@@ -2240,6 +2416,19 @@ async fn assert_invalid_dicom_response(response: axum::response::Response) {
     );
     assert!(json.get("rewritten_dicom_bytes_base64").is_none());
     assert!(json.get("summary").is_none());
+    assert!(json.get("review_queue").is_none());
+}
+
+async fn assert_invalid_pdf_response(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["error"]["code"], "invalid_pdf");
+    assert!(json.get("rewritten_pdf_bytes_base64").is_none());
+    assert!(json.get("summary").is_none());
+    assert!(json.get("page_statuses").is_none());
     assert!(json.get("review_queue").is_none());
 }
 
