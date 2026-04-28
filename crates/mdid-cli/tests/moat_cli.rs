@@ -33,7 +33,9 @@ fn moat_controller_plan_text_exports_multiple_ready_packets_read_only() {
     assert!(stdout.contains("controller_plan_packets=2"));
     assert!(stdout.contains("work_packet=market_scan|planner|market_scan|ready"));
     assert!(stdout.contains("work_packet=competitor_analysis|planner|competitor_analysis|ready"));
-    assert!(stdout.contains("complete_command=mdid-cli moat complete-task"));
+    assert!(stdout.contains("acceptance_criteria=Read-only controller packet export only"));
+    assert!(!stdout.contains("complete_command"));
+    assert!(!stdout.contains("complete-task"));
 
     let after = fs::read_to_string(&history_path).expect("failed to read history after command");
     assert_eq!(after, before, "controller-plan text mutated history");
@@ -70,12 +72,19 @@ fn moat_controller_plan_json_exports_multiple_ready_packets_read_only() {
     assert_eq!(json["read_only"], true);
     assert_eq!(json["packet_count"], 2);
     assert_eq!(json["packets"][0]["node_id"], "market_scan");
-    assert!(json["packets"][0]["complete_command"]
-        .as_str()
-        .expect("complete command string")
-        .contains("complete-task"));
+    assert!(json["packets"][0].get("complete_command").is_none());
+    assert_eq!(
+        json["packets"][0]["acceptance_criteria"],
+        json!(["Read-only controller packet export only; do not mutate moat history or advertise write-side completion commands."])
+    );
     assert_eq!(json["constraints"]["local_only"], true);
     assert_eq!(json["constraints"]["read_only"], true);
+    assert_eq!(json["constraints"]["no_code_writes"], true);
+    assert_eq!(json["constraints"]["no_artifact_writes"], true);
+
+    let serialized = json.to_string();
+    assert!(!serialized.contains("complete_command"));
+    assert!(!serialized.contains("complete-task"));
 
     let after = fs::read_to_string(&history_path).expect("failed to read history after command");
     assert_eq!(after, before, "controller-plan json mutated history");

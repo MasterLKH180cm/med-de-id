@@ -323,8 +323,7 @@ fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), S
     }
 
     let acceptance = [
-        "Use SDD and TDD before completing this task.",
-        "Record artifact handoff with moat complete-task when work is complete.",
+        "Read-only controller packet export only; do not mutate moat history or advertise write-side completion commands.",
     ];
 
     match command.format {
@@ -332,7 +331,7 @@ fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), S
             println!("controller_plan_packets={}", packets.len());
             for packet in packets {
                 println!(
-                    "work_packet={}|{}|{}|{}, title={}, dependencies={}, acceptance_criteria={}, complete_command={}",
+                    "work_packet={}|{}|{}|{}, title={}, dependencies={}, acceptance_criteria={}",
                     packet.node_id,
                     packet.role,
                     packet.kind,
@@ -340,7 +339,6 @@ fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), S
                     packet.title,
                     format_dependencies(&packet.dependencies),
                     acceptance.join("; "),
-                    format_complete_command(&command.history_path, &round_id, &packet.node_id),
                 );
             }
         }
@@ -357,7 +355,6 @@ fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), S
                         "dependencies": packet.dependencies,
                         "spec_ref": packet.spec_ref,
                         "acceptance_criteria": acceptance,
-                        "complete_command": format_complete_command(&command.history_path, &round_id, &packet.node_id),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -484,12 +481,6 @@ fn format_dependencies(dependencies: &[String]) -> String {
     } else {
         dependencies.join(",")
     }
-}
-
-fn format_complete_command(history_path: &str, round_id: &str, node_id: &str) -> String {
-    format!(
-        "mdid-cli moat complete-task --history-path {history_path} --round-id {round_id} --node-id {node_id}"
-    )
 }
 
 fn exit_with_usage(error: &str) -> ! {
