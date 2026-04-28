@@ -199,6 +199,9 @@ pub struct DesktopRuntimeClient {
     port: u16,
 }
 
+const INVALID_DESKTOP_RUNTIME_ROUTE_MESSAGE: &str =
+    "desktop runtime route is not one of the approved local workstation routes";
+
 impl DesktopRuntimeClient {
     pub fn new(host: impl Into<String>, port: u16) -> Result<Self, DesktopRuntimeSubmitError> {
         let host = host.into();
@@ -220,6 +223,8 @@ impl DesktopRuntimeClient {
         &self,
         request: &DesktopWorkflowRequest,
     ) -> Result<String, DesktopRuntimeSubmitError> {
+        Self::validate_runtime_route(request.route)?;
+
         let body = serde_json::to_string(&request.body)
             .map_err(|error| DesktopRuntimeSubmitError::InvalidJson(error.to_string()))?;
 
@@ -231,6 +236,19 @@ impl DesktopRuntimeClient {
             body.len(),
             body
         ))
+    }
+
+    fn validate_runtime_route(route: &str) -> Result<(), DesktopRuntimeSubmitError> {
+        let approved = DesktopWorkflowMode::ALL
+            .iter()
+            .any(|mode| route == mode.route());
+        if !route.starts_with('/') || route.contains(['\r', '\n']) || !approved {
+            return Err(DesktopRuntimeSubmitError::InvalidEndpoint(
+                INVALID_DESKTOP_RUNTIME_ROUTE_MESSAGE.to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     pub fn submit(
@@ -576,6 +594,46 @@ mod tests {
                 .find(|line| line.starts_with("Content-Length: "))
                 .expect("content length header"),
             format!("Content-Length: {}", body.len())
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_client_rejects_unapproved_route() {
+        let request = DesktopWorkflowRequest {
+            route: "/not-approved",
+            body: serde_json::json!({}),
+        };
+        let error = DesktopRuntimeClient::new("127.0.0.1", 8787)
+            .expect("valid local client")
+            .build_http_request(&request)
+            .expect_err("unapproved route rejected");
+
+        assert_eq!(
+            error,
+            DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime route is not one of the approved local workstation routes"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_client_rejects_route_header_injection() {
+        let request = DesktopWorkflowRequest {
+            route: "/tabular/deidentify\r\nX-Bad: yes",
+            body: serde_json::json!({}),
+        };
+        let error = DesktopRuntimeClient::new("127.0.0.1", 8787)
+            .expect("valid local client")
+            .build_http_request(&request)
+            .expect_err("CRLF route rejected");
+
+        assert_eq!(
+            error,
+            DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime route is not one of the approved local workstation routes"
+                    .to_string()
+            )
         );
     }
 
