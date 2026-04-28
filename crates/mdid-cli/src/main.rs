@@ -4,7 +4,10 @@ use mdid_adapters::{CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabul
 use mdid_application::{
     DicomDeidentificationService, PdfDeidentificationService, TabularDeidentificationService,
 };
-use mdid_domain::{BatchSummary, DicomPrivateTagPolicy, PdfPageRef, PdfScanStatus, SurfaceKind};
+use mdid_domain::{
+    AuditEvent, AuditEventKind, BatchSummary, DicomPrivateTagPolicy, PdfPageRef, PdfScanStatus,
+    SurfaceKind,
+};
 use mdid_vault::LocalVaultStore;
 use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,7 @@ enum CliCommand {
     DeidentifyXlsx(DeidentifyXlsxArgs),
     DeidentifyDicom(DeidentifyDicomArgs),
     DeidentifyPdf(DeidentifyPdfArgs),
+    VaultAudit(VaultAuditArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -62,6 +66,13 @@ struct DeidentifyPdfArgs {
     report_path: PathBuf,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct VaultAuditArgs {
+    vault_path: PathBuf,
+    passphrase: String,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 struct PolicyRequest {
     header: String,
@@ -92,6 +103,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "deidentify-pdf" => {
             parse_deidentify_pdf_args(rest).map(CliCommand::DeidentifyPdf)
+        }
+        [command, rest @ ..] if command == "vault-audit" => {
+            parse_vault_audit_args(rest).map(CliCommand::VaultAudit)
         }
         _ => Err("unknown command".to_string()),
     }
@@ -229,6 +243,41 @@ fn parse_deidentify_pdf_args(args: &[String]) -> Result<DeidentifyPdfArgs, Strin
     })
 }
 
+fn parse_vault_audit_args(args: &[String]) -> Result<VaultAuditArgs, String> {
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut limit = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--limit" => {
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid --limit".to_string())?;
+                if parsed == 0 {
+                    return Err("invalid --limit".to_string());
+                }
+                limit = Some(parsed);
+            }
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(VaultAuditArgs {
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        limit,
+    })
+}
+
 fn run_command(command: CliCommand) -> Result<(), String> {
     match command {
         CliCommand::Status => {
@@ -239,6 +288,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::DeidentifyXlsx(args) => run_deidentify_xlsx(args),
         CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
         CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
+        CliCommand::VaultAudit(args) => run_vault_audit(args),
     }
 }
 
@@ -288,6 +338,60 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         serde_json::to_string(&stdout).map_err(|err| format!("failed to render summary: {err}"))?
     );
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct VaultAuditReport {
+    event_count: usize,
+    returned_event_count: usize,
+    events: Vec<VaultAuditEventReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct VaultAuditEventReport {
+    id: String,
+    kind: String,
+    actor: SurfaceKind,
+    detail: String,
+    recorded_at: String,
+}
+
+fn run_vault_audit(args: VaultAuditArgs) -> Result<(), String> {
+    let vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+        .map_err(|err| format!("failed to open vault: {err}"))?;
+    let report = build_vault_audit_report(vault.audit_events(), args.limit);
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|err| format!("failed to render audit report: {err}"))?
+    );
+    Ok(())
+}
+
+fn build_vault_audit_report(events: &[AuditEvent], limit: Option<usize>) -> VaultAuditReport {
+    let event_count = events.len();
+    let selected = events.iter().rev().take(limit.unwrap_or(event_count));
+    let events = selected
+        .map(|event| VaultAuditEventReport {
+            id: event.id.to_string(),
+            kind: format!("{:?}", event.kind),
+            actor: event.actor.clone(),
+            detail: sanitized_audit_detail(event),
+            recorded_at: event.recorded_at.to_rfc3339(),
+        })
+        .collect::<Vec<_>>();
+    VaultAuditReport {
+        event_count,
+        returned_event_count: events.len(),
+        events,
+    }
+}
+
+fn sanitized_audit_detail(event: &AuditEvent) -> String {
+    match event.kind {
+        AuditEventKind::Encode => "encoded mapping".to_string(),
+        _ => event.detail.clone(),
+    }
 }
 
 fn parse_private_tag_policy(policy: &str) -> Result<DicomPrivateTagPolicy, String> {
@@ -454,7 +558,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export."
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only."
 }
 
 #[cfg(test)]
@@ -538,6 +642,63 @@ mod tests {
                     source_name: "scan.pdf".to_string(),
                     report_path: PathBuf::from("report.json"),
                 }))
+        );
+    }
+
+    #[test]
+    fn parses_vault_audit_command_without_requiring_debug() {
+        let args = vec![
+            "vault-audit".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--limit".to_string(),
+            "10".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultAudit(VaultAuditArgs {
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    limit: Some(10),
+                }))
+        );
+    }
+
+    #[test]
+    fn vault_audit_report_limits_events_without_exposing_phi_values() {
+        let events: Vec<mdid_domain::AuditEvent> = serde_json::from_value(json!([
+            {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "kind": "encode",
+                "actor": "cli",
+                "detail": "encoded mapping row:1:patient_name containing Alice Example",
+                "recorded_at": "2026-04-29T00:00:00Z"
+            },
+            {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "kind": "decode",
+                "actor": "desktop",
+                "detail": "decode to screen because break-glass decoded 1 record record_ids=[abc]",
+                "recorded_at": "2026-04-29T01:00:00Z"
+            }
+        ]))
+        .unwrap();
+
+        let report = build_vault_audit_report(&events, Some(1));
+        let rendered = serde_json::to_string(&report).unwrap();
+
+        assert!(rendered.contains("event_count"));
+        assert!(rendered.contains("returned_event_count"));
+        assert!(rendered.contains("Decode"));
+        assert!(!rendered.contains("Alice Example"));
+        assert_eq!(report.event_count, 2);
+        assert_eq!(report.returned_event_count, 1);
+        assert_eq!(
+            report.events[0].detail,
+            "decode to screen because break-glass decoded 1 record record_ids=[abc]"
         );
     }
 
