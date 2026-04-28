@@ -3122,11 +3122,15 @@ name = "mdid-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "mdid-adapters",
  "mdid-application",
  "mdid-domain",
  "mdid-runtime",
+ "mdid-vault",
  "predicates",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
