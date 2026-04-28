@@ -152,6 +152,195 @@ fn moat_controller_plan_reports_unknown_round_id() {
 }
 
 #[test]
+fn moat_controller_plan_filters_ready_packets_across_controller_flags() {
+    let history_path = unique_history_path("controller-plan-filter-flags");
+    write_history_fixture(&history_path);
+
+    assert_packet_node_ids(
+        &history_path,
+        &["--role", "planner"],
+        &["market_scan", "competitor_analysis"],
+    );
+    assert_packet_node_ids(&history_path, &["--kind", "market_scan"], &["market_scan"]);
+    assert_packet_node_ids(
+        &history_path,
+        &["--node-id", "competitor_analysis"],
+        &["competitor_analysis"],
+    );
+    assert_packet_node_ids(
+        &history_path,
+        &["--no-dependencies"],
+        &["market_scan", "competitor_analysis"],
+    );
+    assert_packet_node_ids(
+        &history_path,
+        &["--title-contains", "incumbent clinic"],
+        &["competitor_analysis"],
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_controller_plan_filters_requires_artifacts_and_spec_ref() {
+    let history_path = unique_history_path("controller-plan-artifacts-spec-ref");
+    write_history_fixture_with_value(
+        &history_path,
+        json!({
+            "entries": [
+                {
+                    "report": {
+                        "summary": { "round_id": "round-123" },
+                        "control_plane": {
+                            "task_graph": {
+                                "nodes": [
+                                    {
+                                        "node_id": "market_scan",
+                                        "title": "Map the local workflow moat",
+                                        "role": "planner",
+                                        "kind": "market_scan",
+                                        "state": "ready",
+                                        "spec_ref": null,
+                                        "depends_on": [],
+                                        "artifacts": [{ "path": "reports/market-scan.md" }]
+                                    },
+                                    {
+                                        "node_id": "competitor_analysis",
+                                        "title": "Profile incumbent clinic alternatives",
+                                        "role": "planner",
+                                        "kind": "competitor_analysis",
+                                        "state": "ready",
+                                        "spec_ref": null,
+                                        "depends_on": []
+                                    },
+                                    {
+                                        "node_id": "artifact_ready_implementation",
+                                        "title": "Implement the selected moat slice",
+                                        "role": "coder",
+                                        "kind": "implementation",
+                                        "state": "ready",
+                                        "spec_ref": "moat-spec/workflow-audit",
+                                        "depends_on": ["market_scan"]
+                                    },
+                                    {
+                                        "node_id": "artifact_missing_implementation",
+                                        "title": "Implement the backup moat slice",
+                                        "role": "coder",
+                                        "kind": "implementation",
+                                        "state": "ready",
+                                        "spec_ref": "moat-spec/backup",
+                                        "depends_on": ["competitor_analysis"]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
+        }),
+    );
+
+    assert_packet_node_ids(
+        &history_path,
+        &["--requires-artifacts"],
+        &[
+            "market_scan",
+            "competitor_analysis",
+            "artifact_ready_implementation",
+        ],
+    );
+    assert_packet_node_ids(
+        &history_path,
+        &["--spec-ref", "moat-spec/workflow-audit"],
+        &["artifact_ready_implementation"],
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_controller_plan_rejects_invalid_format_limit_duplicate_and_unknown_flags() {
+    let history_path = unique_history_path("controller-plan-invalid-flags");
+    write_history_fixture(&history_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-plan",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--format",
+            "yaml",
+        ])
+        .output()
+        .expect("failed to run moat controller-plan");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("unknown moat controller-plan format: yaml"),
+        "stderr missing invalid format text: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_stderr_contains(
+        &history_path,
+        &["--limit", "abc"],
+        "invalid moat controller-plan --limit: abc",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &["--role", "planner", "--role", "coder"],
+        "duplicate moat controller-plan --role",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &["--kind", "market_scan", "--kind", "implementation"],
+        "duplicate moat controller-plan --kind",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &[
+            "--node-id",
+            "market_scan",
+            "--node-id",
+            "competitor_analysis",
+        ],
+        "duplicate moat controller-plan --node-id",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &["--no-dependencies", "--no-dependencies"],
+        "duplicate moat controller-plan --no-dependencies",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &["--requires-artifacts", "--requires-artifacts"],
+        "duplicate moat controller-plan --requires-artifacts",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &["--title-contains", "workflow", "--title-contains", "clinic"],
+        "duplicate moat controller-plan --title-contains",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &[
+            "--spec-ref",
+            "moat-spec/workflow-audit",
+            "--spec-ref",
+            "moat-spec/backup",
+        ],
+        "duplicate moat controller-plan --spec-ref",
+    );
+    assert_stderr_contains(
+        &history_path,
+        &["--mystery-flag"],
+        "unknown option for moat controller-plan: --mystery-flag",
+    );
+
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn moat_controller_plan_rejects_malformed_node_data() {
     let history_path = unique_history_path("controller-plan-malformed-node");
     write_history_fixture_with_value(
@@ -268,4 +457,63 @@ fn unique_history_path(label: &str) -> PathBuf {
 
 fn cleanup_history_path(path: &PathBuf) {
     let _ = fs::remove_file(path);
+}
+
+fn assert_packet_node_ids(history_path: &PathBuf, extra_args: &[&str], expected_node_ids: &[&str]) {
+    let mut args = vec!["--format", "json"];
+    args.extend_from_slice(extra_args);
+    let output = run_controller_plan(history_path, &args);
+    assert!(
+        output.status.success(),
+        "controller-plan filter command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("controller-plan stdout json");
+    let actual_node_ids = json["packets"]
+        .as_array()
+        .expect("packets array")
+        .iter()
+        .map(|packet| {
+            packet["node_id"]
+                .as_str()
+                .expect("packet node id")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    let expected_node_ids = expected_node_ids
+        .iter()
+        .map(|node_id| node_id.to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(actual_node_ids, expected_node_ids);
+    assert_eq!(json["packet_count"], expected_node_ids.len());
+}
+
+fn assert_stderr_contains(history_path: &PathBuf, extra_args: &[&str], expected: &str) {
+    let output = run_controller_plan(history_path, extra_args);
+    assert!(
+        !output.status.success(),
+        "controller-plan unexpectedly succeeded"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(expected),
+        "stderr missing expected text `{expected}`: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_controller_plan(history_path: &PathBuf, extra_args: &[&str]) -> std::process::Output {
+    let mut args = vec![
+        "moat",
+        "controller-plan",
+        "--history-path",
+        history_path.to_str().expect("history path utf8"),
+    ];
+    args.extend_from_slice(extra_args);
+
+    Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args(args)
+        .output()
+        .expect("failed to run moat controller-plan")
 }
