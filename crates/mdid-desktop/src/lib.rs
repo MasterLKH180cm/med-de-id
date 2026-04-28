@@ -170,6 +170,12 @@ pub enum DesktopPortableMode {
 }
 
 impl DesktopPortableMode {
+    pub const ALL: [Self; 3] = [
+        Self::VaultExport,
+        Self::InspectArtifact,
+        Self::ImportArtifact,
+    ];
+
     pub fn route(self) -> &'static str {
         match self {
             Self::VaultExport => "/vault/export",
@@ -837,7 +843,10 @@ impl DesktopRuntimeClient {
     fn validate_runtime_route(route: &str) -> Result<(), DesktopRuntimeSubmitError> {
         let approved = DesktopWorkflowMode::ALL
             .iter()
-            .any(|mode| route == mode.route());
+            .any(|mode| route == mode.route())
+            || DesktopPortableMode::ALL
+                .iter()
+                .any(|mode| route == mode.route());
         if !route.starts_with('/') || route.contains(['\r', '\n']) || !approved {
             return Err(DesktopRuntimeSubmitError::InvalidEndpoint(
                 INVALID_DESKTOP_RUNTIME_ROUTE_MESSAGE.to_string(),
@@ -1800,6 +1809,40 @@ mod tests {
                 .expect("content length header"),
             format!("Content-Length: {}", body.len())
         );
+    }
+
+    #[test]
+    fn desktop_runtime_client_accepts_portable_inspect_request_envelope() {
+        let mut state = DesktopPortableRequestState::default();
+        state.mode = DesktopPortableMode::InspectArtifact;
+        state.artifact_json = "{\"version\":1}".to_string();
+        state.portable_passphrase = "portable-secret".to_string();
+        let request = state.try_build_request().expect("valid portable request");
+
+        let http = DesktopRuntimeClient::new("127.0.0.1", 8787)
+            .expect("valid local client")
+            .build_http_request(&request)
+            .expect("portable inspect route accepted");
+
+        assert!(http.starts_with("POST /portable-artifacts/inspect HTTP/1.1\r\n"));
+        let body = http
+            .split_once("\r\n\r\n")
+            .expect("HTTP request has header/body separator")
+            .1;
+        let body_json: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+        assert_eq!(body_json, request.body);
+    }
+
+    #[test]
+    fn desktop_runtime_route_validation_accepts_portable_routes() {
+        for mode in [
+            DesktopPortableMode::VaultExport,
+            DesktopPortableMode::InspectArtifact,
+            DesktopPortableMode::ImportArtifact,
+        ] {
+            DesktopRuntimeClient::validate_runtime_route(mode.route())
+                .expect("portable route is approved for desktop runtime client");
+        }
     }
 
     #[test]
