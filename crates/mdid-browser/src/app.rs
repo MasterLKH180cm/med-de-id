@@ -458,11 +458,18 @@ struct DicomRuntimeSummary {
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 struct DicomReviewCandidate {
-    tag: String,
+    tag: DicomTagRef,
     phi_type: String,
     #[allow(dead_code)]
     value: String,
     decision: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct DicomTagRef {
+    group: u16,
+    element: u16,
+    keyword: String,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -727,8 +734,12 @@ fn format_dicom_review_queue(review_queue: &[DicomReviewCandidate]) -> String {
         .iter()
         .map(|candidate| {
             format!(
-                "- tag {} / {} / {} / value: <redacted>",
-                candidate.tag, candidate.phi_type, candidate.decision
+                "- tag ({:04X},{:04X}) {} / {} / {} / value: <redacted>",
+                candidate.tag.group,
+                candidate.tag.element,
+                candidate.tag.keyword,
+                candidate.phi_type,
+                candidate.decision
             )
         })
         .collect::<Vec<_>>()
@@ -1348,7 +1359,7 @@ mod tests {
                 "burned_in_suspicions": 1
             },
             "review_queue": [
-                {"tag": "(0010,0010)", "phi_type": "patient_name", "value": "Jane Patient", "decision": "needs_review"}
+                {"tag": {"group": 16, "element": 16, "keyword": "PatientName"}, "phi_type": "patient_name", "value": "Jane Patient", "decision": "Review"}
             ],
             "sanitized_file_name": "scan-deidentified.dcm",
             "rewritten_dicom_bytes_base64": "cmV3cml0dGVu"
@@ -1365,7 +1376,7 @@ mod tests {
         assert!(rendered.summary.contains("burned_in_suspicions: 1"));
         assert_eq!(
             rendered.review_queue,
-            "- tag (0010,0010) / patient_name / needs_review / value: <redacted>"
+            "- tag (0010,0010) PatientName / patient_name / Review / value: <redacted>"
         );
         assert!(!rendered.review_queue.contains("Jane Patient"));
         assert!(rendered.rewritten_output.contains("cmV3cml0dGVu"));
