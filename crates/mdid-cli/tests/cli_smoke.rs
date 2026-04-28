@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use mdid_adapters::XlsxTabularAdapter;
 use predicates::prelude::*;
 use rust_xlsxwriter::Workbook;
 use serde_json::Value;
@@ -167,10 +168,23 @@ fn cli_deidentify_xlsx_writes_rewritten_workbook_and_phi_safe_summary() {
         payload["output_path"],
         output_path.to_string_lossy().to_string()
     );
-    assert_eq!(payload["summary"]["processed_rows"], 1);
-    assert_eq!(payload["summary"]["review_items"], 1);
+    assert_eq!(payload["summary"]["total_rows"], 1);
+    assert_eq!(payload["summary"]["encoded_cells"], 1);
+    assert_eq!(payload["summary"]["review_required_cells"], 1);
+    assert!(payload["summary"].get("processed_rows").is_none());
+    assert!(payload["summary"].get("review_items").is_none());
     assert_eq!(payload["review_queue_len"], 1);
-    assert!(fs::metadata(output_path).unwrap().len() > 0);
+
+    let output_bytes = fs::read(&output_path).unwrap();
+    let extracted = XlsxTabularAdapter::new(Vec::new())
+        .extract(&output_bytes)
+        .unwrap();
+    assert_eq!(extracted.columns[0].name, "patient_name");
+    assert_eq!(extracted.columns[1].name, "note");
+    assert_eq!(extracted.rows.len(), 1);
+    assert!(extracted.rows[0][0].starts_with("tok-"));
+    assert!(!extracted.rows[0][0].contains("Alice Patient"));
+    assert_eq!(extracted.rows[0][1], "needs follow-up");
 }
 
 #[test]

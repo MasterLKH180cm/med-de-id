@@ -3122,11 +3122,9 @@ name = "mdid-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
- "base64",
  "mdid-adapters",
  "mdid-application",
  "mdid-domain",
- "mdid-runtime",
  "mdid-vault",
  "predicates",
  "rust_xlsxwriter",

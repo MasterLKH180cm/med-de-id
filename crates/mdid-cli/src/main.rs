@@ -1,6 +1,5 @@
 use std::{fs, path::PathBuf, process};
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use mdid_adapters::{CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter};
 use mdid_application::TabularDeidentificationService;
 use mdid_domain::{BatchSummary, SurfaceKind};
@@ -205,10 +204,6 @@ fn run_deidentify_xlsx(args: DeidentifyXlsxArgs) -> Result<(), String> {
 }
 
 fn render_xlsx_output(csv: &str) -> Result<Vec<u8>, String> {
-    if let Ok(bytes) = STANDARD.decode(csv) {
-        return Ok(bytes);
-    }
-
     let extracted = CsvTabularAdapter::new(Vec::new())
         .extract(csv.as_bytes())
         .map_err(|err| err.to_string())?;
@@ -253,14 +248,7 @@ fn print_summary(
 ) -> Result<(), String> {
     let payload = json!({
         "output_path": output_path,
-        "summary": {
-            "total_rows": summary.total_rows,
-            "processed_rows": summary.total_rows,
-            "encoded_cells": summary.encoded_cells,
-            "review_required_cells": summary.review_required_cells,
-            "review_items": summary.review_required_cells,
-            "failed_rows": summary.failed_rows,
-        },
+        "summary": summary,
         "review_queue_len": review_queue_len,
     });
     println!(

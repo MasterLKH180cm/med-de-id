@@ -2,19 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a bounded `mdid-cli deidentify-xlsx` command that rewrites a local XLSX workbook through the existing tabular adapter/application/vault path and prints only a PHI-safe summary.
+**Goal:** Add a bounded `mdid-cli deidentify-xlsx` command that extracts a local XLSX workbook through the existing tabular adapter/application/vault path, then writes a normalized single-sheet XLSX generated from the de-identified tabular rows and prints only a PHI-safe summary.
 
-**Architecture:** Keep the CLI thin and de-identification-only: parse local file paths and explicit field-policy JSON, read workbook bytes, use `XlsxTabularAdapter` for extraction, delegate to `TabularDeidentificationService::deidentify_extracted`, then write a rewritten workbook file. Do not add agent/controller/moat workflow semantics, runtime networking, auth/session, vault browsing, or generalized orchestration.
+**Architecture:** Keep the CLI thin and de-identification-only: parse local file paths and explicit field-policy JSON, read workbook bytes, use `XlsxTabularAdapter` for extraction, delegate to `TabularDeidentificationService::deidentify_extracted`, then render the returned CSV text into a bounded normalized single-sheet XLSX output. This CLI output is not workbook preservation: it does not preserve original workbook metadata, formatting, formulas, sheet names, or multiple sheets. Do not add agent/controller/moat workflow semantics, runtime networking, auth/session, vault browsing, or generalized orchestration.
 
-**Tech Stack:** Rust, `mdid-cli`, `mdid-adapters::XlsxTabularAdapter`, `mdid-application::TabularDeidentificationService`, `mdid-vault::LocalVaultStore`, `base64`, `rust_xlsxwriter` for tests.
+**Tech Stack:** Rust, `mdid-cli`, `mdid-adapters::XlsxTabularAdapter`, `mdid-application::TabularDeidentificationService`, `mdid-vault::LocalVaultStore`, `rust_xlsxwriter` for normalized XLSX rendering and tests.
 
 ---
 
 ## File Structure
 
-- Modify: `crates/mdid-cli/Cargo.toml` — add `base64` runtime dependency and `rust_xlsxwriter` dev-dependency for integration tests.
+- Modify: `crates/mdid-cli/Cargo.toml` — use `rust_xlsxwriter` for normalized XLSX rendering/tests; no `base64` or `mdid-runtime` dependency is needed by the CLI command.
 - Modify: `crates/mdid-cli/src/main.rs` — add `deidentify-xlsx` argument parsing, thin XLSX workflow, usage text, and parsing tests without sensitive `Debug` derives.
-- Modify: `crates/mdid-cli/tests/cli_smoke.rs` — add end-to-end CLI XLSX smoke tests covering rewrite, PHI-safe stdout, and malformed workbook rejection.
+- Modify: `crates/mdid-cli/tests/cli_smoke.rs` — add end-to-end CLI XLSX smoke tests covering normalized valid XLSX output, encoded/removed PHI in encoded cells, review cells remaining, PHI-safe stdout, summary shape, and malformed workbook rejection.
 - Modify: `README.md` — truth-sync CLI/browser/desktop/overall completion and missing items after landed verification.
 
 ## Task 1: Add bounded CLI XLSX de-identification command
@@ -77,6 +77,7 @@ Add helpers/tests to `crates/mdid-cli/tests/cli_smoke.rs`:
 
 ```rust
 use assert_cmd::Command;
+use mdid_adapters::XlsxTabularAdapter;
 use predicates::prelude::*;
 use rust_xlsxwriter::Workbook;
 use serde_json::Value;
@@ -127,10 +128,18 @@ fn cli_deidentify_xlsx_writes_rewritten_workbook_and_phi_safe_summary() {
     assert!(output_path.exists());
     let payload: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(payload["output_path"], output_path.to_string_lossy().to_string());
-    assert_eq!(payload["summary"]["processed_rows"], 1);
-    assert_eq!(payload["summary"]["review_items"], 1);
+    assert_eq!(payload["summary"]["total_rows"], 1);
+    assert_eq!(payload["summary"]["encoded_cells"], 1);
+    assert_eq!(payload["summary"]["review_required_cells"], 1);
+    assert!(payload["summary"].get("processed_rows").is_none());
+    assert!(payload["summary"].get("review_items").is_none());
     assert_eq!(payload["review_queue_len"], 1);
-    assert!(fs::metadata(output_path).unwrap().len() > 0);
+
+    let output_bytes = fs::read(&output_path).unwrap();
+    let extracted = XlsxTabularAdapter::new(Vec::new()).extract(&output_bytes).unwrap();
+    assert!(extracted.rows[0][0].starts_with("tok-"));
+    assert!(!extracted.rows[0][0].contains("Alice Patient"));
+    assert_eq!(extracted.rows[0][1], "needs follow-up");
 }
 
 #[test]
@@ -183,7 +192,6 @@ Expected: FAIL because the command and test dev-dependency are not wired yet.
 Implement exactly these behavior points:
 
 ```rust
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use mdid_adapters::XlsxTabularAdapter;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -204,10 +212,12 @@ struct DeidentifyXlsxArgs {
   3. opens or creates `LocalVaultStore` exactly like the CSV command,
   4. extracts with `XlsxTabularAdapter::new(policies).extract(&workbook_bytes)`, returning `failed to read XLSX workbook: {err}`,
   5. delegates to `TabularDeidentificationService.deidentify_extracted(extracted, &mut vault, SurfaceKind::Cli)`, returning `failed to deidentify XLSX: {err}`,
-  6. writes the rewritten workbook bytes as `STANDARD.decode(output.csv.as_bytes())` to `--output-path`, returning `failed to render XLSX output: {err}` on base64 decode failure and `failed to write output XLSX: {err}` on write failure,
+  6. renders `output.csv` (CSV text from `deidentify_extracted`) into a normalized single-sheet XLSX and writes those bytes to `--output-path`, returning `failed to render XLSX output: {err}` on render failure and `failed to write output XLSX: {err}` on write failure,
   7. prints existing PHI-safe JSON summary via `print_summary`.
 - Update `usage()` to include `mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>` and a command line `deidentify-xlsx  Rewrite a local XLSX using explicit field policies.`
-- Add `base64.workspace = true` to `crates/mdid-cli/Cargo.toml` dependencies and `rust_xlsxwriter = "0.94"` to dev-dependencies.
+- Do not add `base64` or `mdid-runtime` dependencies to `crates/mdid-cli`; the command renders CSV text into XLSX locally and does not call runtime routes.
+
+Review/fix evidence (2026-04-29 spec review follow-up): smoke test was hardened to read the CLI output with `XlsxTabularAdapter`, verify the encoded cell no longer contains PHI and starts with `tok-`, verify the review cell remains, and verify summary remains `{ output_path, summary, review_queue_len }` with the aggregate `BatchSummary` directly under `summary` and no alias keys.
 
 - [x] **Step 6: Run targeted tests and verify GREEN**
 

@@ -5,11 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-base64.workspace = true
 mdid-adapters = { path = "../mdid-adapters" }
 mdid-application = { path = "../mdid-application" }
 mdid-domain = { path = "../mdid-domain" }
-mdid-runtime = { path = "../mdid-runtime" }
 mdid-vault = { path = "../mdid-vault" }
 serde.workspace = true
 serde_json.workspace = true
