@@ -121,7 +121,9 @@ impl InputMode {
     fn browser_file_read_mode(self) -> BrowserFileReadMode {
         match self {
             Self::CsvText => BrowserFileReadMode::Text,
-            Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => BrowserFileReadMode::DataUrlBase64,
+            Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => {
+                BrowserFileReadMode::DataUrlBase64
+            }
         }
     }
 }
@@ -170,12 +172,18 @@ impl fmt::Debug for BrowserFlowState {
             .field("input_mode", &self.input_mode)
             .field("payload", &"<redacted>")
             .field("source_name", &"<redacted>")
-            .field("imported_file_name", &self.imported_file_name.as_ref().map(|_| "<redacted>"))
+            .field(
+                "imported_file_name",
+                &self.imported_file_name.as_ref().map(|_| "<redacted>"),
+            )
             .field("field_policy_json", &"<redacted>")
             .field("result_output", &"<redacted>")
             .field("summary", &"<redacted>")
             .field("review_queue", &"<redacted>")
-            .field("error_banner", &self.error_banner.as_ref().map(|_| "<redacted>"))
+            .field(
+                "error_banner",
+                &self.error_banner.as_ref().map(|_| "<redacted>"),
+            )
             .field("is_submitting", &self.is_submitting)
             .field("state_revision", &self.state_revision)
             .field("next_submission_token", &self.next_submission_token)
@@ -218,7 +226,8 @@ impl BrowserFlowState {
         self.imported_file_name = Some(file_name.to_string());
         self.invalidate_generated_state();
         self.error_banner = Some(
-            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom.".to_string(),
+            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom."
+                .to_string(),
         );
     }
 
@@ -387,7 +396,6 @@ struct DicomSubmitRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeSubmitRequest {
     endpoint: &'static str,
-    body: String,
     body_json: String,
 }
 
@@ -433,22 +441,28 @@ struct XlsxRuntimeSuccessResponse {
 struct DicomRuntimeSuccessResponse {
     summary: DicomRuntimeSummary,
     review_queue: Vec<DicomReviewCandidate>,
+    #[allow(dead_code)]
+    sanitized_file_name: Option<String>,
     rewritten_dicom_bytes_base64: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 struct DicomRuntimeSummary {
-    fields_processed: usize,
-    encoded_fields: usize,
-    review_required: usize,
+    total_tags: usize,
+    encoded_tags: usize,
+    review_required_tags: usize,
     removed_private_tags: usize,
+    remapped_uids: usize,
+    burned_in_suspicions: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 struct DicomReviewCandidate {
-    field: String,
-    reason: String,
-    sample: String,
+    tag: String,
+    phi_type: String,
+    #[allow(dead_code)]
+    value: String,
+    decision: String,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -530,7 +544,6 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
-            body: body_json.clone(),
             body_json,
         });
     }
@@ -549,7 +562,6 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
-            body: body_json.clone(),
             body_json,
         });
     }
@@ -577,7 +589,6 @@ fn build_submit_request(
 
     Ok(RuntimeSubmitRequest {
         endpoint: input_mode.endpoint(),
-        body: body_json.clone(),
         body_json,
     })
 }
@@ -697,11 +708,13 @@ fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
 
 fn format_dicom_summary(summary: &DicomRuntimeSummary) -> String {
     format!(
-        "fields processed: {}\nencoded fields: {}\nreview required: {}\nremoved private tags: {}",
-        summary.fields_processed,
-        summary.encoded_fields,
-        summary.review_required,
-        summary.removed_private_tags
+        "total_tags: {}\nencoded_tags: {}\nreview_required_tags: {}\nremoved_private_tags: {}\nremapped_uids: {}\nburned_in_suspicions: {}",
+        summary.total_tags,
+        summary.encoded_tags,
+        summary.review_required_tags,
+        summary.removed_private_tags,
+        summary.remapped_uids,
+        summary.burned_in_suspicions
     )
 }
 
@@ -714,8 +727,8 @@ fn format_dicom_review_queue(review_queue: &[DicomReviewCandidate]) -> String {
         .iter()
         .map(|candidate| {
             format!(
-                "- {} / {}: {}",
-                candidate.field, candidate.reason, candidate.sample
+                "- tag {} / {} / {} / value: <redacted>",
+                candidate.tag, candidate.phi_type, candidate.decision
             )
         })
         .collect::<Vec<_>>()
@@ -815,7 +828,8 @@ fn trigger_browser_text_download(file_name: &str, text: &str) -> Result<(), Stri
     let url = Url::create_object_url_with_blob(&blob)
         .map_err(|_| "Failed to create browser export URL.".to_string())?;
 
-    let window = web_sys::window().ok_or("Browser window is unavailable for export.".to_string())?;
+    let window =
+        web_sys::window().ok_or("Browser window is unavailable for export.".to_string())?;
     let document = window
         .document()
         .ok_or("Browser document is unavailable for export.".to_string())?;
@@ -1175,11 +1189,12 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_request, file_import_payload_from_data_url, format_review_queue, format_summary,
-        parse_runtime_error, parse_runtime_success, render_runtime_response, BrowserFileReadMode, BrowserFlowState,
-        InputMode, RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
+        build_submit_request, file_import_payload_from_data_url, format_review_queue,
+        format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
+        validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
+        RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
-        MAX_BROWSER_IMPORT_BYTES, validate_browser_import_size,
+        MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
 
@@ -1223,7 +1238,9 @@ mod tests {
     #[test]
     fn browser_flow_state_debug_redacts_error_banner() {
         let state = BrowserFlowState {
-            error_banner: Some("Runtime fallback included response body for Jane Patient".to_string()),
+            error_banner: Some(
+                "Runtime fallback included response body for Jane Patient".to_string(),
+            ),
             ..BrowserFlowState::default()
         };
 
@@ -1270,17 +1287,35 @@ mod tests {
 
     #[test]
     fn imported_file_name_selects_mode_from_safe_extension() {
-        assert_eq!(InputMode::from_file_name("patients.csv"), Some(InputMode::CsvText));
-        assert_eq!(InputMode::from_file_name("workbook.XLSX"), Some(InputMode::XlsxBase64));
-        assert_eq!(InputMode::from_file_name("scan.PDF"), Some(InputMode::PdfBase64));
+        assert_eq!(
+            InputMode::from_file_name("patients.csv"),
+            Some(InputMode::CsvText)
+        );
+        assert_eq!(
+            InputMode::from_file_name("workbook.XLSX"),
+            Some(InputMode::XlsxBase64)
+        );
+        assert_eq!(
+            InputMode::from_file_name("scan.PDF"),
+            Some(InputMode::PdfBase64)
+        );
         assert_eq!(InputMode::from_file_name("archive.zip"), None);
     }
 
     #[test]
     fn imported_dicom_file_selects_dicom_mode_and_base64_read() {
-        assert_eq!(InputMode::from_file_name("scan.dcm"), Some(InputMode::DicomBase64));
-        assert_eq!(InputMode::from_file_name("SCAN.DICOM"), Some(InputMode::DicomBase64));
-        assert_eq!(InputMode::DicomBase64.browser_file_read_mode(), BrowserFileReadMode::DataUrlBase64);
+        assert_eq!(
+            InputMode::from_file_name("scan.dcm"),
+            Some(InputMode::DicomBase64)
+        );
+        assert_eq!(
+            InputMode::from_file_name("SCAN.DICOM"),
+            Some(InputMode::DicomBase64)
+        );
+        assert_eq!(
+            InputMode::DicomBase64.browser_file_read_mode(),
+            BrowserFileReadMode::DataUrlBase64
+        );
     }
 
     #[test]
@@ -1295,34 +1330,64 @@ mod tests {
         let request = state.validate_submission().expect("valid DICOM request");
 
         assert_eq!(request.endpoint, "/dicom/deidentify");
-        assert!(request.body.contains("\"dicom_bytes_base64\":\"ZGljb20=\""));
-        assert!(request.body.contains("\"source_name\":\"local-scan.dcm\""));
-        assert!(request.body.contains("\"private_tag_policy\":\"remove\""));
+        let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
+        assert_eq!(body["dicom_bytes_base64"], "ZGljb20=");
+        assert_eq!(body["source_name"], "local-scan.dcm");
+        assert_eq!(body["private_tag_policy"], "remove");
     }
 
     #[test]
-    fn dicom_response_renders_summary_review_queue_and_rewritten_bytes() {
+    fn dicom_response_renders_actual_runtime_summary_review_queue_and_rewritten_bytes() {
         let response = r#"{
-            "summary": {"fields_processed": 3, "encoded_fields": 1, "review_required": 1, "removed_private_tags": 2},
+            "summary": {
+                "total_tags": 7,
+                "encoded_tags": 2,
+                "review_required_tags": 1,
+                "removed_private_tags": 3,
+                "remapped_uids": 4,
+                "burned_in_suspicions": 1
+            },
             "review_queue": [
-                {"field": "PatientName", "reason": "manual review", "sample": "REDACTED"}
+                {"tag": "(0010,0010)", "phi_type": "patient_name", "value": "Jane Patient", "decision": "needs_review"}
             ],
+            "sanitized_file_name": "scan-deidentified.dcm",
             "rewritten_dicom_bytes_base64": "cmV3cml0dGVu"
         }"#;
 
-        let rendered = render_runtime_response(InputMode::DicomBase64, response).expect("DICOM response renders");
+        let rendered = render_runtime_response(InputMode::DicomBase64, response)
+            .expect("DICOM response renders");
 
-        assert!(rendered.summary.contains("fields processed: 3"));
-        assert!(rendered.summary.contains("removed private tags: 2"));
-        assert!(rendered.review_queue.contains("PatientName"));
+        assert!(rendered.summary.contains("total_tags: 7"));
+        assert!(rendered.summary.contains("encoded_tags: 2"));
+        assert!(rendered.summary.contains("review_required_tags: 1"));
+        assert!(rendered.summary.contains("removed_private_tags: 3"));
+        assert!(rendered.summary.contains("remapped_uids: 4"));
+        assert!(rendered.summary.contains("burned_in_suspicions: 1"));
+        assert_eq!(
+            rendered.review_queue,
+            "- tag (0010,0010) / patient_name / needs_review / value: <redacted>"
+        );
+        assert!(!rendered.review_queue.contains("Jane Patient"));
         assert!(rendered.rewritten_output.contains("cmV3cml0dGVu"));
     }
 
     #[test]
     fn dicom_mode_discloses_bounded_browser_limits() {
-        assert!(InputMode::DicomBase64.disclosure_copy().unwrap().contains("DICOM mode uses the existing local runtime tag-level de-identification route"));
-        assert!(InputMode::DicomBase64.disclosure_copy().unwrap().contains("does not add pixel redaction"));
-        assert_eq!(BrowserFlowState { input_mode: InputMode::DicomBase64, ..BrowserFlowState::default() }.suggested_export_file_name(), "mdid-browser-output.dcm.base64.txt");
+        assert!(InputMode::DicomBase64.disclosure_copy().unwrap().contains(
+            "DICOM mode uses the existing local runtime tag-level de-identification route"
+        ));
+        assert!(InputMode::DicomBase64
+            .disclosure_copy()
+            .unwrap()
+            .contains("does not add pixel redaction"));
+        assert_eq!(
+            BrowserFlowState {
+                input_mode: InputMode::DicomBase64,
+                ..BrowserFlowState::default()
+            }
+            .suggested_export_file_name(),
+            "mdid-browser-output.dcm.base64.txt"
+        );
     }
 
     #[test]
@@ -1353,7 +1418,10 @@ mod tests {
             file_import_payload_from_data_url("data:application/pdf;base64,JVBERi0x"),
             "JVBERi0x"
         );
-        assert_eq!(file_import_payload_from_data_url("already-base64"), "already-base64");
+        assert_eq!(
+            file_import_payload_from_data_url("already-base64"),
+            "already-base64"
+        );
     }
 
     #[test]
@@ -1371,7 +1439,8 @@ mod tests {
     fn import_export_copy_discloses_bounded_browser_file_limits() {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("CSV files load as text"));
         assert!(BROWSER_FILE_IMPORT_COPY.contains("XLSX and PDF files load as base64 payloads"));
-        assert!(BROWSER_FILE_IMPORT_COPY.contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
+        assert!(BROWSER_FILE_IMPORT_COPY
+            .contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
     }
 
     #[test]
@@ -1393,15 +1462,24 @@ mod tests {
             imported_file_name: Some("Jane Patient.csv".to_string()),
             ..BrowserFlowState::default()
         };
-        assert_eq!(state.suggested_export_file_name(), "mdid-browser-output.csv");
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-output.csv"
+        );
 
         state.input_mode = InputMode::XlsxBase64;
         state.imported_file_name = Some("clinic workbook.xlsx".to_string());
-        assert_eq!(state.suggested_export_file_name(), "mdid-browser-output.xlsx.base64.txt");
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-output.xlsx.base64.txt"
+        );
 
         state.input_mode = InputMode::PdfBase64;
         state.imported_file_name = Some("scan.pdf".to_string());
-        assert_eq!(state.suggested_export_file_name(), "mdid-browser-review-report.txt");
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-review-report.txt"
+        );
     }
 
     #[test]
