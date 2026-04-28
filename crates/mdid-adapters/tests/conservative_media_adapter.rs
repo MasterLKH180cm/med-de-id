@@ -112,6 +112,43 @@ fn extraction_output_debug_redacts_metadata_values() {
 }
 
 #[test]
+fn extraction_output_debug_redacts_phi_bearing_artifact_labels() {
+    let input = ConservativeMediaInput {
+        artifact_label: "patients/Jane-Doe-face.png".to_string(),
+        format: ConservativeMediaFormat::Image,
+        metadata: vec![metadata_entry("Artist", "Jane Patient")],
+        requires_visual_review: true,
+        unsupported_payload: false,
+    };
+
+    let output = ConservativeMediaAdapter::extract_metadata(input).unwrap();
+    let debug = format!("{output:?}");
+
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("Jane-Doe"));
+    assert!(!debug.contains("patients/"));
+    assert!(!debug.contains("Jane Patient"));
+}
+
+#[test]
+fn input_debug_redacts_metadata_values_and_artifact_labels() {
+    let input = ConservativeMediaInput {
+        artifact_label: "patients/Jane-Doe-face.png".to_string(),
+        format: ConservativeMediaFormat::Image,
+        metadata: vec![metadata_entry("Artist", "Jane Patient")],
+        requires_visual_review: true,
+        unsupported_payload: false,
+    };
+
+    let debug = format!("{input:?}");
+
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("Jane Patient"));
+    assert!(!debug.contains("Jane-Doe"));
+    assert!(!debug.contains("patients/"));
+}
+
+#[test]
 fn extraction_rejects_empty_artifact_label() {
     let input = ConservativeMediaInput {
         artifact_label: "   ".to_string(),

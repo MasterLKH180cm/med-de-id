@@ -21,19 +21,40 @@ impl std::fmt::Display for ConservativeMediaAdapterError {
 
 impl std::error::Error for ConservativeMediaAdapterError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ConservativeMediaMetadataEntry {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl std::fmt::Debug for ConservativeMediaMetadataEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConservativeMediaMetadataEntry")
+            .field("key", &self.key)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub struct ConservativeMediaInput {
     pub artifact_label: String,
     pub format: ConservativeMediaFormat,
     pub metadata: Vec<ConservativeMediaMetadataEntry>,
     pub requires_visual_review: bool,
     pub unsupported_payload: bool,
+}
+
+impl std::fmt::Debug for ConservativeMediaInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConservativeMediaInput")
+            .field("artifact_label", &"<redacted>")
+            .field("format", &self.format)
+            .field("metadata", &self.metadata)
+            .field("requires_visual_review", &self.requires_visual_review)
+            .field("unsupported_payload", &self.unsupported_payload)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -45,8 +66,39 @@ pub struct ExtractedConservativeMediaData {
 impl std::fmt::Debug for ExtractedConservativeMediaData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExtractedConservativeMediaData")
-            .field("candidates", &self.candidates)
+            .field(
+                "candidates",
+                &RedactedConservativeMediaCandidates(&self.candidates),
+            )
             .field("summary", &self.summary)
+            .finish()
+    }
+}
+
+struct RedactedConservativeMediaCandidates<'a>(&'a [ConservativeMediaCandidate]);
+
+impl std::fmt::Debug for RedactedConservativeMediaCandidates<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut list = f.debug_list();
+        for candidate in self.0 {
+            list.entry(&RedactedConservativeMediaCandidate(candidate));
+        }
+        list.finish()
+    }
+}
+
+struct RedactedConservativeMediaCandidate<'a>(&'a ConservativeMediaCandidate);
+
+impl std::fmt::Debug for RedactedConservativeMediaCandidate<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let candidate = self.0;
+        f.debug_struct("ConservativeMediaCandidate")
+            .field("field_ref", &"<redacted>")
+            .field("format", &candidate.format)
+            .field("phi_type", &candidate.phi_type)
+            .field("source_value", &"<redacted>")
+            .field("confidence", &candidate.confidence)
+            .field("status", &candidate.status)
             .finish()
     }
 }
