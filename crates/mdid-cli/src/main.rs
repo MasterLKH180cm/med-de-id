@@ -16,13 +16,13 @@ fn main() {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum CliCommand {
     Status,
     DeidentifyCsv(DeidentifyCsvArgs),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct DeidentifyCsvArgs {
     csv_path: PathBuf,
     policies_json: String,
@@ -169,4 +169,38 @@ fn exit_with_usage(error: &str) -> ! {
 
 fn usage() -> &'static str {
     "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status           Print a readiness banner for the local CLI surface.\n  deidentify-csv   Rewrite a local CSV using explicit field policies."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_deidentify_csv_command_without_requiring_debug() {
+        let policies_json = r#"[{"header":"n","phi_type":"NAME","action":"encode"}]"#;
+        let args = vec![
+            "deidentify-csv".to_string(),
+            "--csv-path".to_string(),
+            "input.csv".to_string(),
+            "--policies-json".to_string(),
+            policies_json.to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--output-path".to_string(),
+            "output.csv".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyCsv(DeidentifyCsvArgs {
+                    csv_path: PathBuf::from("input.csv"),
+                    policies_json: policies_json.to_string(),
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    output_path: PathBuf::from("output.csv"),
+                }))
+        );
+    }
 }
