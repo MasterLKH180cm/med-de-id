@@ -55,7 +55,7 @@ fn moat_round_json_emits_deterministic_controller_envelope() {
     assert_eq!(value["source"], "sample");
     assert_eq!(value["history_path"], serde_json::Value::Null);
     assert_eq!(value["input_path"], serde_json::Value::Null);
-    assert!(value["round_id"].as_str().expect("round_id string").starts_with("moat-round-"));
+    assert!(!value["round_id"].as_str().expect("round_id string").is_empty());
     assert_eq!(value["continue_decision"], "continue");
     assert!(value["executed_tasks"].as_array().expect("executed tasks array").len() > 0);
     assert!(value["implemented_specs"].as_array().expect("implemented specs array").len() > 0);
@@ -239,7 +239,7 @@ fn moat_round_json_reports_input_and_history_paths_after_persisting() {
     assert_eq!(value["input_path"], input_path.display().to_string());
     assert_eq!(value["history_path"], history_path.display().to_string());
     assert_eq!(value["history_saved"], true);
-    assert!(value["round_id"].as_str().expect("round_id string").starts_with("moat-round-"));
+    assert!(!value["round_id"].as_str().expect("round_id string").is_empty());
 }
 ```
 

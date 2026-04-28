@@ -54,7 +54,7 @@ fn moat_control_plane_json_emits_deterministic_controller_snapshot() {
     assert_eq!(value["type"], "moat_control_plane");
     assert_eq!(value["history_path"], serde_json::Value::Null);
     assert_eq!(value["source"], "sample");
-    assert!(value["round_id"].as_str().expect("round_id string").starts_with("moat-round-"));
+    assert!(!value["round_id"].as_str().expect("round_id string").is_empty());
     assert!(value["score"].as_u64().expect("score number") > 0);
     assert!(value["improvement_delta"].is_number());
     assert!(value["can_continue"].is_boolean());

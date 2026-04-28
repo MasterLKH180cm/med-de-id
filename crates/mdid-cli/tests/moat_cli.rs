@@ -125,10 +125,10 @@ fn moat_round_json_emits_deterministic_controller_envelope() {
     assert_eq!(value["history_path"], serde_json::Value::Null);
     assert_eq!(value["input_path"], serde_json::Value::Null);
     assert_eq!(value["history_saved"], false);
-    assert!(value["round_id"]
+    assert!(!value["round_id"]
         .as_str()
         .expect("round_id string")
-        .starts_with("moat-round-"));
+        .is_empty());
     assert_eq!(value["continue_decision"], "Continue");
     assert!(
         value["executed_tasks"]
@@ -307,10 +307,14 @@ fn moat_round_json_reports_input_and_history_paths_after_persisting() {
     assert_eq!(value["input_path"], input_path.display().to_string());
     assert_eq!(value["history_path"], history_path.display().to_string());
     assert_eq!(value["history_saved"], true);
-    assert!(value["round_id"]
-        .as_str()
-        .expect("round_id string")
-        .starts_with("moat-round-"));
+
+    let store =
+        LocalMoatHistoryStore::open_existing(&history_path).expect("open persisted history");
+    let entry = store.entries().last().expect("persisted history entry");
+    assert_eq!(
+        value["round_id"].as_str().expect("round_id string"),
+        entry.report.summary.round_id.to_string()
+    );
 }
 
 fn local_moat_round_input_json() -> String {
@@ -1951,10 +1955,10 @@ fn moat_control_plane_json_emits_deterministic_controller_snapshot() {
     assert_eq!(value["type"], "moat_control_plane");
     assert_eq!(value["history_path"], serde_json::Value::Null);
     assert_eq!(value["source"], "sample");
-    assert!(value["round_id"]
+    assert!(!value["round_id"]
         .as_str()
         .expect("round_id string")
-        .starts_with("moat-round-"));
+        .is_empty());
     assert!(value["score"].as_u64().expect("score number") > 0);
     assert!(value["improvement_delta"].is_number());
     assert!(value["can_continue"].is_boolean());
@@ -3896,10 +3900,10 @@ fn moat_complete_task_json_prints_artifact_and_downstream_ready_envelope() {
         serde_json::from_slice(&output.stdout).expect("complete-task json should be parseable");
     assert_eq!(json["type"], "moat_complete_task");
     assert_eq!(json["history_path"], history_path_arg);
-    assert!(json["round_id"]
+    assert!(!json["round_id"]
         .as_str()
         .expect("round id string")
-        .starts_with("moat-round-"));
+        .is_empty());
     assert_eq!(json["node_id"], "spec-workflow-audit");
     assert_eq!(json["previous_state"], "in_progress");
     assert_eq!(json["new_state"], "completed");

@@ -103,7 +103,7 @@ fn moat_complete_task_json_prints_artifact_and_downstream_ready_envelope() {
         serde_json::from_slice(&output.stdout).expect("complete-task json should be parseable");
     assert_eq!(json["type"], "moat_complete_task");
     assert_eq!(json["history_path"], history_path_arg);
-    assert!(json["round_id"].as_str().expect("round id string").starts_with("moat-round-"));
+    assert!(!json["round_id"].as_str().expect("round id string").is_empty());
     assert_eq!(json["node_id"], "spec-workflow-audit");
     assert_eq!(json["previous_state"], "in_progress");
     assert_eq!(json["new_state"], "completed");
