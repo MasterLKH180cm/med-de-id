@@ -440,7 +440,7 @@ pub struct ConservativeMediaCandidate {
     pub format: ConservativeMediaFormat,
     pub phi_type: String,
     pub source_value: String,
-    pub confidence: f64,
+    pub confidence: f32,
     pub status: ConservativeMediaScanStatus,
 }
 
