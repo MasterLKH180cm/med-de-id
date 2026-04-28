@@ -1,53 +1,58 @@
-use std::process::Command;
-
-#[test]
-fn cli_prints_status_banner() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .arg("status")
-        .output()
-        .expect("failed to run mdid-cli");
-
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("med-de-id CLI ready"));
-}
+use assert_cmd::Command;
+use predicates::prelude::*;
 
 #[test]
 fn cli_prints_ready_banner_with_no_args() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .output()
-        .expect("failed to run mdid-cli with no args");
+    let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "med-de-id CLI ready\n"
-    );
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("med-de-id CLI ready"));
 }
 
 #[test]
-fn cli_rejects_removed_moat_round_command_with_updated_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .args(["moat", "round"])
-        .output()
-        .expect("failed to run mdid-cli moat round");
+fn cli_prints_status_banner() {
+    let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
-    assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "unknown command: moat round\nusage: mdid-cli [status | moat controller-plan --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind KIND] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat controller-step --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind KIND] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json]]\n"
-    );
+    cmd.arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("med-de-id CLI ready"));
 }
 
 #[test]
-fn cli_rejects_moat_token_as_unknown_command_with_updated_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .arg("moat")
-        .output()
-        .expect("failed to run mdid-cli moat");
+fn cli_usage_stays_deidentification_scoped() {
+    let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
-    assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "unknown command: moat\nusage: mdid-cli [status | moat controller-plan --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind KIND] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat controller-step --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind KIND] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json]]\n"
-    );
+    cmd.arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage: mdid-cli [status]"))
+        .stderr(predicate::str::contains("local de-identification automation"))
+        .stderr(predicate::str::contains("moat").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("agent").not());
+}
+
+#[test]
+fn cli_rejects_scope_drift_controller_commands() {
+    for args in [
+        vec!["moat"],
+        vec!["moat", "controller-plan", "--history-path", "history.json"],
+        vec!["moat", "controller-step", "--history-path", "history.json", "--agent-id", "agent-1"],
+        vec!["controller-step"],
+        vec!["claim"],
+        vec!["complete_command"],
+    ] {
+        let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
+
+        cmd.args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unknown command"))
+            .stderr(predicate::str::contains("Usage: mdid-cli [status]"))
+            .stderr(predicate::str::contains("moat").not())
+            .stderr(predicate::str::contains("controller").not())
+            .stderr(predicate::str::contains("agent").not());
+    }
 }
