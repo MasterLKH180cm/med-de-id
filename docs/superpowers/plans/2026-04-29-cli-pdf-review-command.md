@@ -323,14 +323,14 @@ git commit -m "feat(cli): add bounded pdf review command"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-29-cli-pdf-review-command.md`
 
-- [ ] **Step 1: Update README completion based on landed tests**
+- [x] **Step 1: Update README completion based on landed tests**
 
 Update `README.md` completion table:
 - CLI: `72%`, mentioning bounded `deidentify-pdf` review report in addition to CSV/XLSX/DICOM commands, and still listing vault/decode, audit, conservative-media, and import/export CLI commands as missing.
 - Overall: `60%`, mentioning CLI PDF review report as a narrow increment; do not claim OCR, visual redaction, PDF rewrite/export, or >90% completion.
 - Missing items must still include richer browser upload/download UX depth, deeper desktop vault/decode/audit workflows, OCR, visual redaction, PDF rewrite/export, portable transfer UX, and broader import/export.
 
-- [ ] **Step 2: Verify docs and tests**
+- [x] **Step 2: Verify docs and tests**
 
 Run:
 
@@ -345,7 +345,7 @@ grep -nE 'CLI|Browser/web|Desktop app|Overall|Missing|OCR|visual redaction|PDF r
 
 Expected: PASS; grep output shows only honest limitations/scope-drift warnings.
 
-- [ ] **Step 3: Mark plan checkboxes complete and commit docs**
+- [x] **Step 3: Mark plan checkboxes complete and commit docs**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-29-cli-pdf-review-command.md
