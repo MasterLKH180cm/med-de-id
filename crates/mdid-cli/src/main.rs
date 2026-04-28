@@ -5,13 +5,14 @@ use mdid_application::{
     DicomDeidentificationService, PdfDeidentificationService, TabularDeidentificationService,
 };
 use mdid_domain::{
-    AuditEvent, AuditEventKind, BatchSummary, DicomPrivateTagPolicy, PdfPageRef, PdfScanStatus,
-    SurfaceKind,
+    AuditEvent, AuditEventKind, BatchSummary, DecodeRequest, DicomPrivateTagPolicy, PdfPageRef,
+    PdfScanStatus, SurfaceKind,
 };
 use mdid_vault::LocalVaultStore;
 use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use uuid::Uuid;
 
 const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
 const MAX_VAULT_AUDIT_LIMIT: usize = 100;
@@ -33,6 +34,7 @@ enum CliCommand {
     DeidentifyDicom(DeidentifyDicomArgs),
     DeidentifyPdf(DeidentifyPdfArgs),
     VaultAudit(VaultAuditArgs),
+    VaultDecode(VaultDecodeArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -76,6 +78,16 @@ struct VaultAuditArgs {
     limit: Option<usize>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct VaultDecodeArgs {
+    vault_path: PathBuf,
+    passphrase: String,
+    record_ids_json: String,
+    output_target: String,
+    justification: String,
+    report_path: PathBuf,
+}
+
 #[derive(Debug, Deserialize)]
 struct PolicyRequest {
     header: String,
@@ -109,6 +121,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "vault-audit" => {
             parse_vault_audit_args(rest).map(CliCommand::VaultAudit)
+        }
+        [command, rest @ ..] if command == "vault-decode" => {
+            parse_vault_decode_args(rest).map(CliCommand::VaultDecode)
         }
         _ => Err("unknown command".to_string()),
     }
@@ -281,6 +296,51 @@ fn parse_vault_audit_args(args: &[String]) -> Result<VaultAuditArgs, String> {
     })
 }
 
+fn parse_vault_decode_args(args: &[String]) -> Result<VaultDecodeArgs, String> {
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut record_ids_json = None;
+    let mut output_target = None;
+    let mut justification = None;
+    let mut report_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--record-ids-json" => record_ids_json = Some(value.clone()),
+            "--output-target" => output_target = Some(value.clone()),
+            "--justification" => justification = Some(value.clone()),
+            "--report-path" => report_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    let output_target = output_target.ok_or_else(|| "missing --output-target".to_string())?;
+    if output_target.trim().is_empty() {
+        return Err("missing --output-target".to_string());
+    }
+    let justification = justification.ok_or_else(|| "missing --justification".to_string())?;
+    if justification.trim().is_empty() {
+        return Err("missing --justification".to_string());
+    }
+
+    Ok(VaultDecodeArgs {
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        record_ids_json: record_ids_json.ok_or_else(|| "missing --record-ids-json".to_string())?,
+        output_target,
+        justification,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+    })
+}
+
 fn run_command(command: CliCommand) -> Result<(), String> {
     match command {
         CliCommand::Status => {
@@ -292,6 +352,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
         CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
         CliCommand::VaultAudit(args) => run_vault_audit(args),
+        CliCommand::VaultDecode(args) => run_vault_decode(args),
     }
 }
 
@@ -357,6 +418,78 @@ struct VaultAuditEventReport {
     actor: SurfaceKind,
     detail: String,
     recorded_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VaultDecodeReport {
+    decoded_value_count: usize,
+    values: Vec<VaultDecodeValueReport>,
+    audit_event: AuditEvent,
+}
+
+#[derive(Debug, Serialize)]
+struct VaultDecodeValueReport {
+    record_id: String,
+    token: String,
+    original_value: String,
+}
+
+fn parse_record_ids_json(record_ids_json: &str) -> Result<Vec<Uuid>, String> {
+    let record_ids: Vec<Uuid> = serde_json::from_str(record_ids_json)
+        .map_err(|err| format!("invalid record ids JSON: {err}"))?;
+    if record_ids.is_empty() {
+        return Err("decode scope must include at least one record id".to_string());
+    }
+    Ok(record_ids)
+}
+
+fn run_vault_decode(args: VaultDecodeArgs) -> Result<(), String> {
+    let record_ids = parse_record_ids_json(&args.record_ids_json)?;
+    let request = DecodeRequest::new(
+        record_ids,
+        args.output_target,
+        args.justification,
+        SurfaceKind::Cli,
+    )
+    .map_err(|err| err.to_string())?;
+    let mut vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+        .map_err(|err| format!("failed to open vault: {err}"))?;
+    let result = vault
+        .decode(request)
+        .map_err(|err| format!("failed to decode vault records: {err}"))?;
+    let report = VaultDecodeReport {
+        decoded_value_count: result.values.len(),
+        values: result
+            .values
+            .into_iter()
+            .map(|value| VaultDecodeValueReport {
+                record_id: value.record_id.to_string(),
+                token: value.token,
+                original_value: value.original_value,
+            })
+            .collect(),
+        audit_event: result.audit_event,
+    };
+    fs::write(
+        &args.report_path,
+        serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("failed to render vault decode report: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write vault decode report: {err}"))?;
+    println!("{}", build_vault_decode_stdout(&args.report_path, &report)?);
+    Ok(())
+}
+
+fn build_vault_decode_stdout(
+    report_path: &PathBuf,
+    report: &VaultDecodeReport,
+) -> Result<String, String> {
+    let stdout = json!({
+        "report_path": report_path,
+        "decoded_value_count": report.decoded_value_count,
+        "audit_event": report.audit_event,
+    });
+    serde_json::to_string(&stdout).map_err(|err| format!("failed to render decode summary: {err}"))
 }
 
 fn run_vault_audit(args: VaultAuditArgs) -> Result<(), String> {
@@ -566,7 +699,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only."
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary."
 }
 
 #[cfg(test)]
@@ -654,6 +787,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_vault_decode_command() {
+        let record_ids_json = r#"["00000000-0000-0000-0000-000000000001"]"#;
+        let args = vec![
+            "vault-decode".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--record-ids-json".to_string(),
+            record_ids_json.to_string(),
+            "--output-target".to_string(),
+            "report-only".to_string(),
+            "--justification".to_string(),
+            "patient request".to_string(),
+            "--report-path".to_string(),
+            "decode-report.json".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultDecode(VaultDecodeArgs {
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    record_ids_json: record_ids_json.to_string(),
+                    output_target: "report-only".to_string(),
+                    justification: "patient request".to_string(),
+                    report_path: PathBuf::from("decode-report.json"),
+                }))
+        );
+    }
+
+    #[test]
     fn parses_vault_audit_command_without_requiring_debug() {
         let args = vec![
             "vault-audit".to_string(),
@@ -673,6 +838,57 @@ mod tests {
                     limit: Some(10),
                 }))
         );
+    }
+
+    #[test]
+    fn parses_record_ids_json_for_vault_decode() {
+        let ids = parse_record_ids_json(
+            r#"["00000000-0000-0000-0000-000000000001","00000000-0000-0000-0000-000000000002"]"#,
+        )
+        .unwrap();
+
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0].to_string(), "00000000-0000-0000-0000-000000000001");
+        assert_eq!(ids[1].to_string(), "00000000-0000-0000-0000-000000000002");
+    }
+
+    #[test]
+    fn rejects_empty_record_ids_json_for_vault_decode() {
+        assert_eq!(
+            parse_record_ids_json("[]"),
+            Err("decode scope must include at least one record id".to_string())
+        );
+    }
+
+    #[test]
+    fn vault_decode_report_keeps_values_in_report_but_not_stdout_summary() {
+        let report_path = PathBuf::from("decode-report.json");
+        let report = VaultDecodeReport {
+            decoded_value_count: 1,
+            values: vec![VaultDecodeValueReport {
+                record_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                token: "MDID-NAME-000001".to_string(),
+                original_value: "Alice Example".to_string(),
+            }],
+            audit_event: serde_json::from_value(json!({
+                "id":"00000000-0000-0000-0000-000000000000",
+                "kind":"decode",
+                "actor":"cli",
+                "detail":"decode event",
+                "recorded_at":"2026-04-29T00:00:00Z"
+            }))
+            .unwrap(),
+        };
+
+        let report_json = serde_json::to_string(&report).unwrap();
+        let stdout_json = build_vault_decode_stdout(&report_path, &report).unwrap();
+
+        assert!(report_json.contains("Alice Example"));
+        assert!(report_json.contains("original_value"));
+        assert!(!stdout_json.contains("Alice Example"));
+        assert!(!stdout_json.contains("original_value"));
+        assert!(stdout_json.contains("decoded_value_count"));
+        assert!(stdout_json.contains("audit_event"));
     }
 
     #[test]

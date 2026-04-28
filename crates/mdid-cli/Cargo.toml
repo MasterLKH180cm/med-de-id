@@ -11,6 +11,7 @@ mdid-domain = { path = "../mdid-domain" }
 mdid-vault = { path = "../mdid-vault" }
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 rust_xlsxwriter = "0.94"
 
 [dev-dependencies]
