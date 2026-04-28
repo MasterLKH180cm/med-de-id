@@ -5,6 +5,8 @@ use std::fmt;
 const DEFAULT_FIELD_POLICY_JSON: &str = "[\n  {\n    \"header\": \"patient_id\",\n    \"phi_type\": \"patient_id\",\n    \"action\": \"encode\"\n  },\n  {\n    \"header\": \"patient_name\",\n    \"phi_type\": \"patient_name\",\n    \"action\": \"review\"\n  }\n]";
 const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
 const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FETCH_UNAVAILABLE_MESSAGE: &str =
@@ -110,6 +112,15 @@ fn file_import_payload_from_data_url(data_url: &str) -> String {
         .map(|(_, payload)| payload)
         .unwrap_or(data_url)
         .to_string()
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn validate_browser_import_size(file_size_bytes: u64) -> Result<(), String> {
+    if file_size_bytes > MAX_BROWSER_IMPORT_BYTES {
+        Err("Browser import file is too large for the bounded local browser flow.".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -707,6 +718,7 @@ fn trigger_browser_text_download(_file_name: &str, _text: &str) -> Result<(), St
 
 #[cfg(target_arch = "wasm32")]
 fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlowState>) {
+    use std::{cell::RefCell, rc::Rc};
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
     use web_sys::{FileReader, HtmlInputElement};
@@ -731,6 +743,14 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
         return;
     };
 
+    if let Err(message) = validate_browser_import_size(file.size() as u64) {
+        state.update(|state| {
+            state.invalidate_generated_state();
+            state.error_banner = Some(message);
+        });
+        return;
+    }
+
     let Ok(reader) = FileReader::new() else {
         state.update(|state| {
             state.error_banner = Some("Failed to prepare browser file reader.".to_string());
@@ -738,10 +758,19 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
         return;
     };
 
+    let onload_slot: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let onerror_slot: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+
     let load_state = state;
     let load_file_name = file_name.clone();
     let load_reader = reader.clone();
+    let load_cleanup_reader = reader.clone();
+    let load_onload_slot = Rc::clone(&onload_slot);
+    let load_onerror_slot = Rc::clone(&onerror_slot);
     let onload = Closure::wrap(Box::new(move || {
+        load_cleanup_reader.set_onload(None);
+        load_cleanup_reader.set_onerror(None);
+
         let payload = load_reader
             .result()
             .ok()
@@ -759,17 +788,29 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
                 state.error_banner = Some("Failed to read browser import payload.".to_string());
             }),
         }
+
+        load_onload_slot.borrow_mut().take();
+        load_onerror_slot.borrow_mut().take();
     }) as Box<dyn FnMut()>);
 
     let error_state = state;
+    let error_cleanup_reader = reader.clone();
+    let error_onload_slot = Rc::clone(&onload_slot);
+    let error_onerror_slot = Rc::clone(&onerror_slot);
     let onerror = Closure::wrap(Box::new(move || {
+        error_cleanup_reader.set_onload(None);
+        error_cleanup_reader.set_onerror(None);
         error_state.update(|state| {
             state.error_banner = Some("Failed to read selected browser import file.".to_string());
         });
+        error_onload_slot.borrow_mut().take();
+        error_onerror_slot.borrow_mut().take();
     }) as Box<dyn FnMut()>);
 
     reader.set_onload(Some(onload.as_ref().unchecked_ref()));
     reader.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+    onload_slot.borrow_mut().replace(onload);
+    onerror_slot.borrow_mut().replace(onerror);
 
     let read_result = match input_mode.browser_file_read_mode() {
         BrowserFileReadMode::Text => reader.read_as_text(&file),
@@ -777,14 +818,14 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
     };
 
     if read_result.is_err() {
+        reader.set_onload(None);
+        reader.set_onerror(None);
+        onload_slot.borrow_mut().take();
+        onerror_slot.borrow_mut().take();
         state.update(|state| {
             state.error_banner = Some("Failed to start browser import file read.".to_string());
         });
-        return;
     }
-
-    onload.forget();
-    onerror.forget();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1016,6 +1057,7 @@ mod tests {
         parse_runtime_error, parse_runtime_success, BrowserFileReadMode, BrowserFlowState,
         InputMode, RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
+        MAX_BROWSER_IMPORT_BYTES, validate_browser_import_size,
     };
     use serde_json::json;
 
@@ -1141,6 +1183,17 @@ mod tests {
             "JVBERi0x"
         );
         assert_eq!(file_import_payload_from_data_url("already-base64"), "already-base64");
+    }
+
+    #[test]
+    fn browser_import_size_bound_rejects_oversized_files_without_phi() {
+        let error = validate_browser_import_size(MAX_BROWSER_IMPORT_BYTES + 1).unwrap_err();
+
+        assert_eq!(
+            error,
+            "Browser import file is too large for the bounded local browser flow."
+        );
+        assert!(validate_browser_import_size(MAX_BROWSER_IMPORT_BYTES).is_ok());
     }
 
     #[test]
