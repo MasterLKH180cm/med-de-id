@@ -7,7 +7,7 @@ const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
-const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
+const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. This does not add OCR, visual redaction, vault browsing, or auth/session.";
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FETCH_UNAVAILABLE_MESSAGE: &str =
     "Runtime submission is only available from a wasm32 browser build.";
@@ -17,6 +17,7 @@ enum InputMode {
     CsvText,
     XlsxBase64,
     PdfBase64,
+    DicomBase64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +38,8 @@ impl InputMode {
             Some(Self::XlsxBase64)
         } else if file_name.ends_with(".pdf") {
             Some(Self::PdfBase64)
+        } else if file_name.ends_with(".dcm") || file_name.ends_with(".dicom") {
+            Some(Self::DicomBase64)
         } else {
             None
         }
@@ -46,6 +49,7 @@ impl InputMode {
         match value {
             "xlsx-base64" => Self::XlsxBase64,
             "pdf-base64" => Self::PdfBase64,
+            "dicom-base64" => Self::DicomBase64,
             _ => Self::CsvText,
         }
     }
@@ -55,6 +59,7 @@ impl InputMode {
             Self::CsvText => "csv-text",
             Self::XlsxBase64 => "xlsx-base64",
             Self::PdfBase64 => "pdf-base64",
+            Self::DicomBase64 => "dicom-base64",
         }
     }
 
@@ -63,6 +68,7 @@ impl InputMode {
             Self::CsvText => "CSV text",
             Self::XlsxBase64 => "XLSX base64",
             Self::PdfBase64 => "PDF base64",
+            Self::DicomBase64 => "DICOM base64",
         }
     }
 
@@ -71,6 +77,7 @@ impl InputMode {
             Self::CsvText => "Paste CSV rows here",
             Self::XlsxBase64 => "Paste base64-encoded XLSX content here",
             Self::PdfBase64 => "Paste base64-encoded PDF content here",
+            Self::DicomBase64 => "Paste base64-encoded DICOM content here",
         }
     }
 
@@ -81,6 +88,7 @@ impl InputMode {
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
+            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or workflow/controller semantics."),
         }
     }
 
@@ -89,18 +97,31 @@ impl InputMode {
             Self::CsvText => "/tabular/deidentify",
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64 => "/pdf/deidentify",
+            Self::DicomBase64 => "/dicom/deidentify",
         }
     }
 
-    fn is_pdf(self) -> bool {
-        matches!(self, Self::PdfBase64)
+    fn source_name_label(self) -> &'static str {
+        match self {
+            Self::PdfBase64 => "PDF",
+            Self::DicomBase64 => "DICOM base64",
+            _ => self.label(),
+        }
+    }
+
+    fn requires_source_name(self) -> bool {
+        matches!(self, Self::PdfBase64 | Self::DicomBase64)
+    }
+
+    fn requires_field_policy(self) -> bool {
+        matches!(self, Self::CsvText | Self::XlsxBase64)
     }
 
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     fn browser_file_read_mode(self) -> BrowserFileReadMode {
         match self {
             Self::CsvText => BrowserFileReadMode::Text,
-            Self::XlsxBase64 | Self::PdfBase64 => BrowserFileReadMode::DataUrlBase64,
+            Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => BrowserFileReadMode::DataUrlBase64,
         }
     }
 }
@@ -197,7 +218,7 @@ impl BrowserFlowState {
         self.imported_file_name = Some(file_name.to_string());
         self.invalidate_generated_state();
         self.error_banner = Some(
-            "Unsupported browser import file type. Use .csv, .xlsx, or .pdf.".to_string(),
+            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom.".to_string(),
         );
     }
 
@@ -207,6 +228,7 @@ impl BrowserFlowState {
             InputMode::CsvText => "mdid-browser-output.csv",
             InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
             InputMode::PdfBase64 => "mdid-browser-review-report.txt",
+            InputMode::DicomBase64 => "mdid-browser-output.dcm.base64.txt",
         }
     }
 
@@ -235,11 +257,14 @@ impl BrowserFlowState {
             ));
         }
 
-        if self.input_mode.is_pdf() && self.source_name.trim().is_empty() {
-            return Err("PDF source name is required before submitting.".to_string());
+        if self.input_mode.requires_source_name() && self.source_name.trim().is_empty() {
+            return Err(format!(
+                "{} source name is required before submitting.",
+                self.input_mode.source_name_label()
+            ));
         }
 
-        if !self.input_mode.is_pdf() && self.field_policy_json.trim().is_empty() {
+        if self.input_mode.requires_field_policy() && self.field_policy_json.trim().is_empty() {
             return Err("Field policy JSON is required before submitting.".to_string());
         }
 
@@ -352,9 +377,17 @@ struct PdfSubmitRequest {
     source_name: String,
 }
 
+#[derive(Clone, Eq, PartialEq, Serialize)]
+struct DicomSubmitRequest {
+    dicom_bytes_base64: String,
+    source_name: String,
+    private_tag_policy: &'static str,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeSubmitRequest {
     endpoint: &'static str,
+    body: String,
     body_json: String,
 }
 
@@ -394,6 +427,28 @@ struct XlsxRuntimeSuccessResponse {
     rewritten_workbook_base64: String,
     summary: RuntimeSummary,
     review_queue: Vec<RuntimeReviewCandidate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct DicomRuntimeSuccessResponse {
+    summary: DicomRuntimeSummary,
+    review_queue: Vec<DicomReviewCandidate>,
+    rewritten_dicom_bytes_base64: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct DicomRuntimeSummary {
+    fields_processed: usize,
+    encoded_fields: usize,
+    review_required: usize,
+    removed_private_tags: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct DicomReviewCandidate {
+    field: String,
+    reason: String,
+    sample: String,
 }
 
 #[derive(Clone, PartialEq, Deserialize)]
@@ -462,7 +517,7 @@ fn build_submit_request(
     source_name: &str,
     field_policy_json: &str,
 ) -> Result<RuntimeSubmitRequest, String> {
-    if input_mode.is_pdf() {
+    if input_mode == InputMode::PdfBase64 {
         if source_name.trim().is_empty() {
             return Err("PDF source name is required before submitting.".to_string());
         }
@@ -475,6 +530,26 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
+            body: body_json.clone(),
+            body_json,
+        });
+    }
+
+    if input_mode == InputMode::DicomBase64 {
+        if source_name.trim().is_empty() {
+            return Err("DICOM base64 source name is required before submitting.".to_string());
+        }
+
+        let body_json = serde_json::to_string(&DicomSubmitRequest {
+            dicom_bytes_base64: payload.trim().to_string(),
+            source_name: source_name.trim().to_string(),
+            private_tag_policy: "remove",
+        })
+        .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+
+        return Ok(RuntimeSubmitRequest {
+            endpoint: input_mode.endpoint(),
+            body: body_json.clone(),
             body_json,
         });
     }
@@ -496,11 +571,13 @@ fn build_submit_request(
             field_policies: policies,
         }),
         InputMode::PdfBase64 => unreachable!("PDF requests are handled before policy parsing"),
+        InputMode::DicomBase64 => unreachable!("DICOM requests are handled before policy parsing"),
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
     Ok(RuntimeSubmitRequest {
         endpoint: input_mode.endpoint(),
+        body: body_json.clone(),
         body_json,
     })
 }
@@ -539,7 +616,24 @@ fn parse_runtime_success(
                 review_queue: format_pdf_review_queue(&parsed.review_queue),
             })
         }
+        InputMode::DicomBase64 => {
+            let parsed: DicomRuntimeSuccessResponse = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: parsed.rewritten_dicom_bytes_base64,
+                summary: format_dicom_summary(&parsed.summary),
+                review_queue: format_dicom_review_queue(&parsed.review_queue),
+            })
+        }
     }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn render_runtime_response(
+    input_mode: InputMode,
+    response_body: &str,
+) -> Result<RuntimeResponseEnvelope, String> {
+    parse_runtime_success(input_mode, response_body)
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
@@ -595,6 +689,33 @@ fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
             format!(
                 "- row {} / {} / {}: {}",
                 candidate.row_index, candidate.column, candidate.phi_type, candidate.value
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_dicom_summary(summary: &DicomRuntimeSummary) -> String {
+    format!(
+        "fields processed: {}\nencoded fields: {}\nreview required: {}\nremoved private tags: {}",
+        summary.fields_processed,
+        summary.encoded_fields,
+        summary.review_required,
+        summary.removed_private_tags
+    )
+}
+
+fn format_dicom_review_queue(review_queue: &[DicomReviewCandidate]) -> String {
+    if review_queue.is_empty() {
+        return "No review items returned.".to_string();
+    }
+
+    review_queue
+        .iter()
+        .map(|candidate| {
+            format!(
+                "- {} / {}: {}",
+                candidate.field, candidate.reason, candidate.sample
             )
         })
         .collect::<Vec<_>>()
@@ -956,15 +1077,15 @@ pub fn App() -> impl IntoView {
                 <h2>"Input"</h2>
                 <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
                 <label>
-                    "Import local CSV/XLSX/PDF payload"
+                    "Import local CSV/XLSX/PDF/DICOM payload"
                     <input
-                        accept=".csv,.xlsx,.pdf"
+                        accept=".csv,.xlsx,.pdf,.dcm,.dicom"
                         on:change=on_file_import_change
                         type="file"
                     />
                 </label>
                 <p class="input-disclosure">
-                    "This bounded control validates CSV/XLSX/PDF selection for the existing payload box. CSV content remains text; XLSX/PDF payloads remain base64 text for localhost runtime routes."
+                    "This bounded control validates CSV/XLSX/PDF/DICOM selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes."
                 </p>
                 <label>
                     "Input mode"
@@ -972,6 +1093,7 @@ pub fn App() -> impl IntoView {
                         <option value="csv-text">"CSV text"</option>
                         <option value="xlsx-base64">"XLSX base64"</option>
                         <option value="pdf-base64">"PDF base64"</option>
+                        <option value="dicom-base64">"DICOM base64"</option>
                     </select>
                 </label>
 
@@ -991,7 +1113,7 @@ pub fn App() -> impl IntoView {
                     </p>
                 </Show>
 
-                <Show when=move || state.get().input_mode.is_pdf()>
+                <Show when=move || state.get().input_mode.requires_source_name()>
                     <label>
                         "Source name"
                         <input
@@ -1002,7 +1124,7 @@ pub fn App() -> impl IntoView {
                     </label>
                 </Show>
 
-                <Show when=move || !state.get().input_mode.is_pdf()>
+                <Show when=move || state.get().input_mode.requires_field_policy()>
                     <label>
                         "Field policy JSON"
                         <textarea
@@ -1054,7 +1176,7 @@ pub fn App() -> impl IntoView {
 mod tests {
     use super::{
         build_submit_request, file_import_payload_from_data_url, format_review_queue, format_summary,
-        parse_runtime_error, parse_runtime_success, BrowserFileReadMode, BrowserFlowState,
+        parse_runtime_error, parse_runtime_success, render_runtime_response, BrowserFileReadMode, BrowserFlowState,
         InputMode, RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
         MAX_BROWSER_IMPORT_BYTES, validate_browser_import_size,
@@ -1155,6 +1277,55 @@ mod tests {
     }
 
     #[test]
+    fn imported_dicom_file_selects_dicom_mode_and_base64_read() {
+        assert_eq!(InputMode::from_file_name("scan.dcm"), Some(InputMode::DicomBase64));
+        assert_eq!(InputMode::from_file_name("SCAN.DICOM"), Some(InputMode::DicomBase64));
+        assert_eq!(InputMode::DicomBase64.browser_file_read_mode(), BrowserFileReadMode::DataUrlBase64);
+    }
+
+    #[test]
+    fn dicom_mode_builds_bounded_runtime_request() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::DicomBase64,
+            payload: "ZGljb20=".to_string(),
+            source_name: "local-scan.dcm".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let request = state.validate_submission().expect("valid DICOM request");
+
+        assert_eq!(request.endpoint, "/dicom/deidentify");
+        assert!(request.body.contains("\"dicom_bytes_base64\":\"ZGljb20=\""));
+        assert!(request.body.contains("\"source_name\":\"local-scan.dcm\""));
+        assert!(request.body.contains("\"private_tag_policy\":\"remove\""));
+    }
+
+    #[test]
+    fn dicom_response_renders_summary_review_queue_and_rewritten_bytes() {
+        let response = r#"{
+            "summary": {"fields_processed": 3, "encoded_fields": 1, "review_required": 1, "removed_private_tags": 2},
+            "review_queue": [
+                {"field": "PatientName", "reason": "manual review", "sample": "REDACTED"}
+            ],
+            "rewritten_dicom_bytes_base64": "cmV3cml0dGVu"
+        }"#;
+
+        let rendered = render_runtime_response(InputMode::DicomBase64, response).expect("DICOM response renders");
+
+        assert!(rendered.summary.contains("fields processed: 3"));
+        assert!(rendered.summary.contains("removed private tags: 2"));
+        assert!(rendered.review_queue.contains("PatientName"));
+        assert!(rendered.rewritten_output.contains("cmV3cml0dGVu"));
+    }
+
+    #[test]
+    fn dicom_mode_discloses_bounded_browser_limits() {
+        assert!(InputMode::DicomBase64.disclosure_copy().unwrap().contains("DICOM mode uses the existing local runtime tag-level de-identification route"));
+        assert!(InputMode::DicomBase64.disclosure_copy().unwrap().contains("does not add pixel redaction"));
+        assert_eq!(BrowserFlowState { input_mode: InputMode::DicomBase64, ..BrowserFlowState::default() }.suggested_export_file_name(), "mdid-browser-output.dcm.base64.txt");
+    }
+
+    #[test]
     fn file_import_read_mode_matches_input_mode() {
         assert_eq!(
             InputMode::CsvText.browser_file_read_mode(),
@@ -1210,7 +1381,7 @@ mod tests {
 
         assert_eq!(
             state.error_banner.as_deref(),
-            Some("Unsupported browser import file type. Use .csv, .xlsx, or .pdf.")
+            Some("Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom.")
         );
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
