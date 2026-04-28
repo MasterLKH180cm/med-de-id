@@ -15,9 +15,15 @@ fn conservative_media_status_uses_stable_snake_case_wire_values() {
 }
 
 #[test]
-fn conservative_media_ref_sanitizes_slashes_in_field_path_labels() {
-    let field_ref = ConservativeMediaRef { artifact_label: "dicom/screenshots/patient.png".to_string(), metadata_key: "Patient/Name".to_string() };
-    assert_eq!(field_ref.field_path(), "media:dicom_screenshots_patient.png:Patient_Name");
+fn conservative_media_ref_sanitizes_slashes_and_backslashes_in_field_path_labels() {
+    let field_ref = ConservativeMediaRef {
+        artifact_label: "dicom\\screenshots/patient.png".to_string(),
+        metadata_key: "Patient\\Name/Family".to_string(),
+    };
+    assert_eq!(
+        field_ref.field_path(),
+        "media:dicom_screenshots_patient.png:Patient_Name_Family"
+    );
 }
 
 #[test]
