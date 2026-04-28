@@ -1,3 +1,83 @@
+pub const DESKTOP_FILE_IMPORT_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopFileImportPayload {
+    pub mode: DesktopWorkflowMode,
+    pub payload: String,
+    pub source_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopFileImportError {
+    UnsupportedFileType,
+    FileTooLarge,
+    InvalidCsvUtf8,
+}
+
+impl DesktopFileImportPayload {
+    pub fn from_bytes(
+        source_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<Self, DesktopFileImportError> {
+        if bytes.len() > DESKTOP_FILE_IMPORT_MAX_BYTES {
+            return Err(DesktopFileImportError::FileTooLarge);
+        }
+
+        let source_name = source_name.into();
+        let extension = source_name
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .ok_or(DesktopFileImportError::UnsupportedFileType)?;
+
+        match extension.as_str() {
+            "csv" => Ok(Self {
+                mode: DesktopWorkflowMode::CsvText,
+                payload: std::str::from_utf8(bytes)
+                    .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
+                    .to_string(),
+                source_name: None,
+            }),
+            "xlsx" => Ok(Self {
+                mode: DesktopWorkflowMode::XlsxBase64,
+                payload: encode_base64(bytes),
+                source_name: None,
+            }),
+            "pdf" => Ok(Self {
+                mode: DesktopWorkflowMode::PdfBase64Review,
+                payload: encode_base64(bytes),
+                source_name: Some(source_name),
+            }),
+            _ => Err(DesktopFileImportError::UnsupportedFileType),
+        }
+    }
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+
+        encoded.push(TABLE[(b0 >> 2) as usize] as char);
+        encoded.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+
+    encoded
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopWorkflowMode {
     CsvText,
@@ -70,10 +150,18 @@ impl DesktopWorkflowRequestState {
     pub fn status_message(&self) -> String {
         match self.try_build_request() {
             Ok(request) => format!(
-                "Ready to submit to {}; this slice can submit prepared envelopes to a localhost runtime and render runtime-shaped responses locally. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, file picker upload/download UX, vault/decode/audit workflow, or full review workflow.",
+                "Ready to submit to {}; this slice can submit prepared envelopes to a localhost runtime, use bounded file import/export helpers, and render runtime-shaped responses locally. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, vault/decode/audit workflow, or full review workflow.",
                 request.route
             ),
             Err(error) => format!("Not ready: {error:?}"),
+        }
+    }
+
+    pub fn apply_imported_file(&mut self, imported: DesktopFileImportPayload) {
+        self.mode = imported.mode;
+        self.payload = imported.payload;
+        if let Some(source_name) = imported.source_name {
+            self.source_name = source_name;
         }
     }
 
@@ -472,6 +560,91 @@ mod tests {
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
 
     #[test]
+    fn desktop_file_import_csv_bytes_map_to_csv_text_payload() {
+        let imported =
+            DesktopFileImportPayload::from_bytes("patients.csv", b"name\nAlice").unwrap();
+
+        assert_eq!(imported.mode, DesktopWorkflowMode::CsvText);
+        assert_eq!(imported.payload, "name\nAlice");
+        assert_eq!(imported.source_name, None);
+    }
+
+    #[test]
+    fn desktop_file_import_xlsx_bytes_map_to_xlsx_base64_payload() {
+        let imported =
+            DesktopFileImportPayload::from_bytes("patients.xlsx", b"PK\x03\x04").unwrap();
+
+        assert_eq!(imported.mode, DesktopWorkflowMode::XlsxBase64);
+        assert_eq!(imported.payload, "UEsDBA==");
+        assert_eq!(imported.source_name, None);
+    }
+
+    #[test]
+    fn desktop_file_import_pdf_bytes_map_to_pdf_base64_payload_with_source_name() {
+        let imported = DesktopFileImportPayload::from_bytes("chart.pdf", b"%PDF-1").unwrap();
+
+        assert_eq!(imported.mode, DesktopWorkflowMode::PdfBase64Review);
+        assert_eq!(imported.payload, "JVBERi0x");
+        assert_eq!(imported.source_name.as_deref(), Some("chart.pdf"));
+    }
+
+    #[test]
+    fn desktop_file_import_rejects_unsupported_file_type() {
+        let error = DesktopFileImportPayload::from_bytes("notes.txt", b"name\nAlice").unwrap_err();
+
+        assert_eq!(error, DesktopFileImportError::UnsupportedFileType);
+    }
+
+    #[test]
+    fn desktop_file_import_rejects_large_payloads() {
+        let bytes = vec![b'a'; DESKTOP_FILE_IMPORT_MAX_BYTES + 1];
+        let error = DesktopFileImportPayload::from_bytes("large.csv", &bytes).unwrap_err();
+
+        assert_eq!(error, DesktopFileImportError::FileTooLarge);
+    }
+
+    #[test]
+    fn desktop_file_import_rejects_non_utf8_csv() {
+        let error = DesktopFileImportPayload::from_bytes("patients.csv", &[0xff]).unwrap_err();
+
+        assert_eq!(error, DesktopFileImportError::InvalidCsvUtf8);
+    }
+
+    #[test]
+    fn desktop_file_import_request_state_apply_updates_import_fields_and_preserves_policy_json() {
+        let mut state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::CsvText,
+            payload: "old".to_string(),
+            field_policy_json: r#"[{"header":"keep","phi_type":"Name","action":"review"}]"#
+                .to_string(),
+            source_name: "keep.pdf".to_string(),
+        };
+        let imported = DesktopFileImportPayload::from_bytes("chart.pdf", b"%PDF-1").unwrap();
+
+        state.apply_imported_file(imported);
+
+        assert_eq!(state.mode, DesktopWorkflowMode::PdfBase64Review);
+        assert_eq!(state.payload, "JVBERi0x");
+        assert_eq!(state.source_name, "chart.pdf");
+        assert_eq!(
+            state.field_policy_json,
+            r#"[{"header":"keep","phi_type":"Name","action":"review"}]"#
+        );
+
+        let imported =
+            DesktopFileImportPayload::from_bytes("patients.csv", b"name\nAlice").unwrap();
+        state.apply_imported_file(imported);
+
+        assert_eq!(state.mode, DesktopWorkflowMode::CsvText);
+        assert_eq!(state.payload, "name\nAlice");
+        assert_eq!(state.source_name, "chart.pdf");
+        assert_eq!(
+            state.field_policy_json,
+            r#"[{"header":"keep","phi_type":"Name","action":"review"}]"#
+        );
+    }
+
+    #[test]
     fn desktop_runtime_settings_default_to_localhost() {
         let settings = DesktopRuntimeSettings::default();
         assert_eq!(settings.host, "127.0.0.1");
@@ -662,7 +835,8 @@ mod tests {
         assert!(message.contains("render runtime-shaped responses locally"));
         assert!(message.contains("submit prepared envelopes to a localhost runtime"));
         assert!(message.contains("no OCR, visual redaction, PDF rewrite/export"));
-        assert!(message.contains("file picker upload/download UX"));
+        assert!(message.contains("bounded file import/export helpers"));
+        assert!(!message.contains("file picker upload/download UX"));
         assert!(message.contains("vault/decode/audit workflow"));
         assert!(message.contains("full review workflow"));
         assert!(!message.contains(&["control", "ler workflow"].concat()));
