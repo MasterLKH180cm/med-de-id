@@ -350,7 +350,7 @@ impl DesktopPortableRequestState {
     }
 }
 
-fn require_nonblank<'a, E>(value: &'a str, error: E) -> Result<&'a str, E> {
+fn require_nonblank<E>(value: &str, error: E) -> Result<&str, E> {
     let value = value.trim();
     if value.is_empty() {
         Err(error)
@@ -1089,10 +1089,12 @@ mod tests {
 
     #[test]
     fn portable_inspect_request_builds_runtime_envelope() {
-        let mut state = DesktopPortableRequestState::default();
-        state.mode = DesktopPortableMode::InspectArtifact;
-        state.artifact_json = "{\"version\":1}".to_string();
-        state.portable_passphrase = "portable-secret".to_string();
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::InspectArtifact,
+            artifact_json: "{\"version\":1}".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
 
         let request = state.try_build_request().unwrap();
 
@@ -1105,13 +1107,15 @@ mod tests {
 
     #[test]
     fn portable_import_request_builds_runtime_envelope() {
-        let mut state = DesktopPortableRequestState::default();
-        state.mode = DesktopPortableMode::ImportArtifact;
-        state.destination_vault_path = "/safe/target.vault".to_string();
-        state.destination_vault_passphrase = "target-secret".to_string();
-        state.artifact_json = "{\"version\":1}".to_string();
-        state.portable_passphrase = "portable-secret".to_string();
-        state.import_context = "restore approved records".to_string();
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::ImportArtifact,
+            destination_vault_path: "/safe/target.vault".to_string(),
+            destination_vault_passphrase: "target-secret".to_string(),
+            artifact_json: "{\"version\":1}".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            import_context: "restore approved records".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
 
         let request = state.try_build_request().unwrap();
 
@@ -1170,19 +1174,23 @@ mod tests {
             Err(DesktopPortableValidationError::BlankVaultPath)
         );
 
-        let mut inspect = DesktopPortableRequestState::default();
-        inspect.mode = DesktopPortableMode::InspectArtifact;
-        inspect.artifact_json = "{\"version\":1}".to_string();
+        let inspect = DesktopPortableRequestState {
+            mode: DesktopPortableMode::InspectArtifact,
+            artifact_json: "{\"version\":1}".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
         assert_eq!(
             inspect.try_build_request(),
             Err(DesktopPortableValidationError::BlankPortablePassphrase)
         );
 
-        let mut import = DesktopPortableRequestState::default();
-        import.mode = DesktopPortableMode::ImportArtifact;
-        import.destination_vault_path = "/safe/target.vault".to_string();
-        import.destination_vault_passphrase = "target-secret".to_string();
-        import.portable_passphrase = "portable-secret".to_string();
+        let import = DesktopPortableRequestState {
+            mode: DesktopPortableMode::ImportArtifact,
+            destination_vault_path: "/safe/target.vault".to_string(),
+            destination_vault_passphrase: "target-secret".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
         assert_eq!(
             import.try_build_request(),
             Err(DesktopPortableValidationError::BlankArtifactJson)
@@ -1836,10 +1844,12 @@ mod tests {
 
     #[test]
     fn desktop_runtime_client_accepts_portable_inspect_request_envelope() {
-        let mut state = DesktopPortableRequestState::default();
-        state.mode = DesktopPortableMode::InspectArtifact;
-        state.artifact_json = "{\"version\":1}".to_string();
-        state.portable_passphrase = "portable-secret".to_string();
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::InspectArtifact,
+            artifact_json: "{\"version\":1}".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
         let request = state.try_build_request().expect("valid portable request");
 
         let http = DesktopRuntimeClient::new("127.0.0.1", 8787)
