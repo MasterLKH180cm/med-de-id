@@ -400,6 +400,80 @@ impl PdfExtractionSummary {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ConservativeMediaFormat {
+    Image,
+    Video,
+    Fcs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConservativeMediaScanStatus {
+    MetadataOnly,
+    OcrOrVisualReviewRequired,
+    UnsupportedPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConservativeMediaRef {
+    pub artifact_label: String,
+    pub metadata_key: String,
+}
+
+impl ConservativeMediaRef {
+    pub fn field_path(&self) -> String {
+        format!(
+            "media:{}:{}",
+            sanitize_media_path_label(&self.artifact_label),
+            sanitize_media_path_label(&self.metadata_key)
+        )
+    }
+}
+
+fn sanitize_media_path_label(label: &str) -> String {
+    label.replace(['/', '\\'], "_")
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ConservativeMediaCandidate {
+    pub field_ref: ConservativeMediaRef,
+    pub format: ConservativeMediaFormat,
+    pub phi_type: String,
+    pub source_value: String,
+    pub confidence: f64,
+    pub status: ConservativeMediaScanStatus,
+}
+
+impl std::fmt::Debug for ConservativeMediaCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConservativeMediaCandidate")
+            .field("field_ref", &self.field_ref)
+            .field("format", &self.format)
+            .field("phi_type", &self.phi_type)
+            .field("source_value", &"<redacted>")
+            .field("confidence", &self.confidence)
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ConservativeMediaSummary {
+    pub total_items: usize,
+    pub metadata_only_items: usize,
+    pub visual_review_required_items: usize,
+    pub unsupported_items: usize,
+    pub review_required_candidates: usize,
+}
+
+impl ConservativeMediaSummary {
+    pub fn requires_review(&self) -> bool {
+        self.visual_review_required_items > 0 || self.review_required_candidates > 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DicomPrivateTagPolicy {
     Keep,
     Remove,
