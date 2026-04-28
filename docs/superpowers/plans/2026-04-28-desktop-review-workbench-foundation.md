@@ -122,7 +122,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::CsvText,
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
-            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"},{"header":"patient_id","phi_type":"ID","action":"ReviewRequired"}]"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(request.endpoint, "/tabular/deidentify");
         assert_eq!(request.body["csv"], "patient_id,patient_name\nMRN-001,Alice Smith");
         assert_eq!(request.body["policies"][0]["header"], "patient_name");
-        assert_eq!(request.body["policies"][0]["action"], "Approve");
+        assert_eq!(request.body["policies"][0]["action"], "encode");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -140,7 +140,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::XlsxBase64,
             payload: "UEsDBBQAAAA=".to_string(),
-            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(request.endpoint, "/tabular/deidentify/xlsx");
         assert_eq!(request.body["workbook_base64"], "UEsDBBQAAAA=");
         assert_eq!(request.body["field_policies"][0]["header"], "patient_name");
-        assert_eq!(request.body["field_policies"][0]["action"], "Approve");
+        assert_eq!(request.body["field_policies"][0]["action"], "encode");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -158,7 +158,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::PdfBase64,
             payload: "JVBERi0xLjQK".to_string(),
-            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "Radiology Report.pdf".to_string(),
         };
 
@@ -287,7 +287,7 @@ impl Default for DesktopWorkbenchState {
         Self {
             mode: DesktopWorkflowMode::CsvText,
             payload: String::new(),
-            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"},{"header":"patient_id","phi_type":"ID","action":"ReviewRequired"}]"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#.to_string(),
             source_name: "local-workstation-review.pdf".to_string(),
         }
     }
@@ -363,7 +363,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::CsvText,
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
-            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"},{"header":"patient_id","phi_type":"ID","action":"ReviewRequired"}]"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(request.endpoint, "/tabular/deidentify");
         assert_eq!(request.body["csv"], "patient_id,patient_name\nMRN-001,Alice Smith");
         assert_eq!(request.body["policies"][0]["header"], "patient_name");
-        assert_eq!(request.body["policies"][0]["action"], "Approve");
+        assert_eq!(request.body["policies"][0]["action"], "encode");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -381,7 +381,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::XlsxBase64,
             payload: "UEsDBBQAAAA=".to_string(),
-            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(request.endpoint, "/tabular/deidentify/xlsx");
         assert_eq!(request.body["workbook_base64"], "UEsDBBQAAAA=");
         assert_eq!(request.body["field_policies"][0]["header"], "patient_name");
-        assert_eq!(request.body["field_policies"][0]["action"], "Approve");
+        assert_eq!(request.body["field_policies"][0]["action"], "encode");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -399,7 +399,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::PdfBase64,
             payload: "JVBERi0xLjQK".to_string(),
-            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "Radiology Report.pdf".to_string(),
         };
 
