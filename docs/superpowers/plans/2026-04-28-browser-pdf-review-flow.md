@@ -181,7 +181,7 @@ git commit -m "feat(browser): add bounded pdf review flow"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Update the completion table and current-status bullets to truthfully include the browser PDF review mode. Use these completion numbers unless controller-visible implementation differs:
 
@@ -192,13 +192,13 @@ Update the completion table and current-status bullets to truthfully include the
 
 Also update the missing-items sentence to keep `browser upload UX`, `desktop PDF flow`, `OCR`, `visual redaction`, `handwriting handling`, and `full PDF rewrite/export` listed as missing.
 
-- [ ] **Step 2: Verify README wording and no scope-drift expansion**
+- [x] **Step 2: Verify README wording and no scope-drift expansion**
 
 Run: `grep -nE "Browser/web|Overall|mdid-browser|PDF|moat|controller|agent|orchestration" README.md`
 
 Expected: Browser/web is 30%, Overall is 39%, PDF browser mode is review-only, and any moat/controller/agent/orchestration wording is negative/scope-drift only.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md
