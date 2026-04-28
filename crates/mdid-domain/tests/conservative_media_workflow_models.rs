@@ -48,6 +48,21 @@ fn conservative_media_ref_sanitizes_slashes_and_backslashes_in_field_path_labels
 }
 
 #[test]
+fn conservative_media_ref_debug_redacts_phi_bearing_labels() {
+    let field_ref = ConservativeMediaRef {
+        artifact_label: "patients/Jane-Doe-face.png".to_string(),
+        metadata_key: "Artist".to_string(),
+    };
+
+    let debug = format!("{field_ref:?}");
+
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("Jane-Doe"));
+    assert!(!debug.contains("patients/"));
+    assert!(!debug.contains("Artist"));
+}
+
+#[test]
 fn conservative_media_candidate_debug_redacts_source_value() {
     let candidate = ConservativeMediaCandidate {
         field_ref: ConservativeMediaRef {
@@ -62,6 +77,28 @@ fn conservative_media_candidate_debug_redacts_source_value() {
     };
     let debug = format!("{candidate:?}");
     assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("Jane Patient"));
+}
+
+#[test]
+fn conservative_media_candidate_debug_redacts_phi_bearing_reference_and_source_value() {
+    let candidate = ConservativeMediaCandidate {
+        field_ref: ConservativeMediaRef {
+            artifact_label: "patients/Jane-Doe-face.png".to_string(),
+            metadata_key: "Artist".to_string(),
+        },
+        format: ConservativeMediaFormat::Image,
+        phi_type: "person_name".to_string(),
+        source_value: "Jane Patient".to_string(),
+        confidence: 0.55,
+        status: ConservativeMediaScanStatus::MetadataOnly,
+    };
+
+    let debug = format!("{candidate:?}");
+
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("Jane-Doe"));
+    assert!(!debug.contains("patients/"));
     assert!(!debug.contains("Jane Patient"));
 }
 

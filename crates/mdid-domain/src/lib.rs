@@ -414,10 +414,19 @@ pub enum ConservativeMediaScanStatus {
     UnsupportedPayload,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConservativeMediaRef {
     pub artifact_label: String,
     pub metadata_key: String,
+}
+
+impl std::fmt::Debug for ConservativeMediaRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConservativeMediaRef")
+            .field("artifact_label", &"<redacted>")
+            .field("metadata_key", &"<redacted>")
+            .finish()
+    }
 }
 
 impl ConservativeMediaRef {
