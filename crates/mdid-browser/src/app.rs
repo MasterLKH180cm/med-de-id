@@ -71,7 +71,7 @@ impl InputMode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TabularFlowState {
+struct BrowserFlowState {
     input_mode: InputMode,
     payload: String,
     source_name: String,
@@ -86,7 +86,7 @@ struct TabularFlowState {
     active_submission_token: Option<u64>,
 }
 
-impl Default for TabularFlowState {
+impl Default for BrowserFlowState {
     fn default() -> Self {
         Self {
             input_mode: InputMode::CsvText,
@@ -105,7 +105,7 @@ impl Default for TabularFlowState {
     }
 }
 
-impl TabularFlowState {
+impl BrowserFlowState {
     fn clear_generated_state(&mut self) {
         self.result_output.clear();
         self.summary = IDLE_SUMMARY.to_string();
@@ -118,7 +118,7 @@ impl TabularFlowState {
         self.clear_generated_state();
     }
 
-    fn validate_submission(&self) -> Result<TabularSubmitRequest, String> {
+    fn validate_submission(&self) -> Result<RuntimeSubmitRequest, String> {
         if self.payload.trim().is_empty() {
             return Err(format!(
                 "{} payload is required before submitting.",
@@ -225,33 +225,33 @@ struct FieldPolicyRequest {
     action: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 struct CsvSubmitRequest {
     csv: String,
     policies: Vec<FieldPolicyRequest>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 struct XlsxSubmitRequest {
     workbook_base64: String,
     field_policies: Vec<FieldPolicyRequest>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 struct PdfSubmitRequest {
     pdf_bytes_base64: String,
     source_name: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TabularSubmitRequest {
+struct RuntimeSubmitRequest {
     endpoint: &'static str,
     body_json: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SubmissionHandle {
-    request: TabularSubmitRequest,
+    request: RuntimeSubmitRequest,
     input_mode: InputMode,
     submission_token: u64,
     state_revision: u64,
@@ -287,11 +287,12 @@ struct XlsxRuntimeSuccessResponse {
     review_queue: Vec<RuntimeReviewCandidate>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, PartialEq, Deserialize)]
 struct PdfRuntimeSuccessResponse {
     summary: PdfExtractionSummary,
     page_statuses: Vec<PdfPageStatusResponse>,
     review_queue: Vec<PdfReviewCandidate>,
+    // PDF mode is review-only; rewrite/export bytes are intentionally ignored.
     rewritten_pdf_bytes_base64: Option<String>,
 }
 
@@ -304,19 +305,19 @@ struct PdfExtractionSummary {
     review_required_candidates: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Deserialize)]
 struct PdfPageStatusResponse {
     page: PdfPageRef,
     status: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Deserialize)]
 struct PdfPageRef {
     source_label: String,
     page_number: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, PartialEq, Deserialize)]
 struct PdfReviewCandidate {
     page: PdfPageRef,
     source_text: String,
@@ -350,7 +351,7 @@ fn build_submit_request(
     payload: &str,
     source_name: &str,
     field_policy_json: &str,
-) -> Result<TabularSubmitRequest, String> {
+) -> Result<RuntimeSubmitRequest, String> {
     if input_mode.is_pdf() {
         if source_name.trim().is_empty() {
             return Err("PDF source name is required before submitting.".to_string());
@@ -362,7 +363,7 @@ fn build_submit_request(
         })
         .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
-        return Ok(TabularSubmitRequest {
+        return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
             body_json,
         });
@@ -388,7 +389,7 @@ fn build_submit_request(
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
-    Ok(TabularSubmitRequest {
+    Ok(RuntimeSubmitRequest {
         endpoint: input_mode.endpoint(),
         body_json,
     })
@@ -537,7 +538,7 @@ fn format_pdf_review_queue(review_queue: &[PdfReviewCandidate]) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn perform_runtime_request(request: TabularSubmitRequest) -> Result<String, String> {
+async fn perform_runtime_request(request: RuntimeSubmitRequest) -> Result<String, String> {
     use gloo_net::http::Request;
 
     let response = Request::post(request.endpoint)
@@ -562,13 +563,13 @@ async fn perform_runtime_request(request: TabularSubmitRequest) -> Result<String
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn perform_runtime_request(_request: TabularSubmitRequest) -> Result<String, String> {
+async fn perform_runtime_request(_request: RuntimeSubmitRequest) -> Result<String, String> {
     Err(FETCH_UNAVAILABLE_MESSAGE.to_string())
 }
 
 #[component]
 pub fn App() -> impl IntoView {
-    let state = create_rw_signal(TabularFlowState::default());
+    let state = create_rw_signal(BrowserFlowState::default());
 
     let on_mode_change = move |event| {
         let next_mode = InputMode::from_select_value(&event_target_value(&event));
@@ -645,7 +646,7 @@ pub fn App() -> impl IntoView {
     view! {
         <main class="tabular-flow-shell">
             <h1>"med-de-id browser tool"</h1>
-            <p>"Bounded tabular deidentification flow"</p>
+            <p>"Bounded tabular de-identification and PDF review flow"</p>
 
             <section>
                 <h2>"Input"</h2>
@@ -730,14 +731,14 @@ pub fn App() -> impl IntoView {
 mod tests {
     use super::{
         build_submit_request, format_review_queue, format_summary, parse_runtime_error,
-        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, TabularFlowState,
+        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, BrowserFlowState,
         DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
     };
     use serde_json::json;
 
     #[test]
-    fn tabular_flow_state_defaults_to_csv_shell() {
-        let state = TabularFlowState::default();
+    fn browser_flow_state_defaults_to_csv_shell() {
+        let state = BrowserFlowState::default();
 
         assert_eq!(state.input_mode, InputMode::CsvText);
         assert!(state.payload.is_empty());
@@ -754,7 +755,7 @@ mod tests {
 
     #[test]
     fn submit_requires_payload_before_runtime_request() {
-        let mut state = TabularFlowState::default();
+        let mut state = BrowserFlowState::default();
         let result = state.begin_submit();
 
         assert!(result.is_err());
@@ -769,10 +770,10 @@ mod tests {
 
     #[test]
     fn submit_requires_non_blank_field_policy_before_runtime_request() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id,name\n1,Alice".to_string(),
             field_policy_json: "   \n\t".to_string(),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let result = state.begin_submit();
@@ -831,11 +832,11 @@ mod tests {
 
     #[test]
     fn pdf_submit_requires_source_name_before_runtime_request() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             input_mode: InputMode::PdfBase64,
             payload: "JVBERi0xLjQK".to_string(),
             source_name: "   ".to_string(),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let result = state.begin_submit();
@@ -1048,9 +1049,9 @@ mod tests {
 
     #[test]
     fn runtime_failure_path_keeps_browser_honest() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id\n1".to_string(),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let request = state.begin_submit().unwrap();
@@ -1075,9 +1076,9 @@ mod tests {
 
     #[test]
     fn overlapping_submission_attempt_is_blocked_while_request_is_in_flight() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id\n1".to_string(),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let first = state.begin_submit().unwrap();
@@ -1090,13 +1091,13 @@ mod tests {
 
     #[test]
     fn editing_during_in_flight_request_invalidates_stale_response_without_clearing_spinner() {
-        let mut state = TabularFlowState {
+        let mut state = BrowserFlowState {
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
             result_output: "old-result".to_string(),
             summary: "old-summary".to_string(),
             review_queue: "old-review".to_string(),
             error_banner: Some("old-error".to_string()),
-            ..TabularFlowState::default()
+            ..BrowserFlowState::default()
         };
 
         let submission = state.begin_submit().unwrap();
