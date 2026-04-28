@@ -93,16 +93,16 @@ fn parse_pdf_runtime_success_renders_review_only_summary_and_page_statuses() {
                 "review_required_candidates": 1
             },
             "page_statuses": [
-                {"page": {"source_label": "radiology/report.pdf", "page_number": 1}, "status": "text_layer_present"},
-                {"page": {"source_label": "radiology/report.pdf", "page_number": 2}, "status": "ocr_required"}
+                {"page": {"label": "radiology/report.pdf", "page_number": 1}, "status": "text_layer_present"},
+                {"page": {"label": "radiology/report.pdf", "page_number": 2}, "status": "ocr_required"}
             ],
             "review_queue": [
                 {
-                    "page": {"source_label": "radiology/report.pdf", "page_number": 1},
+                    "page": {"label": "radiology/report.pdf", "page_number": 1},
                     "source_text": "Alice Smith",
                     "phi_type": "patient_name",
-                    "confidence": 0.2,
-                    "review_required": true
+                    "confidence": 20,
+                    "decision": "needs_review"
                 }
             ],
             "rewritten_pdf_bytes_base64": null
@@ -122,7 +122,7 @@ fn parse_pdf_runtime_success_renders_review_only_summary_and_page_statuses() {
     assert!(response.summary.contains("- page 2 (radiology/report.pdf): ocr_required"));
     assert_eq!(
         response.review_queue,
-        "- page 1 / patient_name / confidence 0.2: Alice Smith"
+        "- page 1 / patient_name / confidence 20 / needs_review: Alice Smith"
     );
 }
 ```
@@ -150,7 +150,8 @@ fn build_submit_request(
 // For PdfBase64, require non-blank source_name and serialize:
 // {"pdf_bytes_base64": payload.trim(), "source_name": source_name.trim()}
 // Add PdfRuntimeSuccessResponse, PdfExtractionSummary, PdfPageStatusResponse,
-// PdfPageRef, PdfReviewCandidate DTOs matching the existing runtime JSON.
+// PdfPageRef { label, page_number }, and PdfReviewCandidate with integer confidence
+// and decision fields matching the existing runtime JSON.
 // In parse_runtime_success, map PdfBase64 to RuntimeResponseEnvelope with summary/review_queue strings.
 // Update the Leptos view with a <option value="pdf-base64">"PDF base64"</option>,
 // a source-name input shown only in PDF mode, and hide field-policy JSON for PDF mode.

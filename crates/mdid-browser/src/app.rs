@@ -293,6 +293,7 @@ struct PdfRuntimeSuccessResponse {
     page_statuses: Vec<PdfPageStatusResponse>,
     review_queue: Vec<PdfReviewCandidate>,
     // PDF mode is review-only; rewrite/export bytes are intentionally ignored.
+    #[allow(dead_code)]
     rewritten_pdf_bytes_base64: Option<String>,
 }
 
@@ -313,7 +314,7 @@ struct PdfPageStatusResponse {
 
 #[derive(Clone, Eq, PartialEq, Deserialize)]
 struct PdfPageRef {
-    source_label: String,
+    label: String,
     page_number: usize,
 }
 
@@ -322,8 +323,8 @@ struct PdfReviewCandidate {
     page: PdfPageRef,
     source_text: String,
     phi_type: String,
-    confidence: f64,
-    review_required: bool,
+    confidence: u8,
+    decision: String,
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
@@ -510,7 +511,7 @@ fn format_pdf_summary(
     lines.extend(page_statuses.iter().map(|page_status| {
         format!(
             "- page {} ({}): {}",
-            page_status.page.page_number, page_status.page.source_label, page_status.status
+            page_status.page.page_number, page_status.page.label, page_status.status
         )
     }));
 
@@ -526,10 +527,11 @@ fn format_pdf_review_queue(review_queue: &[PdfReviewCandidate]) -> String {
         .iter()
         .map(|candidate| {
             format!(
-                "- page {} / {} / confidence {}: {}",
+                "- page {} / {} / confidence {} / {}: {}",
                 candidate.page.page_number,
                 candidate.phi_type,
                 candidate.confidence,
+                candidate.decision,
                 candidate.source_text
             )
         })
@@ -861,16 +863,16 @@ mod tests {
                     "review_required_candidates": 1
                 },
                 "page_statuses": [
-                    {"page": {"source_label": "radiology/report.pdf", "page_number": 1}, "status": "text_layer_present"},
-                    {"page": {"source_label": "radiology/report.pdf", "page_number": 2}, "status": "ocr_required"}
+                    {"page": {"label": "radiology/report.pdf", "page_number": 1}, "status": "text_layer_present"},
+                    {"page": {"label": "radiology/report.pdf", "page_number": 2}, "status": "ocr_required"}
                 ],
                 "review_queue": [
                     {
-                        "page": {"source_label": "radiology/report.pdf", "page_number": 1},
+                        "page": {"label": "radiology/report.pdf", "page_number": 1},
                         "source_text": "Alice Smith",
                         "phi_type": "patient_name",
-                        "confidence": 0.2,
-                        "review_required": true
+                        "confidence": 20,
+                        "decision": "needs_review"
                     }
                 ],
                 "rewritten_pdf_bytes_base64": null
@@ -894,7 +896,7 @@ mod tests {
             .contains("- page 2 (radiology/report.pdf): ocr_required"));
         assert_eq!(
             response.review_queue,
-            "- page 1 / patient_name / confidence 0.2: Alice Smith"
+            "- page 1 / patient_name / confidence 20 / needs_review: Alice Smith"
         );
     }
 
