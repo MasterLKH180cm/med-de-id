@@ -6,6 +6,7 @@ const DEFAULT_FIELD_POLICY_JSON: &str = "[\n  {\n    \"header\": \"patient_id\",
 const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
 const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FETCH_UNAVAILABLE_MESSAGE: &str =
     "Runtime submission is only available from a wasm32 browser build.";
 
@@ -14,6 +15,13 @@ enum InputMode {
     CsvText,
     XlsxBase64,
     PdfBase64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+enum BrowserFileReadMode {
+    Text,
+    DataUrlBase64,
 }
 
 impl InputMode {
@@ -85,6 +93,23 @@ impl InputMode {
     fn is_pdf(self) -> bool {
         matches!(self, Self::PdfBase64)
     }
+
+    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+    fn browser_file_read_mode(self) -> BrowserFileReadMode {
+        match self {
+            Self::CsvText => BrowserFileReadMode::Text,
+            Self::XlsxBase64 | Self::PdfBase64 => BrowserFileReadMode::DataUrlBase64,
+        }
+    }
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn file_import_payload_from_data_url(data_url: &str) -> String {
+    data_url
+        .split_once(',')
+        .map(|(_, payload)| payload)
+        .unwrap_or(data_url)
+        .to_string()
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -680,6 +705,107 @@ fn trigger_browser_text_download(_file_name: &str, _text: &str) -> Result<(), St
     Err("Browser export is only available from a wasm32 browser build.".to_string())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlowState>) {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+    use web_sys::{FileReader, HtmlInputElement};
+
+    let Some(input) = event
+        .target()
+        .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
+    else {
+        state.update(|state| {
+            state.error_banner = Some("Browser import input is unavailable.".to_string());
+        });
+        return;
+    };
+
+    let Some(file) = input.files().and_then(|files| files.get(0)) else {
+        return;
+    };
+
+    let file_name = file.name();
+    let Some(input_mode) = InputMode::from_file_name(&file_name) else {
+        state.update(|state| state.reject_imported_file(&file_name));
+        return;
+    };
+
+    let Ok(reader) = FileReader::new() else {
+        state.update(|state| {
+            state.error_banner = Some("Failed to prepare browser file reader.".to_string());
+        });
+        return;
+    };
+
+    let load_state = state;
+    let load_file_name = file_name.clone();
+    let load_reader = reader.clone();
+    let onload = Closure::wrap(Box::new(move || {
+        let payload = load_reader
+            .result()
+            .ok()
+            .and_then(|value| value.as_string())
+            .map(|value| match input_mode.browser_file_read_mode() {
+                BrowserFileReadMode::Text => value,
+                BrowserFileReadMode::DataUrlBase64 => file_import_payload_from_data_url(&value),
+            });
+
+        match payload {
+            Some(payload) => load_state.update(|state| {
+                state.apply_imported_file(&load_file_name, &payload, input_mode);
+            }),
+            None => load_state.update(|state| {
+                state.error_banner = Some("Failed to read browser import payload.".to_string());
+            }),
+        }
+    }) as Box<dyn FnMut()>);
+
+    let error_state = state;
+    let onerror = Closure::wrap(Box::new(move || {
+        error_state.update(|state| {
+            state.error_banner = Some("Failed to read selected browser import file.".to_string());
+        });
+    }) as Box<dyn FnMut()>);
+
+    reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+    reader.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+
+    let read_result = match input_mode.browser_file_read_mode() {
+        BrowserFileReadMode::Text => reader.read_as_text(&file),
+        BrowserFileReadMode::DataUrlBase64 => reader.read_as_data_url(&file),
+    };
+
+    if read_result.is_err() {
+        state.update(|state| {
+            state.error_banner = Some("Failed to start browser import file read.".to_string());
+        });
+        return;
+    }
+
+    onload.forget();
+    onerror.forget();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlowState>) {
+    let raw_name = event_target_value(&event);
+    let file_name = raw_name
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(raw_name.as_str())
+        .to_string();
+
+    if file_name.is_empty() {
+        return;
+    }
+
+    if InputMode::from_file_name(&file_name).is_none() {
+        state.update(|state| state.reject_imported_file(&file_name));
+    }
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let state = create_rw_signal(BrowserFlowState::default());
@@ -716,23 +842,7 @@ pub fn App() -> impl IntoView {
         });
     };
 
-    let on_file_import_change = move |event| {
-        let raw_name = event_target_value(&event);
-        let file_name = raw_name
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(raw_name.as_str())
-            .to_string();
-
-        if file_name.is_empty() {
-            return;
-        }
-
-        if InputMode::from_file_name(&file_name).is_none() {
-            state.update(|state| state.reject_imported_file(&file_name));
-        }
-    };
+    let on_file_import_change = move |event| read_browser_import_file(event, state);
 
     let export_file_name = move || state.get().suggested_export_file_name();
     let can_export_output = move || state.get().can_export_output();
@@ -902,10 +1012,10 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_request, format_review_queue, format_summary, parse_runtime_error,
-        parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, BrowserFlowState,
-        BROWSER_FILE_IMPORT_COPY, DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE,
-        IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
+        build_submit_request, file_import_payload_from_data_url, format_review_queue, format_summary,
+        parse_runtime_error, parse_runtime_success, BrowserFileReadMode, BrowserFlowState,
+        InputMode, RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
+        DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
     };
     use serde_json::json;
 
@@ -1000,6 +1110,37 @@ mod tests {
         assert_eq!(InputMode::from_file_name("workbook.XLSX"), Some(InputMode::XlsxBase64));
         assert_eq!(InputMode::from_file_name("scan.PDF"), Some(InputMode::PdfBase64));
         assert_eq!(InputMode::from_file_name("archive.zip"), None);
+    }
+
+    #[test]
+    fn file_import_read_mode_matches_input_mode() {
+        assert_eq!(
+            InputMode::CsvText.browser_file_read_mode(),
+            BrowserFileReadMode::Text
+        );
+        assert_eq!(
+            InputMode::XlsxBase64.browser_file_read_mode(),
+            BrowserFileReadMode::DataUrlBase64
+        );
+        assert_eq!(
+            InputMode::PdfBase64.browser_file_read_mode(),
+            BrowserFileReadMode::DataUrlBase64
+        );
+    }
+
+    #[test]
+    fn file_import_payload_from_data_url_strips_base64_prefix() {
+        assert_eq!(
+            file_import_payload_from_data_url(
+                "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBA=="
+            ),
+            "UEsDBA=="
+        );
+        assert_eq!(
+            file_import_payload_from_data_url("data:application/pdf;base64,JVBERi0x"),
+            "JVBERi0x"
+        );
+        assert_eq!(file_import_payload_from_data_url("already-base64"), "already-base64");
     }
 
     #[test]
