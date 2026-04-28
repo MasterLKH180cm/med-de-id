@@ -68,7 +68,7 @@ Completion snapshot, based only on landed repository features:
 | CLI | 45% | Early automation surface with bounded local history-file inspection/handoff commands plus existing local workflow entry points; not a complete automation product |
 | Browser/web | 25% | Bounded localhost tabular de-identification page backed by local runtime routes; not a broader browser governance workspace |
 | Desktop app | 10% | Early scaffold only; sensitive-workstation review, vault, decode, and audit flows remain mostly unimplemented |
-| Overall | 36% | Core workspace, vault MVP, tabular path, bounded DICOM/PDF/runtime slices, conservative media/FCS domain models, browser tabular surface, and bounded CLI slices are present, but major workflow depth and surface parity remain missing |
+| Overall | 37% | Core workspace, vault MVP, tabular path, bounded DICOM/PDF/runtime slices, conservative media/FCS domain models and adapter foundation, browser tabular surface, and bounded CLI slices are present, but major workflow depth and surface parity remain missing |
 
 Missing items include deeper policy/detection crates, full review/governance workflows, richer browser UX, desktop app behavior, broader import/export and upload flows, OCR/visual redaction, generalized spreadsheet handling, auth/session handling where needed, and production packaging/hardening.
 
@@ -77,7 +77,7 @@ This repository currently contains the Slice 1 workspace foundation, the Slice 2
 Implemented so far:
 
 - Shared domain models for pipeline, review, vault mapping, decode requests, audit events, and tabular workflow state
-- Conservative media/FCS domain workflow models now distinguish image/video/FCS metadata-only status, OCR-or-visual-review-required status, unsupported payloads, review-required summaries, and redacted candidate debug output; this is only a domain-model foundation and does not implement OCR, visual redaction, FCS semantic parsing, rewrite/export, or runtime/browser/desktop flows
+- Conservative media/FCS domain workflow models and a bounded adapter foundation now distinguish image/video/FCS metadata-only status, OCR-or-visual-review-required status, unsupported payloads, review-required metadata candidates, honest summary counts, and redacted candidate/reference debug output; this does not implement OCR, visual redaction, FCS semantic parsing, rewrite/export, or runtime/browser/desktop flows
 - An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, bounded portable artifact import, deterministic duplicate/normalization handling via the shared import contract, and repeated-value token reuse
 - An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
 - CSV/tabular import hardening strips a leading UTF-8 BOM from the first header before policy matching, so BOM-prefixed CSV exports still match explicit field policies; this is a narrow adapter normalization and does not broaden upload/import workflows
