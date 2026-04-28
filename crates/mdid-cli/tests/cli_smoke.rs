@@ -25,7 +25,7 @@ fn cli_prints_ready_banner_with_no_args() {
 }
 
 #[test]
-fn cli_rejects_removed_moat_command_family_with_exact_usage() {
+fn cli_rejects_removed_moat_round_command_with_updated_usage() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args(["moat", "round"])
         .output()
@@ -34,12 +34,12 @@ fn cli_rejects_removed_moat_command_family_with_exact_usage() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "unknown command: moat round\nusage: mdid-cli [status]\n"
+        "unknown command: moat round\nusage: mdid-cli [status | moat controller-plan --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind KIND] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json]]\n"
     );
 }
 
 #[test]
-fn cli_rejects_moat_token_as_unknown_command() {
+fn cli_rejects_moat_token_as_unknown_command_with_updated_usage() {
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .arg("moat")
         .output()
@@ -48,6 +48,6 @@ fn cli_rejects_moat_token_as_unknown_command() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "unknown command: moat\nusage: mdid-cli [status]\n"
+        "unknown command: moat\nusage: mdid-cli [status | moat controller-plan --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind KIND] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json]]\n"
     );
 }
