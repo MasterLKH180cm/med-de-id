@@ -372,6 +372,9 @@ fn parse_portable_record_ids_json(
 ) -> Result<serde_json::Value, DesktopPortableValidationError> {
     let record_ids: Vec<String> =
         serde_json::from_str(value).map_err(|parse_error| error(parse_error.to_string()))?;
+    if record_ids.is_empty() {
+        return Err(DesktopPortableValidationError::EmptyRecordIds);
+    }
     for record_id in &record_ids {
         if record_id.trim().is_empty() {
             return Err(error("record id must not be blank".to_string()));
@@ -394,6 +397,7 @@ pub enum DesktopPortableValidationError {
     BlankDestinationVaultPassphrase,
     BlankImportContext,
     BlankRequestedBy,
+    EmptyRecordIds,
     InvalidRecordIdsJson(String),
     InvalidArtifactJson(String),
 }
@@ -1137,6 +1141,25 @@ mod tests {
             state.try_build_request(),
             Err(DesktopPortableValidationError::InvalidRecordIdsJson(_))
         ));
+    }
+
+    #[test]
+    fn portable_export_validation_rejects_empty_record_ids() {
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::VaultExport,
+            vault_path: "/safe/local.vault".to_string(),
+            vault_passphrase: "vault-secret".to_string(),
+            record_ids_json: "[]".to_string(),
+            export_passphrase: "portable-secret".to_string(),
+            export_context: "handoff to privacy office".to_string(),
+            requested_by: "desktop".to_string(),
+            ..DesktopPortableRequestState::default()
+        };
+
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopPortableValidationError::EmptyRecordIds)
+        );
     }
 
     #[test]
