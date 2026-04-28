@@ -499,7 +499,7 @@ impl DesktopWorkflowRequestState {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -510,7 +510,7 @@ cargo test -p mdid-desktop status_message_explains_preview_only_runtime_submit_b
 
 Expected: FAIL because `status_message()` returns an empty string.
 
-- [ ] **Step 3: Implement `status_message()` and update GUI**
+- [x] **Step 3: Implement status_message() and update GUI**
 
 Implement `status_message()` in `crates/mdid-desktop/src/lib.rs`:
 
@@ -583,7 +583,7 @@ impl eframe::App for DesktopApp {
 }
 ```
 
-- [ ] **Step 4: Update README completion snapshot truthfully**
+- [x] **Step 4: Update README completion snapshot truthfully**
 
 Patch README status table and bullets:
 
