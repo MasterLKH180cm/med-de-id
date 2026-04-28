@@ -33,7 +33,7 @@ Add these tests inside the existing `#[cfg(test)] mod tests` in `crates/mdid-des
         response.apply_success_json(
             DesktopWorkflowMode::CsvText,
             json!({
-                "rewritten_csv": "patient_name\n<NAME-1>",
+                "csv": "patient_name\n<NAME-1>",
                 "summary": {"encoded_fields": 1, "review_required": 0},
                 "review_queue": []
             }),
@@ -149,7 +149,7 @@ impl DesktopWorkflowResponseState {
 
         self.output = match mode {
             DesktopWorkflowMode::CsvText => envelope
-                .get("rewritten_csv")
+                .get("csv")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("")
                 .to_string(),
