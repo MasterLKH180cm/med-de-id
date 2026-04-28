@@ -1,13 +1,15 @@
 use chrono::Utc;
 use mdid_adapters::{
-    sanitize_output_name, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
+    sanitize_output_name, ConservativeMediaAdapter, ConservativeMediaAdapterError,
+    ConservativeMediaInput, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
     DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy, PdfAdapter,
     PdfAdapterError, PdfPageExtraction, TabularAdapterError,
 };
 use mdid_domain::{
-    BatchSummary, BurnedInAnnotationStatus, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, MappingScope, PdfExtractionSummary, PdfPhiCandidate, PhiCandidate,
-    PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
+    DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, MappingScope,
+    PdfExtractionSummary, PdfPhiCandidate, PhiCandidate, PipelineDefinition, PipelineRun,
+    PipelineRunState, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -24,6 +26,8 @@ pub enum ApplicationError {
     DicomAdapter(#[from] DicomAdapterError),
     #[error(transparent)]
     PdfAdapter(#[from] PdfAdapterError),
+    #[error(transparent)]
+    ConservativeMediaAdapter(#[from] ConservativeMediaAdapterError),
     #[error(transparent)]
     TabularAdapter(#[from] TabularAdapterError),
     #[error(transparent)]
@@ -139,6 +143,27 @@ impl fmt::Debug for PdfDeidentificationOutput {
     }
 }
 
+#[derive(Clone)]
+pub struct ConservativeMediaDeidentificationOutput {
+    pub summary: ConservativeMediaSummary,
+    pub review_queue: Vec<ConservativeMediaCandidate>,
+    pub rewritten_media_bytes: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for ConservativeMediaDeidentificationOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConservativeMediaDeidentificationOutput")
+            .field("summary", &self.summary)
+            .field("review_queue", &"[REDACTED]")
+            .field("review_queue_len", &self.review_queue.len())
+            .field(
+                "rewritten_media_bytes",
+                &self.rewritten_media_bytes.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TabularDeidentificationService;
 
@@ -147,6 +172,26 @@ pub struct DicomDeidentificationService;
 
 #[derive(Clone, Default)]
 pub struct PdfDeidentificationService;
+
+#[derive(Clone, Default)]
+pub struct ConservativeMediaDeidentificationService {
+    _private: (),
+}
+
+impl ConservativeMediaDeidentificationService {
+    pub fn deidentify_metadata(
+        &self,
+        input: ConservativeMediaInput,
+    ) -> Result<ConservativeMediaDeidentificationOutput, ApplicationError> {
+        let extracted = ConservativeMediaAdapter::extract_metadata(input)?;
+
+        Ok(ConservativeMediaDeidentificationOutput {
+            summary: extracted.summary,
+            review_queue: extracted.candidates,
+            rewritten_media_bytes: None,
+        })
+    }
+}
 
 impl PdfDeidentificationService {
     pub fn deidentify_bytes(
