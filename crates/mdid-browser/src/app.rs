@@ -115,7 +115,7 @@ impl fmt::Debug for BrowserFlowState {
             .field("imported_file_name", &self.imported_file_name.as_ref().map(|_| "<redacted>"))
             .field("field_policy_json", &"<redacted>")
             .field("result_output", &"<redacted>")
-            .field("summary", &self.summary)
+            .field("summary", &"<redacted>")
             .field("review_queue", &"<redacted>")
             .field("error_banner", &self.error_banner.as_ref().map(|_| "<redacted>"))
             .field("is_submitting", &self.is_submitting)
@@ -850,6 +850,19 @@ mod tests {
 
         assert!(!debug_output.contains("Jane Patient"));
         assert!(debug_output.contains("error_banner"));
+    }
+
+    #[test]
+    fn browser_flow_state_debug_redacts_summary_text() {
+        let state = BrowserFlowState {
+            summary: "Jane Patient page label".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let debug_output = format!("{state:?}");
+
+        assert!(!debug_output.contains("Jane Patient page label"));
+        assert!(debug_output.contains("summary: \"<redacted>\""));
     }
 
     #[test]
