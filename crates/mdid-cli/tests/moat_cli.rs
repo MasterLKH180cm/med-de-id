@@ -2684,7 +2684,7 @@ fn claim_task_marks_latest_ready_node_in_progress() {
             "--history-path",
             history_path_arg,
             "--node-id",
-            "market_scan",
+            "review",
         ])
         .output()
         .expect("failed to run mdid-cli moat claim-task");
@@ -2722,7 +2722,7 @@ fn claim_task_marks_latest_ready_node_in_progress() {
             "--history-path",
             history_path_arg,
             "--node-id",
-            "market_scan",
+            "review",
         ])
         .output()
         .expect("failed to inspect task graph after claim");
@@ -3338,7 +3338,7 @@ fn reap_stale_tasks_releases_expired_claims() {
             "--history-path",
             history_path_arg,
             "--node-id",
-            "market_scan",
+            "review",
         ])
         .output()
         .expect("failed to inspect task graph after reap");
@@ -3452,7 +3452,7 @@ fn claim_task_rejects_non_ready_node() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("moat task node is not ready"), "{stderr}");
-    assert!(stderr.contains("review"), "{stderr}");
+    assert!(stderr.contains("market_scan"), "{stderr}");
 
     cleanup_history_path(&history_path);
 }
@@ -4815,7 +4815,7 @@ fn cli_rejects_unblock_task_when_task_is_not_blocked() {
             "--history-path",
             history_path_arg,
             "--node-id",
-            "market_scan",
+            "review",
         ])
         .output()
         .expect("failed to run mdid-cli moat unblock-task for ready node");
@@ -4862,7 +4862,7 @@ fn cli_block_task_rejects_unclaimed_ready_task() {
             "--history-path",
             history_path_arg,
             "--node-id",
-            "market_scan",
+            "review",
         ])
         .output()
         .expect("failed to run mdid-cli moat block-task for ready node");
@@ -10400,7 +10400,14 @@ fn cli_reports_latest_moat_assignments_from_persisted_history() {
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
 
     let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .args(["moat", "round", "--history-path", history_path_arg])
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
         .output()
         .expect("failed to seed moat history");
     assert!(
@@ -10448,7 +10455,14 @@ fn cli_moat_assignments_escapes_pipe_delimited_fields() {
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
 
     let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .args(["moat", "round", "--history-path", history_path_arg])
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
         .output()
         .expect("failed to seed moat history");
     assert!(
@@ -10495,7 +10509,14 @@ fn cli_filters_moat_assignments_by_role() {
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
 
     let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .args(["moat", "round", "--history-path", history_path_arg])
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
         .output()
         .expect("failed to seed moat history");
     assert!(
@@ -12074,7 +12095,14 @@ fn cli_reports_helpful_error_for_unknown_commands() {
 fn seed_moat_history_with_assignment_rows(history_path: &PathBuf) {
     let history_path_arg = history_path.to_str().expect("history path should be utf-8");
     let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .args(["moat", "round", "--history-path", history_path_arg])
+        .args([
+            "moat",
+            "round",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path_arg,
+        ])
         .output()
         .expect("failed to seed moat history");
     assert!(
