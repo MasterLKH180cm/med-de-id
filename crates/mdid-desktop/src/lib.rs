@@ -1,10 +1,20 @@
 pub const DESKTOP_FILE_IMPORT_MAX_BYTES: usize = 10 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DesktopFileImportPayload {
     pub mode: DesktopWorkflowMode,
     pub payload: String,
     pub source_name: Option<String>,
+}
+
+impl std::fmt::Debug for DesktopFileImportPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopFileImportPayload")
+            .field("mode", &self.mode)
+            .field("payload", &"<redacted>")
+            .field("source_name", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -586,6 +596,24 @@ mod tests {
         assert_eq!(imported.mode, DesktopWorkflowMode::PdfBase64Review);
         assert_eq!(imported.payload, "JVBERi0x");
         assert_eq!(imported.source_name.as_deref(), Some("chart.pdf"));
+    }
+
+    #[test]
+    fn desktop_file_import_payload_debug_redacts_sensitive_fields() {
+        let imported = DesktopFileImportPayload::from_bytes(
+            "secret-chart.pdf",
+            b"Patient name: Alice Smith\nMRN: 12345",
+        )
+        .unwrap();
+
+        let debug = format!("{imported:?}");
+
+        assert!(debug.contains("payload: \"<redacted>\""));
+        assert!(debug.contains("source_name: \"<redacted>\""));
+        assert!(!debug.contains("Alice Smith"));
+        assert!(!debug.contains("12345"));
+        assert!(!debug.contains("secret-chart.pdf"));
+        assert!(!debug.contains(&imported.payload));
     }
 
     #[test]
