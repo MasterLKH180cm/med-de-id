@@ -538,6 +538,120 @@ fn moat_controller_step_dry_run_json_exports_packet_without_mutating_history() {
 }
 
 #[test]
+fn moat_controller_step_requires_artifacts_exports_top_level_dependency_artifact() {
+    let history_path = unique_history_path("controller-step-top-level-artifact");
+    let mut history = controller_step_history_fixture();
+    let implementation =
+        &mut history["entries"][0]["report"]["control_plane"]["task_graph"]["nodes"][0];
+    implementation
+        .as_object_mut()
+        .expect("implementation object")
+        .remove("artifacts");
+    implementation["artifact_ref"] =
+        Value::String("plan://implementation-top-level-output".to_string());
+    implementation["artifact_summary"] =
+        Value::String("Top-level implementation artifact".to_string());
+    write_history_fixture_with_value(&history_path, history);
+
+    let before = fs::read_to_string(&history_path).expect("failed to read seeded history");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-step",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--requires-artifacts",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run controller-step with top-level dependency artifact");
+
+    assert!(
+        output.status.success(),
+        "controller-step failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("controller-step stdout json");
+    assert_eq!(
+        json["work_packet"]["dependency_artifacts"][0]["node_id"],
+        "implementation"
+    );
+    assert_eq!(
+        json["work_packet"]["dependency_artifacts"][0]["artifact_ref"],
+        "plan://implementation-top-level-output"
+    );
+    assert_eq!(
+        json["work_packet"]["dependency_artifacts"][0]["artifact_summary"],
+        "Top-level implementation artifact"
+    );
+    let after = fs::read_to_string(&history_path).expect("failed to read dry-run history");
+    assert_eq!(after, before, "dry-run controller-step mutated history");
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_controller_step_lock_rejects_non_dry_run_but_dry_run_ignores_stale_lock() {
+    let history_path = unique_history_path("controller-step-lock");
+    write_history_fixture_with_value(&history_path, controller_step_history_fixture());
+    let before = fs::read_to_string(&history_path).expect("failed to read seeded history");
+    let lock_path = history_path.with_file_name(format!(
+        ".{}.lock",
+        history_path
+            .file_name()
+            .expect("history filename")
+            .to_string_lossy()
+    ));
+    fs::write(&lock_path, "stale lock").expect("write stale lock");
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-step",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--agent-id",
+            "reviewer-locked",
+        ])
+        .output()
+        .expect("failed to run locked controller-step");
+    assert!(
+        !rejected.status.success(),
+        "locked controller-step unexpectedly succeeded"
+    );
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("moat history lock already exists"));
+    let after_rejected =
+        fs::read_to_string(&history_path).expect("failed to read rejected history");
+    assert_eq!(
+        after_rejected, before,
+        "locked controller-step mutated history"
+    );
+
+    let dry_run = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-step",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run dry-run locked controller-step");
+    assert!(
+        dry_run.status.success(),
+        "dry-run should ignore stale lock: {}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let after_dry_run = fs::read_to_string(&history_path).expect("failed to read dry-run history");
+    assert_eq!(after_dry_run, before, "dry-run with lock mutated history");
+    cleanup_history_path(&history_path);
+    let _ = fs::remove_file(lock_path);
+}
+
+#[test]
 fn moat_controller_step_text_prints_bounded_handoff() {
     let history_path = unique_history_path("controller-step-text");
     write_history_fixture_with_value(&history_path, controller_step_history_fixture());

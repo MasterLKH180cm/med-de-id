@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::{fs, path::Path, process};
+use std::{fs, fs::OpenOptions, path::Path, process};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -439,6 +439,11 @@ fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), S
 }
 
 fn run_moat_controller_step(command: &MoatControllerStepCommand) -> Result<(), String> {
+    let _lock = if command.dry_run {
+        None
+    } else {
+        Some(HistoryLock::acquire(&command.history_path)?)
+    };
     let mut history = load_history(&command.history_path)?;
 
     if !command.dry_run && command.agent_id.is_none() {
@@ -611,12 +616,76 @@ fn save_history(path: &str, history: &Value) -> Result<(), String> {
         .and_then(|value| value.to_str())
         .unwrap_or("history.json");
     let temp_path = parent.join(format!(".{file_name}.tmp-{}", process::id()));
-    fs::write(&temp_path, serialized)
+    let permissions = fs::metadata(target)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let mut temp_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
         .map_err(|error| format!("failed to write moat history temp file: {error}"))?;
+    use std::io::Write;
+    temp_file
+        .write_all(serialized.as_bytes())
+        .map_err(|error| format!("failed to write moat history temp file: {error}"))?;
+    temp_file
+        .sync_all()
+        .map_err(|error| format!("failed to sync moat history temp file: {error}"))?;
+    drop(temp_file);
+    if let Some(permissions) = permissions {
+        fs::set_permissions(&temp_path, permissions)
+            .map_err(|error| format!("failed to preserve moat history permissions: {error}"))?;
+    }
     fs::rename(&temp_path, target).map_err(|error| {
         let _ = fs::remove_file(&temp_path);
         format!("failed to replace moat history file: {error}")
-    })
+    })?;
+    if let Ok(parent_dir) = fs::File::open(parent) {
+        parent_dir
+            .sync_all()
+            .map_err(|error| format!("failed to sync moat history directory: {error}"))?;
+    }
+    Ok(())
+}
+
+struct HistoryLock {
+    path: std::path::PathBuf,
+}
+
+impl HistoryLock {
+    fn acquire(history_path: &str) -> Result<Self, String> {
+        let path = history_lock_path(history_path);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!("moat history lock already exists: {}", path.display())
+                } else {
+                    format!(
+                        "failed to create moat history lock {}: {error}",
+                        path.display()
+                    )
+                }
+            })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for HistoryLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn history_lock_path(history_path: &str) -> std::path::PathBuf {
+    let target = Path::new(history_path);
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("history.json");
+    target.with_file_name(format!(".{file_name}.lock"))
 }
 
 fn load_round_nodes<'a>(
@@ -884,6 +953,21 @@ fn collect_dependency_artifacts(
         };
         if node.get("state").and_then(Value::as_str) != Some("completed") {
             continue;
+        }
+        if let Some(artifact_ref) = node.get("artifact_ref").and_then(Value::as_str) {
+            let artifact_summary = node
+                .get("artifact_summary")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    format!(
+                        "invalid moat history file: dependency {dependency} artifact_summary must be a string"
+                    )
+                })?;
+            results.push(DependencyArtifact {
+                node_id: dependency.clone(),
+                artifact_ref: artifact_ref.to_string(),
+                artifact_summary: artifact_summary.to_string(),
+            });
         }
         if let Some(artifacts) = node.get("artifacts").and_then(Value::as_array) {
             for artifact in artifacts {
