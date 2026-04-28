@@ -484,10 +484,11 @@ fn build_vault_decode_stdout(
     report_path: &PathBuf,
     report: &VaultDecodeReport,
 ) -> Result<String, String> {
+    let audit_event = vault_audit_event_report(&report.audit_event);
     let stdout = json!({
         "report_path": report_path,
         "decoded_value_count": report.decoded_value_count,
-        "audit_event": report.audit_event,
+        "audit_event": audit_event,
     });
     serde_json::to_string(&stdout).map_err(|err| format!("failed to render decode summary: {err}"))
 }
@@ -510,19 +511,21 @@ fn build_vault_audit_report(events: &[AuditEvent], limit: Option<usize>) -> Vaul
         .unwrap_or(DEFAULT_VAULT_AUDIT_LIMIT)
         .min(MAX_VAULT_AUDIT_LIMIT);
     let selected = events.iter().rev().take(limit);
-    let events = selected
-        .map(|event| VaultAuditEventReport {
-            id: event.id.to_string(),
-            kind: event.kind.as_str().to_string(),
-            actor: event.actor.clone(),
-            detail: sanitized_audit_detail(event),
-            recorded_at: event.recorded_at.to_rfc3339(),
-        })
-        .collect::<Vec<_>>();
+    let events = selected.map(vault_audit_event_report).collect::<Vec<_>>();
     VaultAuditReport {
         event_count,
         returned_event_count: events.len(),
         events,
+    }
+}
+
+fn vault_audit_event_report(event: &AuditEvent) -> VaultAuditEventReport {
+    VaultAuditEventReport {
+        id: event.id.to_string(),
+        kind: event.kind.as_str().to_string(),
+        actor: event.actor.clone(),
+        detail: sanitized_audit_detail(event),
+        recorded_at: event.recorded_at.to_rfc3339(),
     }
 }
 
@@ -874,7 +877,7 @@ mod tests {
                 "id":"00000000-0000-0000-0000-000000000000",
                 "kind":"decode",
                 "actor":"cli",
-                "detail":"decode event",
+                "detail":"approved disclosure for Alice Example; case packet for Alice Example",
                 "recorded_at":"2026-04-29T00:00:00Z"
             }))
             .unwrap(),
@@ -887,6 +890,9 @@ mod tests {
         assert!(report_json.contains("original_value"));
         assert!(!stdout_json.contains("Alice Example"));
         assert!(!stdout_json.contains("original_value"));
+        assert!(!stdout_json.contains("approved disclosure for Alice Example"));
+        assert!(!stdout_json.contains("case packet for Alice Example"));
+        assert!(stdout_json.contains("decode event"));
         assert!(stdout_json.contains("decoded_value_count"));
         assert!(stdout_json.contains("audit_event"));
     }
