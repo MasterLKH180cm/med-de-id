@@ -122,15 +122,16 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::CsvText,
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
-            field_policy_json: r#"{"patient_name":"Approve","patient_id":"ReviewRequired"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"},{"header":"patient_id","phi_type":"ID","action":"ReviewRequired"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
         let request = state.build_submit_request().expect("csv request should build");
 
-        assert_eq!(request.endpoint, "/tabular/deidentify/csv");
+        assert_eq!(request.endpoint, "/tabular/deidentify");
         assert_eq!(request.body["csv"], "patient_id,patient_name\nMRN-001,Alice Smith");
-        assert_eq!(request.body["field_policies"]["patient_name"], "Approve");
+        assert_eq!(request.body["policies"][0]["header"], "patient_name");
+        assert_eq!(request.body["policies"][0]["action"], "Approve");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -139,15 +140,16 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::XlsxBase64,
             payload: "UEsDBBQAAAA=".to_string(),
-            field_policy_json: r#"{"patient_name":"Approve"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
         let request = state.build_submit_request().expect("xlsx request should build");
 
         assert_eq!(request.endpoint, "/tabular/deidentify/xlsx");
-        assert_eq!(request.body["xlsx_bytes_base64"], "UEsDBBQAAAA=");
-        assert_eq!(request.body["field_policies"]["patient_name"], "Approve");
+        assert_eq!(request.body["workbook_base64"], "UEsDBBQAAAA=");
+        assert_eq!(request.body["field_policies"][0]["header"], "patient_name");
+        assert_eq!(request.body["field_policies"][0]["action"], "Approve");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -156,7 +158,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::PdfBase64,
             payload: "JVBERi0xLjQK".to_string(),
-            field_policy_json: r#"{"patient_name":"Approve"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
             source_name: "Radiology Report.pdf".to_string(),
         };
 
@@ -231,7 +233,7 @@ impl DesktopWorkflowMode {
 
     pub fn endpoint(self) -> &'static str {
         match self {
-            Self::CsvText => "/tabular/deidentify/csv",
+            Self::CsvText => "/tabular/deidentify",
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64 => "/pdf/deidentify",
         }
@@ -285,7 +287,7 @@ impl Default for DesktopWorkbenchState {
         Self {
             mode: DesktopWorkflowMode::CsvText,
             payload: String::new(),
-            field_policy_json: r#"{"patient_name":"Approve","patient_id":"ReviewRequired"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"},{"header":"patient_id","phi_type":"ID","action":"ReviewRequired"}]"#.to_string(),
             source_name: "local-workstation-review.pdf".to_string(),
         }
     }
@@ -303,13 +305,13 @@ impl DesktopWorkbenchState {
                 let field_policies = self.parse_field_policies()?;
                 json!({
                     "csv": payload,
-                    "field_policies": field_policies,
+                    "policies": field_policies,
                 })
             }
             DesktopWorkflowMode::XlsxBase64 => {
                 let field_policies = self.parse_field_policies()?;
                 json!({
-                    "xlsx_bytes_base64": payload,
+                    "workbook_base64": payload,
                     "field_policies": field_policies,
                 })
             }
@@ -361,15 +363,16 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::CsvText,
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
-            field_policy_json: r#"{"patient_name":"Approve","patient_id":"ReviewRequired"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"},{"header":"patient_id","phi_type":"ID","action":"ReviewRequired"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
         let request = state.build_submit_request().expect("csv request should build");
 
-        assert_eq!(request.endpoint, "/tabular/deidentify/csv");
+        assert_eq!(request.endpoint, "/tabular/deidentify");
         assert_eq!(request.body["csv"], "patient_id,patient_name\nMRN-001,Alice Smith");
-        assert_eq!(request.body["field_policies"]["patient_name"], "Approve");
+        assert_eq!(request.body["policies"][0]["header"], "patient_name");
+        assert_eq!(request.body["policies"][0]["action"], "Approve");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -378,15 +381,16 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::XlsxBase64,
             payload: "UEsDBBQAAAA=".to_string(),
-            field_policy_json: r#"{"patient_name":"Approve"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
         let request = state.build_submit_request().expect("xlsx request should build");
 
         assert_eq!(request.endpoint, "/tabular/deidentify/xlsx");
-        assert_eq!(request.body["xlsx_bytes_base64"], "UEsDBBQAAAA=");
-        assert_eq!(request.body["field_policies"]["patient_name"], "Approve");
+        assert_eq!(request.body["workbook_base64"], "UEsDBBQAAAA=");
+        assert_eq!(request.body["field_policies"][0]["header"], "patient_name");
+        assert_eq!(request.body["field_policies"][0]["action"], "Approve");
         assert!(request.body.get("source_name").is_none());
     }
 
@@ -395,7 +399,7 @@ mod tests {
         let state = DesktopWorkbenchState {
             mode: DesktopWorkflowMode::PdfBase64,
             payload: "JVBERi0xLjQK".to_string(),
-            field_policy_json: r#"{"patient_name":"Approve"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"Approve"}]"#.to_string(),
             source_name: "Radiology Report.pdf".to_string(),
         };
 

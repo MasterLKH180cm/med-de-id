@@ -8,7 +8,7 @@ pub enum DesktopWorkflowMode {
 impl DesktopWorkflowMode {
     pub fn disclosure(self) -> &'static str {
         match self {
-            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify/csv; no generalized workflow orchestrator is included.",
+            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; no generalized workflow orchestrator is included.",
             Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; no generalized workflow orchestrator is included.",
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; no generalized workflow orchestrator and no OCR/PDF rewrite are included.",
         }
@@ -16,14 +16,14 @@ impl DesktopWorkflowMode {
 
     fn route(self) -> &'static str {
         match self {
-            Self::CsvText => "/tabular/deidentify/csv",
+            Self::CsvText => "/tabular/deidentify",
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64Review => "/pdf/deidentify",
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowRequestState {
     pub mode: DesktopWorkflowMode,
     pub payload: String,
@@ -56,16 +56,26 @@ impl DesktopWorkflowRequestState {
                     return Err(DesktopWorkflowValidationError::BlankFieldPolicyJson);
                 }
 
-                let field_policies =
+                let field_policies: serde_json::Value =
                     serde_json::from_str(&self.field_policy_json).map_err(|error| {
                         DesktopWorkflowValidationError::InvalidFieldPolicyJson(error.to_string())
                     })?;
 
+                let body = match self.mode {
+                    DesktopWorkflowMode::CsvText => serde_json::json!({
+                        "csv": self.payload,
+                        "policies": field_policies,
+                    }),
+                    DesktopWorkflowMode::XlsxBase64 => serde_json::json!({
+                        "workbook_base64": self.payload,
+                        "field_policies": field_policies,
+                    }),
+                    DesktopWorkflowMode::PdfBase64Review => unreachable!(),
+                };
+
                 Ok(DesktopWorkflowRequest {
                     route: self.mode.route(),
-                    payload: self.payload.clone(),
-                    field_policies: Some(field_policies),
-                    source_name: None,
+                    body,
                 })
             }
             DesktopWorkflowMode::PdfBase64Review => {
@@ -75,21 +85,20 @@ impl DesktopWorkflowRequestState {
 
                 Ok(DesktopWorkflowRequest {
                     route: self.mode.route(),
-                    payload: self.payload.clone(),
-                    field_policies: None,
-                    source_name: Some(self.source_name.clone()),
+                    body: serde_json::json!({
+                        "pdf_bytes_base64": self.payload,
+                        "source_name": self.source_name,
+                    }),
                 })
             }
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct DesktopWorkflowRequest {
     pub route: &'static str,
-    pub payload: String,
-    pub field_policies: Option<serde_json::Value>,
-    pub source_name: Option<String>,
+    pub body: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,57 +129,65 @@ mod tests {
     }
 
     #[test]
-    fn csv_text_builds_tabular_csv_request_with_field_policies() {
+    fn csv_text_builds_runtime_compatible_tabular_request_body() {
         let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::CsvText,
             payload: "name\nAlice".to_string(),
-            field_policy_json: r#"{"patient_name":"mask"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"redact"}]"#
+                .to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
         let request = state.try_build_request().unwrap();
 
-        assert_eq!(request.route, "/tabular/deidentify/csv");
-        assert_eq!(request.payload, "name\nAlice");
-        assert_eq!(request.field_policies, Some(json!({"patient_name":"mask"})));
-        assert_eq!(request.source_name, None);
+        assert_eq!(request.route, "/tabular/deidentify");
+        assert_eq!(
+            request.body,
+            json!({
+                "csv": "name\nAlice",
+                "policies": [{"header":"patient_name","phi_type":"NAME","action":"redact"}]
+            })
+        );
     }
 
     #[test]
-    fn xlsx_base64_builds_tabular_xlsx_request_with_field_policies() {
+    fn xlsx_base64_builds_runtime_compatible_tabular_request_body() {
         let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::XlsxBase64,
             payload: "UEsDBAo=".to_string(),
-            field_policy_json: r#"{"patient_name":"redact"}"#.to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"NAME","action":"redact"}]"#
+                .to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
         let request = state.try_build_request().unwrap();
 
         assert_eq!(request.route, "/tabular/deidentify/xlsx");
-        assert_eq!(request.payload, "UEsDBAo=");
         assert_eq!(
-            request.field_policies,
-            Some(json!({"patient_name":"redact"}))
+            request.body,
+            json!({
+                "workbook_base64": "UEsDBAo=",
+                "field_policies": [{"header":"patient_name","phi_type":"NAME","action":"redact"}]
+            })
         );
-        assert_eq!(request.source_name, None);
     }
 
     #[test]
-    fn pdf_base64_review_builds_pdf_request_without_field_policies() {
+    fn pdf_base64_review_builds_runtime_compatible_pdf_request_body() {
         let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::PdfBase64Review,
             payload: "JVBERi0x".to_string(),
-            field_policy_json: r#"{"patient_name":"redact"}"#.to_string(),
+            field_policy_json: r#"{\"patient_name\":\"redact\"}"#.to_string(),
             source_name: "chart.pdf".to_string(),
         };
 
         let request = state.try_build_request().unwrap();
 
         assert_eq!(request.route, "/pdf/deidentify");
-        assert_eq!(request.payload, "JVBERi0x");
-        assert_eq!(request.field_policies, None);
-        assert_eq!(request.source_name, Some("chart.pdf".to_string()));
+        assert_eq!(
+            request.body,
+            json!({"pdf_bytes_base64":"JVBERi0x","source_name":"chart.pdf"})
+        );
 
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
@@ -186,20 +203,20 @@ mod tests {
             field_policy_json: r#"{"patient_name":"redact"}"#.to_string(),
             source_name: "local-workstation-review.pdf".to_string(),
         };
-        assert_eq!(
+        assert!(matches!(
             blank_csv.try_build_request(),
             Err(DesktopWorkflowValidationError::BlankPayload)
-        );
+        ));
 
         let blank_policy = DesktopWorkflowRequestState {
             payload: "name\nAlice".to_string(),
             field_policy_json: "  ".to_string(),
             ..DesktopWorkflowRequestState::default()
         };
-        assert_eq!(
+        assert!(matches!(
             blank_policy.try_build_request(),
             Err(DesktopWorkflowValidationError::BlankFieldPolicyJson)
-        );
+        ));
 
         let invalid_policy = DesktopWorkflowRequestState {
             payload: "name\nAlice".to_string(),
@@ -217,9 +234,9 @@ mod tests {
             field_policy_json: r#"{"patient_name":"redact"}"#.to_string(),
             source_name: "  ".to_string(),
         };
-        assert_eq!(
+        assert!(matches!(
             blank_pdf_source.try_build_request(),
             Err(DesktopWorkflowValidationError::BlankSourceName)
-        );
+        ));
     }
 }
