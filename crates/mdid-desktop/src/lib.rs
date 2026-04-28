@@ -184,6 +184,121 @@ pub enum DesktopWorkflowValidationError {
     BlankSourceName,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopRuntimeSubmitError {
+    InvalidEndpoint(String),
+    SerializeRequest(String),
+    RuntimeIo(String),
+    InvalidHttpResponse(String),
+    RuntimeHttpStatus { status: u16, body: String },
+    InvalidJsonBody(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopRuntimeClient {
+    host: String,
+    port: u16,
+}
+
+impl DesktopRuntimeClient {
+    pub fn new(host: impl Into<String>, port: u16) -> Result<Self, DesktopRuntimeSubmitError> {
+        let host = host.into();
+        if !matches!(host.as_str(), "localhost" | "127.0.0.1") {
+            return Err(DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime client only supports localhost/127.0.0.1".to_string(),
+            ));
+        }
+        if port == 0 {
+            return Err(DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime client requires a non-zero port".to_string(),
+            ));
+        }
+
+        Ok(Self { host, port })
+    }
+
+    pub fn build_http_request(
+        &self,
+        request: &DesktopWorkflowRequest,
+    ) -> Result<String, DesktopRuntimeSubmitError> {
+        let body = request
+            .body
+            .get("csv")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string)
+            .map(Ok)
+            .unwrap_or_else(|| {
+                serde_json::to_string(&request.body)
+                    .map_err(|error| DesktopRuntimeSubmitError::SerializeRequest(error.to_string()))
+            })?;
+
+        Ok(format!(
+            "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            request.route,
+            self.host,
+            self.port,
+            body.len(),
+            body
+        ))
+    }
+
+    pub fn submit(
+        &self,
+        request: &DesktopWorkflowRequest,
+    ) -> Result<serde_json::Value, DesktopRuntimeSubmitError> {
+        use std::io::{Read, Write};
+
+        let http_request = self.build_http_request(request)?;
+        let mut stream = std::net::TcpStream::connect((self.host.as_str(), self.port))
+            .map_err(|error| DesktopRuntimeSubmitError::RuntimeIo(error.to_string()))?;
+        stream
+            .write_all(http_request.as_bytes())
+            .map_err(|error| DesktopRuntimeSubmitError::RuntimeIo(error.to_string()))?;
+
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .map_err(|error| DesktopRuntimeSubmitError::RuntimeIo(error.to_string()))?;
+
+        Self::extract_json_body(&response)
+    }
+
+    pub fn extract_json_body(
+        response: &str,
+    ) -> Result<serde_json::Value, DesktopRuntimeSubmitError> {
+        let (head, body) = response.split_once("\r\n\r\n").ok_or_else(|| {
+            DesktopRuntimeSubmitError::InvalidHttpResponse(
+                "HTTP response missing header/body separator".to_string(),
+            )
+        })?;
+        let status_line = head.lines().next().ok_or_else(|| {
+            DesktopRuntimeSubmitError::InvalidHttpResponse(
+                "HTTP response missing status".to_string(),
+            )
+        })?;
+        let status = status_line
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| {
+                DesktopRuntimeSubmitError::InvalidHttpResponse(
+                    "HTTP response missing status code".to_string(),
+                )
+            })?
+            .parse::<u16>()
+            .map_err(|error| DesktopRuntimeSubmitError::InvalidHttpResponse(error.to_string()))?;
+
+        if !(200..300).contains(&status) {
+            return Err(DesktopRuntimeSubmitError::RuntimeHttpStatus {
+                status,
+                body: body.to_string(),
+            });
+        }
+
+        serde_json::from_str(body)
+            .map_err(|error| DesktopRuntimeSubmitError::InvalidJsonBody(error.to_string()))
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowResponseState {
     pub banner: String,
@@ -430,6 +545,63 @@ mod tests {
         assert!(message.contains("file picker upload/download UX"));
         assert!(message.contains("vault/decode/audit workflow"));
         assert!(message.contains("controller workflow"));
+    }
+
+    #[test]
+    fn desktop_runtime_client_builds_local_post_request() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::CsvText,
+            payload: "patient_name\nJane".to_string(),
+            field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#
+                .to_string(),
+            source_name: "unused.pdf".to_string(),
+        };
+        let request = state.try_build_request().expect("valid request");
+
+        let client = DesktopRuntimeClient::new("127.0.0.1", 8787).expect("valid local client");
+        let http = client.build_http_request(&request).expect("request bytes");
+
+        assert!(http.starts_with("POST /tabular/deidentify HTTP/1.1\r\n"));
+        assert!(http.contains("Host: 127.0.0.1:8787\r\n"));
+        assert!(http.contains("Content-Type: application/json\r\n"));
+        assert!(http.contains("Connection: close\r\n"));
+        assert!(http.ends_with("Jane"));
+    }
+
+    #[test]
+    fn desktop_runtime_client_rejects_non_local_hosts() {
+        let error =
+            DesktopRuntimeClient::new("example.com", 8787).expect_err("remote host rejected");
+        assert_eq!(
+            error,
+            DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime client only supports localhost/127.0.0.1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_client_extracts_success_json_body() {
+        let response = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\n\r\n{\"csv\":\"ok\"}";
+
+        let body = DesktopRuntimeClient::extract_json_body(response).expect("success body");
+
+        assert_eq!(body, serde_json::json!({"csv":"ok"}));
+    }
+
+    #[test]
+    fn desktop_runtime_client_reports_runtime_error_body() {
+        let response = "HTTP/1.1 422 Unprocessable Entity\r\ncontent-type: application/json\r\n\r\n{\"error\":\"bad csv\"}";
+
+        let error = DesktopRuntimeClient::extract_json_body(response).expect_err("runtime error");
+
+        assert_eq!(
+            error,
+            DesktopRuntimeSubmitError::RuntimeHttpStatus {
+                status: 422,
+                body: "{\"error\":\"bad csv\"}".to_string(),
+            }
+        );
     }
 
     #[test]
