@@ -1,10 +1,10 @@
 # Desktop Local Runtime Submit Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For automated workers:** REQUIRED SUB-SKILL: Use the recommended plan-execution workflow to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a narrow desktop workstation action that submits the already-built request envelope to a local `mdid-runtime` HTTP server and renders the runtime response.
 
-**Architecture:** Keep the desktop surface bounded and local-first: a small HTTP helper in `mdid-desktop` posts JSON to `127.0.0.1:<port>` for the existing selected route, then reuses `DesktopWorkflowResponseState` parsing/rendering. This is not a controller/orchestration feature and does not add agent workflow semantics.
+**Architecture:** Keep the desktop surface bounded and local-first: a small HTTP helper in `mdid-desktop` posts JSON to `127.0.0.1:<port>` for the existing selected route, then reuses `DesktopWorkflowResponseState` parsing/rendering. This is not a broad coordination feature and does not add non-product workflow semantics.
 
 **Tech Stack:** Rust workspace, `eframe`/`egui`, `serde_json`, standard-library `TcpStream` HTTP/1.1, Cargo tests.
 
@@ -356,7 +356,7 @@ Change the completion table to reflect only the landed desktop local runtime sub
 
 ```markdown
 | Desktop app | 23% | Bounded sensitive-workstation foundation now prepares local runtime CSV, XLSX, and PDF review requests, can submit those prepared envelopes to a localhost runtime, and renders runtime-shaped response panes with honest disclosures; file picker upload/download UX, vault browsing, decode, audit investigation, and full review workflows remain unimplemented. |
-| Overall | 43% | Core workspace, vault MVP, tabular path, bounded DICOM/PDF/runtime slices, conservative media/FCS domain models, adapter/application review foundation, bounded runtime metadata review and PDF review entries, browser tabular/PDF review surface, desktop request-preparation/localhost-submit/response workbench foundation, and local CLI foundations are present; major workflow depth and surface parity remain missing; scope-drift controller/moat CLI wording is not counted as core product progress. |
+| Overall | 43% | Core workspace, vault MVP, tabular path, bounded DICOM/PDF/runtime slices, conservative media/FCS domain models, adapter/application review foundation, bounded runtime metadata review and PDF review entries, browser tabular/PDF review surface, desktop request-preparation/localhost-submit/response workbench foundation, and local CLI foundations are present; major workflow depth and surface parity remain missing; scope-drift legacy CLI wording is not counted as core product progress. |
 ```
 
 Also update the desktop implemented bullet to mention localhost runtime submission and keep missing limitations explicit.
@@ -384,6 +384,6 @@ git commit -m "feat(desktop): wire local runtime submit action"
 
 ## Self-Review
 
-- Spec coverage: the plan adds only a bounded desktop localhost submit action and README truth-sync, matching the highest-leverage desktop runtime-submission gap. It does not add controller/orchestration/agent semantics.
+- Spec coverage: the plan adds only a bounded desktop localhost submit action and README truth-sync, matching the highest-leverage desktop runtime-submission gap. It does not add broad coordination or non-product workflow semantics.
 - Placeholder scan: no TBD/TODO/fill-in placeholders are present. The only contingency gives exact behavior-preserving nested-match fallback for a Rust type mismatch.
 - Type consistency: `DesktopRuntimeClient`, `DesktopRuntimeSubmitError`, and `DesktopRuntimeSettings` names are consistent across tests, implementation, and UI wiring.
