@@ -240,6 +240,11 @@ impl DesktopVaultRequestState {
                     return Err(DesktopVaultValidationError::BlankOutputTarget);
                 }
 
+                let justification = self.justification.trim();
+                if justification.is_empty() {
+                    return Err(DesktopVaultValidationError::BlankJustification);
+                }
+
                 let record_ids: Vec<uuid::Uuid> = serde_json::from_str(&self.record_ids_json)
                     .map_err(|error| {
                         DesktopVaultValidationError::InvalidRecordIdsJson(error.to_string())
@@ -253,7 +258,7 @@ impl DesktopVaultRequestState {
                     "vault_passphrase": self.vault_passphrase.clone(),
                     "record_ids": record_ids,
                     "output_target": output_target,
-                    "justification": self.justification.trim(),
+                    "justification": justification,
                     "requested_by": self.requested_by.trim(),
                 })
             }
@@ -284,6 +289,7 @@ pub enum DesktopVaultValidationError {
     BlankVaultPath,
     BlankVaultPassphrase,
     BlankOutputTarget,
+    BlankJustification,
     EmptyRecordIds,
     InvalidRecordIdsJson(String),
 }
@@ -425,10 +431,32 @@ fn parse_field_policies(
     Ok(value)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct DesktopWorkflowRequest {
     pub route: &'static str,
     pub body: serde_json::Value,
+}
+
+impl std::fmt::Debug for DesktopWorkflowRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopWorkflowRequest")
+            .field("route", &self.route)
+            .field("body", &redact_vault_passphrase_in_body(&self.body))
+            .finish()
+    }
+}
+
+fn redact_vault_passphrase_in_body(body: &serde_json::Value) -> serde_json::Value {
+    let mut redacted = body.clone();
+    if let serde_json::Value::Object(object) = &mut redacted {
+        if object.contains_key("vault_passphrase") {
+            object.insert(
+                "vault_passphrase".to_string(),
+                serde_json::Value::String("<redacted>".to_string()),
+            );
+        }
+    }
+    redacted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -831,6 +859,31 @@ mod tests {
     }
 
     #[test]
+    fn desktop_vault_workflow_request_debug_redacts_passphrase_after_build() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::Decode,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "super secret passphrase".to_string(),
+            record_ids_json: r#"["550e8400-e29b-41d4-a716-446655440000"]"#.to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "incident review".to_string(),
+            requested_by: "desktop".to_string(),
+            audit_kind: None,
+            audit_actor: None,
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("decode request should build");
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("/vault/decode"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("super secret passphrase"));
+        assert_eq!(request.body["vault_passphrase"], "super secret passphrase");
+    }
+
+    #[test]
     fn desktop_vault_request_validation_rejects_blank_sensitive_inputs() {
         let mut state = DesktopVaultRequestState::default();
         assert_eq!(
@@ -862,6 +915,26 @@ mod tests {
             state.try_build_request(),
             Err(DesktopVaultValidationError::InvalidRecordIdsJson(_))
         ));
+    }
+
+    #[test]
+    fn desktop_vault_decode_validation_rejects_blank_justification() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::Decode,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            record_ids_json: r#"["550e8400-e29b-41d4-a716-446655440000"]"#.to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "   ".to_string(),
+            requested_by: "desktop".to_string(),
+            audit_kind: None,
+            audit_actor: None,
+        };
+
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::BlankJustification)
+        );
     }
 
     #[test]
