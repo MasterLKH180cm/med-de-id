@@ -592,6 +592,51 @@ fn moat_controller_step_requires_artifacts_exports_top_level_dependency_artifact
 }
 
 #[test]
+fn moat_controller_step_requires_artifacts_ignores_top_level_summary_without_ref() {
+    let history_path = unique_history_path("controller-step-summary-without-ref");
+    let mut history = controller_step_history_fixture();
+    let implementation =
+        &mut history["entries"][0]["report"]["control_plane"]["task_graph"]["nodes"][0];
+    implementation
+        .as_object_mut()
+        .expect("implementation object")
+        .remove("artifacts");
+    implementation["artifact_summary"] =
+        Value::String("Summary without exportable artifact ref".to_string());
+    write_history_fixture_with_value(&history_path, history);
+
+    let before = fs::read_to_string(&history_path).expect("failed to read seeded history");
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-step",
+            "--history-path",
+            history_path.to_str().expect("history path utf8"),
+            "--requires-artifacts",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run controller-step with summary-only dependency artifact");
+
+    assert!(
+        !output.status.success(),
+        "summary-only artifact dependency should not match requires-artifacts: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("no ready moat task matched dispatch filters"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let after = fs::read_to_string(&history_path).expect("failed to read dry-run history");
+    assert_eq!(after, before, "dry-run controller-step mutated history");
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn moat_controller_step_lock_rejects_non_dry_run_but_dry_run_ignores_stale_lock() {
     let history_path = unique_history_path("controller-step-lock");
     write_history_fixture_with_value(&history_path, controller_step_history_fixture());

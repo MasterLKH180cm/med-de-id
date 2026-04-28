@@ -930,13 +930,7 @@ fn node_has_artifacts(node: &Value) -> bool {
     node.get("artifacts")
         .and_then(Value::as_array)
         .map(|artifacts| !artifacts.is_empty())
-        .unwrap_or_else(|| {
-            node.get("artifact_ref").and_then(Value::as_str).is_some()
-                || node
-                    .get("artifact_summary")
-                    .and_then(Value::as_str)
-                    .is_some()
-        })
+        .unwrap_or_else(|| node.get("artifact_ref").and_then(Value::as_str).is_some())
 }
 
 fn collect_dependency_artifacts(
