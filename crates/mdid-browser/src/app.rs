@@ -1,5 +1,6 @@
 use leptos::*;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 const DEFAULT_FIELD_POLICY_JSON: &str = "[\n  {\n    \"header\": \"patient_id\",\n    \"phi_type\": \"patient_id\",\n    \"action\": \"encode\"\n  },\n  {\n    \"header\": \"patient_name\",\n    \"phi_type\": \"patient_name\",\n    \"action\": \"review\"\n  }\n]";
 const IDLE_SUMMARY: &str = "Awaiting submission.";
@@ -15,6 +16,7 @@ enum InputMode {
 }
 
 impl InputMode {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn from_file_name(file_name: &str) -> Option<Self> {
         let file_name = file_name.to_lowercase();
 
@@ -84,7 +86,7 @@ impl InputMode {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 struct BrowserFlowState {
     input_mode: InputMode,
     payload: String,
@@ -99,6 +101,27 @@ struct BrowserFlowState {
     state_revision: u64,
     next_submission_token: u64,
     active_submission_token: Option<u64>,
+}
+
+impl fmt::Debug for BrowserFlowState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BrowserFlowState")
+            .field("input_mode", &self.input_mode)
+            .field("payload", &"<redacted>")
+            .field("source_name", &"<redacted>")
+            .field("imported_file_name", &self.imported_file_name.as_ref().map(|_| "<redacted>"))
+            .field("field_policy_json", &"<redacted>")
+            .field("result_output", &"<redacted>")
+            .field("summary", &self.summary)
+            .field("review_queue", &"<redacted>")
+            .field("error_banner", &self.error_banner)
+            .field("is_submitting", &self.is_submitting)
+            .field("state_revision", &self.state_revision)
+            .field("next_submission_token", &self.next_submission_token)
+            .field("active_submission_token", &self.active_submission_token)
+            .finish()
+    }
 }
 
 impl Default for BrowserFlowState {
@@ -122,6 +145,7 @@ impl Default for BrowserFlowState {
 }
 
 impl BrowserFlowState {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
         self.input_mode = mode;
         self.source_name = file_name.to_string();
@@ -130,6 +154,7 @@ impl BrowserFlowState {
         self.payload = payload.to_string();
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn suggested_export_file_name(&self) -> &'static str {
         match self.input_mode {
             InputMode::CsvText => "mdid-browser-output.csv",
@@ -138,6 +163,7 @@ impl BrowserFlowState {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
     }
@@ -792,12 +818,34 @@ mod tests {
     }
 
     #[test]
+    fn browser_flow_state_debug_redacts_imported_file_metadata() {
+        let state = BrowserFlowState {
+            payload: "name\nJane Patient".to_string(),
+            source_name: "Jane Patient.csv".to_string(),
+            imported_file_name: Some("Jane Patient.csv".to_string()),
+            field_policy_json: r#"{"name":"Jane Patient"}"#.to_string(),
+            result_output: "redacted output for Jane Patient".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let debug_output = format!("{state:?}");
+
+        assert!(!debug_output.contains("Jane Patient.csv"));
+        assert!(!debug_output.contains("Jane Patient"));
+        assert!(!debug_output.contains("redacted output"));
+        assert!(debug_output.contains("input_mode"));
+        assert!(debug_output.contains("is_submitting"));
+    }
+
+    #[test]
     fn file_import_metadata_updates_payload_source_and_clears_generated_state() {
-        let mut state = BrowserFlowState::default();
-        state.result_output = "old output".to_string();
-        state.summary = "old summary".to_string();
-        state.review_queue = "old review".to_string();
-        state.error_banner = Some("old error".to_string());
+        let mut state = BrowserFlowState {
+            result_output: "old output".to_string(),
+            summary: "old summary".to_string(),
+            review_queue: "old review".to_string(),
+            error_banner: Some("old error".to_string()),
+            ..BrowserFlowState::default()
+        };
 
         state.apply_imported_file("report.pdf", "UERG", InputMode::PdfBase64);
 
@@ -821,8 +869,10 @@ mod tests {
 
     #[test]
     fn export_filename_is_safe_and_mode_specific() {
-        let mut state = BrowserFlowState::default();
-        state.imported_file_name = Some("Jane Patient.csv".to_string());
+        let mut state = BrowserFlowState {
+            imported_file_name: Some("Jane Patient.csv".to_string()),
+            ..BrowserFlowState::default()
+        };
         assert_eq!(state.suggested_export_file_name(), "mdid-browser-output.csv");
 
         state.input_mode = InputMode::XlsxBase64;
