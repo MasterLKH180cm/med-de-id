@@ -103,6 +103,8 @@ struct BrowserFlowState {
     active_submission_token: Option<u64>,
 }
 
+// BrowserFlowState may carry PHI-bearing local payloads, file names, and runtime text;
+// keep this Debug implementation redacted for those fields.
 impl fmt::Debug for BrowserFlowState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -115,7 +117,7 @@ impl fmt::Debug for BrowserFlowState {
             .field("result_output", &"<redacted>")
             .field("summary", &self.summary)
             .field("review_queue", &"<redacted>")
-            .field("error_banner", &self.error_banner)
+            .field("error_banner", &self.error_banner.as_ref().map(|_| "<redacted>"))
             .field("is_submitting", &self.is_submitting)
             .field("state_revision", &self.state_revision)
             .field("next_submission_token", &self.next_submission_token)
@@ -835,6 +837,19 @@ mod tests {
         assert!(!debug_output.contains("redacted output"));
         assert!(debug_output.contains("input_mode"));
         assert!(debug_output.contains("is_submitting"));
+    }
+
+    #[test]
+    fn browser_flow_state_debug_redacts_error_banner() {
+        let state = BrowserFlowState {
+            error_banner: Some("Runtime fallback included response body for Jane Patient".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        let debug_output = format!("{state:?}");
+
+        assert!(!debug_output.contains("Jane Patient"));
+        assert!(debug_output.contains("error_banner"));
     }
 
     #[test]
