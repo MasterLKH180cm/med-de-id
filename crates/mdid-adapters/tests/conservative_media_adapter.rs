@@ -122,12 +122,16 @@ fn extraction_output_debug_redacts_phi_bearing_artifact_labels() {
     };
 
     let output = ConservativeMediaAdapter::extract_metadata(input).unwrap();
-    let debug = format!("{output:?}");
+    let output_debug = format!("{output:?}");
+    let candidates_debug = format!("{:?}", output.candidates);
+    let candidate_debug = format!("{:?}", output.candidates[0]);
 
-    assert!(debug.contains("<redacted>"));
-    assert!(!debug.contains("Jane-Doe"));
-    assert!(!debug.contains("patients/"));
-    assert!(!debug.contains("Jane Patient"));
+    for debug in [output_debug, candidates_debug, candidate_debug] {
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("Jane-Doe"));
+        assert!(!debug.contains("patients/"));
+        assert!(!debug.contains("Jane Patient"));
+    }
 }
 
 #[test]

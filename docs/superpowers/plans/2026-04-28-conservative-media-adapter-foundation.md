@@ -21,6 +21,10 @@
   - Covers metadata-only extraction, visual-review routing for image/video, unsupported payload counting, redacted debug output, and empty-label validation.
 - Modify `README.md`
   - Truth-sync completion snapshot after landed adapter support. Completion should stay conservative unless controller-visible implementation and tests justify a percentage change.
+- Modify `crates/mdid-domain/src/lib.rs`
+  - Hardens conservative media domain `Debug` behavior so PHI-bearing artifact labels and metadata keys are redacted at the shared domain type boundary.
+- Modify `crates/mdid-domain/tests/conservative_media_workflow_models.rs`
+  - Covers direct `Debug` formatting for `ConservativeMediaRef` and `ConservativeMediaCandidate` redaction.
 
 ## Scope Guard
 
