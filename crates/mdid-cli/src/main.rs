@@ -1,8 +1,8 @@
 use std::{fs, path::PathBuf, process};
 
 use mdid_adapters::{CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter};
-use mdid_application::TabularDeidentificationService;
-use mdid_domain::{BatchSummary, SurfaceKind};
+use mdid_application::{DicomDeidentificationService, TabularDeidentificationService};
+use mdid_domain::{BatchSummary, DicomPrivateTagPolicy, SurfaceKind};
 use mdid_vault::LocalVaultStore;
 use rust_xlsxwriter::Workbook;
 use serde::Deserialize;
@@ -22,6 +22,7 @@ enum CliCommand {
     Status,
     DeidentifyCsv(DeidentifyCsvArgs),
     DeidentifyXlsx(DeidentifyXlsxArgs),
+    DeidentifyDicom(DeidentifyDicomArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -37,6 +38,15 @@ struct DeidentifyCsvArgs {
 struct DeidentifyXlsxArgs {
     xlsx_path: PathBuf,
     policies_json: String,
+    vault_path: PathBuf,
+    passphrase: String,
+    output_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DeidentifyDicomArgs {
+    dicom_path: PathBuf,
+    private_tag_policy: String,
     vault_path: PathBuf,
     passphrase: String,
     output_path: PathBuf,
@@ -66,6 +76,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "deidentify-xlsx" => {
             parse_deidentify_xlsx_args(rest).map(CliCommand::DeidentifyXlsx)
+        }
+        [command, rest @ ..] if command == "deidentify-dicom" => {
+            parse_deidentify_dicom_args(rest).map(CliCommand::DeidentifyDicom)
         }
         _ => Err("unknown command".to_string()),
     }
@@ -137,6 +150,40 @@ fn parse_deidentify_xlsx_args(args: &[String]) -> Result<DeidentifyXlsxArgs, Str
     })
 }
 
+fn parse_deidentify_dicom_args(args: &[String]) -> Result<DeidentifyDicomArgs, String> {
+    let mut dicom_path = None;
+    let mut private_tag_policy = None;
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut output_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--dicom-path" => dicom_path = Some(PathBuf::from(value)),
+            "--private-tag-policy" => private_tag_policy = Some(value.clone()),
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--output-path" => output_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(DeidentifyDicomArgs {
+        dicom_path: dicom_path.ok_or_else(|| "missing --dicom-path".to_string())?,
+        private_tag_policy: private_tag_policy
+            .ok_or_else(|| "missing --private-tag-policy".to_string())?,
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        output_path: output_path.ok_or_else(|| "missing --output-path".to_string())?,
+    })
+}
+
 fn run_command(command: CliCommand) -> Result<(), String> {
     match command {
         CliCommand::Status => {
@@ -145,7 +192,53 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         }
         CliCommand::DeidentifyCsv(args) => run_deidentify_csv(args),
         CliCommand::DeidentifyXlsx(args) => run_deidentify_xlsx(args),
+        CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
     }
+}
+
+fn parse_private_tag_policy(policy: &str) -> Result<DicomPrivateTagPolicy, String> {
+    match policy {
+        "remove" => Ok(DicomPrivateTagPolicy::Remove),
+        "review" | "review-required" | "required" => Ok(DicomPrivateTagPolicy::ReviewRequired),
+        "keep" => Ok(DicomPrivateTagPolicy::Keep),
+        _ => Err("invalid --private-tag-policy".to_string()),
+    }
+}
+
+fn run_deidentify_dicom(args: DeidentifyDicomArgs) -> Result<(), String> {
+    let policy = parse_private_tag_policy(&args.private_tag_policy)?;
+    let bytes = fs::read(&args.dicom_path).map_err(|err| format!("failed to read DICOM: {err}"))?;
+    let mut vault = if args.vault_path.exists() {
+        LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+    } else {
+        LocalVaultStore::create(&args.vault_path, &args.passphrase)
+    }
+    .map_err(|err| format!("failed to open vault: {err}"))?;
+
+    let output = DicomDeidentificationService
+        .deidentify_bytes(
+            &bytes,
+            "dicom-input.dcm",
+            policy,
+            &mut vault,
+            SurfaceKind::Cli,
+        )
+        .map_err(|err| format!("failed to deidentify DICOM: {err}"))?;
+    fs::write(&args.output_path, &output.bytes)
+        .map_err(|err| format!("failed to write output DICOM: {err}"))?;
+
+    let payload = json!({
+        "output_path": args.output_path,
+        "sanitized_file_name": output.sanitized_file_name,
+        "summary": output.summary,
+        "review_queue_len": output.review_queue.len(),
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&payload)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
 }
 
 fn run_deidentify_csv(args: DeidentifyCsvArgs) -> Result<(), String> {
@@ -267,7 +360,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status            Print a readiness banner for the local CLI surface.\n  deidentify-csv    Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx   Rewrite a bounded local XLSX using explicit field policies."
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary."
 }
 
 #[cfg(test)]
@@ -328,6 +421,34 @@ mod tests {
                     vault_path: PathBuf::from("vault.mdid"),
                     passphrase: "secret-passphrase".to_string(),
                     output_path: PathBuf::from("output.xlsx"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_deidentify_dicom_command_without_requiring_debug() {
+        let args = vec![
+            "deidentify-dicom".to_string(),
+            "--dicom-path".to_string(),
+            "input.dcm".to_string(),
+            "--private-tag-policy".to_string(),
+            "review".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--output-path".to_string(),
+            "output.dcm".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyDicom(DeidentifyDicomArgs {
+                    dicom_path: PathBuf::from("input.dcm"),
+                    private_tag_policy: "review".to_string(),
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    output_path: PathBuf::from("output.dcm"),
                 }))
         );
     }

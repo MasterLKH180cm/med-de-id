@@ -15,6 +15,8 @@ rust_xlsxwriter = "0.94"
 
 [dev-dependencies]
 assert_cmd = "2.0"
+dicom-core = "0.9.1"
+dicom-object = "0.9.1"
 predicates = "3.1"
 serde_json.workspace = true
 tempfile.workspace = true
