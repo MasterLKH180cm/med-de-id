@@ -5,6 +5,7 @@ use std::fmt;
 const DEFAULT_FIELD_POLICY_JSON: &str = "[\n  {\n    \"header\": \"patient_id\",\n    \"phi_type\": \"patient_id\",\n    \"action\": \"encode\"\n  },\n  {\n    \"header\": \"patient_name\",\n    \"phi_type\": \"patient_name\",\n    \"action\": \"review\"\n  }\n]";
 const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
+const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
 const FETCH_UNAVAILABLE_MESSAGE: &str =
     "Runtime submission is only available from a wasm32 browser build.";
 
@@ -154,6 +155,14 @@ impl BrowserFlowState {
         self.imported_file_name = Some(file_name.to_string());
         self.invalidate_generated_state();
         self.payload = payload.to_string();
+    }
+
+    fn reject_imported_file(&mut self, file_name: &str) {
+        self.imported_file_name = Some(file_name.to_string());
+        self.invalidate_generated_state();
+        self.error_banner = Some(
+            "Unsupported browser import file type. Use .csv, .xlsx, or .pdf.".to_string(),
+        );
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -633,6 +642,44 @@ async fn perform_runtime_request(_request: RuntimeSubmitRequest) -> Result<Strin
     Err(FETCH_UNAVAILABLE_MESSAGE.to_string())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn trigger_browser_text_download(file_name: &str, text: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(text));
+
+    let options = BlobPropertyBag::new();
+    options.set_type("text/plain;charset=utf-8");
+
+    let blob = Blob::new_with_str_sequence_and_options(&parts, &options)
+        .map_err(|_| "Failed to create browser export blob.".to_string())?;
+    let url = Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "Failed to create browser export URL.".to_string())?;
+
+    let window = web_sys::window().ok_or("Browser window is unavailable for export.".to_string())?;
+    let document = window
+        .document()
+        .ok_or("Browser document is unavailable for export.".to_string())?;
+    let anchor = document
+        .create_element("a")
+        .map_err(|_| "Failed to create browser export anchor.".to_string())?
+        .dyn_into::<HtmlAnchorElement>()
+        .map_err(|_| "Failed to prepare browser export anchor.".to_string())?;
+
+    anchor.set_href(&url);
+    anchor.set_download(file_name);
+    anchor.click();
+    Url::revoke_object_url(&url).ok();
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn trigger_browser_text_download(_file_name: &str, _text: &str) -> Result<(), String> {
+    Err("Browser export is only available from a wasm32 browser build.".to_string())
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let state = create_rw_signal(BrowserFlowState::default());
@@ -667,6 +714,46 @@ pub fn App() -> impl IntoView {
             state.field_policy_json = next_policy;
             state.invalidate_generated_state();
         });
+    };
+
+    let on_file_import_change = move |event| {
+        let raw_name = event_target_value(&event);
+        let file_name = raw_name
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(raw_name.as_str())
+            .to_string();
+
+        if file_name.is_empty() {
+            return;
+        }
+
+        if InputMode::from_file_name(&file_name).is_none() {
+            state.update(|state| state.reject_imported_file(&file_name));
+        }
+    };
+
+    let export_file_name = move || state.get().suggested_export_file_name();
+    let can_export_output = move || state.get().can_export_output();
+
+    let on_export = move |_| {
+        let export = state.with_untracked(|state| {
+            if state.can_export_output() {
+                Some((
+                    state.suggested_export_file_name().to_string(),
+                    state.result_output.clone(),
+                ))
+            } else {
+                None
+            }
+        });
+
+        if let Some((file_name, text)) = export {
+            if let Err(message) = trigger_browser_text_download(&file_name, &text) {
+                state.update(|state| state.error_banner = Some(message));
+            }
+        }
     };
 
     let on_submit = move |_| {
@@ -716,6 +803,18 @@ pub fn App() -> impl IntoView {
 
             <section>
                 <h2>"Input"</h2>
+                <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
+                <label>
+                    "Import local CSV/XLSX/PDF payload"
+                    <input
+                        accept=".csv,.xlsx,.pdf"
+                        on:change=on_file_import_change
+                        type="file"
+                    />
+                </label>
+                <p class="input-disclosure">
+                    "This bounded control validates CSV/XLSX/PDF selection for the existing payload box. CSV content remains text; XLSX/PDF payloads remain base64 text for localhost runtime routes."
+                </p>
                 <label>
                     "Input mode"
                     <select on:change=on_mode_change prop:value=move || state.get().input_mode.select_value()>
@@ -777,6 +876,13 @@ pub fn App() -> impl IntoView {
 
             <section>
                 <h2>"Rewritten output"</h2>
+                <p>
+                    "Suggested export file: "
+                    <code>{export_file_name}</code>
+                </p>
+                <button disabled=move || !can_export_output() on:click=on_export type="button">
+                    "Export current result output text"
+                </button>
                 <pre>{move || state.get().result_output}</pre>
             </section>
 
@@ -798,7 +904,8 @@ mod tests {
     use super::{
         build_submit_request, format_review_queue, format_summary, parse_runtime_error,
         parse_runtime_success, InputMode, RuntimeReviewCandidate, RuntimeSummary, BrowserFlowState,
-        DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
+        BROWSER_FILE_IMPORT_COPY, DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE,
+        IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
     };
     use serde_json::json;
 
@@ -893,6 +1000,26 @@ mod tests {
         assert_eq!(InputMode::from_file_name("workbook.XLSX"), Some(InputMode::XlsxBase64));
         assert_eq!(InputMode::from_file_name("scan.PDF"), Some(InputMode::PdfBase64));
         assert_eq!(InputMode::from_file_name("archive.zip"), None);
+    }
+
+    #[test]
+    fn import_export_copy_discloses_bounded_browser_file_limits() {
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("CSV files load as text"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("XLSX and PDF files load as base64 payloads"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
+    }
+
+    #[test]
+    fn unsupported_import_extension_error_is_honest() {
+        let mut state = BrowserFlowState::default();
+        state.reject_imported_file("notes.txt");
+
+        assert_eq!(
+            state.error_banner.as_deref(),
+            Some("Unsupported browser import file type. Use .csv, .xlsx, or .pdf.")
+        );
+        assert_eq!(state.summary, IDLE_SUMMARY);
+        assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
     }
 
     #[test]
