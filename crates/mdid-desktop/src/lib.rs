@@ -456,6 +456,19 @@ mod tests {
     }
 
     #[test]
+    fn response_state_default_copy_keeps_networking_and_workflow_limits_honest() {
+        let response = DesktopWorkflowResponseState::default();
+
+        assert_eq!(response.banner, "No runtime response rendered yet.");
+        assert_eq!(
+            response.summary,
+            "No successful runtime summary rendered yet."
+        );
+        assert_eq!(response.review_queue, "No review queue rendered yet.");
+        assert!(response.error.is_none());
+    }
+
+    #[test]
     fn response_state_renders_xlsx_runtime_success_envelope() {
         let mut response = DesktopWorkflowResponseState::default();
 
@@ -507,7 +520,7 @@ mod tests {
         let mut response = DesktopWorkflowResponseState::default();
         response.apply_success_json(
             DesktopWorkflowMode::CsvText,
-            json!({"rewritten_csv":"patient_name\n<NAME-1>","summary":{},"review_queue":[]}),
+            json!({"csv":"patient_name\n<NAME-1>","summary":{},"review_queue":[]}),
         );
 
         response.apply_error("runtime rejected invalid payload");
