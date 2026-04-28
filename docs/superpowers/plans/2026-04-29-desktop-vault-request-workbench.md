@@ -66,8 +66,8 @@ fn desktop_vault_audit_request_builds_read_only_filter_contract() {
     assert_eq!(request.route, "/vault/audit/events");
     assert_eq!(request.body["vault_path"], "C:/vaults/local.mdid");
     assert_eq!(request.body["vault_passphrase"], "correct horse battery staple");
-    assert_eq!(request.body["kind"], "Decode");
-    assert_eq!(request.body["actor"], "Desktop");
+    assert_eq!(request.body["kind"], "decode");
+    assert_eq!(request.body["actor"], "desktop");
     assert!(request.body.get("record_ids").is_none());
 }
 
@@ -90,7 +90,7 @@ fn desktop_vault_request_validation_rejects_blank_sensitive_inputs() {
 #[test]
 fn desktop_vault_workbench_copy_is_bounded_and_non_orchestrating() {
     assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("existing localhost runtime vault routes"));
-    assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("does not store passphrases"));
+    assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("does not persist passphrases"));
     assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("does not add controller, agent, or orchestration behavior"));
 }
 ```
@@ -111,7 +111,7 @@ Expected: FAIL because `DesktopVaultRequestState`, `DesktopVaultMode`, `DesktopV
 Add the following public types and helpers near the existing desktop runtime request state in `crates/mdid-desktop/src/lib.rs`:
 
 ```rust
-pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not store passphrases, browse vault contents directly, transfer portable artifacts, or add controller, agent, or orchestration behavior.";
+pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, or add controller, agent, or orchestration behavior.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopVaultMode {
