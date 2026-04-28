@@ -3087,6 +3087,7 @@ dependencies = [
  "eframe",
  "egui",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

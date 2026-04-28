@@ -8,6 +8,7 @@ license.workspace = true
 eframe.workspace = true
 egui.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 
 [[bin]]
 name = "mdid-desktop"

@@ -23,7 +23,7 @@
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-29-desktop-vault-request-workbench.md`
 
-- [ ] **Step 1: Write failing tests for bounded vault request preparation**
+- [x] **Step 1: Write failing tests for bounded vault request preparation**
 
 Add these tests inside `#[cfg(test)] mod tests` in `crates/mdid-desktop/src/lib.rs`:
 
@@ -95,7 +95,7 @@ fn desktop_vault_workbench_copy_is_bounded_and_non_orchestrating() {
 }
 ```
 
-- [ ] **Step 2: Run targeted tests and verify RED**
+- [x] **Step 2: Run targeted tests and verify RED**
 
 Run:
 
@@ -106,7 +106,7 @@ cargo test -p mdid-desktop desktop_vault_decode_request_builds_existing_runtime_
 
 Expected: FAIL because `DesktopVaultRequestState`, `DesktopVaultMode`, `DesktopVaultValidationError`, and `DESKTOP_VAULT_WORKBENCH_COPY` do not exist.
 
-- [ ] **Step 3: Implement minimal pure request helpers**
+- [x] **Step 3: Implement minimal pure request helpers**
 
 Add the following public types and helpers near the existing desktop runtime request state in `crates/mdid-desktop/src/lib.rs`:
 
@@ -151,7 +151,7 @@ pub enum DesktopVaultValidationError {
 
 Implement `Default` with `mode: Decode`, blank `vault_path`, blank `vault_passphrase`, `record_ids_json: "[]"`, `output_target: "desktop-workbench"`, and no audit filters. Implement `try_build_request(&self) -> Result<DesktopWorkflowRequest, DesktopVaultValidationError>` so decode emits `vault_path`, `vault_passphrase`, `record_ids`, `output_target`; audit emits `vault_path`, `vault_passphrase`, `kind`, and `actor`, where filters are JSON null when absent. Parse record ids as `Vec<uuid::Uuid>` so invalid UUIDs fail through `InvalidRecordIdsJson`.
 
-- [ ] **Step 4: Run targeted tests and verify GREEN**
+- [x] **Step 4: Run targeted tests and verify GREEN**
 
 Run:
 
@@ -162,7 +162,7 @@ cargo test -p mdid-desktop desktop_vault_decode_request_builds_existing_runtime_
 
 Expected: PASS.
 
-- [ ] **Step 5: Run desktop and runtime contract tests**
+- [x] **Step 5: Run desktop and runtime contract tests**
 
 Run:
 
@@ -176,14 +176,14 @@ git diff --check
 
 Expected: PASS for desktop tests, relevant runtime vault HTTP tests, clippy, and whitespace check.
 
-- [ ] **Step 6: Update README completion truthfully**
+- [x] **Step 6: Update README completion truthfully**
 
 Update `README.md` completion snapshot based only on landed behavior:
 - Desktop app may increase from `30%` to `33%` only if the helpers and tests pass, describing bounded vault decode/audit request-preparation helpers without claiming real vault browsing.
 - Overall may increase from `47%` to `48%` only if tests pass.
 - Missing items must still include deeper desktop vault browsing, decode workflow execution UX, audit investigation workflow, portable transfer UX, OCR, visual redaction, PDF rewrite/export, and full review workflows.
 
-- [ ] **Step 7: Mark this plan task complete and commit**
+- [x] **Step 7: Mark this plan task complete and commit**
 
 Update this plan's checkboxes for completed steps, then run:
 
