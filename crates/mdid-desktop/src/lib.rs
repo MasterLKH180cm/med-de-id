@@ -512,6 +512,26 @@ impl Default for DesktopWorkflowResponseState {
 }
 
 impl DesktopWorkflowResponseState {
+    pub fn exportable_output(&self) -> Option<&str> {
+        let output = self.output.trim();
+        if output.is_empty()
+            || output == "No rewritten PDF bytes returned by the bounded review route."
+        {
+            None
+        } else {
+            Some(self.output.as_str())
+        }
+    }
+
+    pub fn suggested_export_file_name(&self, mode: DesktopWorkflowMode) -> Option<&'static str> {
+        self.exportable_output()?;
+        match mode {
+            DesktopWorkflowMode::CsvText => Some("desktop-deidentified.csv"),
+            DesktopWorkflowMode::XlsxBase64 => Some("desktop-deidentified.xlsx.base64.txt"),
+            DesktopWorkflowMode::PdfBase64Review => None,
+        }
+    }
+
     pub fn apply_success_json(&mut self, mode: DesktopWorkflowMode, envelope: serde_json::Value) {
         self.banner = match mode {
             DesktopWorkflowMode::CsvText => "CSV text runtime response rendered locally.".to_string(),
@@ -1102,6 +1122,45 @@ mod tests {
         assert!(response.summary.contains("ocr_required_pages"));
         assert!(response.review_queue.contains("ocr_required"));
         assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn response_state_suggests_exports_only_when_output_bytes_exist() {
+        let mut csv = DesktopWorkflowResponseState::default();
+        csv.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"csv":"patient_name\n<NAME-1>","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            csv.suggested_export_file_name(DesktopWorkflowMode::CsvText),
+            Some("desktop-deidentified.csv")
+        );
+        assert_eq!(csv.exportable_output(), Some("patient_name\n<NAME-1>"));
+
+        let mut pdf = DesktopWorkflowResponseState::default();
+        pdf.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({"rewritten_pdf_bytes_base64":null,"summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            pdf.suggested_export_file_name(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+        assert_eq!(pdf.exportable_output(), None);
+    }
+
+    #[test]
+    fn response_state_suggests_xlsx_export_for_rewritten_workbook_base64() {
+        let mut xlsx = DesktopWorkflowResponseState::default();
+        xlsx.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({"rewritten_workbook_base64":"UEsDBAo=","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            xlsx.suggested_export_file_name(DesktopWorkflowMode::XlsxBase64),
+            Some("desktop-deidentified.xlsx.base64.txt")
+        );
+        assert_eq!(xlsx.exportable_output(), Some("UEsDBAo="));
     }
 
     #[test]
