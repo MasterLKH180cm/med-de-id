@@ -6,6 +6,26 @@ pub enum DesktopWorkflowMode {
 }
 
 impl DesktopWorkflowMode {
+    pub const ALL: [Self; 3] = [Self::CsvText, Self::XlsxBase64, Self::PdfBase64Review];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CsvText => "CSV text",
+            Self::XlsxBase64 => "XLSX base64",
+            Self::PdfBase64Review => "PDF base64 review",
+        }
+    }
+
+    pub fn payload_hint(self) -> &'static str {
+        match self {
+            Self::CsvText => "Paste CSV text for local request preparation",
+            Self::XlsxBase64 => "Paste XLSX workbook bytes encoded as base64",
+            Self::PdfBase64Review => {
+                "Paste PDF bytes encoded as base64 for review request preparation"
+            }
+        }
+    }
+
     pub fn disclosure(self) -> &'static str {
         match self {
             Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; no generalized workflow orchestrator is included.",
@@ -14,12 +34,16 @@ impl DesktopWorkflowMode {
         }
     }
 
-    fn route(self) -> &'static str {
+    pub fn route(self) -> &'static str {
         match self {
             Self::CsvText => "/tabular/deidentify",
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64Review => "/pdf/deidentify",
         }
+    }
+
+    pub fn endpoint(self) -> &'static str {
+        self.route()
     }
 }
 
@@ -43,6 +67,16 @@ impl Default for DesktopWorkflowRequestState {
 }
 
 impl DesktopWorkflowRequestState {
+    pub fn status_message(&self) -> String {
+        match self.try_build_request() {
+            Ok(request) => format!(
+                "Ready to submit to {}; submission is not wired in this desktop slice. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, or controller workflow.",
+                request.route
+            ),
+            Err(error) => format!("Not ready: {error:?}"),
+        }
+    }
+
     pub fn try_build_request(
         &self,
     ) -> Result<DesktopWorkflowRequest, DesktopWorkflowValidationError> {
@@ -304,6 +338,23 @@ mod tests {
                 "policy should be rejected: {field_policy_json}"
             );
         }
+    }
+
+    #[test]
+    fn status_message_explains_preview_only_runtime_submit_boundary() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::PdfBase64Review,
+            payload: "JVBERi0x".to_string(),
+            field_policy_json: DEFAULT_POLICY_JSON.to_string(),
+            source_name: "chart.pdf".to_string(),
+        };
+
+        let message = state.status_message();
+
+        assert!(message.contains("Ready to submit to /pdf/deidentify"));
+        assert!(message.contains("submission is not wired in this desktop slice"));
+        assert!(message
+            .contains("no OCR, visual redaction, PDF rewrite/export, or controller workflow"));
     }
 
     #[test]

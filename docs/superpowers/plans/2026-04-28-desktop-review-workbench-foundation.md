@@ -13,7 +13,7 @@
 ## File Structure
 
 - Create: `crates/mdid-desktop/src/lib.rs`
-  - Owns `DesktopWorkflowMode`, `DesktopWorkbenchState`, `DesktopSubmitRequest`, validation errors, bounded runtime endpoint mapping, disclosure strings, and JSON request construction.
+  - Owns `DesktopWorkflowMode`, `DesktopWorkflowRequestState`, `DesktopWorkflowRequest`, validation errors, bounded runtime endpoint mapping, disclosure strings, and JSON request construction.
 - Modify: `crates/mdid-desktop/src/main.rs`
   - Uses the library state to render a bounded workstation UI with mode selection, payload/source/policy inputs, disclosures, validation status, endpoint preview, and explicit not-yet-implemented runtime submission notice.
 - Modify: `crates/mdid-desktop/Cargo.toml`
@@ -58,20 +58,20 @@ impl Default for DesktopWorkflowMode {
     }
 }
 
-pub struct DesktopWorkbenchState {
+pub struct DesktopWorkflowRequestState {
     pub mode: DesktopWorkflowMode,
     pub payload: String,
     pub field_policy_json: String,
     pub source_name: String,
 }
 
-pub struct DesktopSubmitRequest {
+pub struct DesktopWorkflowRequest {
     pub endpoint: &'static str,
     pub body: Value,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum DesktopSubmitError {
+pub enum DesktopWorkflowValidationError {
     EmptyPayload,
     EmptySourceName,
     EmptyFieldPolicyJson,
@@ -85,7 +85,7 @@ impl DesktopWorkflowMode {
     pub fn requires_field_policies(self) -> bool { false }
 }
 
-impl Default for DesktopWorkbenchState {
+impl Default for DesktopWorkflowRequestState {
     fn default() -> Self {
         Self {
             mode: DesktopWorkflowMode::CsvText,
@@ -96,9 +96,9 @@ impl Default for DesktopWorkbenchState {
     }
 }
 
-impl DesktopWorkbenchState {
-    pub fn build_submit_request(&self) -> Result<DesktopSubmitRequest, DesktopSubmitError> {
-        Err(DesktopSubmitError::EmptyPayload)
+impl DesktopWorkflowRequestState {
+    pub fn try_build_request(&self) -> Result<DesktopWorkflowRequest, DesktopWorkflowValidationError> {
+        Err(DesktopWorkflowValidationError::EmptyPayload)
     }
 }
 
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn default_state_is_bounded_csv_workstation_flow() {
-        let state = DesktopWorkbenchState::default();
+        let state = DesktopWorkflowRequestState::default();
 
         assert_eq!(state.mode, DesktopWorkflowMode::CsvText);
         assert_eq!(state.source_name, "local-workstation-review.pdf");
@@ -119,14 +119,14 @@ mod tests {
 
     #[test]
     fn csv_request_targets_tabular_endpoint_with_field_policies() {
-        let state = DesktopWorkbenchState {
+        let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::CsvText,
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
             field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
-        let request = state.build_submit_request().expect("csv request should build");
+        let request = state.try_build_request().expect("csv request should build");
 
         assert_eq!(request.endpoint, "/tabular/deidentify");
         assert_eq!(request.body["csv"], "patient_id,patient_name\nMRN-001,Alice Smith");
@@ -137,14 +137,14 @@ mod tests {
 
     #[test]
     fn xlsx_request_targets_xlsx_endpoint_with_base64_payload() {
-        let state = DesktopWorkbenchState {
+        let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::XlsxBase64,
             payload: "UEsDBBQAAAA=".to_string(),
             field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
-        let request = state.build_submit_request().expect("xlsx request should build");
+        let request = state.try_build_request().expect("xlsx request should build");
 
         assert_eq!(request.endpoint, "/tabular/deidentify/xlsx");
         assert_eq!(request.body["workbook_base64"], "UEsDBBQAAAA=");
@@ -155,14 +155,14 @@ mod tests {
 
     #[test]
     fn pdf_request_targets_review_endpoint_without_field_policies() {
-        let state = DesktopWorkbenchState {
-            mode: DesktopWorkflowMode::PdfBase64,
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::PdfBase64Review,
             payload: "JVBERi0xLjQK".to_string(),
             field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "Radiology Report.pdf".to_string(),
         };
 
-        let request = state.build_submit_request().expect("pdf request should build");
+        let request = state.try_build_request().expect("pdf request should build");
 
         assert_eq!(request.endpoint, "/pdf/deidentify");
         assert_eq!(request.body["pdf_bytes_base64"], "JVBERi0xLjQK");
@@ -172,19 +172,19 @@ mod tests {
 
     #[test]
     fn validation_rejects_blank_payload_source_and_bad_policy_json() {
-        let mut state = DesktopWorkbenchState::default();
+        let mut state = DesktopWorkflowRequestState::default();
         state.payload = "   ".to_string();
-        assert_eq!(state.build_submit_request(), Err(DesktopSubmitError::EmptyPayload));
+        assert_eq!(state.try_build_request(), Err(DesktopWorkflowValidationError::EmptyPayload));
 
-        state.mode = DesktopWorkflowMode::PdfBase64;
+        state.mode = DesktopWorkflowMode::PdfBase64Review;
         state.payload = "JVBERi0xLjQK".to_string();
         state.source_name = "   ".to_string();
-        assert_eq!(state.build_submit_request(), Err(DesktopSubmitError::EmptySourceName));
+        assert_eq!(state.try_build_request(), Err(DesktopWorkflowValidationError::EmptySourceName));
 
         state.mode = DesktopWorkflowMode::CsvText;
         state.payload = "patient_name\nAlice".to_string();
         state.field_policy_json = "not json".to_string();
-        assert!(matches!(state.build_submit_request(), Err(DesktopSubmitError::InvalidFieldPolicyJson(_))));
+        assert!(matches!(state.try_build_request(), Err(DesktopWorkflowValidationError::InvalidFieldPolicyJson(_))));
     }
 }
 ```
@@ -261,7 +261,7 @@ impl DesktopWorkflowMode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DesktopWorkbenchState {
+pub struct DesktopWorkflowRequestState {
     pub mode: DesktopWorkflowMode,
     pub payload: String,
     pub field_policy_json: String,
@@ -269,20 +269,20 @@ pub struct DesktopWorkbenchState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DesktopSubmitRequest {
+pub struct DesktopWorkflowRequest {
     pub endpoint: &'static str,
     pub body: Value,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DesktopSubmitError {
+pub enum DesktopWorkflowValidationError {
     EmptyPayload,
     EmptySourceName,
     EmptyFieldPolicyJson,
     InvalidFieldPolicyJson(String),
 }
 
-impl Default for DesktopWorkbenchState {
+impl Default for DesktopWorkflowRequestState {
     fn default() -> Self {
         Self {
             mode: DesktopWorkflowMode::CsvText,
@@ -293,11 +293,11 @@ impl Default for DesktopWorkbenchState {
     }
 }
 
-impl DesktopWorkbenchState {
-    pub fn build_submit_request(&self) -> Result<DesktopSubmitRequest, DesktopSubmitError> {
+impl DesktopWorkflowRequestState {
+    pub fn try_build_request(&self) -> Result<DesktopWorkflowRequest, DesktopWorkflowValidationError> {
         let payload = self.payload.trim();
         if payload.is_empty() {
-            return Err(DesktopSubmitError::EmptyPayload);
+            return Err(DesktopWorkflowValidationError::EmptyPayload);
         }
 
         let body = match self.mode {
@@ -315,10 +315,10 @@ impl DesktopWorkbenchState {
                     "field_policies": field_policies,
                 })
             }
-            DesktopWorkflowMode::PdfBase64 => {
+            DesktopWorkflowMode::PdfBase64Review => {
                 let source_name = self.source_name.trim();
                 if source_name.is_empty() {
-                    return Err(DesktopSubmitError::EmptySourceName);
+                    return Err(DesktopWorkflowValidationError::EmptySourceName);
                 }
                 json!({
                     "pdf_bytes_base64": payload,
@@ -327,19 +327,19 @@ impl DesktopWorkbenchState {
             }
         };
 
-        Ok(DesktopSubmitRequest {
+        Ok(DesktopWorkflowRequest {
             endpoint: self.mode.endpoint(),
             body,
         })
     }
 
-    fn parse_field_policies(&self) -> Result<Value, DesktopSubmitError> {
+    fn parse_field_policies(&self) -> Result<Value, DesktopWorkflowValidationError> {
         let policy = self.field_policy_json.trim();
         if policy.is_empty() {
-            return Err(DesktopSubmitError::EmptyFieldPolicyJson);
+            return Err(DesktopWorkflowValidationError::EmptyFieldPolicyJson);
         }
         serde_json::from_str(policy)
-            .map_err(|error| DesktopSubmitError::InvalidFieldPolicyJson(error.to_string()))
+            .map_err(|error| DesktopWorkflowValidationError::InvalidFieldPolicyJson(error.to_string()))
     }
 }
 
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn default_state_is_bounded_csv_workstation_flow() {
-        let state = DesktopWorkbenchState::default();
+        let state = DesktopWorkflowRequestState::default();
 
         assert_eq!(state.mode, DesktopWorkflowMode::CsvText);
         assert_eq!(state.source_name, "local-workstation-review.pdf");
@@ -360,14 +360,14 @@ mod tests {
 
     #[test]
     fn csv_request_targets_tabular_endpoint_with_field_policies() {
-        let state = DesktopWorkbenchState {
+        let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::CsvText,
             payload: "patient_id,patient_name\nMRN-001,Alice Smith".to_string(),
             field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
-        let request = state.build_submit_request().expect("csv request should build");
+        let request = state.try_build_request().expect("csv request should build");
 
         assert_eq!(request.endpoint, "/tabular/deidentify");
         assert_eq!(request.body["csv"], "patient_id,patient_name\nMRN-001,Alice Smith");
@@ -378,14 +378,14 @@ mod tests {
 
     #[test]
     fn xlsx_request_targets_xlsx_endpoint_with_base64_payload() {
-        let state = DesktopWorkbenchState {
+        let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::XlsxBase64,
             payload: "UEsDBBQAAAA=".to_string(),
             field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "ignored.pdf".to_string(),
         };
 
-        let request = state.build_submit_request().expect("xlsx request should build");
+        let request = state.try_build_request().expect("xlsx request should build");
 
         assert_eq!(request.endpoint, "/tabular/deidentify/xlsx");
         assert_eq!(request.body["workbook_base64"], "UEsDBBQAAAA=");
@@ -396,14 +396,14 @@ mod tests {
 
     #[test]
     fn pdf_request_targets_review_endpoint_without_field_policies() {
-        let state = DesktopWorkbenchState {
-            mode: DesktopWorkflowMode::PdfBase64,
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::PdfBase64Review,
             payload: "JVBERi0xLjQK".to_string(),
             field_policy_json: r#"[{"header":"patient_name","phi_type":"Name","action":"encode"}]"#.to_string(),
             source_name: "Radiology Report.pdf".to_string(),
         };
 
-        let request = state.build_submit_request().expect("pdf request should build");
+        let request = state.try_build_request().expect("pdf request should build");
 
         assert_eq!(request.endpoint, "/pdf/deidentify");
         assert_eq!(request.body["pdf_bytes_base64"], "JVBERi0xLjQK");
@@ -413,19 +413,19 @@ mod tests {
 
     #[test]
     fn validation_rejects_blank_payload_source_and_bad_policy_json() {
-        let mut state = DesktopWorkbenchState::default();
+        let mut state = DesktopWorkflowRequestState::default();
         state.payload = "   ".to_string();
-        assert_eq!(state.build_submit_request(), Err(DesktopSubmitError::EmptyPayload));
+        assert_eq!(state.try_build_request(), Err(DesktopWorkflowValidationError::EmptyPayload));
 
-        state.mode = DesktopWorkflowMode::PdfBase64;
+        state.mode = DesktopWorkflowMode::PdfBase64Review;
         state.payload = "JVBERi0xLjQK".to_string();
         state.source_name = "   ".to_string();
-        assert_eq!(state.build_submit_request(), Err(DesktopSubmitError::EmptySourceName));
+        assert_eq!(state.try_build_request(), Err(DesktopWorkflowValidationError::EmptySourceName));
 
         state.mode = DesktopWorkflowMode::CsvText;
         state.payload = "patient_name\nAlice".to_string();
         state.field_policy_json = "not json".to_string();
-        assert!(matches!(state.build_submit_request(), Err(DesktopSubmitError::InvalidFieldPolicyJson(_))));
+        assert!(matches!(state.try_build_request(), Err(DesktopWorkflowValidationError::InvalidFieldPolicyJson(_))));
     }
 }
 ```
@@ -467,15 +467,15 @@ git commit -m "feat(desktop): add bounded workstation request model"
 - Modify: `README.md`
 - Test: `crates/mdid-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write failing test for UI status copy helper**
+- [x] **Step 1: Write failing test for UI status copy helper**
 
 Append this test to `crates/mdid-desktop/src/lib.rs` tests:
 
 ```rust
 #[test]
 fn status_message_explains_preview_only_runtime_submit_boundary() {
-    let state = DesktopWorkbenchState {
-        mode: DesktopWorkflowMode::PdfBase64,
+    let state = DesktopWorkflowRequestState {
+        mode: DesktopWorkflowMode::PdfBase64Review,
         payload: "JVBERi0xLjQK".to_string(),
         field_policy_json: String::new(),
         source_name: "scan.pdf".to_string(),
@@ -492,7 +492,7 @@ fn status_message_explains_preview_only_runtime_submit_boundary() {
 Also add a stub method so the test compiles:
 
 ```rust
-impl DesktopWorkbenchState {
+impl DesktopWorkflowRequestState {
     pub fn status_message(&self) -> String {
         String::new()
     }
@@ -515,9 +515,9 @@ Expected: FAIL because `status_message()` returns an empty string.
 Implement `status_message()` in `crates/mdid-desktop/src/lib.rs`:
 
 ```rust
-impl DesktopWorkbenchState {
+impl DesktopWorkflowRequestState {
     pub fn status_message(&self) -> String {
-        match self.build_submit_request() {
+        match self.try_build_request() {
             Ok(request) => format!(
                 "Ready to submit to {}; submission is not wired in this desktop slice. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, or controller workflow.",
                 request.endpoint
@@ -531,7 +531,7 @@ impl DesktopWorkbenchState {
 Replace `crates/mdid-desktop/src/main.rs` with:
 
 ```rust
-use mdid_desktop::{DesktopWorkbenchState, DesktopWorkflowMode};
+use mdid_desktop::{DesktopWorkflowRequestState, DesktopWorkflowMode};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -544,7 +544,7 @@ fn main() -> eframe::Result<()> {
 
 #[derive(Default)]
 struct DesktopApp {
-    state: DesktopWorkbenchState,
+    state: DesktopWorkflowRequestState,
 }
 
 impl eframe::App for DesktopApp {
@@ -604,7 +604,7 @@ Update Missing items to keep `desktop app behavior` honest:
 Missing items include deeper policy/detection crates, full review/governance workflows, richer browser UX including browser upload UX, actual desktop runtime submission, desktop file picker upload/download UX, desktop vault/decode/audit workflows, desktop PDF flow beyond request preparation, broader import/export and upload flows, OCR, visual redaction, handwriting handling, full PDF rewrite/export, FCS semantic parsing, media rewrite/export, generalized spreadsheet handling, auth/session handling where needed, generalized workflow orchestration, removal or isolation of scope-drift controller/moat CLI surfaces from product-facing documentation and roadmap claims, and production packaging/hardening.
 ```
 
-- [ ] **Step 5: Verify tests and docs**
+- [x] **Step 5: Verify tests and docs**
 
 Run:
 
@@ -618,7 +618,7 @@ grep -nE 'Desktop app|Overall|mdid-desktop|controller|orchestration|agent|moat' 
 
 Expected: tests/clippy/diff check pass. Grep hits for controller/orchestration/agent/moat must be negative scope-drift or explicit not-implemented wording only.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/lib.rs crates/mdid-desktop/src/main.rs README.md
@@ -676,4 +676,4 @@ Expected: on `develop`, clean worktree, desktop tests/clippy pass, merge commit 
 
 1. Spec coverage: This plan addresses desktop app behavior, README completion maintenance, local-first runtime-backed surface alignment, and scope-drift avoidance. It does not implement actual runtime networking/upload/download/vault/decode/audit flows and explicitly documents those as remaining gaps.
 2. Placeholder scan: No TBD/TODO/implement-later placeholders are present; each code-changing step includes concrete code or exact README text.
-3. Type consistency: `DesktopWorkflowMode`, `DesktopWorkbenchState`, `DesktopSubmitRequest`, `DesktopSubmitError`, and `status_message()` names are consistent across tasks.
+3. Type consistency: `DesktopWorkflowMode`, `DesktopWorkflowRequestState`, `DesktopWorkflowRequest`, `DesktopWorkflowValidationError`, and `status_message()` names are consistent across tasks.
