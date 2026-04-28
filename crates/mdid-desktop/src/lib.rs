@@ -160,6 +160,140 @@ pub struct DesktopWorkflowRequestState {
     pub source_name: String,
 }
 
+pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, and does not add controller, agent, or orchestration behavior.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopVaultMode {
+    Decode,
+    AuditEvents,
+}
+
+impl DesktopVaultMode {
+    pub fn route(self) -> &'static str {
+        match self {
+            Self::Decode => "/vault/decode",
+            Self::AuditEvents => "/vault/audit/events",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopVaultRequestState {
+    pub mode: DesktopVaultMode,
+    pub vault_path: String,
+    pub vault_passphrase: String,
+    pub record_ids_json: String,
+    pub output_target: String,
+    pub justification: String,
+    pub requested_by: String,
+    pub audit_kind: Option<String>,
+    pub audit_actor: Option<String>,
+}
+
+impl std::fmt::Debug for DesktopVaultRequestState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopVaultRequestState")
+            .field("mode", &self.mode)
+            .field("vault_path", &self.vault_path)
+            .field("vault_passphrase", &"<redacted>")
+            .field("record_ids_json", &self.record_ids_json)
+            .field("output_target", &self.output_target)
+            .field("justification", &self.justification)
+            .field("requested_by", &self.requested_by)
+            .field("audit_kind", &self.audit_kind)
+            .field("audit_actor", &self.audit_actor)
+            .finish()
+    }
+}
+
+impl Default for DesktopVaultRequestState {
+    fn default() -> Self {
+        Self {
+            mode: DesktopVaultMode::Decode,
+            vault_path: String::new(),
+            vault_passphrase: String::new(),
+            record_ids_json: "[]".to_string(),
+            output_target: "desktop-workbench".to_string(),
+            justification: "desktop decode request".to_string(),
+            requested_by: "desktop".to_string(),
+            audit_kind: None,
+            audit_actor: None,
+        }
+    }
+}
+
+impl DesktopVaultRequestState {
+    pub fn try_build_request(&self) -> Result<DesktopWorkflowRequest, DesktopVaultValidationError> {
+        let vault_path = self.vault_path.trim();
+        if vault_path.is_empty() {
+            return Err(DesktopVaultValidationError::BlankVaultPath);
+        }
+
+        if self.vault_passphrase.trim().is_empty() {
+            return Err(DesktopVaultValidationError::BlankVaultPassphrase);
+        }
+
+        let body = match self.mode {
+            DesktopVaultMode::Decode => {
+                let output_target = self.output_target.trim();
+                if output_target.is_empty() {
+                    return Err(DesktopVaultValidationError::BlankOutputTarget);
+                }
+
+                let justification = self.justification.trim();
+                if justification.is_empty() {
+                    return Err(DesktopVaultValidationError::BlankJustification);
+                }
+
+                let record_ids: Vec<uuid::Uuid> = serde_json::from_str(&self.record_ids_json)
+                    .map_err(|error| {
+                        DesktopVaultValidationError::InvalidRecordIdsJson(error.to_string())
+                    })?;
+                if record_ids.is_empty() {
+                    return Err(DesktopVaultValidationError::EmptyRecordIds);
+                }
+
+                serde_json::json!({
+                    "vault_path": vault_path,
+                    "vault_passphrase": self.vault_passphrase.clone(),
+                    "record_ids": record_ids,
+                    "output_target": output_target,
+                    "justification": justification,
+                    "requested_by": self.requested_by.trim(),
+                })
+            }
+            DesktopVaultMode::AuditEvents => serde_json::json!({
+                "vault_path": vault_path,
+                "vault_passphrase": self.vault_passphrase.clone(),
+                "kind": lowercase_optional_filter(self.audit_kind.as_deref()),
+                "actor": lowercase_optional_filter(self.audit_actor.as_deref()),
+            }),
+        };
+
+        Ok(DesktopWorkflowRequest {
+            route: self.mode.route(),
+            body,
+        })
+    }
+}
+
+fn lowercase_optional_filter(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopVaultValidationError {
+    BlankVaultPath,
+    BlankVaultPassphrase,
+    BlankOutputTarget,
+    BlankJustification,
+    EmptyRecordIds,
+    InvalidRecordIdsJson(String),
+}
+
 impl Default for DesktopWorkflowRequestState {
     fn default() -> Self {
         Self {
@@ -301,6 +435,28 @@ fn parse_field_policies(
 pub struct DesktopWorkflowRequest {
     pub route: &'static str,
     pub body: serde_json::Value,
+}
+
+impl std::fmt::Debug for DesktopWorkflowRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopWorkflowRequest")
+            .field("route", &self.route)
+            .field("body", &redact_vault_passphrase_in_body(&self.body))
+            .finish()
+    }
+}
+
+fn redact_vault_passphrase_in_body(body: &serde_json::Value) -> serde_json::Value {
+    let mut redacted = body.clone();
+    if let serde_json::Value::Object(object) = &mut redacted {
+        if object.contains_key("vault_passphrase") {
+            object.insert(
+                "vault_passphrase".to_string(),
+                serde_json::Value::String("<redacted>".to_string()),
+            );
+        }
+    }
+    redacted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -626,6 +782,168 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn desktop_vault_decode_request_builds_existing_runtime_contract() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::Decode,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: " correct horse battery staple ".to_string(),
+            record_ids_json: r#"["550e8400-e29b-41d4-a716-446655440000"]"#.to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "incident review".to_string(),
+            requested_by: "desktop".to_string(),
+            audit_kind: None,
+            audit_actor: None,
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("decode request should build");
+
+        assert_eq!(request.route, "/vault/decode");
+        assert_eq!(request.body["vault_path"], "C:/vaults/local.mdid");
+        assert_eq!(
+            request.body["vault_passphrase"],
+            " correct horse battery staple "
+        );
+        assert_eq!(
+            request.body["record_ids"][0],
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(request.body["output_target"], "review-workbench");
+        assert_eq!(request.body["justification"], "incident review");
+        assert_eq!(request.body["requested_by"], "desktop");
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_builds_read_only_filter_contract() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            record_ids_json: "[]".to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "desktop audit review".to_string(),
+            requested_by: "desktop".to_string(),
+            audit_kind: Some("Decode".to_string()),
+            audit_actor: Some("Desktop".to_string()),
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("audit request should build");
+
+        assert_eq!(request.route, "/vault/audit/events");
+        assert_eq!(request.body["vault_path"], "C:/vaults/local.mdid");
+        assert_eq!(
+            request.body["vault_passphrase"],
+            "correct horse battery staple"
+        );
+        assert_eq!(request.body["kind"], "decode");
+        assert_eq!(request.body["actor"], "desktop");
+        assert!(request.body.get("record_ids").is_none());
+    }
+
+    #[test]
+    fn desktop_vault_request_state_debug_redacts_passphrase() {
+        let state = DesktopVaultRequestState {
+            vault_passphrase: "correct horse battery staple".to_string(),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let debug = format!("{state:?}");
+
+        assert!(debug.contains("vault_passphrase: \"<redacted>\""));
+        assert!(!debug.contains("correct horse battery staple"));
+    }
+
+    #[test]
+    fn desktop_vault_workflow_request_debug_redacts_passphrase_after_build() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::Decode,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "super secret passphrase".to_string(),
+            record_ids_json: r#"["550e8400-e29b-41d4-a716-446655440000"]"#.to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "incident review".to_string(),
+            requested_by: "desktop".to_string(),
+            audit_kind: None,
+            audit_actor: None,
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("decode request should build");
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("/vault/decode"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("super secret passphrase"));
+        assert_eq!(request.body["vault_passphrase"], "super secret passphrase");
+    }
+
+    #[test]
+    fn desktop_vault_request_validation_rejects_blank_sensitive_inputs() {
+        let mut state = DesktopVaultRequestState::default();
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::BlankVaultPath)
+        );
+
+        state.vault_path = "C:/vaults/local.mdid".to_string();
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::BlankVaultPassphrase)
+        );
+
+        state.vault_passphrase = "correct horse battery staple".to_string();
+        state.output_target = "   ".to_string();
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::BlankOutputTarget)
+        );
+
+        state.output_target = "review-workbench".to_string();
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::EmptyRecordIds)
+        );
+
+        state.record_ids_json = "not json".to_string();
+        assert!(matches!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::InvalidRecordIdsJson(_))
+        ));
+    }
+
+    #[test]
+    fn desktop_vault_decode_validation_rejects_blank_justification() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::Decode,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            record_ids_json: r#"["550e8400-e29b-41d4-a716-446655440000"]"#.to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "   ".to_string(),
+            requested_by: "desktop".to_string(),
+            audit_kind: None,
+            audit_actor: None,
+        };
+
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::BlankJustification)
+        );
+    }
+
+    #[test]
+    fn desktop_vault_workbench_copy_is_bounded_and_non_orchestrating() {
+        assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("existing localhost runtime vault routes"));
+        assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("does not persist passphrases"));
+        assert!(DESKTOP_VAULT_WORKBENCH_COPY
+            .contains("does not add controller, agent, or orchestration behavior"));
+    }
 
     #[test]
     fn desktop_file_import_csv_bytes_map_to_csv_text_payload() {
