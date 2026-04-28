@@ -8,16 +8,18 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use calamine::Reader;
 use mdid_adapters::{
-    CsvTabularAdapter, DicomAdapterError, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
+    ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter, DicomAdapterError,
+    FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
 };
 use mdid_application::{
-    ApplicationError, ApplicationService, DicomDeidentificationOutput, DicomDeidentificationService,
+    ApplicationError, ApplicationService, ConservativeMediaDeidentificationOutput,
+    ConservativeMediaDeidentificationService, DicomDeidentificationOutput, DicomDeidentificationService,
     TabularDeidentificationOutput, TabularDeidentificationService,
 };
 use mdid_domain::{
-    AuditEvent, AuditEventKind, BatchSummary, DecodeRequest, DicomDeidentificationSummary,
-    DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PhiCandidate,
-    SurfaceKind,
+    AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
+    ConservativeMediaSummary, DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate,
+    DicomPrivateTagPolicy, MappingRecord, MappingScope, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
@@ -99,6 +101,23 @@ struct TabularDeidentifyRequest {
 struct TabularXlsxDeidentifyRequest {
     workbook_base64: String,
     field_policies: Vec<FieldPolicyRequest>,
+}
+
+#[derive(Deserialize)]
+struct ConservativeMediaDeidentifyRequest {
+    artifact_label: String,
+    format: ConservativeMediaFormat,
+    metadata: Vec<ConservativeMediaMetadataEntryRequest>,
+    #[serde(default)]
+    ocr_or_visual_review_required: bool,
+    #[serde(default)]
+    unsupported_payload: bool,
+}
+
+#[derive(Deserialize)]
+struct ConservativeMediaMetadataEntryRequest {
+    key: String,
+    value: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,6 +202,13 @@ struct TabularXlsxDeidentifyResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ConservativeMediaDeidentifyResponse {
+    summary: ConservativeMediaSummary,
+    review_queue: Vec<ConservativeMediaCandidate>,
+    rewritten_media_bytes_base64: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorEnvelope {
     error: ErrorBody,
 }
@@ -199,6 +225,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/pipelines", post(create_pipeline))
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/tabular/deidentify/xlsx", post(tabular_xlsx_deidentify))
+        .route("/media/conservative/deidentify", post(conservative_media_deidentify))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
         .route("/vault/export", post(vault_export))
@@ -306,6 +333,26 @@ async fn tabular_xlsx_deidentify(
         Ok(response) => response.into_response(),
         Err(_) => internal_error_response().into_response(),
     }
+}
+
+async fn conservative_media_deidentify(
+    payload: Result<Json<ConservativeMediaDeidentifyRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_conservative_media_request_response().into_response(),
+    };
+
+    let input = ConservativeMediaInput::from(payload);
+    let output = match ConservativeMediaDeidentificationService::default().deidentify_metadata(input) {
+        Ok(output) => output,
+        Err(ApplicationError::ConservativeMediaAdapter(_)) => {
+            return invalid_conservative_media_request_response().into_response()
+        }
+        Err(_) => return internal_error_response().into_response(),
+    };
+
+    conservative_media_success_response(output).into_response()
 }
 
 async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Response {
@@ -507,6 +554,27 @@ fn map_tabular_xlsx_application_error(error: &ApplicationError) -> (StatusCode, 
     }
 }
 
+impl From<ConservativeMediaMetadataEntryRequest> for ConservativeMediaMetadataEntry {
+    fn from(value: ConservativeMediaMetadataEntryRequest) -> Self {
+        Self {
+            key: value.key,
+            value: value.value,
+        }
+    }
+}
+
+impl From<ConservativeMediaDeidentifyRequest> for ConservativeMediaInput {
+    fn from(value: ConservativeMediaDeidentifyRequest) -> Self {
+        Self {
+            artifact_label: value.artifact_label,
+            format: value.format,
+            metadata: value.metadata.into_iter().map(Into::into).collect(),
+            requires_visual_review: value.ocr_or_visual_review_required,
+            unsupported_payload: value.unsupported_payload,
+        }
+    }
+}
+
 impl From<FieldPolicyActionRequest> for FieldPolicyAction {
     fn from(value: FieldPolicyActionRequest) -> Self {
         match value {
@@ -700,6 +768,19 @@ fn tabular_xlsx_success_response(
     ))
 }
 
+fn conservative_media_success_response(
+    output: ConservativeMediaDeidentificationOutput,
+) -> (StatusCode, Json<ConservativeMediaDeidentifyResponse>) {
+    (
+        StatusCode::OK,
+        Json(ConservativeMediaDeidentifyResponse {
+            summary: output.summary,
+            review_queue: output.review_queue,
+            rewritten_media_bytes_base64: None,
+        }),
+    )
+}
+
 fn invalid_dicom_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -731,6 +812,18 @@ fn invalid_tabular_xlsx_request_response() -> (StatusCode, Json<ErrorEnvelope>) 
             error: ErrorBody {
                 code: "invalid_tabular_xlsx_request",
                 message: "request body did not contain a valid XLSX tabular deidentification request",
+            },
+        }),
+    )
+}
+
+fn invalid_conservative_media_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_conservative_media_request",
+                message: "request body did not contain a valid conservative media deidentification request",
             },
         }),
     )
