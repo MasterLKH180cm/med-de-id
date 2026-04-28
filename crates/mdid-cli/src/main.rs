@@ -18,7 +18,7 @@ fn main() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliCommand {
     Status,
-    MoatControllerPlan(MoatControllerPlanCommand),
+    MoatControllerPlan(Box<MoatControllerPlanCommand>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,9 +61,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [moat, controller_plan, rest @ ..]
             if moat == "moat" && controller_plan == "controller-plan" =>
         {
-            Ok(CliCommand::MoatControllerPlan(
+            Ok(CliCommand::MoatControllerPlan(Box::new(
                 parse_moat_controller_plan_command(rest)?,
-            ))
+            )))
         }
         _ => Err(format!("unknown command: {}", args.join(" "))),
     }

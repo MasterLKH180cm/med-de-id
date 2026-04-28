@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -459,7 +459,7 @@ fn cleanup_history_path(path: &PathBuf) {
     let _ = fs::remove_file(path);
 }
 
-fn assert_packet_node_ids(history_path: &PathBuf, extra_args: &[&str], expected_node_ids: &[&str]) {
+fn assert_packet_node_ids(history_path: &Path, extra_args: &[&str], expected_node_ids: &[&str]) {
     let mut args = vec!["--format", "json"];
     args.extend_from_slice(extra_args);
     let output = run_controller_plan(history_path, &args);
@@ -490,7 +490,7 @@ fn assert_packet_node_ids(history_path: &PathBuf, extra_args: &[&str], expected_
     assert_eq!(json["packet_count"], expected_node_ids.len());
 }
 
-fn assert_stderr_contains(history_path: &PathBuf, extra_args: &[&str], expected: &str) {
+fn assert_stderr_contains(history_path: &Path, extra_args: &[&str], expected: &str) {
     let output = run_controller_plan(history_path, extra_args);
     assert!(
         !output.status.success(),
@@ -503,7 +503,7 @@ fn assert_stderr_contains(history_path: &PathBuf, extra_args: &[&str], expected:
     );
 }
 
-fn run_controller_plan(history_path: &PathBuf, extra_args: &[&str]) -> std::process::Output {
+fn run_controller_plan(history_path: &Path, extra_args: &[&str]) -> std::process::Output {
     let mut args = vec![
         "moat",
         "controller-plan",
