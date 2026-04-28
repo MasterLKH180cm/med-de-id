@@ -6062,6 +6062,138 @@ fn claim_task_persists_assigned_agent_id() {
 }
 
 #[test]
+fn moat_controller_plan_text_exports_multiple_ready_packets_read_only() {
+    let history_path = unique_history_path("controller-plan-text");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--strategy-candidates",
+            "0",
+            "--spec-generations",
+            "0",
+            "--implementation-tasks",
+            "0",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to seed moat history for controller-plan text");
+    assert!(
+        seed.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    update_history_task_node(&history_path, "market_scan", |node| {
+        node.insert("state".to_string(), Value::String("ready".to_string()));
+    });
+    update_history_task_node(&history_path, "competitor_analysis", |node| {
+        node.insert("state".to_string(), Value::String("ready".to_string()));
+        node.insert("depends_on".to_string(), serde_json::json!([]));
+    });
+    let before = std::fs::read_to_string(&history_path).expect("failed to read seeded history");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-plan",
+            "--history-path",
+            history_path.to_str().unwrap(),
+            "--limit",
+            "2",
+        ])
+        .output()
+        .expect("failed to run moat controller-plan text");
+    assert!(
+        output.status.success(),
+        "controller-plan text failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout =
+        String::from_utf8(output.stdout).expect("controller-plan text stdout was not utf8");
+    assert!(stdout.contains("controller_plan_packets=2"));
+    assert!(stdout.contains("work_packet=market_scan|planner|market_scan|ready"));
+    assert!(stdout.contains("work_packet=competitor_analysis|planner|competitor_analysis|ready"));
+    assert!(stdout.contains("complete_command=mdid-cli moat complete-task"));
+    let after =
+        std::fs::read_to_string(&history_path).expect("failed to read controller-plan history");
+    assert_eq!(after, before, "controller-plan text mutated history");
+    cleanup_history_path(&history_path);
+}
+
+#[test]
+fn moat_controller_plan_json_exports_multiple_ready_packets_read_only() {
+    let history_path = unique_history_path("controller-plan-json");
+    let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "round",
+            "--strategy-candidates",
+            "0",
+            "--spec-generations",
+            "0",
+            "--implementation-tasks",
+            "0",
+            "--review-loops",
+            "0",
+            "--history-path",
+            history_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to seed moat history for controller-plan json");
+    assert!(
+        seed.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    update_history_task_node(&history_path, "market_scan", |node| {
+        node.insert("state".to_string(), Value::String("ready".to_string()));
+    });
+    update_history_task_node(&history_path, "competitor_analysis", |node| {
+        node.insert("state".to_string(), Value::String("ready".to_string()));
+        node.insert("depends_on".to_string(), serde_json::json!([]));
+    });
+    let before = std::fs::read_to_string(&history_path).expect("failed to read seeded history");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .args([
+            "moat",
+            "controller-plan",
+            "--history-path",
+            history_path.to_str().unwrap(),
+            "--limit",
+            "2",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("failed to run moat controller-plan json");
+    assert!(
+        output.status.success(),
+        "controller-plan json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("controller-plan stdout was not json");
+    assert_eq!(json["type"], "moat_controller_plan");
+    assert_eq!(json["read_only"], true);
+    assert_eq!(json["packet_count"], 2);
+    assert_eq!(json["packets"][0]["node_id"], "market_scan");
+    assert!(json["packets"][0]["complete_command"]
+        .as_str()
+        .unwrap()
+        .contains("complete-task"));
+    assert_eq!(json["constraints"]["local_only"], true);
+    assert_eq!(json["constraints"]["read_only"], true);
+    let after =
+        std::fs::read_to_string(&history_path).expect("failed to read controller-plan history");
+    assert_eq!(after, before, "controller-plan json mutated history");
+    cleanup_history_path(&history_path);
+}
+
+#[test]
 fn moat_controller_step_json_claims_ready_task_and_embeds_work_packet() {
     let history_path = unique_history_path("controller-step-json");
     let seed = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))

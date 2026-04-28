@@ -167,6 +167,7 @@ struct MoatDispatchNextCommand {
 }
 
 type MoatControllerStepCommand = MoatDispatchNextCommand;
+type MoatControllerPlanCommand = MoatReadyTasksCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DispatchOutputFormat {
@@ -309,6 +310,11 @@ fn main() {
                 exit_with_error(error);
             }
         }
+        Ok(CliCommand::MoatControllerPlan(command)) => {
+            if let Err(error) = run_moat_controller_plan(&command) {
+                exit_with_error(error);
+            }
+        }
         Ok(CliCommand::MoatArtifacts(command)) => {
             if let Err(error) = run_moat_artifacts(&command) {
                 exit_with_error(error);
@@ -407,6 +413,7 @@ enum CliCommand {
     MoatReadyTasks(MoatReadyTasksCommand),
     MoatDispatchNext(MoatDispatchNextCommand),
     MoatControllerStep(MoatControllerStepCommand),
+    MoatControllerPlan(MoatControllerPlanCommand),
     MoatArtifacts(MoatArtifactsCommand),
     MoatClaimTask(MoatClaimTaskCommand),
     MoatHeartbeatTask(MoatHeartbeatTaskCommand),
@@ -479,6 +486,13 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         {
             Ok(CliCommand::MoatControllerStep(
                 parse_moat_controller_step_command(rest)?,
+            ))
+        }
+        [moat, controller_plan, rest @ ..]
+            if moat == "moat" && controller_plan == "controller-plan" =>
+        {
+            Ok(CliCommand::MoatControllerPlan(
+                parse_moat_controller_plan_command(rest)?,
             ))
         }
         [moat, artifacts, rest @ ..] if moat == "moat" && artifacts == "artifacts" => Ok(
@@ -1376,6 +1390,27 @@ fn parse_moat_ready_tasks_command(args: &[String]) -> Result<MoatReadyTasksComma
         limit,
         output_format: output_format.unwrap_or(MoatOutputFormat::Text),
     })
+}
+
+fn parse_moat_controller_plan_command(
+    args: &[String],
+) -> Result<MoatControllerPlanCommand, String> {
+    let command = parse_moat_ready_tasks_command(args).map_err(|error| {
+        error
+            .replace(
+                "missing required flag: --history-path",
+                "missing --history-path for moat controller-plan",
+            )
+            .replace("moat ready-tasks", "moat controller-plan")
+            .replace("ready-tasks", "controller-plan")
+            .replace("unknown flag:", "unknown option for moat controller-plan:")
+    })?;
+    if command.depends_on.is_some() && command.no_dependencies {
+        return Err(
+            "moat controller-plan cannot combine --depends-on and --no-dependencies".to_string(),
+        );
+    }
+    Ok(command)
 }
 
 fn parse_moat_work_packet_command(args: &[String]) -> Result<MoatWorkPacketCommand, String> {
@@ -4404,6 +4439,185 @@ fn run_moat_work_packet(command: &MoatWorkPacketCommand) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn run_moat_controller_plan(command: &MoatControllerPlanCommand) -> Result<(), String> {
+    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
+        .map_err(|error| format!("failed to open moat history store: {error}"))?;
+    if store.entries().is_empty() {
+        return Err(
+            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
+                .to_string(),
+        );
+    }
+
+    let entry = if let Some(round_id) = command.round_id.as_deref() {
+        store
+            .entries()
+            .iter()
+            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
+            .ok_or_else(|| "no ready moat task matched controller-plan filters".to_string())?
+    } else {
+        store.entries().last().ok_or_else(|| {
+            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
+                .to_string()
+        })?
+    };
+    let round_id = entry.report.summary.round_id.to_string();
+    let mut ready_nodes = select_ready_controller_plan_nodes(entry, command);
+    if let Some(limit) = command.limit {
+        ready_nodes.truncate(limit);
+    }
+    let acceptance = [
+        "Use SDD and TDD before completing this task.",
+        "Record artifact handoff with moat complete-task when work is complete.",
+    ];
+
+    match command.output_format {
+        MoatOutputFormat::Text => {
+            println!("controller_plan_packets={}", ready_nodes.len());
+            for node in ready_nodes {
+                let complete_command =
+                    format_controller_plan_complete_command(command, &round_id, &node.node_id);
+                println!(
+                    "work_packet={}|{}|{}|{}, title={}, dependencies={}, acceptance_criteria={}, complete_command={}",
+                    escape_assignment_output_field(&node.node_id),
+                    format_agent_role(node.role),
+                    format_moat_task_kind(node.kind),
+                    format_task_node_state(node.state),
+                    escape_assignment_output_field(&node.title),
+                    format_task_graph_dependencies(&node.depends_on),
+                    acceptance.join("; "),
+                    complete_command,
+                );
+            }
+        }
+        MoatOutputFormat::Json => {
+            let packets = ready_nodes
+                .iter()
+                .map(|node| {
+                    serde_json::json!({
+                        "node_id": node.node_id,
+                        "role": format_agent_role(node.role),
+                        "kind": format_moat_task_kind(node.kind),
+                        "state": format_task_node_state(node.state),
+                        "title": node.title,
+                        "dependencies": node.depends_on,
+                        "spec_ref": node.spec_ref,
+                        "acceptance_criteria": acceptance,
+                        "complete_command": format_controller_plan_complete_command(command, &round_id, &node.node_id),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let envelope = serde_json::json!({
+                "type": "moat_controller_plan",
+                "history_path": command.history_path,
+                "round_id": round_id,
+                "read_only": true,
+                "packet_count": packets.len(),
+                "packets": packets,
+                "constraints": {
+                    "local_only": true,
+                    "read_only": true,
+                    "no_agent_launch": true,
+                    "no_daemon": true,
+                    "no_pr_creation": true,
+                    "no_cron_creation": true,
+                    "no_code_writes": true,
+                    "no_artifact_writes": true
+                }
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&envelope).map_err(|error| format!(
+                    "failed to serialize controller-plan envelope: {error}"
+                ))?
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn select_ready_controller_plan_nodes<'a>(
+    entry: &'a MoatHistoryEntry,
+    command: &MoatControllerPlanCommand,
+) -> Vec<&'a MoatTaskNode> {
+    let ready_ids = entry.report.control_plane.task_graph.ready_node_ids();
+    entry
+        .report
+        .control_plane
+        .task_graph
+        .nodes
+        .iter()
+        .filter(|node| ready_ids.iter().any(|ready_id| ready_id == &node.node_id))
+        .filter(|node| command.role.map(|role| node.role == role).unwrap_or(true))
+        .filter(|node| command.kind.map(|kind| node.kind == kind).unwrap_or(true))
+        .filter(|node| {
+            command
+                .node_id
+                .as_deref()
+                .map(|id| node.node_id == id)
+                .unwrap_or(true)
+        })
+        .filter(|node| {
+            command
+                .depends_on
+                .as_deref()
+                .map(|dependency| {
+                    node.depends_on
+                        .iter()
+                        .any(|candidate| candidate == dependency)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|node| !command.no_dependencies || node.depends_on.is_empty())
+        .filter(|node| {
+            !command.requires_artifacts
+                || dependency_artifact_requirements_satisfied(
+                    node,
+                    &entry.report.control_plane.task_graph.nodes,
+                )
+        })
+        .filter(|node| {
+            command
+                .title_contains
+                .as_deref()
+                .map(|needle| node.title.contains(needle))
+                .unwrap_or(true)
+        })
+        .filter(|node| {
+            command
+                .spec_ref
+                .as_deref()
+                .map(|spec_ref| node.spec_ref.as_deref() == Some(spec_ref))
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
+fn format_controller_plan_complete_command(
+    command: &MoatControllerPlanCommand,
+    round_id: &str,
+    node_id: &str,
+) -> String {
+    let dispatch_command = MoatDispatchNextCommand {
+        history_path: command.history_path.clone(),
+        round_id: command.round_id.clone(),
+        agent_id: None,
+        role: command.role,
+        kind: command.kind,
+        node_id: command.node_id.clone(),
+        depends_on: command.depends_on.clone(),
+        no_dependencies: command.no_dependencies,
+        requires_artifacts: command.requires_artifacts,
+        title_contains: command.title_contains.clone(),
+        spec_ref: command.spec_ref.clone(),
+        dry_run: true,
+        output_format: DispatchOutputFormat::Text,
+        lease_seconds: 900,
+    };
+    format_dispatch_complete_command(&dispatch_command, round_id, node_id)
 }
 
 fn run_moat_ready_tasks(command: &MoatReadyTasksCommand) -> Result<(), String> {
