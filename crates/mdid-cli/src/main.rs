@@ -3646,6 +3646,31 @@ fn run_moat_controller_step(command: &MoatControllerStepCommand) -> Result<(), S
     };
     let round_id = entry.report.summary.round_id.to_string();
     let mut selected = select_dispatch_next_node(entry, command)?;
+    let dependency_artifacts = selected
+        .depends_on
+        .iter()
+        .flat_map(|dependency_id| {
+            entry
+                .report
+                .control_plane
+                .task_graph
+                .nodes
+                .iter()
+                .filter(move |candidate| {
+                    candidate.node_id == *dependency_id
+                        && candidate.state == MoatTaskNodeState::Completed
+                })
+                .flat_map(move |dependency| {
+                    dependency.artifacts.iter().map(move |artifact| {
+                        serde_json::json!({
+                            "node_id": dependency.node_id,
+                            "artifact_ref": artifact.artifact_ref,
+                            "artifact_summary": artifact.summary,
+                        })
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
     drop(store);
 
     if !command.dry_run {
@@ -3687,7 +3712,9 @@ fn run_moat_controller_step(command: &MoatControllerStepCommand) -> Result<(), S
             "kind": format_moat_task_kind(selected.kind),
             "title": selected.title,
             "dependencies": selected.depends_on,
-            "dependency_artifacts": [],
+            "state": format_task_node_state(selected.state),
+            "spec_ref": selected.spec_ref,
+            "dependency_artifacts": dependency_artifacts,
             "acceptance_criteria": acceptance,
             "complete_command": complete_command,
         });

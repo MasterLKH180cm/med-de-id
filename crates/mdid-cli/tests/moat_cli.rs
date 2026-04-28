@@ -6172,6 +6172,17 @@ fn moat_controller_step_dry_run_json_exports_packet_without_mutating_history() {
         "seed failed: {}",
         String::from_utf8_lossy(&seed.stderr)
     );
+    update_history_task_node(&history_path, "implementation", |node| {
+        node.insert("state".to_string(), Value::String("completed".to_string()));
+        node.insert(
+            "artifacts".to_string(),
+            serde_json::json!([{
+                "artifact_ref": "plan://implementation-controller-step-output",
+                "summary": "Implemented upstream controller-step dependency",
+                "recorded_at": "2026-04-28T00:00:00Z"
+            }]),
+        );
+    });
     let before = std::fs::read_to_string(&history_path).expect("failed to read seeded history");
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .args([
@@ -6197,7 +6208,28 @@ fn moat_controller_step_dry_run_json_exports_packet_without_mutating_history() {
     assert_eq!(json["claimed"], false);
     assert_eq!(json["assigned_agent_id"], serde_json::Value::Null);
     assert_eq!(json["node_id"], "review");
-    assert_eq!(json["work_packet"]["node_id"], "review");
+    let packet = &json["work_packet"];
+    assert_eq!(packet["node_id"], "review");
+    assert_eq!(packet["state"], "ready");
+    assert_eq!(packet["spec_ref"], serde_json::Value::Null);
+    assert_eq!(packet["dependencies"][0], "implementation");
+    assert_eq!(
+        packet["dependency_artifacts"].as_array().unwrap().len(),
+        1,
+        "controller-step embedded work_packet should include completed upstream handoffs"
+    );
+    assert_eq!(
+        packet["dependency_artifacts"][0]["node_id"],
+        "implementation"
+    );
+    assert_eq!(
+        packet["dependency_artifacts"][0]["artifact_ref"],
+        "plan://implementation-controller-step-output"
+    );
+    assert_eq!(
+        packet["dependency_artifacts"][0]["artifact_summary"],
+        "Implemented upstream controller-step dependency"
+    );
     let after = std::fs::read_to_string(&history_path).expect("failed to read dry-run history");
     assert_eq!(after, before, "dry-run controller-step mutated history");
     cleanup_history_path(&history_path);
