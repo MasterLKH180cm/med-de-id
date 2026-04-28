@@ -70,7 +70,7 @@ impl DesktopWorkflowRequestState {
     pub fn status_message(&self) -> String {
         match self.try_build_request() {
             Ok(request) => format!(
-                "Ready to submit to {}; submission is not wired in this desktop slice. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, or controller workflow.",
+                "Ready to submit to {}; this slice can render runtime-shaped responses locally, but desktop networking is not wired. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, file picker upload/download UX, vault/decode/audit workflow, or controller workflow.",
                 request.route
             ),
             Err(error) => format!("Not ready: {error:?}"),
@@ -182,6 +182,78 @@ pub enum DesktopWorkflowValidationError {
     BlankFieldPolicyJson,
     InvalidFieldPolicyJson(String),
     BlankSourceName,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopWorkflowResponseState {
+    pub banner: String,
+    pub output: String,
+    pub summary: String,
+    pub review_queue: String,
+    pub error: Option<String>,
+}
+
+impl Default for DesktopWorkflowResponseState {
+    fn default() -> Self {
+        Self {
+            banner: "No runtime response rendered yet.".to_string(),
+            output: String::new(),
+            summary: "No successful runtime summary rendered yet.".to_string(),
+            review_queue: "No review queue rendered yet.".to_string(),
+            error: None,
+        }
+    }
+}
+
+impl DesktopWorkflowResponseState {
+    pub fn apply_success_json(&mut self, mode: DesktopWorkflowMode, envelope: serde_json::Value) {
+        self.banner = match mode {
+            DesktopWorkflowMode::CsvText => "CSV text runtime response rendered locally.".to_string(),
+            DesktopWorkflowMode::XlsxBase64 => {
+                "XLSX base64 runtime response rendered locally.".to_string()
+            }
+            DesktopWorkflowMode::PdfBase64Review => "PDF base64 review runtime response rendered locally; no PDF rewrite/export is available.".to_string(),
+        };
+
+        self.output = match mode {
+            DesktopWorkflowMode::CsvText => envelope
+                .get("rewritten_csv")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            DesktopWorkflowMode::XlsxBase64 => envelope
+                .get("rewritten_workbook_base64")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            DesktopWorkflowMode::PdfBase64Review => envelope
+                .get("rewritten_pdf_bytes_base64")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| {
+                    "No rewritten PDF bytes returned by the bounded review route.".to_string()
+                }),
+        };
+
+        self.summary = pretty_json_field(&envelope, "summary");
+        self.review_queue = pretty_json_field(&envelope, "review_queue");
+        self.error = None;
+    }
+
+    pub fn apply_error(&mut self, message: impl Into<String>) {
+        self.banner = "Runtime response error.".to_string();
+        self.output.clear();
+        self.summary = "No successful runtime summary rendered yet.".to_string();
+        self.review_queue = "No review queue rendered yet.".to_string();
+        self.error = Some(message.into());
+    }
+}
+
+fn pretty_json_field(envelope: &serde_json::Value, field: &str) -> String {
+    envelope
+        .get(field)
+        .and_then(|value| serde_json::to_string_pretty(value).ok())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 #[cfg(test)]
@@ -352,9 +424,105 @@ mod tests {
         let message = state.status_message();
 
         assert!(message.contains("Ready to submit to /pdf/deidentify"));
-        assert!(message.contains("submission is not wired in this desktop slice"));
-        assert!(message
-            .contains("no OCR, visual redaction, PDF rewrite/export, or controller workflow"));
+        assert!(message.contains("render runtime-shaped responses locally"));
+        assert!(message.contains("desktop networking is not wired"));
+        assert!(message.contains("no OCR, visual redaction, PDF rewrite/export"));
+        assert!(message.contains("file picker upload/download UX"));
+        assert!(message.contains("vault/decode/audit workflow"));
+        assert!(message.contains("controller workflow"));
+    }
+
+    #[test]
+    fn response_state_renders_csv_runtime_success_envelope() {
+        let mut response = DesktopWorkflowResponseState::default();
+
+        response.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({
+                "rewritten_csv": "patient_name\n<NAME-1>",
+                "summary": {"encoded_fields": 1, "review_required": 0},
+                "review_queue": []
+            }),
+        );
+
+        assert_eq!(
+            response.banner,
+            "CSV text runtime response rendered locally."
+        );
+        assert!(response.output.contains("<NAME-1>"));
+        assert!(response.summary.contains("encoded_fields"));
+        assert_eq!(response.review_queue, "[]");
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn response_state_renders_xlsx_runtime_success_envelope() {
+        let mut response = DesktopWorkflowResponseState::default();
+
+        response.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({
+                "rewritten_workbook_base64": "UEsDBAo=",
+                "summary": {"encoded_fields": 2},
+                "review_queue": [{"header":"patient_id"}]
+            }),
+        );
+
+        assert_eq!(
+            response.banner,
+            "XLSX base64 runtime response rendered locally."
+        );
+        assert_eq!(response.output, "UEsDBAo=");
+        assert!(response.summary.contains("encoded_fields"));
+        assert!(response.review_queue.contains("patient_id"));
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn response_state_renders_pdf_review_runtime_success_envelope_without_rewrite_claim() {
+        let mut response = DesktopWorkflowResponseState::default();
+
+        response.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "rewritten_pdf_bytes_base64": null,
+                "summary": {"pages": 1, "ocr_required_pages": 1},
+                "pages": [{"page_number": 1, "status": "ocr_required"}],
+                "review_queue": [{"page_number": 1, "reason":"ocr_required"}]
+            }),
+        );
+
+        assert_eq!(response.banner, "PDF base64 review runtime response rendered locally; no PDF rewrite/export is available.");
+        assert_eq!(
+            response.output,
+            "No rewritten PDF bytes returned by the bounded review route."
+        );
+        assert!(response.summary.contains("ocr_required_pages"));
+        assert!(response.review_queue.contains("ocr_required"));
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn response_state_records_runtime_error_without_stale_output() {
+        let mut response = DesktopWorkflowResponseState::default();
+        response.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"rewritten_csv":"patient_name\n<NAME-1>","summary":{},"review_queue":[]}),
+        );
+
+        response.apply_error("runtime rejected invalid payload");
+
+        assert_eq!(response.banner, "Runtime response error.");
+        assert_eq!(response.output, "");
+        assert_eq!(
+            response.summary,
+            "No successful runtime summary rendered yet."
+        );
+        assert_eq!(response.review_queue, "No review queue rendered yet.");
+        assert_eq!(
+            response.error.as_deref(),
+            Some("runtime rejected invalid payload")
+        );
     }
 
     #[test]
