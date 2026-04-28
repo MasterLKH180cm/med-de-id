@@ -4,7 +4,7 @@
 
 **Goal:** Add a bounded local HTTP runtime entry that routes conservative image/video/FCS metadata payloads to the existing application-layer review service without claiming OCR, visual redaction, rewrite/export, or workflow orchestration.
 
-**Architecture:** Keep `mdid-runtime` as a thin HTTP surface: deserialize JSON, call `ConservativeMediaDeidentificationService::deidentify_metadata`, and serialize the existing summary/review queue plus `rewritten_media_bytes_base64: null`. Errors from blank artifact labels surface as typed `422 invalid_conservative_media_request`; unsupported payloads remain successful review summaries. README completion status is truth-synced only after controller-visible tests pass.
+**Architecture:** Keep `mdid-runtime` as a thin HTTP surface: deserialize JSON, call `ConservativeMediaDeidentificationService::deidentify_metadata`, and serialize the existing summary/review queue plus `rewritten_media_bytes_base64: null`. Errors from blank artifact labels surface as typed `422 invalid_conservative_media_request`; unsupported payloads are represented by an explicit optional `unsupported_payload` JSON boolean because the existing adapter contract models unsupported status separately from the closed `ConservativeMediaFormat` enum. README completion status is truth-synced only after controller-visible tests pass.
 
 **Tech Stack:** Rust workspace, Axum runtime HTTP handlers, `mdid-application`, `mdid-adapters`, `mdid-domain`, serde, cargo test/clippy.
 
@@ -88,9 +88,10 @@ async fn conservative_media_deidentify_endpoint_reports_unsupported_payload_with
                 .body(Body::from(
                     json!({
                         "artifact_label": "unknown-media.bin",
-                        "format": "unsupported",
+                        "format": "image",
                         "metadata": [],
-                        "ocr_or_visual_review_required": false
+                        "ocr_or_visual_review_required": false,
+                        "unsupported_payload": true
                     })
                     .to_string(),
                 ))
@@ -183,6 +184,8 @@ struct ConservativeMediaDeidentifyRequest {
     metadata: Vec<ConservativeMediaMetadataEntryRequest>,
     #[serde(default)]
     ocr_or_visual_review_required: bool,
+    #[serde(default)]
+    unsupported_payload: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,7 +233,8 @@ async fn conservative_media_deidentify(
                 value: entry.value,
             })
             .collect(),
-        ocr_or_visual_review_required: payload.ocr_or_visual_review_required,
+        requires_visual_review: payload.ocr_or_visual_review_required,
+        unsupported_payload: payload.unsupported_payload,
     };
 
     let output = match ConservativeMediaDeidentificationService::default().deidentify_metadata(input) {
