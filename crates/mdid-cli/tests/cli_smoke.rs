@@ -1,8 +1,21 @@
 use assert_cmd::Command;
+use mdid_adapters::XlsxTabularAdapter;
 use predicates::prelude::*;
-use std::fs;
+use rust_xlsxwriter::Workbook;
+use serde_json::Value;
+use std::{fs, path::Path};
 
 use tempfile::tempdir;
+
+fn write_xlsx(path: &Path) {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.write_string(0, 0, "patient_name").unwrap();
+    worksheet.write_string(0, 1, "note").unwrap();
+    worksheet.write_string(1, 0, "Alice Patient").unwrap();
+    worksheet.write_string(1, 1, "needs follow-up").unwrap();
+    workbook.save(path).unwrap();
+}
 
 #[test]
 fn cli_prints_ready_banner_with_no_args() {
@@ -116,6 +129,95 @@ fn cli_deidentify_csv_rejects_malformed_policy_json_without_scope_drift_terms() 
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());
+}
+
+#[test]
+fn cli_deidentify_xlsx_writes_rewritten_workbook_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("input.xlsx");
+    let output_path = dir.path().join("output.xlsx");
+    let vault_path = dir.path().join("vault.mdid");
+    write_xlsx(&input_path);
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-xlsx",
+            "--xlsx-path",
+            input_path.to_str().unwrap(),
+            "--policies-json",
+            r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"},{"header":"note","phi_type":"NOTE","action":"review"}]"#,
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice Patient").not())
+        .stdout(predicate::str::contains("correct horse battery staple").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    assert!(output_path.exists());
+    let payload: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(
+        payload["output_path"],
+        output_path.to_string_lossy().to_string()
+    );
+    assert_eq!(payload["summary"]["total_rows"], 1);
+    assert_eq!(payload["summary"]["encoded_cells"], 1);
+    assert_eq!(payload["summary"]["review_required_cells"], 1);
+    assert!(payload["summary"].get("processed_rows").is_none());
+    assert!(payload["summary"].get("review_items").is_none());
+    assert_eq!(payload["review_queue_len"], 1);
+
+    let output_bytes = fs::read(&output_path).unwrap();
+    let extracted = XlsxTabularAdapter::new(Vec::new())
+        .extract(&output_bytes)
+        .unwrap();
+    assert_eq!(extracted.columns[0].name, "patient_name");
+    assert_eq!(extracted.columns[1].name, "note");
+    assert_eq!(extracted.rows.len(), 1);
+    assert!(extracted.rows[0][0].starts_with("tok-"));
+    assert!(!extracted.rows[0][0].contains("Alice Patient"));
+    assert_eq!(extracted.rows[0][1], "needs follow-up");
+}
+
+#[test]
+fn cli_deidentify_xlsx_rejects_invalid_workbook_without_scope_drift_terms() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("invalid.xlsx");
+    let output_path = dir.path().join("output.xlsx");
+    let vault_path = dir.path().join("vault.mdid");
+    fs::write(&input_path, b"not an xlsx workbook").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-xlsx",
+            "--xlsx-path",
+            input_path.to_str().unwrap(),
+            "--policies-json",
+            r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"}]"#,
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to read XLSX workbook"))
+        .stderr(predicate::str::contains("agent").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("moat").not());
+
+    assert!(!output_path.exists());
 }
 
 #[test]
