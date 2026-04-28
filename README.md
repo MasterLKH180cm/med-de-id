@@ -256,9 +256,10 @@ Schedule exactly one next bounded round when the continuation gate allows it wit
 
 ```bash
 cargo run -p mdid-cli -- moat schedule-next --history-path .mdid/moat-history.json
+cargo run -p mdid-cli -- moat schedule-next --history-path .mdid/moat-history.json --format json
 ```
 
-`moat schedule-next` is a one-shot local scheduler control: it requires an existing history file, checks the same continuation gate as `moat continue`, appends one deterministic bounded round only when `can_continue=true`, and otherwise leaves history unchanged. It does not create a cron job, background daemon, live crawler, or unrestricted autonomous loop.
+`moat schedule-next` is a one-shot local scheduler control: it requires an existing history file, checks the same continuation gate as `moat continue`, appends one deterministic bounded round only when `can_continue=true`, and otherwise leaves history unchanged. Text output remains the default (`--format text`). `--format json` emits a pretty, parseable `moat_schedule_next` envelope with `type`, `history_path`, `scheduled`, `reason`, nullable `scheduled_round_id`, and `required_improvement_threshold`. It does not launch agents, crawl data, open PRs, create cron jobs, create a background daemon, or run an unrestricted autonomous loop.
 
 Export the latest persisted implemented-spec handoffs as markdown with:
 
@@ -282,7 +283,7 @@ cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.jso
 
 `moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR` is also one-shot and local: it requires an already-existing history file, fails when the history is empty or the selected round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one `*-implementation-plan.md` file per handoff. By default it exports the latest persisted round; pass `--round-id ROUND_ID` to replay a prior handoff round by exact persisted round id. It does not start background agents, create cron jobs, open PRs, or run an unrestricted autonomous loop.
 
-This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest or exact prior persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
+This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next --format text|json`, and markdown export of latest or exact prior persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
 
 External workers can claim one ready task with a bounded dispatch envelope:
 

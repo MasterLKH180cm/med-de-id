@@ -367,8 +367,10 @@ fn main() {
         Ok(CliCommand::MoatScheduleNext {
             history_path,
             improvement_threshold,
+            format,
         }) => {
-            if let Err(error) = run_moat_schedule_next(&history_path, improvement_threshold) {
+            if let Err(error) = run_moat_schedule_next(&history_path, improvement_threshold, format)
+            {
                 exit_with_error(error);
             }
         }
@@ -414,6 +416,7 @@ enum CliCommand {
     MoatScheduleNext {
         history_path: String,
         improvement_threshold: i16,
+        format: MoatOutputFormat,
     },
 }
 
@@ -2092,6 +2095,7 @@ fn parse_moat_continue_command(args: &[String]) -> Result<CliCommand, String> {
 fn parse_moat_schedule_next_command(args: &[String]) -> Result<CliCommand, String> {
     let mut history_path = None;
     let mut improvement_threshold = 3;
+    let mut format = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -2108,6 +2112,21 @@ fn parse_moat_schedule_next_command(args: &[String]) -> Result<CliCommand, Strin
                 improvement_threshold =
                     parse_non_negative_i16_flag("--improvement-threshold", value)?;
             }
+            "--format" => {
+                let value = required_flag_value(args, index, "--format", false)?;
+                if format.is_some() {
+                    return Err(duplicate_flag_error("--format"));
+                }
+                format = Some(match value.as_str() {
+                    "text" => MoatOutputFormat::Text,
+                    "json" => MoatOutputFormat::Json,
+                    other => {
+                        return Err(format!(
+                            "\u{0}NO_USAGEerror: unknown output format for --format: {other}"
+                        ));
+                    }
+                });
+            }
             flag => return Err(format!("unknown flag: {flag}")),
         }
 
@@ -2118,6 +2137,7 @@ fn parse_moat_schedule_next_command(args: &[String]) -> Result<CliCommand, Strin
         history_path: history_path
             .ok_or_else(|| "missing required flag: --history-path".to_string())?,
         improvement_threshold,
+        format: format.unwrap_or(MoatOutputFormat::Text),
     })
 }
 
@@ -4169,7 +4189,11 @@ fn run_moat_continue(history_path: &str, improvement_threshold: i16) -> Result<(
     Ok(())
 }
 
-fn run_moat_schedule_next(history_path: &str, improvement_threshold: i16) -> Result<(), String> {
+fn run_moat_schedule_next(
+    history_path: &str,
+    improvement_threshold: i16,
+    format: MoatOutputFormat,
+) -> Result<(), String> {
     let mut store = LocalMoatHistoryStore::open_existing(history_path)
         .map_err(|error| format!("failed to open moat history store: {error}"))?;
     let gate = store.continuation_gate(improvement_threshold);
@@ -4183,17 +4207,37 @@ fn run_moat_schedule_next(history_path: &str, improvement_threshold: i16) -> Res
             .map_err(|error| format!("failed to append moat history entry: {error}"))?;
     }
 
-    println!("moat schedule next");
-    println!(
-        "scheduled={}",
-        if gate.can_continue { "true" } else { "false" }
-    );
-    println!("reason={}", gate.reason);
-    println!(
-        "scheduled_round_id={}",
-        scheduled_round_id.as_deref().unwrap_or("<none>")
-    );
-    println!("history_path={history_path}");
+    match format {
+        MoatOutputFormat::Text => {
+            println!("moat schedule next");
+            println!(
+                "scheduled={}",
+                if gate.can_continue { "true" } else { "false" }
+            );
+            println!("reason={}", gate.reason);
+            println!(
+                "scheduled_round_id={}",
+                scheduled_round_id.as_deref().unwrap_or("<none>")
+            );
+            println!("history_path={history_path}");
+        }
+        MoatOutputFormat::Json => {
+            let envelope = serde_json::json!({
+                "type": "moat_schedule_next",
+                "history_path": history_path,
+                "scheduled": gate.can_continue,
+                "reason": gate.reason,
+                "scheduled_round_id": scheduled_round_id,
+                "required_improvement_threshold": gate.required_improvement_threshold,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&envelope).map_err(|error| format!(
+                    "failed to serialize moat schedule-next json: {error}"
+                ))?
+            );
+        }
+    }
 
     Ok(())
 }
@@ -4632,12 +4676,16 @@ fn format_command(args: &[String]) -> String {
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--input-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--input-path PATH] [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] [--format text|json] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] [--format text|json] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] [--format text|json] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]"
+    "usage: mdid-cli [status | moat round [--input-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--input-path PATH] [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] [--format text|json] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--assigned-agent-id AGENT_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-events --history-path PATH [--round-id ROUND_ID] [--node-id NODE_ID] [--action claim|heartbeat|reap|complete|release|block|unblock] [--agent-id AGENT_ID] [--contains TEXT] [--limit N] [--format text|json] | moat work-packet --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--format text|json] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--limit N] [--format text|json] | moat artifacts --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--contains TEXT] [--artifact-ref TEXT] [--artifact-summary TEXT] [--limit N] [--format text|json] | moat dispatch-next --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--requires-artifacts] [--title-contains TEXT] [--spec-ref SPEC_REF] [--agent-id AGENT_ID] [--lease-seconds N] [--dry-run] [--format text|json] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat heartbeat-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--lease-seconds N] [--format text|json] | moat reap-stale-tasks --history-path PATH [--round-id ROUND_ID] [--now RFC3339] [--format text|json] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] [--agent-id AGENT_ID] [--artifact-ref TEXT --artifact-summary TEXT] [--format text|json] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] [--format text|json] | moat export-specs --history-path PATH [--round-id ROUND_ID] --output-dir DIR | moat export-plans --history-path PATH [--round-id ROUND_ID] --output-dir DIR]"
 }
 
 fn exit_with_usage(message: String) -> ! {
-    eprintln!("{message}");
-    eprintln!("{}", usage());
+    if let Some(message) = message.strip_prefix("\u{0}NO_USAGE") {
+        eprintln!("{message}");
+    } else {
+        eprintln!("{message}");
+        eprintln!("{}", usage());
+    }
     std::process::exit(1);
 }
 
@@ -4800,6 +4848,7 @@ mod tests {
             CliCommand::MoatScheduleNext {
                 history_path: "history.json".into(),
                 improvement_threshold: 5,
+                format: MoatOutputFormat::Text,
             }
         );
     }
