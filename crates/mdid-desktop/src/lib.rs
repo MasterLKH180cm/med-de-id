@@ -209,7 +209,7 @@ impl DesktopRuntimeClient {
         }
         if port == 0 {
             return Err(DesktopRuntimeSubmitError::InvalidEndpoint(
-                "desktop runtime client requires a non-zero port".to_string(),
+                "desktop runtime port must be greater than zero".to_string(),
             ));
         }
 
@@ -599,6 +599,17 @@ mod tests {
             error,
             DesktopRuntimeSubmitError::InvalidEndpoint(
                 "desktop runtime client only supports localhost/127.0.0.1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_client_rejects_zero_port() {
+        let error = DesktopRuntimeClient::new("127.0.0.1", 0).expect_err("zero port rejected");
+        assert_eq!(
+            error,
+            DesktopRuntimeSubmitError::InvalidEndpoint(
+                "desktop runtime port must be greater than zero".to_string()
             )
         );
     }

@@ -95,7 +95,7 @@ impl eframe::App for DesktopApp {
             );
 
             ui.label(
-                "Not implemented in this desktop slice: runtime networking, file picker upload/download UX, vault browsing, decode, audit investigation, OCR, visual redaction, PDF rewrite/export, and controller workflows.",
+                "Not implemented in this desktop slice: runtime networking, file picker upload/download UX, vault browsing, decode, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
             );
         });
     }
