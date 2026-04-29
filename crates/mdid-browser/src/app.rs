@@ -526,6 +526,93 @@ impl fmt::Debug for BrowserFlowState {
     }
 }
 
+fn parse_media_summary_report(summary: &str) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    for line in summary.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if !matches!(
+            key,
+            "total_items"
+                | "metadata_only_items"
+                | "visual_review_required_items"
+                | "unsupported_items"
+                | "review_required_candidates"
+                | "rewritten_media_bytes_base64"
+        ) {
+            continue;
+        }
+        if key == "rewritten_media_bytes_base64" {
+            object.insert(key.to_string(), serde_json::Value::Null);
+            continue;
+        }
+
+        let value = value.trim();
+        let parsed_value = value
+            .parse::<u64>()
+            .map_or(serde_json::Value::Null, serde_json::Value::from);
+        object.insert(key.to_string(), parsed_value);
+    }
+    serde_json::Value::Object(object)
+}
+
+fn parse_media_review_queue_report(review_queue: &str) -> serde_json::Value {
+    serde_json::Value::Array(
+        review_queue
+            .lines()
+            .filter_map(parse_media_review_queue_line)
+            .collect(),
+    )
+}
+
+fn parse_media_review_queue_line(line: &str) -> Option<serde_json::Value> {
+    let line = line.trim().strip_prefix("- ").unwrap_or(line.trim());
+    let parts: Vec<&str> = line.split(" / ").map(str::trim).collect();
+    if parts.len() < 5 {
+        return None;
+    }
+
+    let format = allowlisted_media_format(parts.get(1).copied().unwrap_or_default());
+    let phi_type = allowlisted_media_phi_type(parts.get(2).copied().unwrap_or_default());
+    let confidence = parts
+        .iter()
+        .find_map(|part| part.strip_prefix("confidence "))
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    Some(serde_json::json!({
+        "metadata_key": "redacted-field",
+        "format": format,
+        "phi_type": phi_type,
+        "confidence": confidence,
+        "value": "redacted",
+    }))
+}
+
+fn allowlisted_media_format(format: &str) -> &'static str {
+    match format {
+        "image" => "image",
+        "video" => "video",
+        "fcs" => "fcs",
+        _ => "unknown",
+    }
+}
+
+fn allowlisted_media_phi_type(phi_type: &str) -> &'static str {
+    match phi_type {
+        "Name" => "Name",
+        "Date" => "Date",
+        "Location" => "Location",
+        "Identifier" => "Identifier",
+        "Contact" => "Contact",
+        "Age" => "Age",
+        "metadata_identifier" => "metadata_identifier",
+        _ => "Other",
+    }
+}
+
 impl Default for BrowserFlowState {
     fn default() -> Self {
         Self {
@@ -660,6 +747,15 @@ impl BrowserFlowState {
         .map_err(|_| "Browser output download could not encode review report JSON.".to_string())
     }
 
+    fn media_review_report_download_json(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mode": "media_metadata_review",
+            "summary": parse_media_summary_report(&self.summary),
+            "review_queue": parse_media_review_queue_report(&self.review_queue),
+        }))
+        .map_err(|_| "Browser output download could not encode media review report JSON.".to_string())
+    }
+
     fn prepared_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
         let file_name = self.suggested_export_file_name();
         match self.input_mode {
@@ -691,8 +787,13 @@ impl BrowserFlowState {
                     is_text: false,
                 })
             }
+            InputMode::MediaMetadataJson => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "application/json;charset=utf-8",
+                bytes: self.media_review_report_download_json()?,
+                is_text: true,
+            }),
             InputMode::PdfBase64
-            | InputMode::MediaMetadataJson
             | InputMode::VaultAuditEvents
             | InputMode::VaultDecode
             | InputMode::PortableArtifactInspect
@@ -2298,6 +2399,43 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("review-only PDF analysis"));
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn media_review_download_is_structured_and_phi_safe() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::MediaMetadataJson;
+        state.result_output = "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string();
+        state.summary = "total_items: 1\nmetadata_only_items: 1\nvisual_review_required_items: 1\nunsupported_items: 0\nreview_required_candidates: 1\nrewritten_media_bytes_base64: null\noperator_notes: Jane Patient\ntotal_items_label: one\nmetadata_only_items: not-a-number".to_string();
+        state.review_queue = "- PatientName / image / metadata_identifier / confidence 0.97 / value: <redacted>\n- FlowCytometryId / fcs / metadata_identifier / confidence 0.91 / value: <redacted>\n- VoiceNote / audio / metadata_identifier / confidence 0.88 / value: <redacted>".to_string();
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("report json");
+        let report_text = String::from_utf8(payload.bytes).expect("report utf8");
+
+        assert_eq!(payload.file_name, "mdid-browser-media-review-report.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(report["mode"], "media_metadata_review");
+        assert_eq!(report["summary"]["total_items"], 1);
+        assert_eq!(report["summary"]["metadata_only_items"], serde_json::Value::Null);
+        assert_eq!(report["summary"]["visual_review_required_items"], 1);
+        assert_eq!(report["summary"]["unsupported_items"], 0);
+        assert_eq!(report["summary"]["review_required_candidates"], 1);
+        assert_eq!(report["summary"]["rewritten_media_bytes_base64"], serde_json::Value::Null);
+        assert_eq!(report["review_queue"][0]["metadata_key"], "redacted-field");
+        assert_eq!(report["review_queue"][0]["format"], "image");
+        assert_eq!(report["review_queue"][1]["format"], "fcs");
+        assert_eq!(report["review_queue"][2]["format"], "unknown");
+        assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
+        assert!(report["summary"].get("operator_notes").is_none());
+        assert!(report["summary"].get("total_items_label").is_none());
+        assert_eq!(report["review_queue"][0]["confidence"], 0.97);
+        assert_eq!(report["review_queue"][0]["value"], "redacted");
+        assert!(!report_text.contains("Jane Patient"));
+        assert!(!report_text.contains("PatientName"));
+        assert!(!report_text.contains("source_value"));
     }
 
     #[test]
