@@ -1919,7 +1919,7 @@ fn safe_source_file_stem(source_name: &str) -> Option<String> {
             safe.push(ch);
             last_was_dash = false;
         } else if !last_was_dash && !safe.is_empty() {
-            safe.push('_');
+            safe.push('-');
             last_was_dash = true;
         }
     }
@@ -2098,7 +2098,7 @@ mod tests {
             .expect("portable inspect response should create a safe report download");
         assert_eq!(
             inspect_report.file_name,
-            "Clinic_Batch.mdid-portable-response-report.json"
+            "Clinic-Batch.mdid-portable-response-report.json"
         );
         let inspect_text = std::str::from_utf8(&inspect_report.bytes).expect("report is utf8 json");
         assert!(inspect_text.contains("bounded portable artifact response rendered locally"));
@@ -2135,7 +2135,7 @@ mod tests {
             .expect("portable import response should create a safe report download");
         assert_eq!(
             import_report.file_name,
-            "Partner_Export.mdid-portable-response-report.json"
+            "Partner-Export.mdid-portable-response-report.json"
         );
         let import_text = std::str::from_utf8(&import_report.bytes).expect("report is utf8 json");
         assert!(import_text.contains("bounded portable artifact response rendered locally"));
@@ -2162,7 +2162,7 @@ mod tests {
 
         assert_eq!(
             download.file_name,
-            "Patient_Alpha.mdid-vault-response-report.json"
+            "Patient-Alpha.mdid-vault-response-report.json"
         );
         let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
         assert_eq!(report["mode"], "vault_decode");
@@ -2181,7 +2181,7 @@ mod tests {
             .safe_response_report_download_for_source(Some("audit export.json"))
             .expect("audit report download should be available");
 
-        assert_eq!(download.file_name, "audit_export-response-report.json");
+        assert_eq!(download.file_name, "audit-export-response-report.json");
         let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
         assert_eq!(report["mode"], "vault_audit");
         assert_eq!(report["summary"], "events returned: 3 / 8");
@@ -2201,7 +2201,7 @@ mod tests {
 
         assert_eq!(
             download.file_name,
-            "portable_subset.mdid-portable-response-report.json"
+            "portable-subset.mdid-portable-response-report.json"
         );
         let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
         assert_eq!(report["mode"], "vault_export");

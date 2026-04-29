@@ -806,8 +806,8 @@ mod tests {
                 &portable_inspect_report_state(),
             ),
             (
-                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
-                Some("Clinic_Batch.mdid-portable-response-report.json".to_string())
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic-Batch.mdid-portable-response-report.json".to_string())
             )
         );
     }
@@ -816,14 +816,14 @@ mod tests {
     fn portable_response_report_path_refreshes_previous_generated_portable_path() {
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic_Batch.mdid-portable-response-report.json",
-                Some("Clinic_Batch.mdid-portable-response-report.json"),
+                "Clinic-Batch.mdid-portable-response-report.json",
+                Some("Clinic-Batch.mdid-portable-response-report.json"),
                 Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
                 &portable_inspect_report_state(),
             ),
             (
-                "Partner_Export.mdid-portable-response-report.json".to_string(),
-                Some("Partner_Export.mdid-portable-response-report.json".to_string())
+                "Partner-Export.mdid-portable-response-report.json".to_string(),
+                Some("Partner-Export.mdid-portable-response-report.json".to_string())
             )
         );
     }
@@ -832,13 +832,13 @@ mod tests {
     fn portable_response_report_path_preserves_generated_shaped_path_without_marker() {
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic_Batch.mdid-portable-response-report.json",
+                "Clinic-Batch.mdid-portable-response-report.json",
                 None,
                 Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
                 &portable_inspect_report_state(),
             ),
             (
-                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
                 None
             )
         );
@@ -859,14 +859,14 @@ mod tests {
 
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic_Batch.mdid-portable-response-report.json",
-                Some("Clinic_Batch.mdid-portable-response-report.json"),
+                "Clinic-Batch.mdid-portable-response-report.json",
+                Some("Clinic-Batch.mdid-portable-response-report.json"),
                 Some("C:\\\\vaults\\\\Clinic Batch.mdid-portable.json"),
                 &state,
             ),
             (
-                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
-                Some("Clinic_Batch.mdid-portable-response-report.json".to_string())
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic-Batch.mdid-portable-response-report.json".to_string())
             )
         );
     }
@@ -917,8 +917,8 @@ mod tests {
                 &state,
             ),
             (
-                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
-                Some("Clinic_Batch.mdid-portable-response-report.json".to_string())
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic-Batch.mdid-portable-response-report.json".to_string())
             )
         );
     }
