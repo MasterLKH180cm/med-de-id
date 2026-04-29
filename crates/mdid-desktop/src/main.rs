@@ -607,7 +607,7 @@ impl eframe::App for DesktopApp {
                     ui.label(&self.portable_artifact_save_status);
                 }
             }
-            if self.vault_response_state.has_safe_response_report() {
+            if self.vault_response_state.safe_response_report_json().is_ok() {
                 ui.label("Save safe vault/portable response report JSON");
                 ui.text_edit_singleline(&mut self.vault_response_report_save_path);
                 if ui
