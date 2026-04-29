@@ -73,9 +73,16 @@ impl DesktopApp {
                 self.runtime_submission_receiver = Some(receiver);
             }
             Err(TryRecvError::Disconnected) => {
-                self.runtime_submission_mode = None;
-                self.response_state
-                    .apply_error("runtime submission worker disconnected".to_string());
+                let mode = self.runtime_submission_mode.take();
+                if let Some(vault_mode) =
+                    mode.and_then(DesktopRuntimeSubmissionMode::vault_response_mode)
+                {
+                    self.vault_response_state
+                        .apply_error(vault_mode, "runtime submission worker disconnected");
+                } else {
+                    self.response_state
+                        .apply_error("runtime submission worker disconnected".to_string());
+                }
             }
         }
     }
@@ -376,5 +383,76 @@ impl eframe::App for DesktopApp {
         if self.runtime_submission_receiver.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with_disconnected_submission(mode: DesktopRuntimeSubmissionMode) -> DesktopApp {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        drop(_sender);
+        DesktopApp {
+            runtime_submission_receiver: Some(receiver),
+            runtime_submission_mode: Some(mode),
+            ..DesktopApp::default()
+        }
+    }
+
+    #[test]
+    fn disconnected_vault_submission_error_is_routed_to_vault_response_state() {
+        let mut app = app_with_disconnected_submission(DesktopRuntimeSubmissionMode::Vault(
+            DesktopVaultMode::Decode,
+        ));
+
+        app.poll_runtime_submission();
+
+        assert_eq!(app.runtime_submission_mode, None);
+        assert_eq!(app.response_state.error, None);
+        assert_eq!(
+            app.vault_response_state.banner,
+            "bounded vault decode response rendered locally"
+        );
+        assert_eq!(
+            app.vault_response_state.error.as_deref(),
+            Some("runtime failed; details redacted")
+        );
+    }
+
+    #[test]
+    fn disconnected_portable_submission_error_is_routed_to_vault_response_state() {
+        let mut app = app_with_disconnected_submission(DesktopRuntimeSubmissionMode::Portable(
+            DesktopPortableMode::InspectArtifact,
+        ));
+
+        app.poll_runtime_submission();
+
+        assert_eq!(app.runtime_submission_mode, None);
+        assert_eq!(app.response_state.error, None);
+        assert_eq!(
+            app.vault_response_state.banner,
+            "bounded portable artifact response rendered locally"
+        );
+        assert_eq!(
+            app.vault_response_state.error.as_deref(),
+            Some("runtime failed; details redacted")
+        );
+    }
+
+    #[test]
+    fn disconnected_workflow_submission_error_is_routed_to_workflow_response_state() {
+        let mut app = app_with_disconnected_submission(DesktopRuntimeSubmissionMode::Workflow(
+            DesktopWorkflowMode::CsvText,
+        ));
+
+        app.poll_runtime_submission();
+
+        assert_eq!(app.runtime_submission_mode, None);
+        assert_eq!(
+            app.response_state.error.as_deref(),
+            Some("runtime submission worker disconnected")
+        );
+        assert_eq!(app.vault_response_state.error, None);
     }
 }
