@@ -34,6 +34,17 @@ enum BrowserFileReadMode {
 }
 
 impl InputMode {
+    fn redacts_runtime_error_details(self) -> bool {
+        matches!(
+            self,
+            Self::VaultAuditEvents
+                | Self::VaultDecode
+                | Self::VaultExport
+                | Self::PortableArtifactInspect
+                | Self::PortableArtifactImport
+        )
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn from_file_name(file_name: &str) -> Option<Self> {
         let file_name = file_name.to_lowercase();
@@ -590,6 +601,7 @@ impl BrowserFlowState {
 
             return Ok(RuntimeSubmitRequest {
                 endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
                 body_json,
             });
         }
@@ -606,6 +618,7 @@ impl BrowserFlowState {
 
             return Ok(RuntimeSubmitRequest {
                 endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
                 body_json,
             });
         }
@@ -621,6 +634,7 @@ impl BrowserFlowState {
             .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
             return Ok(RuntimeSubmitRequest {
                 endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
                 body_json,
             });
         }
@@ -634,6 +648,7 @@ impl BrowserFlowState {
                 .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
             return Ok(RuntimeSubmitRequest {
                 endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
                 body_json,
             });
         }
@@ -649,6 +664,7 @@ impl BrowserFlowState {
             .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
             return Ok(RuntimeSubmitRequest {
                 endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
                 body_json,
             });
         }
@@ -824,6 +840,7 @@ struct MediaReviewFieldRef {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeSubmitRequest {
     endpoint: &'static str,
+    input_mode: InputMode,
     body_json: String,
 }
 
@@ -998,6 +1015,7 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
+            input_mode,
             body_json,
         });
     }
@@ -1016,6 +1034,7 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
+            input_mode,
             body_json,
         });
     }
@@ -1035,6 +1054,7 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
+            input_mode,
             body_json,
         });
     }
@@ -1080,6 +1100,7 @@ fn build_submit_request(
 
     Ok(RuntimeSubmitRequest {
         endpoint: input_mode.endpoint(),
+        input_mode,
         body_json,
     })
 }
@@ -1153,11 +1174,21 @@ fn parse_runtime_success(
                 review_queue: format!("- {}", parsed.audit_event.kind),
             })
         }
-        InputMode::VaultExport => Ok(RuntimeResponseEnvelope {
-            rewritten_output: "Portable artifact created by bounded localhost runtime request. Artifact contents are hidden for PHI safety.".to_string(),
-            summary: "Portable artifact created.".to_string(),
-            review_queue: "No review items returned.".to_string(),
-        }),
+        InputMode::VaultExport => {
+            let parsed: serde_json::Value = serde_json::from_str(response_body)
+                .map_err(|_| "Failed to parse runtime success response.".to_string())?;
+            if !parsed
+                .get("artifact")
+                .is_some_and(serde_json::Value::is_object)
+            {
+                return Err("Vault export response missing artifact object.".to_string());
+            }
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: "Portable artifact created by bounded localhost runtime request. Artifact contents are hidden for PHI safety.".to_string(),
+                summary: "Portable artifact created.".to_string(),
+                review_queue: "No review items returned.".to_string(),
+            })
+        }
         InputMode::PortableArtifactInspect => {
             let parsed: serde_json::Value = serde_json::from_str(response_body)
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
@@ -1177,11 +1208,15 @@ fn parse_runtime_success(
             let imported = parsed
                 .get("imported_record_count")
                 .and_then(serde_json::Value::as_u64)
-                .ok_or("Portable artifact import response missing imported_record_count.".to_string())?;
+                .ok_or(
+                    "Portable artifact import response missing imported_record_count.".to_string(),
+                )?;
             let duplicates = parsed
                 .get("duplicate_record_count")
                 .and_then(serde_json::Value::as_u64)
-                .ok_or("Portable artifact import response missing duplicate_record_count.".to_string())?;
+                .ok_or(
+                    "Portable artifact import response missing duplicate_record_count.".to_string(),
+                )?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Portable artifact import completed. Audit detail and artifact contents are hidden for PHI safety.".to_string(),
                 summary: format!("{imported} imported portable record(s)."),
@@ -1200,8 +1235,14 @@ fn render_runtime_response(
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
-fn parse_runtime_error(status: u16, response_body: &str) -> String {
+fn parse_runtime_error(input_mode: InputMode, status: u16, response_body: &str) -> String {
     const MAX_MESSAGE_LEN: usize = 240;
+
+    if input_mode.redacts_runtime_error_details() {
+        return format!(
+            "Runtime request failed. Details hidden for PHI and secret safety. Status: {status}."
+        );
+    }
 
     let message = serde_json::from_str::<ErrorEnvelope>(response_body)
         .map(|envelope| format!("{}: {}", envelope.error.code, envelope.error.message))
@@ -1379,7 +1420,7 @@ async fn perform_runtime_request(request: RuntimeSubmitRequest) -> Result<String
         .map_err(|error| format!("Failed to build runtime request: {error}"))?
         .send()
         .await
-        .map_err(|error| parse_runtime_error(0, &error.to_string()))?;
+        .map_err(|error| parse_runtime_error(request.input_mode, 0, &error.to_string()))?;
 
     let status = response.status();
     let body = response
@@ -1390,7 +1431,7 @@ async fn perform_runtime_request(request: RuntimeSubmitRequest) -> Result<String
     if (200..300).contains(&status) {
         Ok(body)
     } else {
-        Err(parse_runtime_error(status, &body))
+        Err(parse_runtime_error(request.input_mode, status, &body))
     }
 }
 
@@ -2125,6 +2166,21 @@ mod tests {
         assert!(rendered_import.summary.contains("1 imported"));
         assert!(rendered_import.review_queue.contains("2 duplicate"));
         assert!(!rendered_import.rewritten_output.contains("MRN 123"));
+    }
+
+    #[test]
+    fn vault_export_runtime_success_rejects_malformed_contract() {
+        let malformed = json!({
+            "message": "exported record 11111111-1111-1111-1111-111111111111 for Jane Patient",
+            "artifact": "not an artifact object"
+        });
+
+        let error = parse_runtime_success(InputMode::VaultExport, &malformed.to_string())
+            .expect_err("malformed vault export success should fail closed");
+
+        assert!(error.contains("Vault export response missing artifact object"));
+        assert!(!error.contains("Jane Patient"));
+        assert!(!error.contains("11111111-1111-1111-1111-111111111111"));
     }
 
     #[test]
@@ -3055,6 +3111,7 @@ mod tests {
     #[test]
     fn parse_runtime_error_prefers_error_envelope_and_truncates() {
         let error = parse_runtime_error(
+            InputMode::CsvText,
             422,
             &json!({
                 "error": {
@@ -3068,6 +3125,51 @@ mod tests {
         assert!(error.starts_with("invalid_tabular_request: x"));
         assert!(error.ends_with('…'));
         assert!(error.chars().count() <= 240);
+    }
+
+    #[test]
+    fn parse_runtime_error_redacts_sensitive_portable_and_vault_modes() {
+        let body = json!({
+            "error": {
+                "code": "portable_artifact_failure",
+                "message": "failed passphrase portable secret for MRN 123 Jane Patient token TOKEN-1 at /tmp/vault.json record 11111111-1111-1111-1111-111111111111"
+            },
+            "artifact": {"ciphertext": "artifact JSON secret"},
+            "audit_event": {"detail": "audit detail with vault path"}
+        })
+        .to_string();
+
+        for mode in [
+            InputMode::VaultAuditEvents,
+            InputMode::VaultDecode,
+            InputMode::VaultExport,
+            InputMode::PortableArtifactInspect,
+            InputMode::PortableArtifactImport,
+        ] {
+            let error = parse_runtime_error(mode, 422, &body);
+
+            assert_eq!(
+                error,
+                "Runtime request failed. Details hidden for PHI and secret safety. Status: 422."
+            );
+            for forbidden in [
+                "portable_artifact_failure",
+                "passphrase",
+                "portable secret",
+                "MRN 123",
+                "Jane Patient",
+                "TOKEN-1",
+                "/tmp/vault.json",
+                "11111111-1111-1111-1111-111111111111",
+                "artifact JSON secret",
+                "audit detail",
+            ] {
+                assert!(
+                    !error.contains(forbidden),
+                    "leaked {forbidden} for {mode:?}"
+                );
+            }
+        }
     }
 
     #[test]
