@@ -819,23 +819,11 @@ impl std::fmt::Debug for DesktopWorkflowRequest {
 }
 
 fn redact_sensitive_request_body_fields(body: &serde_json::Value) -> serde_json::Value {
-    let mut redacted = body.clone();
-    if let serde_json::Value::Object(object) = &mut redacted {
-        for key in [
-            "vault_passphrase",
-            "export_passphrase",
-            "portable_passphrase",
-            "artifact",
-        ] {
-            if object.contains_key(key) {
-                object.insert(
-                    key.to_string(),
-                    serde_json::Value::String("<redacted>".to_string()),
-                );
-            }
-        }
+    match body {
+        serde_json::Value::Object(object) if object.is_empty() => body.clone(),
+        serde_json::Value::Null => body.clone(),
+        _ => serde_json::Value::String("<redacted>".to_string()),
     }
-    redacted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1258,6 +1246,26 @@ mod tests {
             invalid.try_build_request(),
             Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson)
         );
+    }
+
+    #[test]
+    fn media_metadata_request_debug_redacts_phi_payload() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::MediaMetadataJson,
+            payload: "{\"artifact_label\":\"scan.png\",\"format\":\"image\",\"metadata\":[{\"key\":\"PatientName\",\"value\":\"Jane Patient\"}],\"ocr_or_visual_review_required\":true}".to_string(),
+            field_policy_json: "{}".to_string(),
+            source_name: "local-media-metadata.json".to_string(),
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("valid metadata object should build");
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("/media/conservative/deidentify"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("Jane Patient"));
+        assert!(!debug.contains("PatientName"));
     }
 
     #[test]
