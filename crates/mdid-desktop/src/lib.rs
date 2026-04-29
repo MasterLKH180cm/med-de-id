@@ -813,6 +813,11 @@ impl DesktopVaultResponseState {
                 || self.error.is_some())
     }
 
+    pub fn safe_response_report_mode(&self) -> Option<DesktopVaultResponseMode> {
+        self.has_safe_response_report()
+            .then_some(self.rendered_mode?)
+    }
+
     pub fn safe_response_report_json(
         &self,
     ) -> Result<serde_json::Value, DesktopPortableArtifactSaveError> {
@@ -899,9 +904,10 @@ pub fn write_portable_artifact_json(
 
 pub fn write_safe_vault_response_json(
     state: &DesktopVaultResponseState,
+    mode: DesktopVaultResponseMode,
     path: impl AsRef<std::path::Path>,
 ) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
-    let report_json = serde_json::to_string_pretty(&state.safe_response_report_json()?)
+    let report_json = serde_json::to_string_pretty(&state.safe_export_json(mode))
         .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
     let path = path.as_ref();
     std::fs::write(path, report_json)
@@ -2240,8 +2246,9 @@ mod tests {
         });
         state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
 
-        let written_path = write_safe_vault_response_json(&state, &target)
-            .expect("safe vault response report should be written");
+        let written_path =
+            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target)
+                .expect("safe vault response report should be written");
 
         assert_eq!(written_path, target);
         let persisted = std::fs::read_to_string(&written_path).expect("read report");

@@ -252,7 +252,15 @@ impl DesktopApp {
             );
         }
 
-        write_safe_vault_response_json(&self.vault_response_state, path)
+        let mode = self
+            .vault_response_state
+            .safe_response_report_mode()
+            .ok_or_else(|| {
+                "vault response report save failed: no safe response summary is available"
+                    .to_string()
+            })?;
+
+        write_safe_vault_response_json(&self.vault_response_state, mode, path)
             .map(|_| ())
             .map_err(vault_response_report_save_error_status)
     }
