@@ -685,8 +685,8 @@ fn build_verify_artifacts_report(
     let mut artifacts = Vec::with_capacity(paths.len());
 
     for (index, path) in paths.iter().enumerate() {
-        match fs::metadata(path) {
-            Ok(metadata) => {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
                 existing_count += 1;
                 let byte_len = metadata.len();
                 let within_max_bytes = max_bytes.map(|limit| byte_len <= limit);
@@ -698,6 +698,15 @@ fn build_verify_artifacts_report(
                     exists: true,
                     byte_len: Some(byte_len),
                     within_max_bytes,
+                });
+            }
+            Ok(_) => {
+                missing_count += 1;
+                artifacts.push(VerifyArtifactEntryReport {
+                    index,
+                    exists: false,
+                    byte_len: None,
+                    within_max_bytes: None,
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1290,6 +1299,93 @@ mod tests {
         assert!(!json.contains("Jane"));
         assert!(!json.contains("MRN"));
         assert!(!json.contains("name"));
+    }
+
+    #[test]
+    fn verify_artifacts_report_treats_directory_as_missing_without_printing_phi_name() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let phi_dir = temp_dir.path().join("Jane-Doe-MRN-123-artifact-dir");
+        std::fs::create_dir(&phi_dir).expect("create directory fixture");
+
+        let report =
+            build_verify_artifacts_report(&[phi_dir.to_string_lossy().to_string()], Some(1024))
+                .expect("report");
+        let json = serde_json::to_string(&report).expect("json");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 0);
+        assert_eq!(report.missing_count, 1);
+        assert_eq!(report.oversized_count, 0);
+        assert_eq!(report.artifacts[0].index, 0);
+        assert!(!report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, None);
+        assert_eq!(report.artifacts[0].within_max_bytes, None);
+        assert!(!json.contains("Jane"));
+        assert!(!json.contains("MRN"));
+        assert!(!json.contains("artifact-dir"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_artifacts_report_does_not_follow_symlinked_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let target_path = temp_dir.path().join("target.bin");
+        let symlink_path = temp_dir.path().join("artifact-link.bin");
+        std::fs::write(&target_path, b"abcd").expect("write target fixture");
+        std::os::unix::fs::symlink(&target_path, &symlink_path).expect("create symlink fixture");
+
+        let report = build_verify_artifacts_report(
+            &[symlink_path.to_string_lossy().to_string()],
+            Some(1024),
+        )
+        .expect("report");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 0);
+        assert_eq!(report.missing_count, 1);
+        assert_eq!(report.oversized_count, 0);
+        assert!(!report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, None);
+        assert_eq!(report.artifacts[0].within_max_bytes, None);
+    }
+
+    #[test]
+    fn verify_artifacts_report_counts_missing_file_as_missing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let missing_path = temp_dir.path().join("missing-output.csv");
+
+        let report = build_verify_artifacts_report(
+            &[missing_path.to_string_lossy().to_string()],
+            Some(1024),
+        )
+        .expect("report");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 0);
+        assert_eq!(report.missing_count, 1);
+        assert_eq!(report.oversized_count, 0);
+        assert!(!report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, None);
+        assert_eq!(report.artifacts[0].within_max_bytes, Some(false));
+    }
+
+    #[test]
+    fn verify_artifacts_report_counts_oversized_file_as_existing_and_oversized() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let artifact_path = temp_dir.path().join("artifact.bin");
+        std::fs::write(&artifact_path, b"abcd").expect("write fixture");
+
+        let report =
+            build_verify_artifacts_report(&[artifact_path.to_string_lossy().to_string()], Some(3))
+                .expect("report");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 1);
+        assert_eq!(report.missing_count, 0);
+        assert_eq!(report.oversized_count, 1);
+        assert!(report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, Some(4));
+        assert_eq!(report.artifacts[0].within_max_bytes, Some(false));
     }
 
     #[test]
