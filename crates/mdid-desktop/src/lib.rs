@@ -519,6 +519,7 @@ pub struct DesktopVaultRequestState {
     pub requested_by: String,
     pub audit_kind: Option<String>,
     pub audit_actor: Option<String>,
+    pub audit_limit: Option<String>,
 }
 
 impl std::fmt::Debug for DesktopVaultRequestState {
@@ -533,6 +534,7 @@ impl std::fmt::Debug for DesktopVaultRequestState {
             .field("requested_by", &self.requested_by)
             .field("audit_kind", &self.audit_kind)
             .field("audit_actor", &self.audit_actor)
+            .field("audit_limit", &self.audit_limit)
             .finish()
     }
 }
@@ -549,6 +551,7 @@ impl Default for DesktopVaultRequestState {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         }
     }
 }
@@ -593,12 +596,23 @@ impl DesktopVaultRequestState {
                     "requested_by": self.requested_by.trim(),
                 })
             }
-            DesktopVaultMode::AuditEvents => serde_json::json!({
-                "vault_path": vault_path,
-                "vault_passphrase": self.vault_passphrase.clone(),
-                "kind": lowercase_optional_filter(self.audit_kind.as_deref()),
-                "actor": lowercase_optional_filter(self.audit_actor.as_deref()),
-            }),
+            DesktopVaultMode::AuditEvents => {
+                let limit = parse_optional_positive_usize(
+                    self.audit_limit.as_deref(),
+                    DesktopVaultValidationError::InvalidAuditLimit,
+                    DesktopVaultValidationError::ZeroAuditLimit,
+                )?;
+                let mut body = serde_json::json!({
+                    "vault_path": vault_path,
+                    "vault_passphrase": self.vault_passphrase.clone(),
+                    "kind": lowercase_optional_filter(self.audit_kind.as_deref()),
+                    "actor": lowercase_optional_filter(self.audit_actor.as_deref()),
+                });
+                if let Some(limit) = limit {
+                    body["limit"] = serde_json::json!(limit);
+                }
+                body
+            }
         };
 
         Ok(DesktopWorkflowRequest {
@@ -615,6 +629,23 @@ fn lowercase_optional_filter(value: Option<&str>) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+fn parse_optional_positive_usize<E>(
+    value: Option<&str>,
+    invalid: fn(String) -> E,
+    zero: E,
+) -> Result<Option<usize>, E> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|error| invalid(error.to_string()))?;
+    if parsed == 0 {
+        return Err(zero);
+    }
+    Ok(Some(parsed))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopVaultValidationError {
     BlankVaultPath,
@@ -623,6 +654,8 @@ pub enum DesktopVaultValidationError {
     BlankJustification,
     EmptyRecordIds,
     InvalidRecordIdsJson(String),
+    InvalidAuditLimit(String),
+    ZeroAuditLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2129,6 +2162,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         };
 
         let request = state
@@ -2162,6 +2196,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: Some("Decode".to_string()),
             audit_actor: Some("Desktop".to_string()),
+            audit_limit: None,
         };
 
         let request = state
@@ -2177,6 +2212,73 @@ mod tests {
         assert_eq!(request.body["kind"], "decode");
         assert_eq!(request.body["actor"], "desktop");
         assert!(request.body.get("record_ids").is_none());
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_includes_optional_positive_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some(" 25 ".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("audit request with positive limit should build");
+
+        assert_eq!(request.route, "/vault/audit/events");
+        assert_eq!(request.body["limit"], 25);
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_omits_blank_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("   ".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("audit request with blank limit should build");
+
+        assert!(request.body.get("limit").is_none());
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_rejects_invalid_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("not-a-number".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        assert!(matches!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::InvalidAuditLimit(_))
+        ));
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_rejects_zero_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("0".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::ZeroAuditLimit)
+        );
     }
 
     #[test]
@@ -2204,6 +2306,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         };
 
         let request = state
@@ -2263,6 +2366,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         };
 
         assert_eq!(
