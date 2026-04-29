@@ -35,6 +35,7 @@ enum CliCommand {
     DeidentifyPdf(DeidentifyPdfArgs),
     VaultAudit(VaultAuditArgs),
     VaultDecode(VaultDecodeArgs),
+    VaultExport(VaultExportArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -88,6 +89,16 @@ struct VaultDecodeArgs {
     report_path: PathBuf,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct VaultExportArgs {
+    vault_path: PathBuf,
+    passphrase: String,
+    record_ids_json: String,
+    export_passphrase: String,
+    context: String,
+    artifact_path: PathBuf,
+}
+
 #[derive(Debug, Deserialize)]
 struct PolicyRequest {
     header: String,
@@ -124,6 +135,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "vault-decode" => {
             parse_vault_decode_args(rest).map(CliCommand::VaultDecode)
+        }
+        [command, rest @ ..] if command == "vault-export" => {
+            parse_vault_export_args(rest).map(CliCommand::VaultExport)
         }
         _ => Err("unknown command".to_string()),
     }
@@ -341,6 +355,43 @@ fn parse_vault_decode_args(args: &[String]) -> Result<VaultDecodeArgs, String> {
     })
 }
 
+fn parse_vault_export_args(args: &[String]) -> Result<VaultExportArgs, String> {
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut record_ids_json = None;
+    let mut export_passphrase = None;
+    let mut context = None;
+    let mut artifact_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--record-ids-json" => record_ids_json = Some(value.clone()),
+            "--export-passphrase" => export_passphrase = Some(value.clone()),
+            "--context" => context = Some(value.clone()),
+            "--artifact-path" => artifact_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(VaultExportArgs {
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        record_ids_json: record_ids_json.ok_or_else(|| "missing --record-ids-json".to_string())?,
+        export_passphrase: export_passphrase
+            .ok_or_else(|| "missing --export-passphrase".to_string())?,
+        context: context.ok_or_else(|| "missing --context".to_string())?,
+        artifact_path: artifact_path.ok_or_else(|| "missing --artifact-path".to_string())?,
+    })
+}
+
 fn run_command(command: CliCommand) -> Result<(), String> {
     match command {
         CliCommand::Status => {
@@ -353,6 +404,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
         CliCommand::VaultAudit(args) => run_vault_audit(args),
         CliCommand::VaultDecode(args) => run_vault_decode(args),
+        CliCommand::VaultExport(args) => run_vault_export(args),
     }
 }
 
@@ -441,6 +493,43 @@ fn parse_record_ids_json(record_ids_json: &str) -> Result<Vec<Uuid>, String> {
         return Err("decode scope must include at least one record id".to_string());
     }
     Ok(record_ids)
+}
+
+fn run_vault_export(args: VaultExportArgs) -> Result<(), String> {
+    println!("{}", run_vault_export_for_summary(args)?);
+    Ok(())
+}
+
+fn run_vault_export_for_summary(args: VaultExportArgs) -> Result<String, String> {
+    let record_ids = parse_record_ids_json(&args.record_ids_json)?;
+    let mut vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+        .map_err(|err| format!("failed to open vault: {err}"))?;
+    let artifact = vault
+        .export_portable(
+            &record_ids,
+            &args.export_passphrase,
+            SurfaceKind::Cli,
+            &args.context,
+        )
+        .map_err(|err| format!("failed to export vault records: {err}"))?;
+    fs::write(
+        &args.artifact_path,
+        serde_json::to_vec_pretty(&artifact)
+            .map_err(|err| format!("failed to render vault export artifact: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write vault export artifact: {err}"))?;
+    let audit_event_id = vault
+        .audit_events()
+        .last()
+        .map(|event| event.id.to_string())
+        .ok_or_else(|| "missing vault export audit event".to_string())?;
+    let stdout = json!({
+        "command": "vault-export",
+        "exported_records": record_ids.len(),
+        "artifact_path": args.artifact_path,
+        "audit_event_id": audit_event_id,
+    });
+    serde_json::to_string(&stdout).map_err(|err| format!("failed to render export summary: {err}"))
 }
 
 fn run_vault_decode(args: VaultDecodeArgs) -> Result<(), String> {
@@ -702,12 +791,14 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary."
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary."
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mdid_domain::MappingScope;
+    use mdid_vault::NewMappingRecord;
 
     #[test]
     fn parses_deidentify_csv_command_without_requiring_debug() {
@@ -819,6 +910,85 @@ mod tests {
                     report_path: PathBuf::from("decode-report.json"),
                 }))
         );
+    }
+
+    #[test]
+    fn parses_vault_export_command() {
+        let record_ids_json = r#"["00000000-0000-0000-0000-000000000001"]"#;
+        let args = vec![
+            "vault-export".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--record-ids-json".to_string(),
+            record_ids_json.to_string(),
+            "--export-passphrase".to_string(),
+            "portable-secret".to_string(),
+            "--context".to_string(),
+            "handoff".to_string(),
+            "--artifact-path".to_string(),
+            "portable-export.json".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultExport(VaultExportArgs {
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    record_ids_json: record_ids_json.to_string(),
+                    export_passphrase: "portable-secret".to_string(),
+                    context: "handoff".to_string(),
+                    artifact_path: PathBuf::from("portable-export.json"),
+                }))
+        );
+    }
+
+    #[test]
+    fn vault_export_writes_artifact_and_returns_phi_safe_summary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_path = temp_dir.path().join("vault.mdid");
+        let artifact_path = temp_dir.path().join("portable-export.json");
+        let mut vault = LocalVaultStore::create(&vault_path, "secret-passphrase").unwrap();
+        let record = vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(
+                        Uuid::new_v4(),
+                        Uuid::new_v4(),
+                        "patient.name".to_string(),
+                    ),
+                    phi_type: "NAME".to_string(),
+                    original_value: "Alice Example".to_string(),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+
+        let summary = run_vault_export_for_summary(VaultExportArgs {
+            vault_path,
+            passphrase: "secret-passphrase".to_string(),
+            record_ids_json: format!(r#"["{}"]"#, record.id),
+            export_passphrase: "portable-secret".to_string(),
+            context: "handoff".to_string(),
+            artifact_path: artifact_path.clone(),
+        })
+        .unwrap();
+
+        assert!(artifact_path.exists());
+        let artifact_json = fs::read_to_string(&artifact_path).unwrap();
+        assert!(artifact_json.contains("ciphertext_b64"));
+        let summary_json: serde_json::Value = serde_json::from_str(&summary).unwrap();
+        assert_eq!(summary_json["command"], "vault-export");
+        assert_eq!(summary_json["exported_records"], 1);
+        assert_eq!(
+            summary_json["artifact_path"].as_str().unwrap(),
+            artifact_path.to_string_lossy()
+        );
+        assert!(Uuid::parse_str(summary_json["audit_event_id"].as_str().unwrap()).is_ok());
+        for secret in ["Alice Example", "secret-passphrase", "portable-secret"] {
+            assert!(!summary.contains(secret));
+        }
     }
 
     #[test]
