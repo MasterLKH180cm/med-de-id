@@ -1,10 +1,10 @@
 use mdid_desktop::{
-    write_portable_artifact_json, DesktopFileImportPayload, DesktopFileImportTarget,
-    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
-    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
-    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseMode,
-    DesktopVaultResponseState, DesktopWorkflowMode, DesktopWorkflowRequestState,
-    DesktopWorkflowResponseState,
+    write_portable_artifact_json, write_safe_vault_response_json, DesktopFileImportPayload,
+    DesktopFileImportTarget, DesktopPortableMode, DesktopPortableRequestState,
+    DesktopRuntimeSettings, DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot,
+    DesktopRuntimeSubmitError, DesktopVaultMode, DesktopVaultRequestState,
+    DesktopVaultResponseMode, DesktopVaultResponseState, DesktopWorkflowMode,
+    DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -45,6 +45,8 @@ struct DesktopApp {
     workflow_output_save_status: String,
     portable_artifact_save_path: String,
     portable_artifact_save_status: String,
+    vault_response_report_save_path: String,
+    vault_response_report_save_status: String,
 }
 
 impl Default for DesktopApp {
@@ -62,6 +64,8 @@ impl Default for DesktopApp {
             workflow_output_save_status: String::new(),
             portable_artifact_save_path: "desktop-portable-artifact.mdid-portable.json".to_string(),
             portable_artifact_save_status: String::new(),
+            vault_response_report_save_path: "desktop-vault-response-report.json".to_string(),
+            vault_response_report_save_status: String::new(),
         }
     }
 }
@@ -145,6 +149,50 @@ impl DesktopApp {
             }
             Err(error) => {
                 self.portable_artifact_save_status = error.to_string();
+            }
+        }
+    }
+
+    fn vault_response_report_mode(&self) -> DesktopVaultResponseMode {
+        if self.vault_response_state.banner.contains("audit") {
+            DesktopVaultResponseMode::VaultAudit
+        } else if self.vault_response_state.banner.contains("decode") {
+            DesktopVaultResponseMode::VaultDecode
+        } else {
+            DesktopRuntimeSubmissionMode::Portable(self.portable_request_state.mode)
+                .vault_response_mode()
+                .unwrap_or(DesktopVaultResponseMode::VaultExport)
+        }
+    }
+
+    fn save_vault_response_report(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        if self.vault_response_state.summary.is_empty()
+            && self.vault_response_state.artifact_notice.is_empty()
+            && self.vault_response_state.error.is_none()
+        {
+            return Err(
+                "vault response report save failed: no safe response summary is available"
+                    .to_string(),
+            );
+        }
+
+        write_safe_vault_response_json(
+            &self.vault_response_state,
+            self.vault_response_report_mode(),
+            path,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
+    fn save_vault_response_report_response(&mut self) {
+        match self.save_vault_response_report(self.vault_response_report_save_path.trim()) {
+            Ok(()) => {
+                self.vault_response_report_save_status =
+                    "Safe vault/portable response report saved.".to_string();
+            }
+            Err(error) => {
+                self.vault_response_report_save_status = error;
             }
         }
     }
@@ -479,6 +527,22 @@ impl eframe::App for DesktopApp {
                     ui.label(&self.portable_artifact_save_status);
                 }
             }
+            if !self.vault_response_state.summary.is_empty()
+                || !self.vault_response_state.artifact_notice.is_empty()
+                || self.vault_response_state.error.is_some()
+            {
+                ui.label("Save safe vault/portable response report JSON");
+                ui.text_edit_singleline(&mut self.vault_response_report_save_path);
+                if ui
+                    .button("Save safe vault/portable response report JSON")
+                    .clicked()
+                {
+                    self.save_vault_response_report_response();
+                }
+                if !self.vault_response_report_save_status.is_empty() {
+                    ui.label(&self.vault_response_report_save_status);
+                }
+            }
             ui.separator();
             ui.heading("Runtime-shaped response workbench");
             ui.label(&self.response_state.banner);
@@ -666,6 +730,79 @@ mod tests {
             app.portable_artifact_save_status,
             "Portable artifact JSON saved; encrypted contents only."
         );
+    }
+
+    #[test]
+    fn app_save_vault_response_report_writes_safe_audit_summary_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-vault-response-report-ui-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("patient-jane-doe-mrn-12345-vault-report.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            mdid_desktop::DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 1,
+                "returned_event_count": 1,
+                "events": [
+                    {
+                        "event_id": "evt-1",
+                        "kind": "decode",
+                        "actor": "clinician-a",
+                        "record_id": "record-7",
+                        "scope": ["patient_name"],
+                        "occurred_at": "2026-04-30T01:00:00Z",
+                        "detail": "decoded Alice Example with token <NAME-1>"
+                    }
+                ],
+                "vault_path": "/secret/Alice.vault",
+                "passphrase": "do-not-save"
+            }),
+        );
+        app.vault_response_report_save_path = path.to_string_lossy().to_string();
+
+        app.save_vault_response_report_response();
+
+        let saved = std::fs::read_to_string(&path).expect("safe vault report saved");
+        assert!(saved.contains("\"mode\": \"vault_audit\""));
+        assert!(saved.contains("events returned: 1 / 1"));
+        assert!(!saved.contains("\"events\""));
+        assert!(!saved.contains("\"kind\""));
+        assert!(!saved.contains("Alice Example"));
+        assert!(!saved.contains("<NAME-1>"));
+        assert!(!saved.contains("/secret"));
+        assert!(!saved.contains("do-not-save"));
+        assert_eq!(
+            app.vault_response_report_save_status,
+            "Safe vault/portable response report saved."
+        );
+        assert!(!app
+            .vault_response_report_save_status
+            .contains(path.to_string_lossy().as_ref()));
+        assert!(!app.vault_response_report_save_status.contains("jane-doe"));
+        assert!(!app.vault_response_report_save_status.contains("12345"));
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_vault_response_report_action_sets_phi_safe_no_response_status() {
+        let path = "/tmp/patient-jane-doe-mrn-12345-vault-report.json";
+        let mut app = DesktopApp {
+            vault_response_report_save_path: path.to_string(),
+            ..DesktopApp::default()
+        };
+
+        app.save_vault_response_report_response();
+
+        assert_eq!(
+            app.vault_response_report_save_status,
+            "vault response report save failed: no safe response summary is available"
+        );
+        assert!(!app.vault_response_report_save_status.contains(path));
+        assert!(!app.vault_response_report_save_status.contains("jane-doe"));
+        assert!(!app.vault_response_report_save_status.contains("12345"));
     }
 
     #[test]
