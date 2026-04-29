@@ -1594,7 +1594,7 @@ pub struct DesktopWorkflowOutputDownload {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowReviewReportDownload {
-    pub file_name: &'static str,
+    pub file_name: String,
     pub bytes: Vec<u8>,
 }
 
@@ -1714,14 +1714,37 @@ impl DesktopWorkflowResponseState {
 
         Some(DesktopWorkflowReviewReportDownload {
             file_name: match mode {
-                DesktopWorkflowMode::PdfBase64Review => "desktop-pdf-review-report.json",
-                DesktopWorkflowMode::MediaMetadataJson => "desktop-media-review-report.json",
+                DesktopWorkflowMode::PdfBase64Review => {
+                    "desktop-pdf-review-report.json".to_string()
+                }
+                DesktopWorkflowMode::MediaMetadataJson => {
+                    "desktop-media-review-report.json".to_string()
+                }
                 DesktopWorkflowMode::CsvText
                 | DesktopWorkflowMode::XlsxBase64
                 | DesktopWorkflowMode::DicomBase64 => return None,
             },
             bytes: json.into_bytes(),
         })
+    }
+
+    pub fn review_report_download_for_source(
+        &self,
+        mode: DesktopWorkflowMode,
+        source_name: Option<&str>,
+    ) -> Option<DesktopWorkflowReviewReportDownload> {
+        let mut download = self.review_report_download(mode)?;
+        let stem = source_name
+            .and_then(safe_source_file_stem)
+            .unwrap_or_else(|| "desktop".to_string());
+        download.file_name = match mode {
+            DesktopWorkflowMode::PdfBase64Review => format!("{stem}-pdf-review-report.json"),
+            DesktopWorkflowMode::MediaMetadataJson => format!("{stem}-media-review-report.json"),
+            DesktopWorkflowMode::CsvText
+            | DesktopWorkflowMode::XlsxBase64
+            | DesktopWorkflowMode::DicomBase64 => return None,
+        };
+        Some(download)
     }
 
     pub fn exportable_output(&self) -> Option<&str> {
@@ -1843,7 +1866,9 @@ fn safe_source_file_stem(source_name: &str) -> Option<String> {
             break;
         }
 
-        if ch.is_ascii_alphanumeric() {
+        if ch.is_ascii_alphanumeric()
+            || (ch == '.' && !safe.is_empty() && !safe.ends_with('.') && !last_was_dash)
+        {
             safe.push(ch);
             last_was_dash = false;
         } else if !last_was_dash && !safe.is_empty() {
@@ -1852,7 +1877,7 @@ fn safe_source_file_stem(source_name: &str) -> Option<String> {
         }
     }
 
-    while safe.ends_with('-') {
+    while safe.ends_with(['-', '.']) {
         safe.pop();
     }
 
@@ -3552,6 +3577,48 @@ mod tests {
         assert!(report.get("rewritten_pdf_bytes_base64").is_none());
         assert!(report.get("debug_raw_text").is_none());
         assert!(!text.contains("Alice Patient"));
+    }
+
+    #[test]
+    fn desktop_review_report_download_for_source_uses_safe_pdf_and_media_filenames() {
+        let mut pdf_state = DesktopWorkflowResponseState::default();
+        pdf_state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            serde_json::json!({
+                "summary": { "total_pages": 1, "pages_requiring_review": 1 },
+                "review_queue": [{ "page_index": 0, "reason": "ocr_required" }],
+                "rewritten_pdf_bytes_base64": null,
+            }),
+        );
+
+        let pdf_report = pdf_state
+            .review_report_download_for_source(
+                DesktopWorkflowMode::PdfBase64Review,
+                Some("C:\\clinic\\March intake.pdf"),
+            )
+            .expect("pdf review report should be exportable");
+        assert_eq!(pdf_report.file_name, "March-intake-pdf-review-report.json");
+
+        let mut media_state = DesktopWorkflowResponseState::default();
+        media_state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            serde_json::json!({
+                "summary": { "metadata_fields_reviewed": 2, "metadata_fields_requiring_review": 1 },
+                "review_queue": [{ "field_index": 0, "reason": "metadata_identifier" }],
+                "rewritten_media_bytes_base64": null,
+            }),
+        );
+
+        let media_report = media_state
+            .review_report_download_for_source(
+                DesktopWorkflowMode::MediaMetadataJson,
+                Some("/uploads/Camera Roll.metadata.json"),
+            )
+            .expect("media review report should be exportable");
+        assert_eq!(
+            media_report.file_name,
+            "Camera-Roll.metadata-media-review-report.json"
+        );
     }
 
     #[test]
