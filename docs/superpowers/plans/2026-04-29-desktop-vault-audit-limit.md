@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add desktop vault-audit limit parity so the workstation surface can submit bounded `/vault/audit/events` requests with the same optional positive limit already supported by runtime, CLI, and browser.
+**Goal:** Add desktop vault-audit limit parity so the workstation surface can submit bounded `/vault/audit/events` requests with the same positive-limit behavior enforced by runtime and CLI, while matching the existing browser request-field shape that submits an optional limit to the runtime contract.
 
 **Architecture:** Keep the change inside the desktop request-state builder and UI only. The domain/runtime contract already accepts `limit`; desktop will parse an optional text field into a positive integer, omit blank values, and fail closed on invalid values before localhost submission.
 
