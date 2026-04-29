@@ -719,11 +719,13 @@ impl BrowserFlowState {
                 InputMode::MediaMetadataJson => {
                     return format!("{stem}-media-review-report.json");
                 }
-                InputMode::VaultAuditEvents
-                | InputMode::VaultDecode
-                | InputMode::VaultExport
-                | InputMode::PortableArtifactInspect
-                | InputMode::PortableArtifactImport => {}
+                InputMode::PortableArtifactInspect => {
+                    return format!("{stem}-portable-artifact-inspect.json");
+                }
+                InputMode::PortableArtifactImport => {
+                    return format!("{stem}-portable-artifact-import.json");
+                }
+                InputMode::VaultAuditEvents | InputMode::VaultDecode | InputMode::VaultExport => {}
             }
         }
 
@@ -2530,6 +2532,50 @@ mod tests {
         );
         assert!(!text.contains("artifact_json"));
         assert!(!text.contains("original_value"));
+    }
+
+    #[test]
+    fn browser_portable_response_downloads_use_safe_source_filenames() {
+        let mut inspect_state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactInspect,
+            summary: "2 portable record(s) available for import.".to_string(),
+            review_queue: "Portable artifact preview: values hidden in browser report.".to_string(),
+            result_output: "Portable artifact contains 2 record(s). Artifact contents are hidden."
+                .to_string(),
+            ..BrowserFlowState::default()
+        };
+        inspect_state.imported_file_name = Some("../Clinic Export 2026.JSON".to_string());
+
+        let inspect_payload = inspect_state
+            .prepared_download_payload()
+            .expect("inspect payload");
+
+        assert_eq!(
+            inspect_payload.file_name,
+            "clinic-export-2026-portable-artifact-inspect.json"
+        );
+        assert_eq!(inspect_payload.mime_type, "application/json;charset=utf-8");
+        assert!(inspect_payload.is_text);
+
+        let mut import_state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactImport,
+            summary: "Imported 2 portable record(s); skipped 0 duplicate(s).".to_string(),
+            review_queue: "Portable import response: artifact contents hidden.".to_string(),
+            result_output: "Portable import completed; raw artifact payload hidden.".to_string(),
+            ..BrowserFlowState::default()
+        };
+        import_state.imported_file_name = Some("Patient Bundle!!.json".to_string());
+
+        let import_payload = import_state
+            .prepared_download_payload()
+            .expect("import payload");
+
+        assert_eq!(
+            import_payload.file_name,
+            "patient-bundle-portable-artifact-import.json"
+        );
+        assert_eq!(import_payload.mime_type, "application/json;charset=utf-8");
+        assert!(import_payload.is_text);
     }
 
     #[test]
