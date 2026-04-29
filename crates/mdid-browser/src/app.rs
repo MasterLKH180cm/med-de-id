@@ -595,7 +595,7 @@ fn allowlisted_media_format(format: &str) -> &'static str {
     match format {
         "image" => "image",
         "video" => "video",
-        "audio" => "audio",
+        "fcs" => "fcs",
         _ => "unknown",
     }
 }
@@ -2408,7 +2408,7 @@ mod tests {
         state.input_mode = InputMode::MediaMetadataJson;
         state.result_output = "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string();
         state.summary = "total_items: 1\nmetadata_only_items: 1\nvisual_review_required_items: 1\nunsupported_items: 0\nreview_required_candidates: 1\nrewritten_media_bytes_base64: null\noperator_notes: Jane Patient\ntotal_items_label: one\nmetadata_only_items: not-a-number".to_string();
-        state.review_queue = "- PatientName / image / metadata_identifier / confidence 0.97 / value: <redacted>".to_string();
+        state.review_queue = "- PatientName / image / metadata_identifier / confidence 0.97 / value: <redacted>\n- FlowCytometryId / fcs / metadata_identifier / confidence 0.91 / value: <redacted>\n- VoiceNote / audio / metadata_identifier / confidence 0.88 / value: <redacted>".to_string();
 
         let payload = state.prepared_download_payload().expect("download payload");
         let report: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("report json");
@@ -2426,6 +2426,8 @@ mod tests {
         assert_eq!(report["summary"]["rewritten_media_bytes_base64"], serde_json::Value::Null);
         assert_eq!(report["review_queue"][0]["metadata_key"], "redacted-field");
         assert_eq!(report["review_queue"][0]["format"], "image");
+        assert_eq!(report["review_queue"][1]["format"], "fcs");
+        assert_eq!(report["review_queue"][2]["format"], "unknown");
         assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
         assert!(report["summary"].get("operator_notes").is_none());
         assert!(report["summary"].get("total_items_label").is_none());
