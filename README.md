@@ -61,7 +61,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-Completion snapshot, based only on landed repository features and verification state (truth-synced 2026-04-29 after desktop vault audit requests gained optional positive limit input/request parity with the existing runtime, CLI, and browser audit limit contract, with `mdid-desktop` verification passing):
+Completion snapshot, based only on landed repository features and verification state (truth-synced 2026-04-29 after desktop vault audit requests gained an optional positive limit input/request field; runtime and CLI share positive-limit enforcement, while browser already sends an optional audit limit request field to the existing runtime contract, with `mdid-desktop` verification passing):
 
 | Area | Completion | Status |
 |---|---:|---|
@@ -77,7 +77,7 @@ This repository currently contains the Slice 1 workspace foundation, the Slice 2
 Implemented so far:
 
 - Shared domain models for pipeline, review, vault mapping, decode requests, audit events, and tabular workflow state
-- Conservative media/FCS domain workflow models, bounded adapter foundation, and application-layer review routing now distinguish image/video/FCS metadata-only status, OCR-or-visual-review-required status, unsupported payloads, review-required metadata candidates, honest summary counts, and redacted candidate/reference/output debug; this does not implement OCR, visual redaction, FCS semantic parsing, rewrite/export, or browser/desktop flows
+- Conservative media/FCS domain workflow models, bounded adapter foundation, and application-layer review routing now distinguish image/video/FCS metadata-only status, OCR-or-visual-review-required status, unsupported payloads, review-required metadata candidates, honest summary counts, and redacted candidate/reference/output debug; browser and desktop can prepare or submit bounded metadata-only conservative media JSON review requests against the landed local runtime surface, but this foundation still does not implement OCR, visual redaction, FCS semantic parsing, media rewrite/export, or generalized browser/desktop media workflows
 - An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, bounded portable artifact import, deterministic duplicate/normalization handling via the shared import contract, and repeated-value token reuse
 - An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
 - CSV/tabular import hardening strips a leading UTF-8 BOM from the first header before policy matching, so BOM-prefixed CSV exports still match explicit field policies; this is a narrow adapter normalization and does not broaden upload/import workflows
@@ -112,6 +112,7 @@ Available docs:
 - Slice 2 vault/decode MVP plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-2-vault-encode-decode-mvp.md`
 - Slice 3 tabular deep-support plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md`
 - Desktop conservative media review plan: `docs/superpowers/plans/2026-04-29-desktop-conservative-media-review.md`
+- Desktop vault audit limit plan: `docs/superpowers/plans/2026-04-29-desktop-vault-audit-limit.md`
 
 ## Roadmap
 
