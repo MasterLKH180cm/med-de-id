@@ -29,7 +29,7 @@
 - Modify: `crates/mdid-desktop/src/lib.rs`
 - Test: existing unit tests in `crates/mdid-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add these tests inside the existing `#[cfg(test)] mod tests` in `crates/mdid-desktop/src/lib.rs`:
 
@@ -100,13 +100,13 @@ fn write_portable_artifact_json_writes_pretty_artifact_without_sensitive_runtime
 }
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop portable_artifact -- --nocapture`
 
 Expected: FAIL with missing `DesktopVaultResponseState::portable_artifact_download_json`, missing `DesktopPortableArtifactSaveError`, and missing `write_portable_artifact_json`.
 
-- [ ] **Step 3: Implement minimal helper**
+- [x] **Step 3: Implement minimal helper**
 
 Add public helper types/functions in `crates/mdid-desktop/src/lib.rs` near `DesktopVaultResponseState`:
 
@@ -169,19 +169,19 @@ pub fn write_portable_artifact_json(
 }
 ```
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop portable_artifact -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run broader verification**
+- [x] **Step 5: Run broader verification**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/lib.rs
