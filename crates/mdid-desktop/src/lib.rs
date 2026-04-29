@@ -1326,6 +1326,21 @@ pub struct DesktopWorkflowOutputDownload {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopWorkflowReviewReportDownload {
+    pub file_name: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for DesktopWorkflowReviewReportDownload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopWorkflowReviewReportDownload")
+            .field("file_name", &self.file_name)
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for DesktopWorkflowOutputDownload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DesktopWorkflowOutputDownload")
@@ -1402,6 +1417,34 @@ impl DesktopWorkflowResponseState {
             }
             DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => None,
         }
+    }
+
+    pub fn review_report_download(
+        &self,
+        mode: DesktopWorkflowMode,
+    ) -> Option<DesktopWorkflowReviewReportDownload> {
+        if mode != DesktopWorkflowMode::PdfBase64Review
+            || self.error.is_some()
+            || self.last_success_mode != Some(mode)
+        {
+            return None;
+        }
+
+        let response = self.last_success_response.as_ref()?;
+        let report = serde_json::json!({
+            "mode": "pdf_review",
+            "summary": response.get("summary").cloned().unwrap_or(serde_json::Value::Null),
+            "review_queue": response
+                .get("review_queue")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        });
+        let bytes = serde_json::to_string_pretty(&report).ok()?.into_bytes();
+
+        Some(DesktopWorkflowReviewReportDownload {
+            file_name: "desktop-pdf-review-report.json",
+            bytes,
+        })
     }
 
     pub fn exportable_output(&self) -> Option<&str> {
@@ -3142,6 +3185,40 @@ mod tests {
                 body: "{\"error\":\"bad csv\"}".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn pdf_review_report_download_exports_structured_json_without_pdf_bytes() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {"pages": 1, "ocr_required": false},
+                "review_queue": [{"page": 1, "reason": "text-layer review"}],
+                "rewritten_pdf_bytes_base64": null,
+                "debug_raw_text": "Alice Patient"
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review success should create a structured review report download");
+
+        assert_eq!(download.file_name, "desktop-pdf-review-report.json");
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(report["mode"], "pdf_review");
+        assert_eq!(
+            report["summary"],
+            json!({"pages": 1, "ocr_required": false})
+        );
+        assert_eq!(
+            report["review_queue"],
+            json!([{"page": 1, "reason": "text-layer review"}])
+        );
+        assert!(report.get("rewritten_pdf_bytes_base64").is_none());
+        assert!(report.get("debug_raw_text").is_none());
+        assert!(!text.contains("Alice Patient"));
     }
 
     #[test]
