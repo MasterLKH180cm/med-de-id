@@ -235,7 +235,7 @@ impl BrowserFlowState {
         self.imported_file_name = Some(file_name.to_string());
         self.invalidate_generated_state();
         self.error_banner = Some(
-            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom."
+            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, or .json."
                 .to_string(),
         );
     }
@@ -1197,15 +1197,15 @@ pub fn App() -> impl IntoView {
                 <h2>"Input"</h2>
                 <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
                 <label>
-                    "Import local CSV/XLSX/PDF/DICOM payload"
+                    "Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"
                     <input
-                        accept=".csv,.xlsx,.pdf,.dcm,.dicom"
+                        accept=".csv,.xlsx,.pdf,.dcm,.dicom,.json"
                         on:change=on_file_import_change
                         type="file"
                     />
                 </label>
                 <p class="input-disclosure">
-                    "This bounded control validates CSV/XLSX/PDF/DICOM selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes."
+                    "This bounded control validates CSV/XLSX/PDF/DICOM/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. JSON payloads remain metadata-only and do not include media bytes."
                 </p>
                 <label>
                     "Input mode"
@@ -1214,6 +1214,7 @@ pub fn App() -> impl IntoView {
                         <option value="xlsx-base64">"XLSX base64"</option>
                         <option value="pdf-base64">"PDF base64"</option>
                         <option value="dicom-base64">"DICOM base64"</option>
+                        <option value="media-metadata-json">"Media metadata JSON"</option>
                     </select>
                 </label>
 
@@ -1632,9 +1633,22 @@ mod tests {
     #[test]
     fn import_export_copy_discloses_bounded_browser_file_limits() {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("CSV files load as text"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("media metadata JSON files also load as text"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("Media metadata JSON sends metadata only, not media bytes"));
         assert!(BROWSER_FILE_IMPORT_COPY.contains("XLSX and PDF files load as base64 payloads"));
         assert!(BROWSER_FILE_IMPORT_COPY
             .contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
+    }
+
+    #[test]
+    fn browser_file_import_controls_expose_media_metadata_json() {
+        let source = include_str!("app.rs");
+
+        assert!(source.contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
+        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.json\""));
+        assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"));
+        assert!(source.contains("validates CSV/XLSX/PDF/DICOM/media metadata JSON selection"));
+        assert!(source.contains("JSON payloads remain metadata-only and do not include media bytes"));
     }
 
     #[test]
@@ -1644,7 +1658,7 @@ mod tests {
 
         assert_eq!(
             state.error_banner.as_deref(),
-            Some("Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom.")
+            Some("Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, or .json.")
         );
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
