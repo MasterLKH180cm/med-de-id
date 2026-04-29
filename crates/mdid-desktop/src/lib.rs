@@ -1475,7 +1475,6 @@ pub struct DesktopWorkflowOutputDownload {
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowReviewReportDownload {
     pub file_name: &'static str,
-    pub json: String,
     pub bytes: Vec<u8>,
 }
 
@@ -1592,7 +1591,6 @@ impl DesktopWorkflowResponseState {
             "review_queue": sanitize_review_report_queue(response.get("review_queue")),
         });
         let json = serde_json::to_string_pretty(&report).ok()?;
-        let bytes = json.as_bytes().to_vec();
 
         Some(DesktopWorkflowReviewReportDownload {
             file_name: match mode {
@@ -1602,8 +1600,7 @@ impl DesktopWorkflowResponseState {
                 | DesktopWorkflowMode::XlsxBase64
                 | DesktopWorkflowMode::DicomBase64 => return None,
             },
-            json,
-            bytes,
+            bytes: json.into_bytes(),
         })
     }
 
@@ -3414,7 +3411,8 @@ mod tests {
             .expect("media metadata review response should produce structured report");
 
         assert_eq!(download.file_name, "desktop-media-review-report.json");
-        let report: serde_json::Value = serde_json::from_str(&download.json).unwrap();
+        let rendered = std::str::from_utf8(&download.bytes).unwrap();
+        let report: serde_json::Value = serde_json::from_str(rendered).unwrap();
         assert_eq!(report["mode"], "media_metadata_json");
         assert_eq!(report["summary"]["artifact_count"], 1);
         assert_eq!(report["summary"]["candidate_count"], 1);
@@ -3422,7 +3420,6 @@ mod tests {
         assert_eq!(report["review_queue"][0]["status"], "review_required");
         assert_eq!(report["review_queue"][0]["phi_type"], "name");
 
-        let rendered = download.json;
         assert!(!rendered.contains("Jane Doe"));
         assert!(!rendered.contains("MRN-12345"));
         assert!(!rendered.contains("PatientName"));
