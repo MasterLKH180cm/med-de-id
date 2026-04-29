@@ -612,12 +612,16 @@ fn vault_response_summary(mode: DesktopVaultResponseMode, response: &serde_json:
 }
 
 fn vault_response_artifact_notice(response: &serde_json::Value) -> String {
-    response
+    if response
         .get("report_path")
         .or_else(|| response.get("artifact_path"))
         .and_then(serde_json::Value::as_str)
-        .map(|path| format!("artifact written to: {path}"))
-        .unwrap_or_default()
+        .is_some()
+    {
+        "artifact path returned; full path hidden".to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn response_u64(response: &serde_json::Value, field: &str) -> u64 {
@@ -1371,7 +1375,7 @@ mod tests {
         let mut state = DesktopVaultResponseState::default();
         let response = serde_json::json!({
             "decoded_value_count": 2,
-            "report_path": "/tmp/patient-report.json",
+            "report_path": "/tmp/Alice-Smith-decode-report.json",
             "audit_event": {"kind": "decode", "detail": "patient Alice decoded for oncology"},
             "decoded_values": [{"original_value": "Alice Smith", "token": format!("PHI-TOKEN-{}", 1)}]
         });
@@ -1380,12 +1384,16 @@ mod tests {
 
         assert!(state.banner.contains("bounded vault decode response"));
         assert!(state.summary.contains("decoded values: 2"));
-        assert!(state.artifact_notice.contains("/tmp/patient-report.json"));
+        assert!(state
+            .artifact_notice
+            .contains("artifact path returned; full path hidden"));
         let rendered = format!(
             "{} {} {}",
             state.banner, state.summary, state.artifact_notice
         );
         assert!(!rendered.contains("Alice Smith"));
+        assert!(!rendered.contains("Alice-Smith"));
+        assert!(!rendered.contains("/tmp/Alice-Smith-decode-report.json"));
         assert!(!rendered.contains("patient Alice"));
         assert!(!rendered.contains("PHI-TOKEN-1"));
     }
@@ -1418,7 +1426,7 @@ mod tests {
     fn vault_response_state_renders_portable_artifact_without_raw_artifact_json() {
         let mut state = DesktopVaultResponseState::default();
         let response = serde_json::json!({
-            "artifact_path": "/tmp/portable-artifact.json",
+            "artifact_path": "/tmp/MRN-123-portable-artifact.json",
             "record_count": 3,
             "artifact_json": {"records": [{"original_value": "MRN-123"}]},
             "imported_record_count": 3
@@ -1429,7 +1437,7 @@ mod tests {
         assert!(state.summary.contains("records: 3"));
         assert!(state
             .artifact_notice
-            .contains("/tmp/portable-artifact.json"));
+            .contains("artifact path returned; full path hidden"));
 
         state.apply_success(DesktopVaultResponseMode::ImportArtifact, &response);
         assert!(state.summary.contains("imported records: 3"));
@@ -1439,6 +1447,7 @@ mod tests {
             state.banner, state.summary, state.artifact_notice
         );
         assert!(!rendered.contains("MRN-123"));
+        assert!(!rendered.contains("/tmp/MRN-123-portable-artifact.json"));
     }
 
     #[test]
