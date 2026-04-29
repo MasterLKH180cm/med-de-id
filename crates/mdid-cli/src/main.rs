@@ -5,13 +5,17 @@ use std::{
     process,
 };
 
-use mdid_adapters::{CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter};
+use mdid_adapters::{
+    ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter, FieldPolicy,
+    FieldPolicyAction, XlsxTabularAdapter,
+};
 use mdid_application::{
-    DicomDeidentificationService, PdfDeidentificationService, TabularDeidentificationService,
+    ConservativeMediaDeidentificationService, DicomDeidentificationService,
+    PdfDeidentificationService, TabularDeidentificationService,
 };
 use mdid_domain::{
-    AuditEvent, AuditEventKind, BatchSummary, DecodeRequest, DicomPrivateTagPolicy, PdfPageRef,
-    PdfScanStatus, SurfaceKind,
+    AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaFormat, DecodeRequest,
+    DicomPrivateTagPolicy, PdfPageRef, PdfScanStatus, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact};
 use rust_xlsxwriter::Workbook;
@@ -40,6 +44,7 @@ enum CliCommand {
     DeidentifyXlsx(DeidentifyXlsxArgs),
     DeidentifyDicom(DeidentifyDicomArgs),
     DeidentifyPdf(DeidentifyPdfArgs),
+    ReviewMedia(ReviewMediaArgs),
     VaultAudit(VaultAuditArgs),
     VaultDecode(VaultDecodeArgs),
     VaultExport(VaultExportArgs),
@@ -77,6 +82,16 @@ struct DeidentifyDicomArgs {
 struct DeidentifyPdfArgs {
     pdf_path: PathBuf,
     source_name: String,
+    report_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ReviewMediaArgs {
+    artifact_label: String,
+    format: ConservativeMediaFormat,
+    metadata_json: String,
+    requires_visual_review: bool,
+    unsupported_payload: bool,
     report_path: PathBuf,
 }
 
@@ -131,6 +146,12 @@ enum PolicyActionRequest {
     Ignore,
 }
 
+#[derive(Debug, Deserialize)]
+struct ConservativeMediaMetadataEntryRequest {
+    key: String,
+    value: String,
+}
+
 fn parse_command(args: &[String]) -> Result<CliCommand, String> {
     match args {
         [] => Ok(CliCommand::Status),
@@ -146,6 +167,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "deidentify-pdf" => {
             parse_deidentify_pdf_args(rest).map(CliCommand::DeidentifyPdf)
+        }
+        [command, rest @ ..] if command == "review-media" => {
+            parse_review_media_args(rest).map(CliCommand::ReviewMedia)
         }
         [command, rest @ ..] if command == "vault-audit" => {
             parse_vault_audit_args(rest).map(CliCommand::VaultAudit)
@@ -293,6 +317,66 @@ fn parse_deidentify_pdf_args(args: &[String]) -> Result<DeidentifyPdfArgs, Strin
         source_name,
         report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
     })
+}
+
+fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
+    let mut artifact_label = None;
+    let mut format = None;
+    let mut metadata_json = None;
+    let mut requires_visual_review = None;
+    let mut unsupported_payload = None;
+    let mut report_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--artifact-label" => artifact_label = Some(value.clone()),
+            "--format" => format = Some(parse_conservative_media_format(value)?),
+            "--metadata-json" => metadata_json = Some(value.clone()),
+            "--requires-visual-review" => requires_visual_review = Some(parse_bool_flag(value)?),
+            "--unsupported-payload" => unsupported_payload = Some(parse_bool_flag(value)?),
+            "--report-path" => report_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    let artifact_label = artifact_label.ok_or_else(|| "missing --artifact-label".to_string())?;
+    if artifact_label.trim().is_empty() {
+        return Err("missing --artifact-label".to_string());
+    }
+
+    Ok(ReviewMediaArgs {
+        artifact_label,
+        format: format.ok_or_else(|| "missing --format".to_string())?,
+        metadata_json: metadata_json.ok_or_else(|| "missing --metadata-json".to_string())?,
+        requires_visual_review: requires_visual_review
+            .ok_or_else(|| "missing --requires-visual-review".to_string())?,
+        unsupported_payload: unsupported_payload
+            .ok_or_else(|| "missing --unsupported-payload".to_string())?,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+    })
+}
+
+fn parse_conservative_media_format(value: &str) -> Result<ConservativeMediaFormat, String> {
+    match value {
+        "image" => Ok(ConservativeMediaFormat::Image),
+        "video" => Ok(ConservativeMediaFormat::Video),
+        "fcs" => Ok(ConservativeMediaFormat::Fcs),
+        _ => Err("invalid --format".to_string()),
+    }
+}
+
+fn parse_bool_flag(value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err("invalid boolean flag".to_string()),
+    }
 }
 
 fn parse_vault_audit_args(args: &[String]) -> Result<VaultAuditArgs, String> {
@@ -456,6 +540,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::DeidentifyXlsx(args) => run_deidentify_xlsx(args),
         CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
         CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
+        CliCommand::ReviewMedia(args) => run_review_media(args),
         CliCommand::VaultAudit(args) => run_vault_audit(args),
         CliCommand::VaultDecode(args) => run_vault_decode(args),
         CliCommand::VaultExport(args) => run_vault_export(args),
@@ -467,6 +552,76 @@ fn run_command(command: CliCommand) -> Result<(), String> {
 struct PdfPageStatusReport {
     page: PdfPageRef,
     status: PdfScanStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct ConservativeMediaCandidateReport {
+    field_path: String,
+    format: ConservativeMediaFormat,
+    phi_type: String,
+    confidence: f32,
+    status: mdid_domain::ConservativeMediaScanStatus,
+}
+
+fn run_review_media(args: ReviewMediaArgs) -> Result<(), String> {
+    let metadata: Vec<ConservativeMediaMetadataEntryRequest> =
+        serde_json::from_str(&args.metadata_json)
+            .map_err(|err| format!("invalid metadata JSON: {err}"))?;
+    let metadata = metadata
+        .into_iter()
+        .map(|entry| ConservativeMediaMetadataEntry {
+            key: entry.key,
+            value: entry.value,
+        })
+        .collect();
+
+    let output = ConservativeMediaDeidentificationService::default()
+        .deidentify_metadata(ConservativeMediaInput {
+            artifact_label: args.artifact_label,
+            format: args.format,
+            metadata,
+            requires_visual_review: args.requires_visual_review,
+            unsupported_payload: args.unsupported_payload,
+        })
+        .map_err(|err| format!("failed to review media: {err}"))?;
+
+    let review_queue_len = output.review_queue.len();
+    let review_queue: Vec<ConservativeMediaCandidateReport> = output
+        .review_queue
+        .into_iter()
+        .map(|candidate| ConservativeMediaCandidateReport {
+            field_path: candidate.field_ref.field_path(),
+            format: candidate.format,
+            phi_type: candidate.phi_type,
+            confidence: candidate.confidence,
+            status: candidate.status,
+        })
+        .collect();
+    let report = json!({
+        "summary": output.summary,
+        "review_queue_len": review_queue_len,
+        "rewritten_media_bytes": serde_json::Value::Null,
+        "review_queue": review_queue,
+    });
+
+    fs::write(
+        &args.report_path,
+        serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("failed to render media report: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write media report: {err}"))?;
+
+    let stdout = json!({
+        "report_path": args.report_path,
+        "summary": report["summary"].clone(),
+        "review_queue_len": report["review_queue_len"].clone(),
+        "rewritten_media_bytes": serde_json::Value::Null,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&stdout).map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
 }
 
 fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {

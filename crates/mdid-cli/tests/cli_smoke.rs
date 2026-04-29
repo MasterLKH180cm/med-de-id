@@ -335,6 +335,66 @@ fn cli_deidentify_dicom_rejects_invalid_dicom_without_scope_drift_terms() {
 }
 
 #[test]
+fn cli_review_media_writes_phi_safe_report() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("media-review.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "review-media",
+            "--artifact-label",
+            "scan-1.png",
+            "--format",
+            "image",
+            "--metadata-json",
+            r#"[{"key":"DeviceSerialNumber","value":"ABC123"}]"#,
+            "--requires-visual-review",
+            "false",
+            "--unsupported-payload",
+            "false",
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ABC123").not());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(!report_text.contains("ABC123"));
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["metadata_only_items"], 1);
+    assert_eq!(report["review_queue_len"], 1);
+    assert!(report["rewritten_media_bytes"].is_null());
+}
+
+#[test]
+fn cli_review_media_rejects_blank_artifact_label() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("media-review.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "review-media",
+            "--artifact-label",
+            "   ",
+            "--format",
+            "image",
+            "--metadata-json",
+            r#"[{"key":"DeviceSerialNumber","value":"ABC123"}]"#,
+            "--requires-visual-review",
+            "false",
+            "--unsupported-payload",
+            "false",
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn cli_usage_stays_deidentification_scoped() {
     let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
