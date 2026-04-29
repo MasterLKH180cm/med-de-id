@@ -36,7 +36,7 @@ fn is_replaceable_vault_response_report_save_path(
 fn next_vault_response_report_save_path(
     current_path: &str,
     generated_path: Option<&str>,
-    portable_source_name: Option<&str>,
+    source_name: Option<&str>,
     state: &DesktopVaultResponseState,
 ) -> (String, Option<String>) {
     if !is_replaceable_vault_response_report_save_path(current_path, generated_path) {
@@ -44,12 +44,34 @@ fn next_vault_response_report_save_path(
     }
 
     let next_path = state
-        .safe_response_report_download_for_source(portable_source_name)
+        .safe_response_report_download_for_source(source_name)
         .map(|download| download.file_name)
         .unwrap_or_else(|_| DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string());
     let next_generated_path =
         (next_path != DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH).then(|| next_path.clone());
     (next_path, next_generated_path)
+}
+
+fn response_report_source_name<'a>(
+    mode: DesktopRuntimeSubmissionMode,
+    vault_request_state: &'a DesktopVaultRequestState,
+    portable_request_state: &'a DesktopPortableRequestState,
+    portable_source_name: Option<&'a str>,
+) -> Option<&'a str> {
+    match mode {
+        DesktopRuntimeSubmissionMode::Vault(
+            DesktopVaultMode::Decode | DesktopVaultMode::AuditEvents,
+        ) => (!vault_request_state.vault_path.trim().is_empty())
+            .then_some(vault_request_state.vault_path.as_str()),
+        DesktopRuntimeSubmissionMode::Portable(DesktopPortableMode::VaultExport) => {
+            (!portable_request_state.vault_path.trim().is_empty())
+                .then_some(portable_request_state.vault_path.as_str())
+        }
+        DesktopRuntimeSubmissionMode::Portable(
+            DesktopPortableMode::InspectArtifact | DesktopPortableMode::ImportArtifact,
+        ) => portable_source_name,
+        DesktopRuntimeSubmissionMode::Workflow(_) => None,
+    }
 }
 
 fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> {
@@ -149,10 +171,16 @@ impl DesktopApp {
                 if let Some(vault_mode) = mode.vault_response_mode() {
                     self.vault_response_state
                         .apply_success(vault_mode, &envelope);
+                    let source_name = response_report_source_name(
+                        mode,
+                        &self.vault_request_state,
+                        &self.portable_request_state,
+                        self.portable_response_report_source_name.as_deref(),
+                    );
                     let (next_path, generated_path) = next_vault_response_report_save_path(
                         &self.vault_response_report_save_path,
                         self.generated_vault_response_report_save_path.as_deref(),
-                        self.portable_response_report_source_name.as_deref(),
+                        source_name,
                         &self.vault_response_state,
                     );
                     self.vault_response_report_save_path = next_path;
@@ -806,8 +834,8 @@ mod tests {
                 &portable_inspect_report_state(),
             ),
             (
-                "Clinic-Batch.mdid-portable-portable-response-report.json".to_string(),
-                Some("Clinic-Batch.mdid-portable-portable-response-report.json".to_string())
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic-Batch.mdid-portable-response-report.json".to_string())
             )
         );
     }
@@ -816,14 +844,14 @@ mod tests {
     fn portable_response_report_path_refreshes_previous_generated_portable_path() {
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic-Batch.mdid-portable-portable-response-report.json",
-                Some("Clinic-Batch.mdid-portable-portable-response-report.json"),
+                "Clinic-Batch.mdid-portable-response-report.json",
+                Some("Clinic-Batch.mdid-portable-response-report.json"),
                 Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
                 &portable_inspect_report_state(),
             ),
             (
-                "Partner-Export.mdid-portable-portable-response-report.json".to_string(),
-                Some("Partner-Export.mdid-portable-portable-response-report.json".to_string())
+                "Partner-Export.mdid-portable-response-report.json".to_string(),
+                Some("Partner-Export.mdid-portable-response-report.json".to_string())
             )
         );
     }
@@ -832,20 +860,20 @@ mod tests {
     fn portable_response_report_path_preserves_generated_shaped_path_without_marker() {
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic-Batch.mdid-portable-portable-response-report.json",
+                "Clinic-Batch.mdid-portable-response-report.json",
                 None,
                 Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
                 &portable_inspect_report_state(),
             ),
             (
-                "Clinic-Batch.mdid-portable-portable-response-report.json".to_string(),
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
                 None
             )
         );
     }
 
     #[test]
-    fn portable_response_report_path_resets_previous_generated_portable_path_for_non_portable_report_modes(
+    fn portable_response_report_path_refreshes_previous_generated_path_for_non_portable_report_modes(
     ) {
         let mut state = DesktopVaultResponseState::default();
         state.apply_success(
@@ -859,12 +887,15 @@ mod tests {
 
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic-Batch.mdid-portable-portable-response-report.json",
-                Some("Clinic-Batch.mdid-portable-portable-response-report.json"),
+                "Clinic-Batch.mdid-portable-response-report.json",
+                Some("Clinic-Batch.mdid-portable-response-report.json"),
                 Some("C:\\\\vaults\\\\Clinic Batch.mdid-portable.json"),
                 &state,
             ),
-            (DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(), None)
+            (
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic-Batch.mdid-portable-response-report.json".to_string())
+            )
         );
     }
 
@@ -895,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_response_report_path_keeps_generic_path_for_non_portable_report_modes() {
+    fn portable_response_report_path_uses_sanitized_source_for_non_portable_report_modes() {
         let mut state = DesktopVaultResponseState::default();
         state.apply_success(
             DesktopVaultResponseMode::VaultDecode,
@@ -913,8 +944,69 @@ mod tests {
                 Some("C:\\vaults\\Clinic Batch.mdid-portable.json"),
                 &state,
             ),
-            (DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(), None)
+            (
+                "Clinic-Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic-Batch.mdid-portable-response-report.json".to_string())
+            )
         );
+    }
+
+    #[test]
+    fn app_vault_response_report_path_uses_vault_path_for_non_portable_modes_when_default() {
+        let cases = [
+            (
+                DesktopRuntimeSubmissionMode::Vault(DesktopVaultMode::Decode),
+                "C:\\vaults\\Clinic Batch.vault.json",
+                serde_json::json!({
+                    "decoded_count": 1,
+                    "audit_event": {"event_id": "evt-1"},
+                    "decoded_values": {"record-1": {"name": "Jane Doe"}}
+                }),
+                "Clinic-Batch.vault-response-report.json",
+            ),
+            (
+                DesktopRuntimeSubmissionMode::Vault(DesktopVaultMode::AuditEvents),
+                "/vaults/Partner Audit.vault.json",
+                serde_json::json!({
+                    "event_count": 1,
+                    "returned_event_count": 1,
+                    "events": [{"event_id": "evt-1", "detail": "decoded Jane Doe"}]
+                }),
+                "Partner-Audit.vault-response-report.json",
+            ),
+            (
+                DesktopRuntimeSubmissionMode::Portable(DesktopPortableMode::VaultExport),
+                "C:\\vaults\\Research Export.vault.json",
+                serde_json::json!({
+                    "artifact": {"version": 1, "ciphertext": "encrypted-payload"},
+                    "audit_event": {"event_id": "evt-1"}
+                }),
+                "Research-Export.vault-response-report.json",
+            ),
+        ];
+
+        for (mode, vault_path, envelope, expected_path) in cases {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            sender.send(Ok(envelope)).expect("send response");
+            let mut app = DesktopApp {
+                runtime_submission_receiver: Some(receiver),
+                runtime_submission_mode: Some(mode),
+                portable_response_report_source_name: Some(
+                    "C:\\vaults\\Stale Portable.mdid-portable.json".to_string(),
+                ),
+                ..DesktopApp::default()
+            };
+            app.vault_request_state.vault_path = vault_path.to_string();
+            app.portable_request_state.vault_path = vault_path.to_string();
+
+            app.poll_runtime_submission();
+
+            assert_eq!(app.vault_response_report_save_path, expected_path);
+            assert_eq!(
+                app.generated_vault_response_report_save_path.as_deref(),
+                Some(expected_path)
+            );
+        }
     }
 
     #[test]
@@ -1130,7 +1222,7 @@ mod tests {
 
         assert_eq!(
             app.vault_response_report_save_status,
-            "vault export response did not include a portable artifact object"
+            "safe response report or portable artifact is unavailable"
         );
         assert!(!app.vault_response_report_save_status.contains(path));
         assert!(!app.vault_response_report_save_status.contains("jane-doe"));
