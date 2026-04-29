@@ -651,18 +651,11 @@ impl BrowserFlowState {
     }
 
     fn review_report_download_json(&self) -> Result<Vec<u8>, String> {
-        let scrub_review_text = |value: &str| {
-            value
-                .replace("artifact_json", "[redacted]")
-                .replace("original_value", "[redacted]")
-                .replace("token", "[redacted]")
-        };
-
         serde_json::to_vec_pretty(&serde_json::json!({
             "mode": self.input_mode.label(),
-            "summary": scrub_review_text(&self.summary),
-            "review_queue": scrub_review_text(&self.review_queue),
-            "output": scrub_review_text(&self.result_output),
+            "summary": self.summary,
+            "review_queue": self.review_queue,
+            "output": self.result_output,
         }))
         .map_err(|_| "Browser output download could not encode review report JSON.".to_string())
     }
@@ -2331,9 +2324,12 @@ mod tests {
         assert_eq!(payload.mime_type, "application/json;charset=utf-8");
         assert!(payload.is_text);
         assert_eq!(json["mode"], "Portable artifact inspect");
+        assert_eq!(
+            json["review_queue"],
+            "Portable artifact inspection completed without rendering original values or tokens."
+        );
         assert!(!text.contains("artifact_json"));
         assert!(!text.contains("original_value"));
-        assert!(!text.contains("token"));
     }
 
     #[test]
