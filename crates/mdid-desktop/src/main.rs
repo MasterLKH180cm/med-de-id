@@ -1,10 +1,10 @@
 use mdid_desktop::{
     write_portable_artifact_json, write_safe_vault_response_json, DesktopFileImportPayload,
-    DesktopFileImportTarget, DesktopPortableMode, DesktopPortableRequestState,
-    DesktopRuntimeSettings, DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot,
-    DesktopRuntimeSubmitError, DesktopVaultMode, DesktopVaultRequestState,
-    DesktopVaultResponseMode, DesktopVaultResponseState, DesktopWorkflowMode,
-    DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    DesktopFileImportTarget, DesktopPortableFileImportPayload, DesktopPortableMode,
+    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
+    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
+    DesktopVaultRequestState, DesktopVaultResponseMode, DesktopVaultResponseState,
+    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -59,6 +59,18 @@ fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> 
     }
 
     std::fs::read(path).map_err(|_| DROPPED_FILE_READ_ERROR)
+}
+
+fn is_portable_artifact_drop_source_name(source_name: &str) -> bool {
+    let filename = source_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(source_name)
+        .to_ascii_lowercase();
+
+    filename == "mdid-browser-portable-artifact.json"
+        || filename.ends_with(".mdid-portable.json")
+        || filename.ends_with("-mdid-portable.json")
 }
 
 fn main() -> eframe::Result<()> {
@@ -193,6 +205,26 @@ impl DesktopApp {
         }
     }
 
+    fn import_file_bytes_for_current_state(&mut self, source_name: String, bytes: &[u8]) {
+        let imported = if is_portable_artifact_drop_source_name(&source_name) {
+            DesktopPortableFileImportPayload::from_bytes_for_mode(
+                self.portable_request_state.mode,
+                source_name,
+                bytes,
+            )
+            .map(DesktopFileImportTarget::PortableArtifactInspect)
+        } else {
+            DesktopFileImportPayload::from_bytes_target(source_name, bytes)
+        };
+
+        match imported {
+            Ok(imported) => self.apply_file_import_target(imported),
+            Err(error) => self
+                .response_state
+                .apply_error(format!("file import failed: {error:?}")),
+        }
+    }
+
     fn save_portable_artifact_response(&mut self) {
         match write_portable_artifact_json(
             &self.vault_response_state,
@@ -298,12 +330,7 @@ impl DesktopApp {
                 continue;
             };
 
-            match DesktopFileImportPayload::from_bytes_target(source_name, &bytes) {
-                Ok(imported) => self.apply_file_import_target(imported),
-                Err(error) => self
-                    .response_state
-                    .apply_error(format!("file import failed: {error:?}")),
-            }
+            self.import_file_bytes_for_current_state(source_name, &bytes);
         }
     }
     fn start_runtime_submission(
@@ -1193,6 +1220,31 @@ mod tests {
         assert_eq!(app.portable_request_state.artifact_json, artifact_json);
         assert_eq!(app.request_state.mode, DesktopWorkflowMode::CsvText);
         assert!(app.request_state.payload.is_empty());
+    }
+
+    #[test]
+    fn app_imports_dropped_portable_artifact_into_selected_import_mode() {
+        let mut app = DesktopApp::default();
+        app.portable_request_state.mode = DesktopPortableMode::ImportArtifact;
+
+        app.import_file_bytes_for_current_state(
+            "Clinic Bundle.mdid-portable.json".to_string(),
+            br#"{\"records\":[{\"record_id\":\"patient-1\"}]}"#,
+        );
+
+        assert_eq!(
+            app.portable_request_state.mode,
+            DesktopPortableMode::ImportArtifact
+        );
+        assert_eq!(
+            app.portable_request_state.artifact_json,
+            r#"{\"records\":[{\"record_id\":\"patient-1\"}]}"#
+        );
+        assert_eq!(
+            app.portable_response_report_source_name.as_deref(),
+            Some("Clinic Bundle.mdid-portable.json")
+        );
+        assert!(app.response_state.error.is_none());
     }
 
     #[test]
