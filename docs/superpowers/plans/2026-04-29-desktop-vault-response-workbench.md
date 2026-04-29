@@ -190,12 +190,16 @@ impl DesktopVaultResponseState {
                 response.get("imported_record_count").and_then(serde_json::Value::as_u64).unwrap_or(0)
             ),
         };
-        self.artifact_notice = response
+        self.artifact_notice = if response
             .get("report_path")
             .or_else(|| response.get("artifact_path"))
             .and_then(serde_json::Value::as_str)
-            .map(|path| format!("local artifact: {path}"))
-            .unwrap_or_else(|| "no local artifact path returned".to_string());
+            .is_some()
+        {
+            "artifact path returned; full path hidden".to_string()
+        } else {
+            String::new()
+        };
     }
 
     pub fn apply_error(&mut self, mode: DesktopVaultResponseMode, error: &str) {
