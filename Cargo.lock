@@ -3113,6 +3113,7 @@ dependencies = [
  "leptos",
  "serde",
  "serde_json",
+ "uuid",
  "wasm-bindgen",
  "web-sys",
 ]
