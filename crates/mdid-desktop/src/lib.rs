@@ -770,6 +770,21 @@ impl std::fmt::Display for DesktopPortableArtifactSaveError {
 
 impl std::error::Error for DesktopPortableArtifactSaveError {}
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopVaultResponseReportDownload {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for DesktopVaultResponseReportDownload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopVaultResponseReportDownload")
+            .field("file_name", &self.file_name)
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
+}
+
 impl DesktopVaultResponseState {
     pub fn apply_success(&mut self, mode: DesktopVaultResponseMode, response: &serde_json::Value) {
         self.banner = vault_response_banner(mode).to_string();
@@ -808,6 +823,22 @@ impl DesktopVaultResponseState {
             .rendered_mode
             .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
         Ok(self.safe_export_json(mode))
+    }
+
+    pub fn safe_response_report_download_for_source(
+        &self,
+        source_name: Option<&str>,
+    ) -> Result<DesktopVaultResponseReportDownload, DesktopPortableArtifactSaveError> {
+        let json = serde_json::to_string_pretty(&self.safe_response_report_json()?)
+            .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
+        let stem = source_name
+            .and_then(safe_source_file_stem)
+            .unwrap_or_else(|| "desktop".to_string());
+
+        Ok(DesktopVaultResponseReportDownload {
+            file_name: format!("{stem}-portable-response-report.json"),
+            bytes: json.into_bytes(),
+        })
     }
 
     pub fn portable_artifact_download_json(
@@ -2021,6 +2052,55 @@ mod tests {
         assert!(!state.summary.contains("Alice Patient"));
         assert!(!state.summary.contains("PATIENT_TOKEN"));
         assert!(!state.summary.contains("Dr Patient"));
+    }
+
+    #[test]
+    fn desktop_portable_response_report_for_source_uses_safe_imported_artifact_filename() {
+        let mut inspect_state = DesktopVaultResponseState::default();
+        inspect_state.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({
+                "record_count": 2,
+                "records": [{"record_id": "patient-123", "token": "tok-secret"}],
+                "artifact_path": "C:\\vaults\\sensitive\\Clinic Batch.mdid-portable.json"
+            }),
+        );
+
+        let inspect_report = inspect_state
+            .safe_response_report_download_for_source(Some(
+                "C:\\vaults\\sensitive\\Clinic Batch.mdid-portable.json",
+            ))
+            .expect("portable inspect response should create a safe report download");
+        assert_eq!(
+            inspect_report.file_name,
+            "Clinic-Batch.mdid-portable-portable-response-report.json"
+        );
+        let inspect_text = std::str::from_utf8(&inspect_report.bytes).expect("report is utf8 json");
+        assert!(inspect_text.contains("bounded portable artifact response rendered locally"));
+        assert!(inspect_text.contains("artifact path returned; full path hidden"));
+        assert!(!inspect_text.contains("Clinic Batch"));
+        assert!(!inspect_text.contains("patient-123"));
+        assert!(!inspect_text.contains("tok-secret"));
+
+        let mut import_state = DesktopVaultResponseState::default();
+        import_state.apply_success(
+            DesktopVaultResponseMode::ImportArtifact,
+            &serde_json::json!({
+                "imported_record_count": 1,
+                "duplicate_record_count": 1,
+                "artifact_path": "/tmp/Partner Export.mdid-portable.json"
+            }),
+        );
+
+        let import_report = import_state
+            .safe_response_report_download_for_source(Some(
+                "/tmp/Partner Export.mdid-portable.json",
+            ))
+            .expect("portable import response should create a safe report download");
+        assert_eq!(
+            import_report.file_name,
+            "Partner-Export.mdid-portable-portable-response-report.json"
+        );
     }
 
     #[test]
