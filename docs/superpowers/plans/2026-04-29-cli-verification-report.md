@@ -157,14 +157,16 @@ git commit -m "feat(cli): add PHI-safe artifact verification report"
 
 ## Task 2: README truth-sync
 
+**Completion evidence:** Task 1 landed and passed targeted/broader CLI verification with `cargo test -p mdid-cli --all-targets`, `cargo clippy -p mdid-cli --all-targets -- -D warnings`, and `git diff --check`; quality review approved the bounded `verify-artifacts` command as metadata-only and PHI-safe. Task 2 updates only README truth-sync claims plus this plan evidence/checklist.
+
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Change the snapshot sentence to mention the bounded CLI artifact verification command. If Task 1 verification passed, set CLI to 95%, Browser/web unchanged at 63%, Desktop app unchanged at 58%, and Overall to 88%.
 
-- [ ] **Step 2: Verify README claims**
+- [x] **Step 2: Verify README claims**
 
 Run:
 
@@ -175,7 +177,7 @@ git diff --check
 
 Expected: grep finds the updated rows and command mention; diff check passes.
 
-- [ ] **Step 3: Commit README truth-sync**
+- [x] **Step 3: Commit README truth-sync**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-29-cli-verification-report.md
