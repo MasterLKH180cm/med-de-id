@@ -1437,6 +1437,20 @@ fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::V
                     serde_json::Value::String("redacted-field".into()),
                 );
             }
+            "field_ref"
+                if value.as_object().is_some_and(|field_ref| {
+                    field_ref.contains_key("artifact_label")
+                        && field_ref.contains_key("metadata_key")
+                }) =>
+            {
+                sanitized.insert(
+                    key.clone(),
+                    serde_json::json!({
+                        "artifact_label": "redacted-artifact",
+                        "metadata_key": "redacted-field"
+                    }),
+                );
+            }
             "reason" | "message" => {
                 sanitized.insert(
                     key.clone(),
@@ -3441,7 +3455,10 @@ mod tests {
                     "phi_type": "metadata_identifier",
                     "metadata_key": "PatientName",
                     "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
-                    "field_ref": "dicom.PatientName",
+                    "field_ref": {
+                        "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                        "metadata_key": "PatientName"
+                    },
                     "source_value": "Jane Doe MRN-12345"
                 }],
                 "raw_body": {"patient": "Jane Doe"},
@@ -3471,12 +3488,20 @@ mod tests {
             "ocr_or_visual_review_required"
         );
         assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
+        assert_eq!(
+            report["review_queue"][0]["field_ref"]["artifact_label"],
+            "redacted-artifact"
+        );
+        assert_eq!(
+            report["review_queue"][0]["field_ref"]["metadata_key"],
+            "redacted-field"
+        );
 
         assert!(!rendered.contains("Jane Doe"));
         assert!(!rendered.contains("MRN-12345"));
         assert!(!rendered.contains("PatientName"));
         assert!(!rendered.contains("Patient-Jane-Doe"));
-        assert!(!rendered.contains("field_ref"));
+        assert!(rendered.contains("field_ref"));
         assert!(!rendered.contains("dicom.PatientName"));
         assert!(!rendered.contains("raw_body"));
         assert!(!rendered.contains("rewritten_media_bytes"));

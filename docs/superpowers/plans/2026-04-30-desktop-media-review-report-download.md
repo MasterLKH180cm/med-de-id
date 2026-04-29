@@ -203,3 +203,4 @@ git commit -m "docs: truth-sync desktop media report completion"
 - Spec coverage: Task 1 lands the bounded desktop media review report helper with PHI-safe tests. Task 2 updates README completion for CLI, browser/web, desktop app, overall, and remaining blockers.
 - Placeholder scan: No TBD/TODO/fill-in placeholders remain.
 - Type consistency: The plan uses existing `DesktopWorkflowMode::MediaMetadataJson`, `DesktopWorkflowResponseState::review_report_download`, and `DesktopWorkflowReviewReportDownload` names consistently.
+- Quality-gap follow-up: Added coverage for nested media `field_ref` objects with raw `artifact_label`/`metadata_key` values and updated the sanitizer to preserve only PHI-safe constants (`redacted-artifact`, `redacted-field`) in downloaded review reports.
