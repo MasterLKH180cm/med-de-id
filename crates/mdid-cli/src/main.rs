@@ -1,4 +1,9 @@
-use std::{fs, path::PathBuf, process};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    process,
+};
 
 use mdid_adapters::{CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter};
 use mdid_application::{
@@ -555,15 +560,22 @@ fn run_vault_import(args: VaultImportArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn run_vault_import_for_summary(args: VaultImportArgs) -> Result<String, String> {
-    let artifact_len = fs::metadata(&args.artifact_path)
-        .map_err(|err| format!("failed to read vault import artifact metadata: {err}"))?
-        .len();
-    if artifact_len > MAX_PORTABLE_ARTIFACT_BYTES {
+fn read_bounded_portable_artifact(path: &Path) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path)
+        .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
+    let mut reader = file.take(MAX_PORTABLE_ARTIFACT_BYTES + 1);
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
+    if bytes.len() as u64 > MAX_PORTABLE_ARTIFACT_BYTES {
         return Err("portable artifact exceeds maximum size".to_string());
     }
-    let artifact_bytes = fs::read(&args.artifact_path)
-        .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
+    Ok(bytes)
+}
+
+fn run_vault_import_for_summary(args: VaultImportArgs) -> Result<String, String> {
+    let artifact_bytes = read_bounded_portable_artifact(&args.artifact_path)?;
     let artifact: PortableVaultArtifact = serde_json::from_slice(&artifact_bytes)
         .map_err(|err| format!("failed to parse vault import artifact: {err}"))?;
     let mut vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
@@ -1102,6 +1114,22 @@ mod tests {
         for secret in ["Alice Example", "secret-passphrase", "portable-secret"] {
             assert!(!summary.contains(secret));
         }
+    }
+
+    #[test]
+    fn vault_import_bounded_read_rejects_sparse_oversized_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let artifact_path = temp_dir
+            .path()
+            .join("sparse-oversized-portable-export.json");
+        std::fs::File::create(&artifact_path)
+            .unwrap()
+            .set_len(MAX_PORTABLE_ARTIFACT_BYTES + 1)
+            .unwrap();
+
+        let error = read_bounded_portable_artifact(&artifact_path).unwrap_err();
+
+        assert_eq!(error, "portable artifact exceeds maximum size");
     }
 
     #[test]
