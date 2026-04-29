@@ -688,6 +688,40 @@ fn sanitized_import_stem(file_name: &str) -> String {
     }
 }
 
+fn sanitized_vault_export_stem(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('_');
+            }
+            sanitized.push(ch);
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('_') {
+            sanitized.pop();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-output".to_string()
+    } else {
+        sanitized
+    }
+}
+
 impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
@@ -731,7 +765,10 @@ impl BrowserFlowState {
                 InputMode::VaultDecode => {
                     return format!("{stem}-vault-decode-response.json");
                 }
-                InputMode::VaultExport => {}
+                InputMode::VaultExport => {
+                    let stem = sanitized_vault_export_stem(imported_file_name);
+                    return format!("{stem}-portable-artifact.json");
+                }
             }
         }
 
@@ -2626,6 +2663,20 @@ mod tests {
     }
 
     #[test]
+    fn browser_vault_export_download_uses_safe_source_filename() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "Clinic_Vault_Backup_2026-portable-artifact.json"
+        );
+    }
+
+    #[test]
     fn browser_vault_response_downloads_use_safe_source_filenames() {
         let mut audit_state = BrowserFlowState {
             input_mode: InputMode::VaultAuditEvents,
@@ -2726,7 +2777,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_vault_export_keeps_static_portable_artifact_name() {
+    fn imported_vault_export_suggests_safe_source_portable_artifact_name() {
         let mut state = BrowserFlowState::default();
         state.apply_imported_file(
             "Patient Portable Artifact.json",
@@ -2736,7 +2787,7 @@ mod tests {
 
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-portable-artifact.json"
+            "Patient_Portable_Artifact-portable-artifact.json"
         );
     }
 
@@ -3734,7 +3785,7 @@ mod tests {
         state.input_mode = InputMode::VaultExport;
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-portable-artifact.json"
+            "scan-portable-artifact.json"
         );
     }
 
