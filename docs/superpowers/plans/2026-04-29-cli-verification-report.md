@@ -97,9 +97,9 @@ Implement:
 - `CliCommand::VerifyArtifacts(VerifyArtifactsArgs)`
 - `VerifyArtifactsArgs { artifact_paths_json: String, max_bytes: Option<u64> }`
 - parser branch for `verify-artifacts`
-- `parse_artifact_paths_json(&str) -> Result<Vec<String>, CliError>` requiring a non-empty JSON string array of non-blank paths
-- `parse_positive_max_bytes(&str) -> Result<u64, CliError>` requiring `> 0`
-- `build_verify_artifacts_report(paths: &[String], max_bytes: Option<u64>) -> Result<VerifyArtifactsReport, CliError>` using `std::fs::metadata` only; report entries must not include raw paths or filenames
+- `parse_artifact_paths_json(&str) -> Result<Vec<String>, String>` requiring a non-empty JSON string array of non-blank paths, matching the existing CLI parser error convention
+- `parse_positive_max_bytes(&str) -> Result<u64, String>` requiring `> 0`, matching the existing CLI parser error convention
+- `build_verify_artifacts_report(paths: &[String], max_bytes: Option<u64>) -> Result<VerifyArtifactsReport, String>` using `std::fs::metadata` only; report entries must not include raw paths/filenames
 - command execution that prints only safe JSON counts and entry indices/status/byte sizes
 
 Report shape:
@@ -184,6 +184,6 @@ git commit -m "docs: truth-sync CLI verification completion"
 
 ## Self-Review
 
-- Spec coverage: command is local-only, metadata-only, PHI-safe, verification/audit polish for CLI; no browser/desktop changes; README truth-sync included.
+- Spec coverage: command is local-only, metadata-only, PHI-safe, verification/audit polish for CLI; helper functions use the existing CLI `Result<_, String>` parser convention; no browser/desktop changes; README truth-sync included.
 - Placeholder scan: no TODO/TBD placeholders.
 - Type consistency: parser, args, report helper, and report structs all use `verify-artifacts` and `VerifyArtifacts` consistently.
