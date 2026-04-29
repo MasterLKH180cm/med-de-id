@@ -1177,16 +1177,17 @@ fn parse_runtime_success(
         InputMode::VaultExport => {
             let parsed: serde_json::Value = serde_json::from_str(response_body)
                 .map_err(|_| "Failed to parse runtime success response.".to_string())?;
-            if !parsed
+            let artifact = parsed
                 .get("artifact")
-                .is_some_and(serde_json::Value::is_object)
-            {
-                return Err("Vault export response missing artifact object.".to_string());
-            }
+                .filter(|artifact| artifact.is_object())
+                .ok_or("Vault export response missing artifact object.".to_string())?;
+            let rewritten_output = serde_json::to_string_pretty(artifact)
+                .map_err(|error| format!("Failed to render portable artifact: {error}"))?;
             Ok(RuntimeResponseEnvelope {
-                rewritten_output: "Portable artifact created by bounded localhost runtime request. Artifact contents are hidden for PHI safety.".to_string(),
-                summary: "Portable artifact created.".to_string(),
-                review_queue: "No review items returned.".to_string(),
+                rewritten_output,
+                summary: "Portable artifact created and available for local download.".to_string(),
+                review_queue: "encrypted portable artifact available. Decoded PHI is not rendered."
+                    .to_string(),
             })
         }
         InputMode::PortableArtifactInspect => {
@@ -2138,11 +2139,18 @@ mod tests {
         });
         let rendered_export = parse_runtime_success(InputMode::VaultExport, &export.to_string())
             .expect("export render");
+        assert!(rendered_export.summary.contains("Portable artifact created"));
+        assert!(rendered_export
+            .review_queue
+            .contains("encrypted portable artifact"));
+        assert!(rendered_export.rewritten_output.contains("ciphertext"));
         assert!(rendered_export
             .rewritten_output
-            .contains("Portable artifact created"));
-        assert!(!rendered_export.rewritten_output.contains("patient Jane"));
-        assert!(!rendered_export.rewritten_output.contains("ciphertext"));
+            .contains("patient Jane token"));
+        assert!(!rendered_export.summary.contains("patient Jane"));
+        assert!(!rendered_export.review_queue.contains("patient Jane"));
+        assert!(!rendered_export.summary.contains("secret salt"));
+        assert!(!rendered_export.review_queue.contains("secret nonce"));
 
         let inspect = json!({
             "record_count": 1,
@@ -2166,6 +2174,32 @@ mod tests {
         assert!(rendered_import.summary.contains("1 imported"));
         assert!(rendered_import.review_queue.contains("2 duplicate"));
         assert!(!rendered_import.rewritten_output.contains("MRN 123"));
+    }
+
+    #[test]
+    fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
+        let export = json!({
+            "artifact": {
+                "version": 1,
+                "records": [
+                    {"record_id": "11111111-1111-1111-1111-111111111111", "token": "MDID-1"}
+                ],
+                "ciphertext": "encrypted-local-artifact"
+            }
+        });
+
+        let rendered = parse_runtime_success(InputMode::VaultExport, &export.to_string())
+            .expect("valid vault export success renders artifact JSON");
+
+        assert!(rendered.summary.contains("Portable artifact created"));
+        assert!(rendered.review_queue.contains("encrypted portable artifact"));
+        assert!(rendered.rewritten_output.contains("\"version\": 1"));
+        assert!(rendered.rewritten_output.contains("encrypted-local-artifact"));
+        assert!(rendered
+            .rewritten_output
+            .contains("11111111-1111-1111-1111-111111111111"));
+        assert!(!rendered.summary.contains("encrypted-local-artifact"));
+        assert!(!rendered.review_queue.contains("MDID-1"));
     }
 
     #[test]
