@@ -407,6 +407,7 @@ struct DicomSubmitRequest {
 struct MediaRuntimeSuccessResponse {
     summary: MediaRuntimeSummary,
     review_queue: Vec<MediaReviewCandidate>,
+    #[allow(dead_code)]
     rewritten_media_bytes_base64: Option<String>,
 }
 
@@ -653,7 +654,9 @@ fn build_submit_request(
         }),
         InputMode::PdfBase64 => unreachable!("PDF requests are handled before policy parsing"),
         InputMode::DicomBase64 => unreachable!("DICOM requests are handled before policy parsing"),
-        InputMode::MediaMetadataJson => unreachable!("Media metadata JSON requests are handled before policy parsing"),
+        InputMode::MediaMetadataJson => {
+            unreachable!("Media metadata JSON requests are handled before policy parsing")
+        }
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -711,7 +714,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string(),
-                summary: format_media_summary(&parsed.summary, parsed.rewritten_media_bytes_base64.as_deref()),
+                summary: format_media_summary(&parsed.summary),
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
         }
@@ -818,16 +821,14 @@ fn format_dicom_review_queue(review_queue: &[DicomReviewCandidate]) -> String {
         .join("\n")
 }
 
-fn format_media_summary(summary: &MediaRuntimeSummary, rewritten_media_bytes_base64: Option<&str>) -> String {
-    let rewritten_media_bytes_base64 = rewritten_media_bytes_base64.unwrap_or("null");
+fn format_media_summary(summary: &MediaRuntimeSummary) -> String {
     format!(
-        "total_items: {}\nmetadata_only_items: {}\nvisual_review_required_items: {}\nunsupported_items: {}\nreview_required_candidates: {}\nrewritten_media_bytes_base64: {}",
+        "total_items: {}\nmetadata_only_items: {}\nvisual_review_required_items: {}\nunsupported_items: {}\nreview_required_candidates: {}\nrewritten_media_bytes_base64: null",
         summary.total_items,
         summary.metadata_only_items,
         summary.visual_review_required_items,
         summary.unsupported_items,
-        summary.review_required_candidates,
-        rewritten_media_bytes_base64
+        summary.review_required_candidates
     )
 }
 
@@ -1509,11 +1510,26 @@ mod tests {
 
     #[test]
     fn media_metadata_mode_uses_json_text_and_bounded_runtime_route() {
-        assert_eq!(InputMode::from_select_value("media-metadata-json"), InputMode::MediaMetadataJson);
-        assert_eq!(InputMode::MediaMetadataJson.select_value(), "media-metadata-json");
-        assert_eq!(InputMode::MediaMetadataJson.endpoint(), "/media/conservative/deidentify");
-        assert_eq!(InputMode::MediaMetadataJson.browser_file_read_mode(), BrowserFileReadMode::Text);
-        assert_eq!(InputMode::from_file_name("metadata.JSON"), Some(InputMode::MediaMetadataJson));
+        assert_eq!(
+            InputMode::from_select_value("media-metadata-json"),
+            InputMode::MediaMetadataJson
+        );
+        assert_eq!(
+            InputMode::MediaMetadataJson.select_value(),
+            "media-metadata-json"
+        );
+        assert_eq!(
+            InputMode::MediaMetadataJson.endpoint(),
+            "/media/conservative/deidentify"
+        );
+        assert_eq!(
+            InputMode::MediaMetadataJson.browser_file_read_mode(),
+            BrowserFileReadMode::Text
+        );
+        assert_eq!(
+            InputMode::from_file_name("metadata.JSON"),
+            Some(InputMode::MediaMetadataJson)
+        );
     }
 
     #[test]
@@ -1539,7 +1555,8 @@ mod tests {
 
     #[test]
     fn media_metadata_mode_rejects_non_object_payload() {
-        let error = build_submit_request(InputMode::MediaMetadataJson, "[]", "metadata.json", "").unwrap_err();
+        let error = build_submit_request(InputMode::MediaMetadataJson, "[]", "metadata.json", "")
+            .unwrap_err();
 
         assert_eq!(error, "Media metadata JSON must be a JSON object accepted by the local media review runtime route.");
     }
@@ -1566,7 +1583,7 @@ mod tests {
                         "status": "ocr_or_visual_review_required"
                     }
                 ],
-                "rewritten_media_bytes_base64": null
+                "rewritten_media_bytes_base64": "PHI_MEDIA_BYTES"
             })
             .to_string(),
         )
@@ -1579,7 +1596,10 @@ mod tests {
         assert!(response.summary.contains("total_items: 1"));
         assert!(response.summary.contains("visual_review_required_items: 1"));
         assert!(response.summary.contains("review_required_candidates: 1"));
-        assert!(response.summary.contains("rewritten_media_bytes_base64: null"));
+        assert!(response
+            .summary
+            .contains("rewritten_media_bytes_base64: null"));
+        assert!(!response.summary.contains("PHI_MEDIA_BYTES"));
         assert_eq!(
             response.review_queue,
             "- PatientName / image / metadata_identifier / confidence 0.92 / value: <redacted>"
@@ -1595,7 +1615,11 @@ mod tests {
         assert!(copy.contains("does not perform OCR"));
         assert!(copy.contains("visual redaction"));
         assert_eq!(
-            BrowserFlowState { input_mode: InputMode::MediaMetadataJson, ..BrowserFlowState::default() }.suggested_export_file_name(),
+            BrowserFlowState {
+                input_mode: InputMode::MediaMetadataJson,
+                ..BrowserFlowState::default()
+            }
+            .suggested_export_file_name(),
             "mdid-browser-media-review-report.txt"
         );
     }
@@ -1649,7 +1673,8 @@ mod tests {
     fn import_export_copy_discloses_bounded_browser_file_limits() {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("CSV files load as text"));
         assert!(BROWSER_FILE_IMPORT_COPY.contains("media metadata JSON files also load as text"));
-        assert!(BROWSER_FILE_IMPORT_COPY.contains("Media metadata JSON sends metadata only, not media bytes"));
+        assert!(BROWSER_FILE_IMPORT_COPY
+            .contains("Media metadata JSON sends metadata only, not media bytes"));
         assert!(BROWSER_FILE_IMPORT_COPY.contains("XLSX and PDF files load as base64 payloads"));
         assert!(BROWSER_FILE_IMPORT_COPY
             .contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
@@ -1659,11 +1684,14 @@ mod tests {
     fn browser_file_import_controls_expose_media_metadata_json() {
         let source = include_str!("app.rs");
 
-        assert!(source.contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
+        assert!(source
+            .contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
         assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.json\""));
         assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"));
         assert!(source.contains("validates CSV/XLSX/PDF/DICOM/media metadata JSON selection"));
-        assert!(source.contains("JSON payloads remain metadata-only and do not include media bytes"));
+        assert!(
+            source.contains("JSON payloads remain metadata-only and do not include media bytes")
+        );
     }
 
     #[test]
