@@ -36,7 +36,14 @@ Add this test inside the existing `mod tests` in `crates/mdid-browser/src/app.rs
 fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
     let export = json!({
         "artifact": {
-            "kdf": "argon2id",
+            "kdf": {
+                "algorithm": "argon2id",
+                "version": 19,
+                "memory_cost_kib": 19456,
+                "iterations": 2,
+                "parallelism": 1,
+                "output_len": 32
+            },
             "verifier_b64": "dmVyaWZpZXI=",
             "salt_b64": "c2FsdA==",
             "nonce_b64": "bm9uY2U=",
