@@ -228,13 +228,12 @@ git commit -m "docs: truth-sync browser review downloads completion"
 - Spec coverage: Task 1 adds structured downloads for browser review modes while preserving existing binary/text behavior. Task 2 updates README completion and missing-items narrative.
 - Placeholder scan: no TBD/TODO/fill-in-later language remains.
 - Type consistency: all code references use existing `BrowserFlowState`, `InputMode`, and `BrowserDownloadPayload` names.
-     1|
-     2|## Completion Evidence
-     3|
-     4|- Landed branch: `feature/browser-file-import-download-polish`
-     5|- Task 1 commit: `a762a02 feat(browser): export structured review reports`
-     6|- Quality fix commit: `57f1164 fix(browser): preserve safe review report text`
-     7|- Task 2 commit: pending until docs truth-sync is committed.
-     8|- Verification: `cargo test -p mdid-browser pdf_review_download_exports_structured_json_report -- --nocapture` PASS; `cargo test -p mdid-browser portable_review_download_exports_json_without_raw_runtime_body -- --nocapture` PASS; `cargo test -p mdid-browser output_download -- --nocapture` PASS; `cargo test -p mdid-browser --lib` PASS; `cargo clippy -p mdid-browser --all-targets -- -D warnings` PASS; `git diff --check` PASS.
-     9|- Reviews: Task 1 spec review PASS after quality fix; Task 1 quality review APPROVED after removing the brittle scrubber and preserving already-safe rendered review text.
-    10|
+
+## Completion Evidence
+
+- Landed branch: `feature/browser-file-import-download-polish`
+- Task 1 commit: `a762a02 feat(browser): export structured review reports`
+- Quality fix commit: `57f1164 fix(browser): preserve safe review report text`
+- Task 2 commit: `2158b65 docs: truth-sync browser review downloads completion`
+- Verification: `cargo test -p mdid-browser pdf_review_download_exports_structured_json_report -- --nocapture` PASS; `cargo test -p mdid-browser portable_review_download_exports_json_without_raw_runtime_body -- --nocapture` PASS; `cargo test -p mdid-browser output_download -- --nocapture` PASS; `cargo test -p mdid-browser --lib` PASS; `cargo clippy -p mdid-browser --all-targets -- -D warnings` PASS; `git diff --check` PASS.
+- Reviews: Task 1 spec review PASS after quality fix; Task 1 quality review APPROVED after removing the brittle scrubber and preserving already-safe rendered review text; Task 2 docs spec/quality review found stale plan evidence and README wording, fixed in follow-up commit.
