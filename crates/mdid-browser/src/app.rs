@@ -776,7 +776,9 @@ impl BrowserFlowState {
             "summary": parse_media_summary_report(&self.summary),
             "review_queue": parse_media_review_queue_report(&self.review_queue),
         }))
-        .map_err(|_| "Browser output download could not encode media review report JSON.".to_string())
+        .map_err(|_| {
+            "Browser output download could not encode media review report JSON.".to_string()
+        })
     }
 
     fn prepared_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
@@ -2434,12 +2436,15 @@ mod tests {
     fn media_review_download_is_structured_and_phi_safe() {
         let mut state = BrowserFlowState::default();
         state.input_mode = InputMode::MediaMetadataJson;
-        state.result_output = "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string();
+        state.result_output =
+            "Media rewrite/export unavailable: runtime returned metadata-only conservative review."
+                .to_string();
         state.summary = "total_items: 1\nmetadata_only_items: 1\nvisual_review_required_items: 1\nunsupported_items: 0\nreview_required_candidates: 1\nrewritten_media_bytes_base64: null\noperator_notes: Jane Patient\ntotal_items_label: one\nmetadata_only_items: not-a-number".to_string();
         state.review_queue = "- PatientName / image / metadata_identifier / confidence 0.97 / value: <redacted>\n- FlowCytometryId / fcs / metadata_identifier / confidence 0.91 / value: <redacted>\n- VoiceNote / audio / metadata_identifier / confidence 0.88 / value: <redacted>".to_string();
 
         let payload = state.prepared_download_payload().expect("download payload");
-        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("report json");
+        let report: serde_json::Value =
+            serde_json::from_slice(&payload.bytes).expect("report json");
         let report_text = String::from_utf8(payload.bytes).expect("report utf8");
 
         assert_eq!(payload.file_name, "mdid-browser-media-review-report.json");
@@ -2447,11 +2452,17 @@ mod tests {
         assert!(payload.is_text);
         assert_eq!(report["mode"], "media_metadata_review");
         assert_eq!(report["summary"]["total_items"], 1);
-        assert_eq!(report["summary"]["metadata_only_items"], serde_json::Value::Null);
+        assert_eq!(
+            report["summary"]["metadata_only_items"],
+            serde_json::Value::Null
+        );
         assert_eq!(report["summary"]["visual_review_required_items"], 1);
         assert_eq!(report["summary"]["unsupported_items"], 0);
         assert_eq!(report["summary"]["review_required_candidates"], 1);
-        assert_eq!(report["summary"]["rewritten_media_bytes_base64"], serde_json::Value::Null);
+        assert_eq!(
+            report["summary"]["rewritten_media_bytes_base64"],
+            serde_json::Value::Null
+        );
         assert_eq!(report["review_queue"][0]["metadata_key"], "redacted-field");
         assert_eq!(report["review_queue"][0]["format"], "image");
         assert_eq!(report["review_queue"][1]["format"], "fcs");
@@ -2484,7 +2495,8 @@ mod tests {
         };
 
         let payload = state.prepared_download_payload().expect("download payload");
-        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json report");
+        let report: serde_json::Value =
+            serde_json::from_slice(&payload.bytes).expect("json report");
 
         assert_eq!(payload.file_name, "mdid-browser-vault-decode-response.json");
         assert_eq!(payload.mime_type, "application/json;charset=utf-8");
