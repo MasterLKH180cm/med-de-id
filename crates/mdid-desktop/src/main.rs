@@ -1,9 +1,10 @@
 use mdid_desktop::{
-    DesktopFileImportPayload, DesktopFileImportTarget, DesktopPortableMode,
-    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
-    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
-    DesktopVaultRequestState, DesktopVaultResponseState, DesktopWorkflowMode,
-    DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    write_portable_artifact_json, DesktopFileImportPayload, DesktopFileImportTarget,
+    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
+    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
+    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseMode,
+    DesktopVaultResponseState, DesktopWorkflowMode, DesktopWorkflowRequestState,
+    DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -31,7 +32,6 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Default)]
 struct DesktopApp {
     request_state: DesktopWorkflowRequestState,
     vault_request_state: DesktopVaultRequestState,
@@ -41,6 +41,25 @@ struct DesktopApp {
     vault_response_state: DesktopVaultResponseState,
     runtime_submission_receiver: Option<Receiver<RuntimeSubmissionResult>>,
     runtime_submission_mode: Option<DesktopRuntimeSubmissionMode>,
+    portable_artifact_save_path: String,
+    portable_artifact_save_status: String,
+}
+
+impl Default for DesktopApp {
+    fn default() -> Self {
+        Self {
+            request_state: DesktopWorkflowRequestState::default(),
+            vault_request_state: DesktopVaultRequestState::default(),
+            portable_request_state: DesktopPortableRequestState::default(),
+            runtime_settings: DesktopRuntimeSettings::default(),
+            response_state: DesktopWorkflowResponseState::default(),
+            vault_response_state: DesktopVaultResponseState::default(),
+            runtime_submission_receiver: None,
+            runtime_submission_mode: None,
+            portable_artifact_save_path: "desktop-portable-artifact.mdid-portable.json".to_string(),
+            portable_artifact_save_status: String::new(),
+        }
+    }
 }
 
 impl DesktopApp {
@@ -107,6 +126,21 @@ impl DesktopApp {
             DesktopFileImportTarget::PortableArtifactInspect(payload) => {
                 self.portable_request_state.mode = payload.mode;
                 self.portable_request_state.artifact_json = payload.artifact_json;
+            }
+        }
+    }
+
+    fn save_portable_artifact_response(&mut self) {
+        match write_portable_artifact_json(
+            &self.vault_response_state,
+            self.portable_artifact_save_path.trim(),
+        ) {
+            Ok(_) => {
+                self.portable_artifact_save_status =
+                    "Portable artifact JSON saved; encrypted contents only.".to_string();
+            }
+            Err(error) => {
+                self.portable_artifact_save_status = error.to_string();
             }
         }
     }
@@ -403,6 +437,20 @@ impl eframe::App for DesktopApp {
             if !self.vault_response_state.artifact_notice.is_empty() {
                 ui.label(&self.vault_response_state.artifact_notice);
             }
+            if self
+                .vault_response_state
+                .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)
+                .is_ok()
+            {
+                ui.label("Save portable artifact JSON");
+                ui.text_edit_singleline(&mut self.portable_artifact_save_path);
+                if ui.button("Save portable artifact JSON").clicked() {
+                    self.save_portable_artifact_response();
+                }
+                if !self.portable_artifact_save_status.is_empty() {
+                    ui.label(&self.portable_artifact_save_status);
+                }
+            }
             ui.separator();
             ui.heading("Runtime-shaped response workbench");
             ui.label(&self.response_state.banner);
@@ -458,6 +506,37 @@ mod tests {
             runtime_submission_mode: Some(mode),
             ..DesktopApp::default()
         }
+    }
+
+    #[test]
+    fn app_save_portable_artifact_writes_artifact_json_without_sensitive_runtime_envelope() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-portable-artifact-save-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("desktop-export.mdid-portable.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            mdid_desktop::DesktopVaultResponseMode::VaultExport,
+            &serde_json::json!({
+                "artifact": {"version": 1, "ciphertext": "encrypted-payload"},
+                "audit_event": {"detail": "exported Alice Example"},
+                "vault_path": "/secret/Alice.vault"
+            }),
+        );
+        app.portable_artifact_save_path = path.to_string_lossy().to_string();
+
+        app.save_portable_artifact_response();
+
+        let saved = std::fs::read_to_string(&path).expect("artifact saved");
+        assert!(saved.contains("encrypted-payload"));
+        assert!(!saved.contains("Alice Example"));
+        assert!(!saved.contains("/secret"));
+        assert_eq!(
+            app.portable_artifact_save_status,
+            "Portable artifact JSON saved; encrypted contents only."
+        );
     }
 
     #[test]

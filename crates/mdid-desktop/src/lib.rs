@@ -677,6 +677,25 @@ pub enum DesktopPortableArtifactSaveError {
     InvalidJson(String),
 }
 
+impl std::fmt::Display for DesktopPortableArtifactSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVaultExport => write!(
+                f,
+                "portable artifact save is only available for vault export responses"
+            ),
+            Self::MissingArtifact => write!(
+                f,
+                "vault export response did not include a portable artifact object"
+            ),
+            Self::Io(_) => write!(f, "portable artifact JSON could not be written"),
+            Self::InvalidJson(_) => write!(f, "portable artifact JSON could not be prepared"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopPortableArtifactSaveError {}
+
 impl DesktopVaultResponseState {
     pub fn apply_success(&mut self, mode: DesktopVaultResponseMode, response: &serde_json::Value) {
         self.banner = vault_response_banner(mode).to_string();
