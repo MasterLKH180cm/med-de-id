@@ -907,6 +907,10 @@ pub fn write_safe_vault_response_json(
     mode: DesktopVaultResponseMode,
     path: impl AsRef<std::path::Path>,
 ) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
+    if state.safe_response_report_mode() != Some(mode) {
+        return Err(DesktopPortableArtifactSaveError::MissingArtifact);
+    }
+
     let report_json = serde_json::to_string_pretty(&state.safe_export_json(mode))
         .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
     let path = path.as_ref();
@@ -2227,6 +2231,47 @@ mod tests {
         assert_eq!(exported["error"], "runtime failed; details redacted");
         assert!(!exported_text.contains("/secret/artifact.json"));
         assert!(!exported_text.contains("hunter2"));
+    }
+
+    #[test]
+    fn safe_vault_response_json_writer_rejects_default_state_without_creating_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let target = temp_dir.path().join("synthetic-vault-audit-report.json");
+        let state = DesktopVaultResponseState::default();
+
+        let result =
+            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target);
+
+        assert!(matches!(
+            result,
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        ));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn safe_vault_response_json_writer_rejects_mismatched_rendered_mode_without_creating_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let target = temp_dir.path().join("mismatched-vault-audit-report.json");
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_value_count": 1,
+            "decoded_values": [
+                {"record_id": "patient-1", "field": "name", "value": "Alice Example"}
+            ],
+            "vault_path": "C:/vaults/alice.mdid",
+            "audit_event": {"kind": "decode", "detail": "released Alice Example"}
+        });
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let result =
+            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target);
+
+        assert!(matches!(
+            result,
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        ));
+        assert!(!target.exists());
     }
 
     #[test]
