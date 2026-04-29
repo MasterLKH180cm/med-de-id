@@ -206,7 +206,11 @@ impl DesktopApp {
     }
 
     fn import_file_bytes_for_current_state(&mut self, source_name: String, bytes: &[u8]) {
-        let imported = if is_portable_artifact_drop_source_name(&source_name) {
+        let imported = if is_portable_artifact_drop_source_name(&source_name)
+            && matches!(
+                self.portable_request_state.mode,
+                DesktopPortableMode::InspectArtifact | DesktopPortableMode::ImportArtifact
+            ) {
             DesktopPortableFileImportPayload::from_bytes_for_mode(
                 self.portable_request_state.mode,
                 source_name,
@@ -1240,6 +1244,29 @@ mod tests {
             app.portable_request_state.artifact_json,
             r#"{\"records\":[{\"record_id\":\"patient-1\"}]}"#
         );
+        assert_eq!(
+            app.portable_response_report_source_name.as_deref(),
+            Some("Clinic Bundle.mdid-portable.json")
+        );
+        assert!(app.response_state.error.is_none());
+    }
+
+    #[test]
+    fn app_imports_dropped_portable_artifact_from_export_mode_as_inspect() {
+        let artifact_json = r#"{\"artifact\":{\"ciphertext\":\"secret\"}}"#;
+        let mut app = DesktopApp::default();
+        app.portable_request_state.mode = DesktopPortableMode::VaultExport;
+
+        app.import_file_bytes_for_current_state(
+            "Clinic Bundle.mdid-portable.json".to_string(),
+            artifact_json.as_bytes(),
+        );
+
+        assert_eq!(
+            app.portable_request_state.mode,
+            DesktopPortableMode::InspectArtifact
+        );
+        assert_eq!(app.portable_request_state.artifact_json, artifact_json);
         assert_eq!(
             app.portable_response_report_source_name.as_deref(),
             Some("Clinic Bundle.mdid-portable.json")
