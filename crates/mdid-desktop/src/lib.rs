@@ -1375,14 +1375,23 @@ fn is_allowed_review_report_summary_key(key: &str) -> bool {
             | "row_count"
             | "metadata_fields"
             | "metadata_field_count"
+            | "metadata_entry_count"
+            | "artifact_count"
             | "ocr_required"
             | "ocr_or_visual_review_required"
             | "review_required"
+            | "review_required_count"
             | "reviewed_field_count"
             | "candidate_count"
             | "finding_count"
             | "unsupported_count"
+            | "unsupported_payload_count"
             | "text_layer_page_count"
+            | "total_items"
+            | "metadata_only_items"
+            | "visual_review_required_items"
+            | "unsupported_items"
+            | "review_required_candidates"
     )
 }
 
@@ -1409,6 +1418,9 @@ fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::V
             "kind" if value.as_str().is_some_and(is_allowed_review_report_kind) => {
                 sanitized.insert(key.clone(), value.clone());
             }
+            "format" if value.as_str().is_some_and(is_allowed_review_report_format) => {
+                sanitized.insert(key.clone(), value.clone());
+            }
             "phi_type"
                 if value
                     .as_str()
@@ -1423,6 +1435,20 @@ fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::V
                 sanitized.insert(
                     key.clone(),
                     serde_json::Value::String("redacted-field".into()),
+                );
+            }
+            "field_ref"
+                if value.as_object().is_some_and(|field_ref| {
+                    field_ref.contains_key("artifact_label")
+                        && field_ref.contains_key("metadata_key")
+                }) =>
+            {
+                sanitized.insert(
+                    key.clone(),
+                    serde_json::json!({
+                        "artifact_label": "redacted-artifact",
+                        "metadata_key": "redacted-field"
+                    }),
                 );
             }
             "reason" | "message" => {
@@ -1440,7 +1466,13 @@ fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::V
 fn is_allowed_review_report_status(text: &str) -> bool {
     matches!(
         text,
-        "review_required" | "reviewed" | "unsupported" | "ok" | "blocked" | "warning"
+        "review_required"
+            | "reviewed"
+            | "unsupported"
+            | "ok"
+            | "blocked"
+            | "warning"
+            | "ocr_or_visual_review_required"
     )
 }
 
@@ -1454,7 +1486,33 @@ fn is_allowed_review_report_kind(text: &str) -> bool {
 fn is_allowed_review_report_phi_type(text: &str) -> bool {
     matches!(
         text,
-        "Name" | "RecordId" | "Date" | "Location" | "Contact" | "FreeText"
+        "Name"
+            | "RecordId"
+            | "Date"
+            | "Location"
+            | "Contact"
+            | "FreeText"
+            | "name"
+            | "metadata_identifier"
+    )
+}
+
+fn is_allowed_review_report_format(text: &str) -> bool {
+    matches!(
+        text,
+        "image"
+            | "video"
+            | "audio"
+            | "fcs"
+            | "unknown"
+            | "image/jpeg"
+            | "image/png"
+            | "image/gif"
+            | "image/tiff"
+            | "application/dicom"
+            | "video/mp4"
+            | "audio/mpeg"
+            | "metadata/json"
     )
 }
 
@@ -1565,8 +1623,10 @@ impl DesktopWorkflowResponseState {
         &self,
         mode: DesktopWorkflowMode,
     ) -> Option<DesktopWorkflowReviewReportDownload> {
-        if mode != DesktopWorkflowMode::PdfBase64Review
-            || self.error.is_some()
+        if !matches!(
+            mode,
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson
+        ) || self.error.is_some()
             || self.last_success_mode != Some(mode)
         {
             return None;
@@ -1574,15 +1634,27 @@ impl DesktopWorkflowResponseState {
 
         let response = self.last_success_response.as_ref()?;
         let report = serde_json::json!({
-            "mode": "pdf_review",
+            "mode": match mode {
+                DesktopWorkflowMode::PdfBase64Review => "pdf_review",
+                DesktopWorkflowMode::MediaMetadataJson => "media_metadata_json",
+                DesktopWorkflowMode::CsvText
+                | DesktopWorkflowMode::XlsxBase64
+                | DesktopWorkflowMode::DicomBase64 => return None,
+            },
             "summary": sanitize_review_report_summary(response.get("summary")),
             "review_queue": sanitize_review_report_queue(response.get("review_queue")),
         });
-        let bytes = serde_json::to_string_pretty(&report).ok()?.into_bytes();
+        let json = serde_json::to_string_pretty(&report).ok()?;
 
         Some(DesktopWorkflowReviewReportDownload {
-            file_name: "desktop-pdf-review-report.json",
-            bytes,
+            file_name: match mode {
+                DesktopWorkflowMode::PdfBase64Review => "desktop-pdf-review-report.json",
+                DesktopWorkflowMode::MediaMetadataJson => "desktop-media-review-report.json",
+                DesktopWorkflowMode::CsvText
+                | DesktopWorkflowMode::XlsxBase64
+                | DesktopWorkflowMode::DicomBase64 => return None,
+            },
+            bytes: json.into_bytes(),
         })
     }
 
@@ -3361,6 +3433,86 @@ mod tests {
     }
 
     #[test]
+    fn media_review_report_download_exports_structured_json_without_metadata_phi() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            serde_json::json!({
+                "summary": {
+                    "total_items": 1,
+                    "metadata_only_items": 1,
+                    "visual_review_required_items": 1,
+                    "unsupported_items": 0,
+                    "review_required_candidates": 1,
+                    "artifact_count": 1,
+                    "metadata_entry_count": 2,
+                    "candidate_count": 1,
+                    "review_required_count": 1,
+                    "unsupported_payload_count": 0,
+                    "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                    "free_text_note": "MRN-12345"
+                },
+                "review_queue": [{
+                    "kind": "conservative_media",
+                    "format": "image",
+                    "status": "ocr_or_visual_review_required",
+                    "action": "review",
+                    "phi_type": "metadata_identifier",
+                    "metadata_key": "PatientName",
+                    "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                    "field_ref": {
+                        "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                        "metadata_key": "PatientName"
+                    },
+                    "source_value": "Jane Doe MRN-12345"
+                }],
+                "raw_body": {"patient": "Jane Doe"},
+                "rewritten_media_bytes_base64": "SlBFRyBCWVRFUw=="
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::MediaMetadataJson)
+            .expect("media metadata review response should produce structured report");
+
+        assert_eq!(download.file_name, "desktop-media-review-report.json");
+        let rendered = std::str::from_utf8(&download.bytes).unwrap();
+        let report: serde_json::Value = serde_json::from_str(rendered).unwrap();
+        assert_eq!(report["mode"], "media_metadata_json");
+        assert_eq!(report["summary"]["total_items"], 1);
+        assert_eq!(report["summary"]["metadata_only_items"], 1);
+        assert_eq!(report["summary"]["visual_review_required_items"], 1);
+        assert_eq!(report["summary"]["unsupported_items"], 0);
+        assert_eq!(report["summary"]["review_required_candidates"], 1);
+        assert_eq!(report["summary"]["artifact_count"], 1);
+        assert_eq!(report["summary"]["candidate_count"], 1);
+        assert_eq!(report["review_queue"][0]["kind"], "conservative_media");
+        assert_eq!(report["review_queue"][0]["format"], "image");
+        assert_eq!(
+            report["review_queue"][0]["status"],
+            "ocr_or_visual_review_required"
+        );
+        assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
+        assert_eq!(
+            report["review_queue"][0]["field_ref"]["artifact_label"],
+            "redacted-artifact"
+        );
+        assert_eq!(
+            report["review_queue"][0]["field_ref"]["metadata_key"],
+            "redacted-field"
+        );
+
+        assert!(!rendered.contains("Jane Doe"));
+        assert!(!rendered.contains("MRN-12345"));
+        assert!(!rendered.contains("PatientName"));
+        assert!(!rendered.contains("Patient-Jane-Doe"));
+        assert!(rendered.contains("field_ref"));
+        assert!(!rendered.contains("dicom.PatientName"));
+        assert!(!rendered.contains("raw_body"));
+        assert!(!rendered.contains("rewritten_media_bytes"));
+    }
+
+    #[test]
     fn pdf_review_report_download_sanitizes_review_queue_phi_fields() {
         let mut state = DesktopWorkflowResponseState::default();
         state.apply_success_json(
@@ -3545,6 +3697,20 @@ mod tests {
         state.apply_error("runtime failed");
         assert_eq!(
             state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            json!({"summary":{"total_items":1},"review_queue":[]}),
+        );
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+        state.apply_error("media runtime failed");
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::MediaMetadataJson),
             None
         );
     }
