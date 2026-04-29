@@ -40,6 +40,7 @@ fn main() {
 #[derive(Clone, PartialEq, Eq)]
 enum CliCommand {
     Status,
+    VerifyArtifacts(VerifyArtifactsArgs),
     DeidentifyCsv(DeidentifyCsvArgs),
     DeidentifyXlsx(DeidentifyXlsxArgs),
     DeidentifyDicom(DeidentifyDicomArgs),
@@ -50,6 +51,12 @@ enum CliCommand {
     VaultExport(VaultExportArgs),
     VaultImport(VaultImportArgs),
     VaultInspectArtifact(VaultInspectArtifactArgs),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct VerifyArtifactsArgs {
+    artifact_paths_json: String,
+    max_bytes: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -163,6 +170,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
     match args {
         [] => Ok(CliCommand::Status),
         [status] if status == "status" => Ok(CliCommand::Status),
+        [command, rest @ ..] if command == "verify-artifacts" => {
+            parse_verify_artifacts_args(rest).map(CliCommand::VerifyArtifacts)
+        }
         [command, rest @ ..] if command == "deidentify-csv" => {
             parse_deidentify_csv_args(rest).map(CliCommand::DeidentifyCsv)
         }
@@ -195,6 +205,53 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         _ => Err("unknown command".to_string()),
     }
+}
+
+fn parse_verify_artifacts_args(args: &[String]) -> Result<VerifyArtifactsArgs, String> {
+    let mut artifact_paths_json = None;
+    let mut max_bytes = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--artifact-paths-json" => artifact_paths_json = Some(value.clone()),
+            "--max-bytes" => max_bytes = Some(parse_positive_max_bytes(value)?),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    let artifact_paths_json =
+        artifact_paths_json.ok_or_else(|| "missing --artifact-paths-json".to_string())?;
+    parse_artifact_paths_json(&artifact_paths_json)?;
+
+    Ok(VerifyArtifactsArgs {
+        artifact_paths_json,
+        max_bytes,
+    })
+}
+
+fn parse_artifact_paths_json(artifact_paths_json: &str) -> Result<Vec<String>, String> {
+    let paths: Vec<String> = serde_json::from_str(artifact_paths_json)
+        .map_err(|err| format!("invalid artifact paths JSON: {err}"))?;
+    if paths.is_empty() || paths.iter().any(|path| path.trim().is_empty()) {
+        return Err("artifact path list must include at least one non-blank path".to_string());
+    }
+    Ok(paths)
+}
+
+fn parse_positive_max_bytes(max_bytes: &str) -> Result<u64, String> {
+    let parsed = max_bytes
+        .parse::<u64>()
+        .map_err(|_| "invalid --max-bytes".to_string())?;
+    if parsed == 0 {
+        return Err("invalid --max-bytes".to_string());
+    }
+    Ok(parsed)
 }
 
 fn parse_deidentify_csv_args(args: &[String]) -> Result<DeidentifyCsvArgs, String> {
@@ -571,6 +628,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
             println!("med-de-id CLI ready");
             Ok(())
         }
+        CliCommand::VerifyArtifacts(args) => run_verify_artifacts(args),
         CliCommand::DeidentifyCsv(args) => run_deidentify_csv(args),
         CliCommand::DeidentifyXlsx(args) => run_deidentify_xlsx(args),
         CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
@@ -582,6 +640,96 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultImport(args) => run_vault_import(args),
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
     }
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyArtifactsReport {
+    artifact_count: usize,
+    existing_count: usize,
+    missing_count: usize,
+    oversized_count: usize,
+    max_bytes: Option<u64>,
+    artifacts: Vec<VerifyArtifactEntryReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyArtifactEntryReport {
+    index: usize,
+    exists: bool,
+    byte_len: Option<u64>,
+    within_max_bytes: Option<bool>,
+}
+
+fn run_verify_artifacts(args: VerifyArtifactsArgs) -> Result<(), String> {
+    let paths = parse_artifact_paths_json(&args.artifact_paths_json)?;
+    let report = build_verify_artifacts_report(&paths, args.max_bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|err| format!("failed to render artifact verification report: {err}"))?
+    );
+    Ok(())
+}
+
+fn build_verify_artifacts_report(
+    paths: &[String],
+    max_bytes: Option<u64>,
+) -> Result<VerifyArtifactsReport, String> {
+    if paths.is_empty() || paths.iter().any(|path| path.trim().is_empty()) {
+        return Err("artifact path list must include at least one non-blank path".to_string());
+    }
+
+    let mut existing_count = 0;
+    let mut missing_count = 0;
+    let mut oversized_count = 0;
+    let mut artifacts = Vec::with_capacity(paths.len());
+
+    for (index, path) in paths.iter().enumerate() {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                existing_count += 1;
+                let byte_len = metadata.len();
+                let within_max_bytes = max_bytes.map(|limit| byte_len <= limit);
+                if within_max_bytes == Some(false) {
+                    oversized_count += 1;
+                }
+                artifacts.push(VerifyArtifactEntryReport {
+                    index,
+                    exists: true,
+                    byte_len: Some(byte_len),
+                    within_max_bytes,
+                });
+            }
+            Ok(_) => {
+                missing_count += 1;
+                artifacts.push(VerifyArtifactEntryReport {
+                    index,
+                    exists: false,
+                    byte_len: None,
+                    within_max_bytes: None,
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing_count += 1;
+                artifacts.push(VerifyArtifactEntryReport {
+                    index,
+                    exists: false,
+                    byte_len: None,
+                    within_max_bytes: max_bytes.map(|_| false),
+                });
+            }
+            Err(error) => return Err(format!("failed to inspect artifact metadata: {error}")),
+        }
+    }
+
+    Ok(VerifyArtifactsReport {
+        artifact_count: paths.len(),
+        existing_count,
+        missing_count,
+        oversized_count,
+        max_bytes,
+        artifacts,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -1104,7 +1252,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]
@@ -1112,6 +1260,140 @@ mod tests {
     use super::*;
     use mdid_domain::MappingScope;
     use mdid_vault::NewMappingRecord;
+
+    #[test]
+    fn parses_verify_artifacts_command_without_requiring_debug() {
+        let command = parse_command(&[
+            "verify-artifacts".to_string(),
+            "--artifact-paths-json".to_string(),
+            "[\"/tmp/a.csv\",\"/tmp/b.json\"]".to_string(),
+            "--max-bytes".to_string(),
+            "1024".to_string(),
+        ])
+        .expect("verify artifacts command should parse");
+
+        match command {
+            CliCommand::VerifyArtifacts(args) => {
+                assert_eq!(args.artifact_paths_json, "[\"/tmp/a.csv\",\"/tmp/b.json\"]");
+                assert_eq!(args.max_bytes, Some(1024));
+            }
+            _ => panic!("expected VerifyArtifacts command"),
+        }
+    }
+
+    #[test]
+    fn verify_artifacts_report_checks_metadata_without_printing_phi_paths_or_contents() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let phi_path = temp_dir.path().join("Jane-Doe-MRN-123-output.csv");
+        std::fs::write(&phi_path, "name\nJane Doe\n").expect("write fixture");
+
+        let report =
+            build_verify_artifacts_report(&[phi_path.to_string_lossy().to_string()], Some(1024))
+                .expect("report");
+        let json = serde_json::to_string(&report).expect("json");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 1);
+        assert_eq!(report.oversized_count, 0);
+        assert_eq!(report.missing_count, 0);
+        assert!(!json.contains("Jane"));
+        assert!(!json.contains("MRN"));
+        assert!(!json.contains("name"));
+    }
+
+    #[test]
+    fn verify_artifacts_report_treats_directory_as_missing_without_printing_phi_name() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let phi_dir = temp_dir.path().join("Jane-Doe-MRN-123-artifact-dir");
+        std::fs::create_dir(&phi_dir).expect("create directory fixture");
+
+        let report =
+            build_verify_artifacts_report(&[phi_dir.to_string_lossy().to_string()], Some(1024))
+                .expect("report");
+        let json = serde_json::to_string(&report).expect("json");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 0);
+        assert_eq!(report.missing_count, 1);
+        assert_eq!(report.oversized_count, 0);
+        assert_eq!(report.artifacts[0].index, 0);
+        assert!(!report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, None);
+        assert_eq!(report.artifacts[0].within_max_bytes, None);
+        assert!(!json.contains("Jane"));
+        assert!(!json.contains("MRN"));
+        assert!(!json.contains("artifact-dir"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_artifacts_report_does_not_follow_symlinked_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let target_path = temp_dir.path().join("target.bin");
+        let symlink_path = temp_dir.path().join("artifact-link.bin");
+        std::fs::write(&target_path, b"abcd").expect("write target fixture");
+        std::os::unix::fs::symlink(&target_path, &symlink_path).expect("create symlink fixture");
+
+        let report = build_verify_artifacts_report(
+            &[symlink_path.to_string_lossy().to_string()],
+            Some(1024),
+        )
+        .expect("report");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 0);
+        assert_eq!(report.missing_count, 1);
+        assert_eq!(report.oversized_count, 0);
+        assert!(!report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, None);
+        assert_eq!(report.artifacts[0].within_max_bytes, None);
+    }
+
+    #[test]
+    fn verify_artifacts_report_counts_missing_file_as_missing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let missing_path = temp_dir.path().join("missing-output.csv");
+
+        let report = build_verify_artifacts_report(
+            &[missing_path.to_string_lossy().to_string()],
+            Some(1024),
+        )
+        .expect("report");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 0);
+        assert_eq!(report.missing_count, 1);
+        assert_eq!(report.oversized_count, 0);
+        assert!(!report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, None);
+        assert_eq!(report.artifacts[0].within_max_bytes, Some(false));
+    }
+
+    #[test]
+    fn verify_artifacts_report_counts_oversized_file_as_existing_and_oversized() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let artifact_path = temp_dir.path().join("artifact.bin");
+        std::fs::write(&artifact_path, b"abcd").expect("write fixture");
+
+        let report =
+            build_verify_artifacts_report(&[artifact_path.to_string_lossy().to_string()], Some(3))
+                .expect("report");
+
+        assert_eq!(report.artifact_count, 1);
+        assert_eq!(report.existing_count, 1);
+        assert_eq!(report.missing_count, 0);
+        assert_eq!(report.oversized_count, 1);
+        assert!(report.artifacts[0].exists);
+        assert_eq!(report.artifacts[0].byte_len, Some(4));
+        assert_eq!(report.artifacts[0].within_max_bytes, Some(false));
+    }
+
+    #[test]
+    fn verify_artifacts_rejects_empty_path_list_and_non_positive_max_bytes() {
+        assert!(parse_artifact_paths_json("[]").is_err());
+        assert!(parse_positive_max_bytes("0").is_err());
+        assert!(parse_positive_max_bytes("not-a-number").is_err());
+    }
 
     #[test]
     fn parses_deidentify_csv_command_without_requiring_debug() {
