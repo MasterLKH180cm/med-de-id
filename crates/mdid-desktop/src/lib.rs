@@ -1325,70 +1325,109 @@ fn sanitize_review_report_queue(value: Option<&serde_json::Value>) -> serde_json
         Some(serde_json::Value::Array(items)) => serde_json::Value::Array(
             items
                 .iter()
-                .map(sanitize_review_report_value)
+                .map(sanitize_review_report_queue_item)
                 .collect::<Vec<_>>(),
         ),
         _ => serde_json::Value::Null,
     }
 }
 
-fn sanitize_review_report_value(value: &serde_json::Value) -> serde_json::Value {
+fn sanitize_review_report_summary(value: Option<&serde_json::Value>) -> serde_json::Value {
+    value.map_or(
+        serde_json::Value::Null,
+        sanitize_review_report_summary_value,
+    )
+}
+
+fn sanitize_review_report_summary_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(items) => serde_json::Value::Array(
             items
                 .iter()
-                .map(sanitize_review_report_value)
+                .map(sanitize_review_report_summary_value)
                 .collect::<Vec<_>>(),
         ),
         serde_json::Value::Object(object) => {
             let mut sanitized = serde_json::Map::new();
             for (key, value) in object {
-                if is_safe_review_report_key(key) {
-                    sanitized.insert(key.clone(), sanitize_review_report_value(value));
+                if let Some(value) = sanitize_review_report_summary_field(value) {
+                    sanitized.insert(key.clone(), value);
                 }
             }
             serde_json::Value::Object(sanitized)
         }
-        serde_json::Value::Null
-        | serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::String(_) => value.clone(),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            value.clone()
+        }
+        serde_json::Value::String(text) => {
+            if is_ascii_enum_token(text) {
+                value.clone()
+            } else {
+                serde_json::Value::Null
+            }
+        }
     }
 }
 
-fn is_safe_review_report_key(key: &str) -> bool {
-    let normalized = key.to_ascii_lowercase();
-    let blocked_fragments = [
-        "source_text",
-        "raw_text",
-        "text",
-        "value",
-        "metadata",
-        "bytes",
-        "base64",
-        "debug",
-        "path",
-    ];
-    if blocked_fragments
-        .iter()
-        .any(|fragment| normalized.contains(fragment))
-    {
-        return false;
+fn sanitize_review_report_summary_field(value: &serde_json::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            Some(value.clone())
+        }
+        serde_json::Value::String(text) if is_ascii_enum_token(text) => Some(value.clone()),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            Some(sanitize_review_report_summary_value(value))
+        }
+        serde_json::Value::String(_) => None,
     }
+}
 
-    matches!(
-        normalized.as_str(),
-        "page"
-            | "field"
-            | "reason"
-            | "status"
-            | "kind"
-            | "message"
-            | "phi_type"
-            | "action"
-            | "confidence"
-            | "requires_review"
-    )
+fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(object) = value else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+
+    let mut sanitized = serde_json::Map::new();
+    for (key, value) in object {
+        match key.as_str() {
+            "page" if value.as_u64().is_some() => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "confidence" if value.is_number() => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "requires_review" if value.is_boolean() => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "status" | "kind" | "phi_type" | "action"
+                if value.as_str().is_some_and(is_ascii_enum_token) =>
+            {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "field" => {
+                sanitized.insert(
+                    key.clone(),
+                    serde_json::Value::String("redacted-field".into()),
+                );
+            }
+            "reason" | "message" => {
+                sanitized.insert(
+                    key.clone(),
+                    serde_json::Value::String("redacted-review-note".into()),
+                );
+            }
+            _ => {}
+        }
+    }
+    serde_json::Value::Object(sanitized)
+}
+
+fn is_ascii_enum_token(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1504,7 +1543,7 @@ impl DesktopWorkflowResponseState {
         let response = self.last_success_response.as_ref()?;
         let report = serde_json::json!({
             "mode": "pdf_review",
-            "summary": response.get("summary").cloned().unwrap_or(serde_json::Value::Null),
+            "summary": sanitize_review_report_summary(response.get("summary")),
             "review_queue": sanitize_review_report_queue(response.get("review_queue")),
         });
         let bytes = serde_json::to_string_pretty(&report).ok()?.into_bytes();
@@ -3282,7 +3321,7 @@ mod tests {
         );
         assert_eq!(
             report["review_queue"],
-            json!([{"page": 1, "reason": "text-layer review"}])
+            json!([{"page": 1, "reason": "redacted-review-note"}])
         );
         assert!(report.get("rewritten_pdf_bytes_base64").is_none());
         assert!(report.get("debug_raw_text").is_none());
@@ -3298,8 +3337,9 @@ mod tests {
                 "summary": {"pages": 1, "ocr_required": true},
                 "review_queue": [{
                     "page": 1,
-                    "field": "patient_name",
-                    "reason": "possible name",
+                    "field": "Alice Patient name field",
+                    "reason": "possible Alice Patient DOB 1/2/1934",
+                    "message": "call Alice Patient at 555-1212",
                     "status": "requires_review",
                     "source_text": "Alice Patient",
                     "raw_text": "Alice Patient DOB 1/2/1934",
@@ -3318,6 +3358,7 @@ mod tests {
 
         let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
         assert!(!text.contains("Alice Patient"));
+        assert!(!text.contains("555-1212"));
         assert!(!text.contains("source_text"));
         assert!(!text.contains("raw_text"));
         assert!(!text.contains("value"));
@@ -3327,11 +3368,51 @@ mod tests {
         assert_eq!(
             report["review_queue"],
             json!([{
-                "field": "patient_name",
+                "field": "redacted-field",
+                "message": "redacted-review-note",
                 "page": 1,
-                "reason": "possible name",
+                "reason": "redacted-review-note",
                 "status": "requires_review"
             }])
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_download_redacts_summary_free_text() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {
+                    "pages": 2,
+                    "ocr_required": false,
+                    "status": "complete",
+                    "note": "Alice Patient reviewed on 1/2/1934",
+                    "source": "Alice Patient intake.pdf",
+                    "path": "/tmp/Alice Patient intake.pdf",
+                    "nested": {"count": 1, "note": "Alice Patient nested note"}
+                },
+                "review_queue": [],
+                "rewritten_pdf_bytes_base64": null
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        assert!(!text.contains("Alice Patient"));
+        assert!(!text.contains("intake.pdf"));
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(
+            report["summary"],
+            json!({
+                "nested": {"count": 1},
+                "ocr_required": false,
+                "pages": 2,
+                "status": "complete"
+            })
         );
     }
 
