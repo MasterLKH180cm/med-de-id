@@ -1,13 +1,27 @@
 use mdid_desktop::{
+    write_portable_artifact_json, DesktopFileImportPayload, DesktopFileImportTarget,
     DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
     DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
-    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseState, DesktopWorkflowMode,
-    DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseMode,
+    DesktopVaultResponseState, DesktopWorkflowMode, DesktopWorkflowRequestState,
+    DesktopWorkflowResponseState,
 };
+use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 type RuntimeSubmissionResult = Result<serde_json::Value, DesktopRuntimeSubmitError>;
+
+const DROPPED_FILE_READ_ERROR: &str = "file import failed: unable to read dropped file";
+
+fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> {
+    let metadata = std::fs::metadata(path).map_err(|_| DROPPED_FILE_READ_ERROR)?;
+    if metadata.len() > mdid_desktop::DESKTOP_FILE_IMPORT_MAX_BYTES as u64 {
+        return Err("file import failed: FileTooLarge");
+    }
+
+    std::fs::read(path).map_err(|_| DROPPED_FILE_READ_ERROR)
+}
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -18,7 +32,6 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Default)]
 struct DesktopApp {
     request_state: DesktopWorkflowRequestState,
     vault_request_state: DesktopVaultRequestState,
@@ -28,6 +41,25 @@ struct DesktopApp {
     vault_response_state: DesktopVaultResponseState,
     runtime_submission_receiver: Option<Receiver<RuntimeSubmissionResult>>,
     runtime_submission_mode: Option<DesktopRuntimeSubmissionMode>,
+    portable_artifact_save_path: String,
+    portable_artifact_save_status: String,
+}
+
+impl Default for DesktopApp {
+    fn default() -> Self {
+        Self {
+            request_state: DesktopWorkflowRequestState::default(),
+            vault_request_state: DesktopVaultRequestState::default(),
+            portable_request_state: DesktopPortableRequestState::default(),
+            runtime_settings: DesktopRuntimeSettings::default(),
+            response_state: DesktopWorkflowResponseState::default(),
+            vault_response_state: DesktopVaultResponseState::default(),
+            runtime_submission_receiver: None,
+            runtime_submission_mode: None,
+            portable_artifact_save_path: "desktop-portable-artifact.mdid-portable.json".to_string(),
+            portable_artifact_save_status: String::new(),
+        }
+    }
 }
 
 impl DesktopApp {
@@ -86,6 +118,67 @@ impl DesktopApp {
             }
         }
     }
+    fn apply_file_import_target(&mut self, imported: DesktopFileImportTarget) {
+        match imported {
+            DesktopFileImportTarget::Workflow(payload) => {
+                self.request_state.apply_imported_file(payload);
+            }
+            DesktopFileImportTarget::PortableArtifactInspect(payload) => {
+                self.portable_request_state.mode = payload.mode;
+                self.portable_request_state.artifact_json = payload.artifact_json;
+            }
+        }
+    }
+
+    fn save_portable_artifact_response(&mut self) {
+        match write_portable_artifact_json(
+            &self.vault_response_state,
+            self.portable_artifact_save_path.trim(),
+        ) {
+            Ok(_) => {
+                self.portable_artifact_save_status =
+                    "Portable artifact JSON saved; encrypted contents only.".to_string();
+            }
+            Err(error) => {
+                self.portable_artifact_save_status = error.to_string();
+            }
+        }
+    }
+
+    fn import_dropped_files(&mut self, ctx: &egui::Context) {
+        let files = ctx.input(|input| input.raw.dropped_files.clone());
+        for file in files {
+            let source_name = file
+                .path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+                .unwrap_or(file.name);
+            let bytes = if let Some(bytes) = file.bytes {
+                bytes.to_vec()
+            } else if let Some(path) = file.path {
+                match read_dropped_file_path_bounded(&path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.response_state.apply_error(error.to_string());
+                        continue;
+                    }
+                }
+            } else {
+                self.response_state
+                    .apply_error("file import failed: no file bytes available".to_string());
+                continue;
+            };
+
+            match DesktopFileImportPayload::from_bytes_target(source_name, &bytes) {
+                Ok(imported) => self.apply_file_import_target(imported),
+                Err(error) => self
+                    .response_state
+                    .apply_error(format!("file import failed: {error:?}")),
+            }
+        }
+    }
     fn start_runtime_submission(
         &mut self,
         mode: DesktopRuntimeSubmissionMode,
@@ -124,6 +217,7 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_runtime_submission();
+        self.import_dropped_files(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("med-de-id desktop workstation");
             ui.label("Bounded sensitive-workstation request preparation for local runtime routes.");
@@ -238,6 +332,9 @@ impl eframe::App for DesktopApp {
                     let actor = self.vault_request_state.audit_actor.get_or_insert_with(String::new);
                     ui.label("Audit actor filter");
                     ui.text_edit_singleline(actor);
+                    let limit = self.vault_request_state.audit_limit.get_or_insert_with(String::new);
+                    ui.label("Audit limit (optional)");
+                    ui.text_edit_singleline(limit);
                 }
             }
             if ui
@@ -343,6 +440,20 @@ impl eframe::App for DesktopApp {
             if !self.vault_response_state.artifact_notice.is_empty() {
                 ui.label(&self.vault_response_state.artifact_notice);
             }
+            if self
+                .vault_response_state
+                .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)
+                .is_ok()
+            {
+                ui.label("Save portable artifact JSON");
+                ui.text_edit_singleline(&mut self.portable_artifact_save_path);
+                if ui.button("Save portable artifact JSON").clicked() {
+                    self.save_portable_artifact_response();
+                }
+                if !self.portable_artifact_save_status.is_empty() {
+                    ui.label(&self.portable_artifact_save_status);
+                }
+            }
             ui.separator();
             ui.heading("Runtime-shaped response workbench");
             ui.label(&self.response_state.banner);
@@ -398,6 +509,86 @@ mod tests {
             runtime_submission_mode: Some(mode),
             ..DesktopApp::default()
         }
+    }
+
+    #[test]
+    fn app_save_portable_artifact_writes_artifact_json_without_sensitive_runtime_envelope() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-portable-artifact-save-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("desktop-export.mdid-portable.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            mdid_desktop::DesktopVaultResponseMode::VaultExport,
+            &serde_json::json!({
+                "artifact": {"version": 1, "ciphertext": "encrypted-payload"},
+                "audit_event": {"detail": "exported Alice Example"},
+                "vault_path": "/secret/Alice.vault"
+            }),
+        );
+        app.portable_artifact_save_path = path.to_string_lossy().to_string();
+
+        app.save_portable_artifact_response();
+
+        let saved = std::fs::read_to_string(&path).expect("artifact saved");
+        assert!(saved.contains("encrypted-payload"));
+        assert!(!saved.contains("Alice Example"));
+        assert!(!saved.contains("/secret"));
+        assert_eq!(
+            app.portable_artifact_save_status,
+            "Portable artifact JSON saved; encrypted contents only."
+        );
+    }
+
+    #[test]
+    fn path_backed_file_import_rejects_large_file_before_read() {
+        let path = std::env::temp_dir().join(format!(
+            "mdid-large-dropped-file-{}.csv",
+            uuid::Uuid::new_v4()
+        ));
+        let file = std::fs::File::create(&path).expect("create temp dropped file");
+        file.set_len((mdid_desktop::DESKTOP_FILE_IMPORT_MAX_BYTES + 1) as u64)
+            .expect("size temp dropped file");
+
+        let error = read_dropped_file_path_bounded(&path).expect_err("large file rejected");
+
+        assert_eq!(error, "file import failed: FileTooLarge");
+        std::fs::remove_file(path).expect("remove temp dropped file");
+    }
+
+    #[test]
+    fn path_backed_file_import_read_error_is_phi_safe() {
+        let path = std::env::temp_dir().join("patient-jane-doe-mrn-12345-missing-dropped-file.csv");
+
+        let error = read_dropped_file_path_bounded(&path).expect_err("missing file rejected");
+
+        assert_eq!(error, "file import failed: unable to read dropped file");
+        assert!(!error.contains(path.to_string_lossy().as_ref()));
+        assert!(!error.contains("jane-doe"));
+        assert!(!error.contains("12345"));
+    }
+
+    #[test]
+    fn app_file_import_target_populates_portable_artifact_inspect_state() {
+        let artifact_json = r#"{"artifact":{"ciphertext":"secret"}}"#;
+        let imported = mdid_desktop::DesktopFileImportPayload::from_bytes_target(
+            "mdid-browser-portable-artifact.json",
+            artifact_json.as_bytes(),
+        )
+        .expect("portable artifact import target");
+        let mut app = DesktopApp::default();
+
+        app.apply_file_import_target(imported);
+
+        assert_eq!(
+            app.portable_request_state.mode,
+            DesktopPortableMode::InspectArtifact
+        );
+        assert_eq!(app.portable_request_state.artifact_json, artifact_json);
+        assert_eq!(app.request_state.mode, DesktopWorkflowMode::CsvText);
+        assert!(app.request_state.payload.is_empty());
     }
 
     #[test]

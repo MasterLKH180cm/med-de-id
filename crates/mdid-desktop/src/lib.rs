@@ -17,6 +17,41 @@ impl std::fmt::Debug for DesktopFileImportPayload {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub enum DesktopFileImportTarget {
+    Workflow(DesktopFileImportPayload),
+    PortableArtifactInspect(DesktopPortableFileImportPayload),
+}
+
+impl std::fmt::Debug for DesktopFileImportTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Workflow(payload) => f.debug_tuple("Workflow").field(payload).finish(),
+            Self::PortableArtifactInspect(payload) => f
+                .debug_tuple("PortableArtifactInspect")
+                .field(payload)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopPortableFileImportPayload {
+    pub mode: DesktopPortableMode,
+    pub artifact_json: String,
+    pub source_name: String,
+}
+
+impl std::fmt::Debug for DesktopPortableFileImportPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopPortableFileImportPayload")
+            .field("mode", &self.mode)
+            .field("artifact_json", &"<redacted>")
+            .field("source_name", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopFileImportError {
     UnsupportedFileType,
@@ -25,6 +60,30 @@ pub enum DesktopFileImportError {
 }
 
 impl DesktopFileImportPayload {
+    pub fn from_bytes_target(
+        source_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<DesktopFileImportTarget, DesktopFileImportError> {
+        let source_name = source_name.into();
+        if is_portable_artifact_json_filename(&source_name) {
+            if bytes.len() > DESKTOP_FILE_IMPORT_MAX_BYTES {
+                return Err(DesktopFileImportError::FileTooLarge);
+            }
+            let artifact_json = std::str::from_utf8(bytes)
+                .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
+                .to_string();
+            return Ok(DesktopFileImportTarget::PortableArtifactInspect(
+                DesktopPortableFileImportPayload {
+                    mode: DesktopPortableMode::InspectArtifact,
+                    artifact_json,
+                    source_name,
+                },
+            ));
+        }
+
+        Self::from_bytes(source_name, bytes).map(DesktopFileImportTarget::Workflow)
+    }
+
     pub fn from_bytes(
         source_name: impl Into<String>,
         bytes: &[u8],
@@ -34,6 +93,9 @@ impl DesktopFileImportPayload {
         }
 
         let source_name = source_name.into();
+        if is_portable_artifact_json_filename(&source_name) {
+            return Err(DesktopFileImportError::UnsupportedFileType);
+        }
         let extension = source_name
             .rsplit_once('.')
             .map(|(_, extension)| extension.to_ascii_lowercase())
@@ -72,6 +134,18 @@ impl DesktopFileImportPayload {
             _ => Err(DesktopFileImportError::UnsupportedFileType),
         }
     }
+}
+
+fn is_portable_artifact_json_filename(source_name: &str) -> bool {
+    let filename = source_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(source_name)
+        .to_ascii_lowercase();
+
+    filename == "mdid-browser-portable-artifact.json"
+        || filename.ends_with(".mdid-portable.json")
+        || filename.ends_with("-mdid-portable.json")
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
@@ -144,10 +218,10 @@ impl DesktopWorkflowMode {
 
     pub fn disclosure(self) -> &'static str {
         match self {
-            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; no generalized workflow orchestrator is included.",
-            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; no generalized workflow orchestrator is included.",
-            Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; no generalized workflow orchestrator and no OCR/PDF rewrite are included.",
-            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; no generalized workflow orchestrator is included.",
+            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; it stays limited to this local de-identification request surface.",
+            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it stays limited to this local de-identification request surface.",
+            Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
+            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; it stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
         }
     }
@@ -175,7 +249,7 @@ pub struct DesktopWorkflowRequestState {
     pub source_name: String,
 }
 
-pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, and does not add controller, agent, or orchestration behavior.";
+pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, or add unrelated background workflow behavior.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopPortableMode {
@@ -201,9 +275,9 @@ impl DesktopPortableMode {
 
     pub fn disclosure(self) -> &'static str {
         match self {
-            Self::VaultExport => "bounded desktop portable export request preparation for the existing local /vault/export runtime route; no generalized workflow orchestration behavior is included.",
-            Self::InspectArtifact => "bounded desktop portable artifact inspection request preparation for the existing local /portable-artifacts/inspect runtime route; no generalized workflow orchestration behavior is included.",
-            Self::ImportArtifact => "bounded desktop portable artifact import request preparation for the existing local /portable-artifacts/import runtime route; no generalized workflow orchestration behavior is included.",
+            Self::VaultExport => "bounded desktop portable export request preparation for the existing local /vault/export runtime route; no unrelated background workflow behavior is included.",
+            Self::InspectArtifact => "bounded desktop portable artifact inspection request preparation for the existing local /portable-artifacts/inspect runtime route; no unrelated background workflow behavior is included.",
+            Self::ImportArtifact => "bounded desktop portable artifact import request preparation for the existing local /portable-artifacts/import runtime route; no unrelated background workflow behavior is included.",
         }
     }
 }
@@ -445,6 +519,7 @@ pub struct DesktopVaultRequestState {
     pub requested_by: String,
     pub audit_kind: Option<String>,
     pub audit_actor: Option<String>,
+    pub audit_limit: Option<String>,
 }
 
 impl std::fmt::Debug for DesktopVaultRequestState {
@@ -459,6 +534,7 @@ impl std::fmt::Debug for DesktopVaultRequestState {
             .field("requested_by", &self.requested_by)
             .field("audit_kind", &self.audit_kind)
             .field("audit_actor", &self.audit_actor)
+            .field("audit_limit", &self.audit_limit)
             .finish()
     }
 }
@@ -475,6 +551,7 @@ impl Default for DesktopVaultRequestState {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         }
     }
 }
@@ -519,12 +596,23 @@ impl DesktopVaultRequestState {
                     "requested_by": self.requested_by.trim(),
                 })
             }
-            DesktopVaultMode::AuditEvents => serde_json::json!({
-                "vault_path": vault_path,
-                "vault_passphrase": self.vault_passphrase.clone(),
-                "kind": lowercase_optional_filter(self.audit_kind.as_deref()),
-                "actor": lowercase_optional_filter(self.audit_actor.as_deref()),
-            }),
+            DesktopVaultMode::AuditEvents => {
+                let limit = parse_optional_positive_usize(
+                    self.audit_limit.as_deref(),
+                    DesktopVaultValidationError::InvalidAuditLimit,
+                    DesktopVaultValidationError::ZeroAuditLimit,
+                )?;
+                let mut body = serde_json::json!({
+                    "vault_path": vault_path,
+                    "vault_passphrase": self.vault_passphrase.clone(),
+                    "kind": lowercase_optional_filter(self.audit_kind.as_deref()),
+                    "actor": lowercase_optional_filter(self.audit_actor.as_deref()),
+                });
+                if let Some(limit) = limit {
+                    body["limit"] = serde_json::json!(limit);
+                }
+                body
+            }
         };
 
         Ok(DesktopWorkflowRequest {
@@ -541,6 +629,23 @@ fn lowercase_optional_filter(value: Option<&str>) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+fn parse_optional_positive_usize<E>(
+    value: Option<&str>,
+    invalid: fn(String) -> E,
+    zero: E,
+) -> Result<Option<usize>, E> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|error| invalid(error.to_string()))?;
+    if parsed == 0 {
+        return Err(zero);
+    }
+    Ok(Some(parsed))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopVaultValidationError {
     BlankVaultPath,
@@ -549,6 +654,8 @@ pub enum DesktopVaultValidationError {
     BlankJustification,
     EmptyRecordIds,
     InvalidRecordIdsJson(String),
+    InvalidAuditLimit(String),
+    ZeroAuditLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,6 +685,8 @@ pub struct DesktopVaultResponseState {
     pub error: Option<String>,
     pub summary: String,
     pub artifact_notice: String,
+    last_success_mode: Option<DesktopVaultResponseMode>,
+    last_success_response: Option<serde_json::Value>,
 }
 
 impl Default for DesktopVaultResponseState {
@@ -587,9 +696,38 @@ impl Default for DesktopVaultResponseState {
             error: None,
             summary: String::new(),
             artifact_notice: String::new(),
+            last_success_mode: None,
+            last_success_response: None,
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopPortableArtifactSaveError {
+    NotVaultExport,
+    MissingArtifact,
+    Io(String),
+    InvalidJson(String),
+}
+
+impl std::fmt::Display for DesktopPortableArtifactSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVaultExport => write!(
+                f,
+                "portable artifact save is only available for vault export responses"
+            ),
+            Self::MissingArtifact => write!(
+                f,
+                "vault export response did not include a portable artifact object"
+            ),
+            Self::Io(_) => write!(f, "portable artifact JSON could not be written"),
+            Self::InvalidJson(_) => write!(f, "portable artifact JSON could not be prepared"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopPortableArtifactSaveError {}
 
 impl DesktopVaultResponseState {
     pub fn apply_success(&mut self, mode: DesktopVaultResponseMode, response: &serde_json::Value) {
@@ -597,6 +735,8 @@ impl DesktopVaultResponseState {
         self.summary = vault_response_summary(mode, response);
         self.artifact_notice = vault_response_artifact_notice(response);
         self.error = None;
+        self.last_success_mode = Some(mode);
+        self.last_success_response = Some(response.clone());
     }
 
     pub fn apply_error(&mut self, mode: DesktopVaultResponseMode, message: impl AsRef<str>) {
@@ -604,6 +744,31 @@ impl DesktopVaultResponseState {
         self.error = Some(redact_desktop_vault_error(message.as_ref()));
         self.summary.clear();
         self.artifact_notice.clear();
+        self.last_success_mode = None;
+        self.last_success_response = None;
+    }
+
+    pub fn portable_artifact_download_json(
+        &self,
+        mode: DesktopVaultResponseMode,
+    ) -> Result<String, DesktopPortableArtifactSaveError> {
+        if mode != DesktopVaultResponseMode::VaultExport {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
+        if self.last_success_mode != Some(DesktopVaultResponseMode::VaultExport) {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
+        let artifact = self
+            .last_success_response
+            .as_ref()
+            .and_then(|response| response.get("artifact"))
+            .filter(|artifact| artifact.is_object())
+            .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
+
+        serde_json::to_string_pretty(artifact)
+            .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))
     }
 
     pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
@@ -615,6 +780,18 @@ impl DesktopVaultResponseState {
             "error": self.error,
         })
     }
+}
+
+pub fn write_portable_artifact_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
+    let artifact_json =
+        state.portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)?;
+    let path = path.as_ref();
+    std::fs::write(path, artifact_json)
+        .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
 }
 
 fn vault_response_banner(mode: DesktopVaultResponseMode) -> &'static str {
@@ -1245,11 +1422,79 @@ fn pretty_json_field(envelope: &serde_json::Value, field: &str) -> String {
 }
 
 #[cfg(test)]
+mod tempfile {
+    use std::path::{Path, PathBuf};
+
+    pub struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    pub fn tempdir() -> std::io::Result<TempDir> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "mdid-desktop-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path)?;
+        Ok(TempDir { path })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tempfile;
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn desktop_product_copy_avoids_scope_drift_terms() {
+        const FORBIDDEN_TERMS: [&str; 4] = ["controller", "agent", "orchestrator", "orchestration"];
+
+        let mut copy = vec![DESKTOP_VAULT_WORKBENCH_COPY];
+        copy.extend(
+            DesktopWorkflowMode::ALL
+                .iter()
+                .map(|mode| mode.disclosure()),
+        );
+        copy.extend(
+            DesktopWorkflowMode::ALL
+                .iter()
+                .map(|mode| mode.payload_hint()),
+        );
+        copy.extend(
+            DesktopPortableMode::ALL
+                .iter()
+                .map(|mode| mode.disclosure()),
+        );
+
+        for text in copy {
+            let normalized = text.to_ascii_lowercase();
+            for forbidden in FORBIDDEN_TERMS {
+                assert!(
+                    !normalized.contains(forbidden),
+                    "desktop product copy contains forbidden scope drift term {forbidden:?}: {text}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn vault_and_portable_submission_modes_map_to_phi_safe_response_modes() {
@@ -1481,9 +1726,9 @@ mod tests {
         assert!(DesktopPortableMode::VaultExport
             .disclosure()
             .contains("bounded"));
-        assert!(!DesktopPortableMode::VaultExport
+        assert!(DesktopPortableMode::VaultExport
             .disclosure()
-            .contains("controller"));
+            .contains("existing local /vault/export runtime route"));
     }
 
     #[test]
@@ -1700,6 +1945,91 @@ mod tests {
     }
 
     #[test]
+    fn vault_export_download_json_contains_only_artifact_object() {
+        let response = serde_json::json!({
+            "artifact": {"version": 1, "ciphertext": "encrypted-payload", "nonce": "safe-nonce"},
+            "record_count": 1,
+            "vault_path": "/sensitive/Alice-vault.json",
+            "vault_passphrase": "hunter2",
+            "audit_event": {"detail": "exported Alice Example MRN 123"},
+            "original_value": "Alice Example"
+        });
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(DesktopVaultResponseMode::VaultExport, &response);
+
+        let artifact_json = state
+            .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)
+            .expect("valid artifact JSON should be available");
+
+        assert!(artifact_json.contains("encrypted-payload"));
+        assert!(artifact_json.contains("safe-nonce"));
+        assert!(!artifact_json.contains("Alice Example"));
+        assert!(!artifact_json.contains("/sensitive"));
+        assert!(!artifact_json.contains("hunter2"));
+        assert!(!artifact_json.contains("audit_event"));
+        assert!(!artifact_json.contains("original_value"));
+    }
+
+    #[test]
+    fn vault_export_download_json_fails_closed_for_malformed_or_non_export_responses() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({"record_count": 3}),
+        );
+        assert_eq!(
+            state.portable_artifact_download_json(DesktopVaultResponseMode::InspectArtifact),
+            Err(DesktopPortableArtifactSaveError::NotVaultExport)
+        );
+
+        let mut inspect_state_with_artifact = DesktopVaultResponseState::default();
+        inspect_state_with_artifact.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({"artifact": {"version": 1, "ciphertext": "inspect-payload"}}),
+        );
+        assert_eq!(
+            inspect_state_with_artifact
+                .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport),
+            Err(DesktopPortableArtifactSaveError::NotVaultExport)
+        );
+
+        let mut export_state = DesktopVaultResponseState::default();
+        export_state.apply_success(
+            DesktopVaultResponseMode::VaultExport,
+            &serde_json::json!({"artifact": "not an object"}),
+        );
+        assert_eq!(
+            export_state.portable_artifact_download_json(DesktopVaultResponseMode::VaultExport),
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        );
+    }
+
+    #[test]
+    fn write_portable_artifact_json_writes_pretty_artifact_without_sensitive_runtime_envelope() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("export.mdid-portable.json");
+        let response = serde_json::json!({
+            "artifact": {"version": 1, "ciphertext": "encrypted-payload"},
+            "audit_event": {"detail": "patient Alice handoff"},
+            "vault_path": "/secret/patient.vault"
+        });
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(DesktopVaultResponseMode::VaultExport, &response);
+
+        let written = write_portable_artifact_json(&state, &path).expect("artifact write succeeds");
+        let persisted = std::fs::read_to_string(&path).expect("artifact file exists");
+
+        assert_eq!(written, path);
+        assert_eq!(
+            persisted,
+            "{\n  \"ciphertext\": \"encrypted-payload\",\n  \"version\": 1\n}"
+        );
+        assert!(!persisted.contains("Alice"));
+        assert!(!persisted.contains("/secret"));
+        assert!(!persisted.contains("audit_event"));
+    }
+
+    #[test]
     fn vault_response_state_renders_decode_summary_without_decoded_values() {
         let mut state = DesktopVaultResponseState::default();
         let response = serde_json::json!({
@@ -1832,6 +2162,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         };
 
         let request = state
@@ -1865,6 +2196,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: Some("Decode".to_string()),
             audit_actor: Some("Desktop".to_string()),
+            audit_limit: None,
         };
 
         let request = state
@@ -1880,6 +2212,73 @@ mod tests {
         assert_eq!(request.body["kind"], "decode");
         assert_eq!(request.body["actor"], "desktop");
         assert!(request.body.get("record_ids").is_none());
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_includes_optional_positive_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some(" 25 ".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("audit request with positive limit should build");
+
+        assert_eq!(request.route, "/vault/audit/events");
+        assert_eq!(request.body["limit"], 25);
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_omits_blank_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("   ".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("audit request with blank limit should build");
+
+        assert!(request.body.get("limit").is_none());
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_rejects_invalid_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("not-a-number".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        assert!(matches!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::InvalidAuditLimit(_))
+        ));
+    }
+
+    #[test]
+    fn desktop_vault_audit_request_rejects_zero_limit() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("0".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        assert_eq!(
+            state.try_build_request(),
+            Err(DesktopVaultValidationError::ZeroAuditLimit)
+        );
     }
 
     #[test]
@@ -1907,6 +2306,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         };
 
         let request = state
@@ -1966,6 +2366,7 @@ mod tests {
             requested_by: "desktop".to_string(),
             audit_kind: None,
             audit_actor: None,
+            audit_limit: None,
         };
 
         assert_eq!(
@@ -1978,8 +2379,7 @@ mod tests {
     fn desktop_vault_workbench_copy_is_bounded_and_non_orchestrating() {
         assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("existing localhost runtime vault routes"));
         assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("does not persist passphrases"));
-        assert!(DESKTOP_VAULT_WORKBENCH_COPY
-            .contains("does not add controller, agent, or orchestration behavior"));
+        assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("unrelated background workflow behavior"));
     }
 
     #[test]
@@ -2044,8 +2444,90 @@ mod tests {
     }
 
     #[test]
+    fn portable_artifact_json_file_import_targets_inspect_mode() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "patient-123.mdid-portable.json",
+            br#"{"version":1,"artifact":{"ciphertext":"secret-patient-ciphertext"}}"#,
+        )
+        .expect("portable artifact json imports should be accepted");
+
+        match imported {
+            DesktopFileImportTarget::PortableArtifactInspect(payload) => {
+                assert_eq!(payload.mode, DesktopPortableMode::InspectArtifact);
+                assert_eq!(
+                    payload.artifact_json,
+                    r#"{"version":1,"artifact":{"ciphertext":"secret-patient-ciphertext"}}"#
+                );
+                assert_eq!(payload.source_name, "patient-123.mdid-portable.json");
+            }
+            other => panic!("expected portable inspect import target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exact_browser_portable_artifact_filename_targets_inspect_mode() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "mdid-browser-portable-artifact.json",
+            br#"{"artifact":{"ciphertext":"secret"}}"#,
+        )
+        .expect("browser portable artifact export names should be accepted");
+
+        assert!(matches!(
+            imported,
+            DesktopFileImportTarget::PortableArtifactInspect(_)
+        ));
+    }
+
+    #[test]
+    fn generic_json_file_import_still_uses_media_metadata_mode() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "local-media-metadata.json",
+            b"{\"artifact_label\":\"scan.png\",\"format\":\"image\",\"metadata\":[]}",
+        )
+        .expect("generic json metadata imports should still be accepted");
+
+        match imported {
+            DesktopFileImportTarget::Workflow(payload) => {
+                assert_eq!(payload.mode, DesktopWorkflowMode::MediaMetadataJson);
+                assert_eq!(
+                    payload.source_name.as_deref(),
+                    Some("local-media-metadata.json")
+                );
+            }
+            other => panic!("expected workflow import target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn portable_artifact_file_import_debug_redacts_artifact_contents() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "patient-123-mrn-456-m did-portable.json".replace(" ", ""),
+            br#"{"artifact":{"ciphertext":"secret-patient-ciphertext"}}"#,
+        )
+        .expect("portable artifact json imports should be accepted");
+
+        let debug = format!("{imported:?}");
+
+        assert!(debug.contains("PortableArtifactInspect"));
+        assert!(!debug.contains("secret-patient-ciphertext"));
+        assert!(!debug.contains("patient-123"));
+        assert!(!debug.contains("mrn-456"));
+    }
+
+    #[test]
     fn desktop_file_import_rejects_unsupported_file_type() {
         let error = DesktopFileImportPayload::from_bytes("notes.txt", b"name\nAlice").unwrap_err();
+
+        assert_eq!(error, DesktopFileImportError::UnsupportedFileType);
+    }
+
+    #[test]
+    fn workflow_only_file_import_rejects_portable_artifact_json_names() {
+        let error = DesktopFileImportPayload::from_bytes(
+            "patient-123.mdid-portable.json",
+            br#"{"artifact":{"ciphertext":"secret"}}"#,
+        )
+        .unwrap_err();
 
         assert_eq!(error, DesktopFileImportError::UnsupportedFileType);
     }
@@ -2142,7 +2624,7 @@ mod tests {
 
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
     }
 
     #[test]
@@ -2202,7 +2684,7 @@ mod tests {
 
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
         assert!(disclosure.contains("no OCR/PDF rewrite"));
     }
 
@@ -2231,7 +2713,7 @@ mod tests {
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
         assert!(disclosure.contains("tag-level DICOM de-identification"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
     }
 
     #[test]
