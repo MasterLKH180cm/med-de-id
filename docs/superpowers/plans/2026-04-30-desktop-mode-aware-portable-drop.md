@@ -169,5 +169,5 @@ git commit -m "docs: truth-sync desktop portable drop handoff"
 ## Self-Review
 
 - Spec coverage: Task 1 implements and verifies mode-aware desktop portable artifact JSON drops; Task 2 updates completion status and verification evidence.
-- Placeholder scan: no TBD/TODO/implement-later placeholders remain.
+- Placeholder scan: no unresolved placeholder markers remain.
 - Type consistency: `import_file_bytes_for_current_state`, `DesktopPortableMode::ImportArtifact`, and `DesktopPortableFileImportPayload::from_bytes_for_mode` are existing or introduced consistently.
