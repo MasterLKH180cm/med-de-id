@@ -55,12 +55,12 @@ Add this test inside the existing `#[cfg(test)] mod tests` in `crates/mdid-deskt
 
         assert_eq!(written_path, target);
         let persisted = std::fs::read_to_string(&written_path).expect("read report");
-        assert!(persisted.contains(""mode": "vault_audit""));
+        assert!(persisted.contains("\"mode\": \"vault_audit\""));
         assert!(persisted.contains("events returned: 2 / 4"));
         assert!(!persisted.contains("patient Alice"));
         assert!(!persisted.contains("C:/vaults/alice.mdid"));
         assert!(!persisted.contains("correct horse battery staple"));
-        assert!(!persisted.contains("events"));
+        assert!(!persisted.contains("\"events\""));
     }
 ```
 
