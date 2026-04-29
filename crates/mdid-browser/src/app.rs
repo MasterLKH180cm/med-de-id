@@ -1181,9 +1181,14 @@ fn parse_runtime_success(
                 .get("artifact")
                 .filter(|artifact| artifact.is_object())
                 .ok_or("Vault export response missing artifact object.".to_string())?;
-            if !artifact.get("version").is_some_and(serde_json::Value::is_number)
+            if !artifact
+                .get("salt_b64")
+                .is_some_and(serde_json::Value::is_string)
                 || !artifact
-                    .get("ciphertext")
+                    .get("nonce_b64")
+                    .is_some_and(serde_json::Value::is_string)
+                || !artifact
+                    .get("ciphertext_b64")
                     .is_some_and(serde_json::Value::is_string)
             {
                 return Err(
@@ -2095,11 +2100,14 @@ mod tests {
 
     #[test]
     fn portable_artifact_payloads_map_form_to_runtime_contract() {
-        let artifact_json = r#"{"version":1,"records":[]}"#;
+        let artifact_json = r#"{"kdf":"argon2id","verifier_b64":"dmVyaWZpZXI=","salt_b64":"c2FsdA==","nonce_b64":"bm9uY2U=","ciphertext_b64":"ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"}"#;
         let inspect =
             build_portable_artifact_inspect_request_payload(artifact_json, " portable secret ")
                 .expect("inspect payload");
-        assert_eq!(inspect["artifact"]["version"], 1);
+        assert_eq!(
+            inspect["artifact"]["ciphertext_b64"],
+            "ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"
+        );
         assert_eq!(inspect["portable_passphrase"], "portable secret");
 
         let import = build_portable_artifact_import_request_payload(
@@ -2112,7 +2120,10 @@ mod tests {
         .expect("import payload");
         assert_eq!(import["vault_path"], "/tmp/vault.json");
         assert_eq!(import["vault_passphrase"], "vault secret");
-        assert_eq!(import["artifact"]["version"], 1);
+        assert_eq!(
+            import["artifact"]["ciphertext_b64"],
+            "ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"
+        );
         assert_eq!(import["portable_passphrase"], "portable secret");
         assert_eq!(import["context"], "import for local review");
         assert_eq!(import["requested_by"], "browser");
@@ -2144,15 +2155,17 @@ mod tests {
     #[test]
     fn portable_artifact_runtime_success_hides_artifact_values_and_raw_audit_detail() {
         let export = json!({
-            "artifact": {"version": 1, "ciphertext": "bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM=", "salt": "c2FsdC1ieXRlcw==", "nonce": "bm9uY2UtYnl0ZXM="}
+            "artifact": {"kdf":"argon2id", "verifier_b64":"dmVyaWZpZXI=", "salt_b64":"c2FsdC1ieXRlcw==", "nonce_b64":"bm9uY2UtYnl0ZXM=", "ciphertext_b64":"bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM="}
         });
         let rendered_export = parse_runtime_success(InputMode::VaultExport, &export.to_string())
             .expect("export render");
-        assert!(rendered_export.summary.contains("Portable artifact created"));
+        assert!(rendered_export
+            .summary
+            .contains("Portable artifact created"));
         assert!(rendered_export
             .review_queue
             .contains("encrypted portable artifact"));
-        assert!(rendered_export.rewritten_output.contains("ciphertext"));
+        assert!(rendered_export.rewritten_output.contains("ciphertext_b64"));
         assert!(rendered_export
             .rewritten_output
             .contains("bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM="));
@@ -2187,11 +2200,11 @@ mod tests {
     fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
         let export = json!({
             "artifact": {
-                "version": 1,
-                "records": [
-                    {"record_id": "11111111-1111-1111-1111-111111111111", "token": "MDID-1"}
-                ],
-                "ciphertext": "bW9jay1hZXMtZ2NtLXBvcnRhYmxlLWFydGlmYWN0"
+                "kdf": "argon2id",
+                "verifier_b64": "dmVyaWZpZXI=",
+                "salt_b64": "c2FsdA==",
+                "nonce_b64": "bm9uY2U=",
+                "ciphertext_b64": "ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"
             }
         });
 
@@ -2199,17 +2212,16 @@ mod tests {
             .expect("valid vault export success renders artifact JSON");
 
         assert!(rendered.summary.contains("Portable artifact created"));
-        assert!(rendered.review_queue.contains("encrypted portable artifact"));
-        assert!(rendered.rewritten_output.contains("\"version\": 1"));
+        assert!(rendered
+            .review_queue
+            .contains("encrypted portable artifact"));
+        assert!(rendered.rewritten_output.contains("\"ciphertext_b64\""));
         assert!(rendered
             .rewritten_output
-            .contains("bW9jay1hZXMtZ2NtLXBvcnRhYmxlLWFydGlmYWN0"));
-        assert!(rendered
-            .rewritten_output
-            .contains("11111111-1111-1111-1111-111111111111"));
+            .contains("ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"));
         assert!(!rendered
             .summary
-            .contains("bW9jay1hZXMtZ2NtLXBvcnRhYmxlLWFydGlmYWN0"));
+            .contains("ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"));
         assert!(!rendered.review_queue.contains("MDID-1"));
     }
 
@@ -3202,7 +3214,7 @@ mod tests {
                 "code": "portable_artifact_failure",
                 "message": "failed passphrase portable secret for MRN 123 Jane Patient token TOKEN-1 at /tmp/vault.json record 11111111-1111-1111-1111-111111111111"
             },
-            "artifact": {"ciphertext": "artifact JSON secret"},
+            "artifact": {"ciphertext_b64": "artifact JSON secret"},
             "audit_event": {"detail": "audit detail with vault path"}
         })
         .to_string();
