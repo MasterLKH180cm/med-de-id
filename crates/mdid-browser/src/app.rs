@@ -19,6 +19,7 @@ enum InputMode {
     PdfBase64,
     DicomBase64,
     MediaMetadataJson,
+    VaultAuditEvents,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +55,7 @@ impl InputMode {
             "pdf-base64" => Self::PdfBase64,
             "dicom-base64" => Self::DicomBase64,
             "media-metadata-json" => Self::MediaMetadataJson,
+            "vault-audit-events" => Self::VaultAuditEvents,
             _ => Self::CsvText,
         }
     }
@@ -65,6 +67,7 @@ impl InputMode {
             Self::PdfBase64 => "pdf-base64",
             Self::DicomBase64 => "dicom-base64",
             Self::MediaMetadataJson => "media-metadata-json",
+            Self::VaultAuditEvents => "vault-audit-events",
         }
     }
 
@@ -75,6 +78,7 @@ impl InputMode {
             Self::PdfBase64 => "PDF base64",
             Self::DicomBase64 => "DICOM base64",
             Self::MediaMetadataJson => "Media metadata JSON",
+            Self::VaultAuditEvents => "Vault audit events",
         }
     }
 
@@ -85,6 +89,7 @@ impl InputMode {
             Self::PdfBase64 => "Paste base64-encoded PDF content here",
             Self::DicomBase64 => "Paste base64-encoded DICOM content here",
             Self::MediaMetadataJson => "Paste media metadata JSON here",
+            Self::VaultAuditEvents => "Vault audit request fields are rendered by the browser form",
         }
     }
 
@@ -97,6 +102,7 @@ impl InputMode {
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
             Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or workflow/controller semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
+            Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
         }
     }
 
@@ -107,6 +113,7 @@ impl InputMode {
             Self::PdfBase64 => "/pdf/deidentify",
             Self::DicomBase64 => "/dicom/deidentify",
             Self::MediaMetadataJson => "/media/conservative/deidentify",
+            Self::VaultAuditEvents => "/vault/audit/events",
         }
     }
 
@@ -129,7 +136,7 @@ impl InputMode {
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     fn browser_file_read_mode(self) -> BrowserFileReadMode {
         match self {
-            Self::CsvText | Self::MediaMetadataJson => BrowserFileReadMode::Text,
+            Self::CsvText | Self::MediaMetadataJson | Self::VaultAuditEvents => BrowserFileReadMode::Text,
             Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => {
                 BrowserFileReadMode::DataUrlBase64
             }
@@ -155,11 +162,62 @@ fn validate_browser_import_size(file_size_bytes: u64) -> Result<(), String> {
     }
 }
 
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn build_vault_audit_request_payload(
+    vault_path: &str,
+    vault_passphrase: &str,
+    kind: &str,
+    actor: &str,
+    limit: &str,
+) -> Result<serde_json::Value, String> {
+    let vault_path = vault_path.trim();
+    if vault_path.is_empty() {
+        return Err("Vault path is required before submitting.".to_string());
+    }
+
+    let vault_passphrase = vault_passphrase.trim();
+    if vault_passphrase.is_empty() {
+        return Err("Vault passphrase is required before submitting.".to_string());
+    }
+
+    let mut payload = serde_json::json!({
+        "vault_path": vault_path,
+        "vault_passphrase": vault_passphrase,
+    });
+
+    if let Some(object) = payload.as_object_mut() {
+        let kind = kind.trim();
+        if !kind.is_empty() {
+            object.insert("kind".to_string(), serde_json::json!(kind));
+        }
+
+        let actor = actor.trim();
+        if !actor.is_empty() {
+            object.insert("actor".to_string(), serde_json::json!(actor));
+        }
+
+        let limit = limit.trim();
+        if !limit.is_empty() {
+            let parsed_limit = limit
+                .parse::<usize>()
+                .map_err(|_| "Vault audit limit must be a non-negative integer.".to_string())?;
+            object.insert("limit".to_string(), serde_json::json!(parsed_limit));
+        }
+    }
+
+    Ok(payload)
+}
+
 #[derive(Clone, Eq, PartialEq)]
 struct BrowserFlowState {
     input_mode: InputMode,
     payload: String,
     source_name: String,
+    vault_path: String,
+    vault_passphrase: String,
+    vault_audit_kind: String,
+    vault_audit_actor: String,
+    vault_audit_limit: String,
     imported_file_name: Option<String>,
     field_policy_json: String,
     result_output: String,
@@ -181,6 +239,11 @@ impl fmt::Debug for BrowserFlowState {
             .field("input_mode", &self.input_mode)
             .field("payload", &"<redacted>")
             .field("source_name", &"<redacted>")
+            .field("vault_path", &"<redacted>")
+            .field("vault_passphrase", &"<redacted>")
+            .field("vault_audit_kind", &"<redacted>")
+            .field("vault_audit_actor", &"<redacted>")
+            .field("vault_audit_limit", &"<redacted>")
             .field(
                 "imported_file_name",
                 &self.imported_file_name.as_ref().map(|_| "<redacted>"),
@@ -207,6 +270,11 @@ impl Default for BrowserFlowState {
             input_mode: InputMode::CsvText,
             payload: String::new(),
             source_name: "local-review.pdf".to_string(),
+            vault_path: String::new(),
+            vault_passphrase: String::new(),
+            vault_audit_kind: String::new(),
+            vault_audit_actor: String::new(),
+            vault_audit_limit: String::new(),
             imported_file_name: None,
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
@@ -248,6 +316,7 @@ impl BrowserFlowState {
             InputMode::PdfBase64 => "mdid-browser-review-report.txt",
             InputMode::DicomBase64 => "mdid-browser-output.dcm.base64.txt",
             InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
+            InputMode::VaultAuditEvents => "mdid-browser-vault-audit-events.json",
         }
     }
 
@@ -269,6 +338,22 @@ impl BrowserFlowState {
     }
 
     fn validate_submission(&self) -> Result<RuntimeSubmitRequest, String> {
+        if self.input_mode == InputMode::VaultAuditEvents {
+            let body_json = serde_json::to_string(&build_vault_audit_request_payload(
+                &self.vault_path,
+                &self.vault_passphrase,
+                &self.vault_audit_kind,
+                &self.vault_audit_actor,
+                &self.vault_audit_limit,
+            )?)
+            .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+
+            return Ok(RuntimeSubmitRequest {
+                endpoint: self.input_mode.endpoint(),
+                body_json,
+            });
+        }
+
         if self.payload.trim().is_empty() {
             return Err(format!(
                 "{} payload is required before submitting.",
@@ -657,6 +742,9 @@ fn build_submit_request(
         InputMode::MediaMetadataJson => {
             unreachable!("Media metadata JSON requests are handled before policy parsing")
         }
+        InputMode::VaultAuditEvents => {
+            unreachable!("Vault audit events requests are handled before policy parsing")
+        }
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -718,6 +806,11 @@ fn parse_runtime_success(
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
         }
+        InputMode::VaultAuditEvents => Ok(RuntimeResponseEnvelope {
+            rewritten_output: response_body.trim().to_string(),
+            summary: "Vault audit events returned by read-only runtime endpoint.".to_string(),
+            review_queue: "No review items returned.".to_string(),
+        }),
     }
 }
 
@@ -1135,6 +1228,46 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let on_vault_path_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_path = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_passphrase_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_passphrase = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_kind_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_kind = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_actor_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_actor = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_limit_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_limit = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
     let on_file_import_change = move |event| read_browser_import_file(event, state);
 
     let export_file_name = move || state.get().suggested_export_file_name();
@@ -1226,18 +1359,46 @@ pub fn App() -> impl IntoView {
                         <option value="pdf-base64">"PDF base64"</option>
                         <option value="dicom-base64">"DICOM base64"</option>
                         <option value="media-metadata-json">"Media metadata JSON"</option>
+                        <option value="vault-audit-events">"Vault audit events"</option>
                     </select>
                 </label>
 
-                <label>
-                    "Payload"
-                    <textarea
-                        on:input=on_payload_input
-                        prop:value=move || state.get().payload
-                        placeholder=move || state.get().input_mode.payload_hint()
-                        rows="12"
-                    />
-                </label>
+                <Show when=move || state.get().input_mode != InputMode::VaultAuditEvents>
+                    <label>
+                        "Payload"
+                        <textarea
+                            on:input=on_payload_input
+                            prop:value=move || state.get().payload
+                            placeholder=move || state.get().input_mode.payload_hint()
+                            rows="12"
+                        />
+                    </label>
+                </Show>
+
+                <Show when=move || state.get().input_mode == InputMode::VaultAuditEvents>
+                    <div class="vault-audit-fields">
+                        <label>
+                            "Vault path"
+                            <input on:input=on_vault_path_input prop:value=move || state.get().vault_path type="text" />
+                        </label>
+                        <label>
+                            "Vault passphrase"
+                            <input on:input=on_vault_passphrase_input prop:value=move || state.get().vault_passphrase type="password" />
+                        </label>
+                        <label>
+                            "Kind filter (optional)"
+                            <input on:input=on_vault_kind_input prop:value=move || state.get().vault_audit_kind type="text" />
+                        </label>
+                        <label>
+                            "Actor filter (optional)"
+                            <input on:input=on_vault_actor_input prop:value=move || state.get().vault_audit_actor type="text" />
+                        </label>
+                        <label>
+                            "Limit (optional)"
+                            <input on:input=on_vault_limit_input prop:value=move || state.get().vault_audit_limit type="text" />
+                        </label>
+                    </div>
+                </Show>
 
                 <Show when=move || state.get().input_mode.disclosure_copy().is_some()>
                     <p class="input-disclosure">
@@ -1307,14 +1468,80 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_request, file_import_payload_from_data_url, format_review_queue,
-        format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
-        validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
-        RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
+        build_submit_request, build_vault_audit_request_payload, file_import_payload_from_data_url,
+        format_review_queue, format_summary, parse_runtime_error, parse_runtime_success,
+        render_runtime_response, validate_browser_import_size, BrowserFileReadMode, BrowserFlowState,
+        InputMode, RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
         MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    fn vault_audit_events_mode_uses_existing_read_only_runtime_endpoint() {
+        let mode = InputMode::from_select_value("vault-audit-events");
+
+        assert_eq!(mode, InputMode::VaultAuditEvents);
+        assert_eq!(mode.select_value(), "vault-audit-events");
+        assert_eq!(mode.endpoint(), "/vault/audit/events");
+        assert!(!mode.requires_field_policy());
+        assert!(!mode.requires_source_name());
+        assert_eq!(mode.browser_file_read_mode(), BrowserFileReadMode::Text);
+        assert!(mode
+            .disclosure_copy()
+            .expect("vault audit mode has bounded disclosure")
+            .contains("read-only"));
+    }
+
+    #[test]
+    fn vault_audit_payload_maps_text_form_to_bounded_runtime_contract() {
+        let payload = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "25",
+        )
+        .expect("valid bounded audit payload");
+
+        assert_eq!(payload["vault_path"], "/tmp/local-vault");
+        assert_eq!(payload["vault_passphrase"], "passphrase kept local");
+        assert_eq!(payload["kind"], "decode");
+        assert_eq!(payload["actor"], "browser");
+        assert_eq!(payload["limit"], 25);
+    }
+
+    #[test]
+    fn vault_audit_payload_omits_blank_optional_filters() {
+        let payload = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            " ",
+            "",
+            "",
+        )
+        .expect("blank optional filters are valid");
+
+        assert_eq!(payload["vault_path"], "/tmp/local-vault");
+        assert_eq!(payload["vault_passphrase"], "passphrase kept local");
+        assert!(payload.get("kind").is_none());
+        assert!(payload.get("actor").is_none());
+        assert!(payload.get("limit").is_none());
+    }
+
+    #[test]
+    fn vault_audit_payload_rejects_invalid_limit() {
+        let error = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "not-a-number",
+        )
+        .expect_err("invalid limit must be rejected before localhost submission");
+
+        assert!(error.contains("limit"));
+    }
 
     #[test]
     fn browser_flow_state_defaults_to_csv_shell() {
