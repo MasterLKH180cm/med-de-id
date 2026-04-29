@@ -145,6 +145,17 @@ impl DesktopApp {
         }
     }
 
+    #[allow(dead_code)]
+    fn save_workflow_output(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let download = self
+            .response_state
+            .workflow_output_download(self.request_state.mode)
+            .ok_or_else(|| {
+                "workflow output save failed: no rewritten output is available".to_string()
+            })?;
+        mdid_desktop::write_workflow_output_file(path, &download)
+    }
+
     fn import_dropped_files(&mut self, ctx: &egui::Context) {
         let files = ctx.input(|input| input.raw.dropped_files.clone());
         for file in files {
@@ -509,6 +520,35 @@ mod tests {
             runtime_submission_mode: Some(mode),
             ..DesktopApp::default()
         }
+    }
+
+    #[test]
+    fn app_save_workflow_output_writes_latest_csv_output() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-workflow-output-save-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("patient-jane-doe-mrn-12345-deidentified.csv");
+        let mut app = DesktopApp::default();
+        app.request_state.mode = DesktopWorkflowMode::CsvText;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            serde_json::json!({
+                "csv": "patient_name\n<NAME-1>\n",
+                "summary": {"encoded_fields": 1},
+                "review_queue": []
+            }),
+        );
+
+        app.save_workflow_output(&path)
+            .expect("workflow output saved");
+
+        assert_eq!(
+            std::fs::read(&path).expect("saved output readable"),
+            b"patient_name\n<NAME-1>\n"
+        );
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
     }
 
     #[test]

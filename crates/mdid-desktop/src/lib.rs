@@ -1335,6 +1335,14 @@ impl std::fmt::Debug for DesktopWorkflowOutputDownload {
     }
 }
 
+pub fn write_workflow_output_file(
+    path: impl AsRef<std::path::Path>,
+    download: &DesktopWorkflowOutputDownload,
+) -> Result<(), String> {
+    std::fs::write(path, &download.bytes)
+        .map_err(|_| "workflow output save failed: unable to write output file".to_string())
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowResponseState {
     pub banner: String,
@@ -3159,6 +3167,46 @@ mod tests {
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("patient_name"));
         assert!(!debug.contains("NAME-1"));
+    }
+
+    #[test]
+    fn write_workflow_output_file_writes_bytes_without_exposing_phi_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir
+            .path()
+            .join("patient-jane-doe-mrn-12345-deidentified.csv");
+        let download = DesktopWorkflowOutputDownload {
+            file_name: "desktop-deidentified.csv",
+            bytes: b"patient_name\n<NAME-1>\n".to_vec(),
+        };
+
+        write_workflow_output_file(&path, &download).expect("workflow output saved");
+
+        assert_eq!(
+            std::fs::read(&path).expect("saved bytes readable"),
+            b"patient_name\n<NAME-1>\n"
+        );
+    }
+
+    #[test]
+    fn write_workflow_output_file_error_is_phi_safe() {
+        let path = std::env::temp_dir()
+            .join("missing-parent-jane-doe-mrn-12345")
+            .join("output.csv");
+        let download = DesktopWorkflowOutputDownload {
+            file_name: "desktop-deidentified.csv",
+            bytes: b"patient_name\n<NAME-1>\n".to_vec(),
+        };
+
+        let error = write_workflow_output_file(&path, &download).expect_err("write fails");
+
+        assert_eq!(
+            error,
+            "workflow output save failed: unable to write output file"
+        );
+        assert!(!error.contains("jane-doe"));
+        assert!(!error.contains("12345"));
+        assert!(!error.contains(path.to_string_lossy().as_ref()));
     }
 
     #[test]
