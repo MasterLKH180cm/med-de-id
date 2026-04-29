@@ -867,7 +867,7 @@ fn vault_audit_event_report(event: &AuditEvent) -> VaultAuditEventReport {
     VaultAuditEventReport {
         id: event.id.to_string(),
         kind: event.kind.as_str().to_string(),
-        actor: event.actor.clone(),
+        actor: event.actor,
         detail: sanitized_audit_detail(event),
         recorded_at: event.recorded_at.to_rfc3339(),
     }
