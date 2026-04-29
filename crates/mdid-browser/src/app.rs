@@ -129,7 +129,7 @@ impl InputMode {
 
     fn safe_vault_report_mode_label(self) -> &'static str {
         match self {
-            Self::VaultAuditEvents => "vault_audit_events",
+            Self::VaultAuditEvents => "vault_audit",
             Self::VaultDecode => "vault_decode",
             Self::PortableArtifactInspect => "portable_artifact_inspect",
             Self::PortableArtifactImport => "portable_artifact_import",
@@ -725,7 +725,13 @@ impl BrowserFlowState {
                 InputMode::PortableArtifactImport => {
                     return format!("{stem}-portable-artifact-import.json");
                 }
-                InputMode::VaultAuditEvents | InputMode::VaultDecode | InputMode::VaultExport => {}
+                InputMode::VaultAuditEvents => {
+                    return format!("{stem}-vault-audit-events.json");
+                }
+                InputMode::VaultDecode => {
+                    return format!("{stem}-vault-decode-response.json");
+                }
+                InputMode::VaultExport => {}
             }
         }
 
@@ -2588,6 +2594,53 @@ mod tests {
         );
         assert_eq!(import_payload.mime_type, "application/json;charset=utf-8");
         assert!(import_payload.is_text);
+    }
+
+    #[test]
+    fn browser_vault_response_downloads_use_safe_source_filenames() {
+        let mut audit_state = BrowserFlowState {
+            input_mode: InputMode::VaultAuditEvents,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+        audit_state.summary = "events returned: 2 / 2".to_string();
+        audit_state.review_queue = "audit event summaries available".to_string();
+        audit_state.result_output = "safe summary".to_string();
+
+        let audit_payload = audit_state
+            .prepared_download_payload()
+            .expect("vault audit payload should be prepared");
+        assert_eq!(
+            audit_payload.file_name,
+            "clinic-vault-backup-2026-vault-audit-events.json"
+        );
+        assert_eq!(audit_payload.mime_type, "application/json;charset=utf-8");
+        let audit_json = String::from_utf8(audit_payload.bytes).expect("audit json utf8");
+        assert!(audit_json.contains("\"mode\": \"vault_audit\""));
+        assert!(audit_json.contains("events returned: 2 / 2"));
+        assert!(!audit_json.contains("safe summary"));
+
+        let decode_state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            summary: "decoded count: 1".to_string(),
+            review_queue: "decoded PHI is not included in the safe report".to_string(),
+            result_output: "Jane Doe".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let decode_payload = decode_state
+            .prepared_download_payload()
+            .expect("vault decode payload should be prepared");
+        assert_eq!(
+            decode_payload.file_name,
+            "clinic-vault-backup-2026-vault-decode-response.json"
+        );
+        assert_eq!(decode_payload.mime_type, "application/json;charset=utf-8");
+        let decode_json = String::from_utf8(decode_payload.bytes).expect("decode json utf8");
+        assert!(decode_json.contains("\"mode\": \"vault_decode\""));
+        assert!(decode_json.contains("decoded count: 1"));
+        assert!(!decode_json.contains("Jane Doe"));
     }
 
     #[test]
