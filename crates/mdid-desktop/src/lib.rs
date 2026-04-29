@@ -693,6 +693,7 @@ pub struct DesktopVaultResponseState {
     pub error: Option<String>,
     pub summary: String,
     pub artifact_notice: String,
+    rendered_mode: Option<DesktopVaultResponseMode>,
     last_success_mode: Option<DesktopVaultResponseMode>,
     last_success_response: Option<serde_json::Value>,
 }
@@ -704,6 +705,7 @@ impl Default for DesktopVaultResponseState {
             error: None,
             summary: String::new(),
             artifact_notice: String::new(),
+            rendered_mode: None,
             last_success_mode: None,
             last_success_response: None,
         }
@@ -743,6 +745,7 @@ impl DesktopVaultResponseState {
         self.summary = vault_response_summary(mode, response);
         self.artifact_notice = vault_response_artifact_notice(response);
         self.error = None;
+        self.rendered_mode = Some(mode);
         self.last_success_mode = Some(mode);
         self.last_success_response = Some(response.clone());
     }
@@ -752,8 +755,28 @@ impl DesktopVaultResponseState {
         self.error = Some(redact_desktop_vault_error(message.as_ref()));
         self.summary.clear();
         self.artifact_notice.clear();
+        self.rendered_mode = Some(mode);
         self.last_success_mode = None;
         self.last_success_response = None;
+    }
+
+    pub fn has_safe_response_report(&self) -> bool {
+        self.rendered_mode.is_some()
+            && (!self.summary.is_empty()
+                || !self.artifact_notice.is_empty()
+                || self.error.is_some())
+    }
+
+    pub fn safe_response_report_json(
+        &self,
+    ) -> Result<serde_json::Value, DesktopPortableArtifactSaveError> {
+        if !self.has_safe_response_report() {
+            return Err(DesktopPortableArtifactSaveError::MissingArtifact);
+        }
+        let mode = self
+            .rendered_mode
+            .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
+        Ok(self.safe_export_json(mode))
     }
 
     pub fn portable_artifact_download_json(
@@ -804,10 +827,9 @@ pub fn write_portable_artifact_json(
 
 pub fn write_safe_vault_response_json(
     state: &DesktopVaultResponseState,
-    mode: DesktopVaultResponseMode,
     path: impl AsRef<std::path::Path>,
 ) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
-    let report_json = serde_json::to_string_pretty(&state.safe_export_json(mode))
+    let report_json = serde_json::to_string_pretty(&state.safe_response_report_json()?)
         .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
     let path = path.as_ref();
     std::fs::write(path, report_json)
@@ -2019,9 +2041,8 @@ mod tests {
         });
         state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
 
-        let written_path =
-            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target)
-                .expect("safe vault response report should be written");
+        let written_path = write_safe_vault_response_json(&state, &target)
+            .expect("safe vault response report should be written");
 
         assert_eq!(written_path, target);
         let persisted = std::fs::read_to_string(&written_path).expect("read report");

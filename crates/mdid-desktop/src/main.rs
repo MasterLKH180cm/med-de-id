@@ -153,36 +153,17 @@ impl DesktopApp {
         }
     }
 
-    fn vault_response_report_mode(&self) -> DesktopVaultResponseMode {
-        if self.vault_response_state.banner.contains("audit") {
-            DesktopVaultResponseMode::VaultAudit
-        } else if self.vault_response_state.banner.contains("decode") {
-            DesktopVaultResponseMode::VaultDecode
-        } else {
-            DesktopRuntimeSubmissionMode::Portable(self.portable_request_state.mode)
-                .vault_response_mode()
-                .unwrap_or(DesktopVaultResponseMode::VaultExport)
-        }
-    }
-
     fn save_vault_response_report(&self, path: impl AsRef<Path>) -> Result<(), String> {
-        if self.vault_response_state.summary.is_empty()
-            && self.vault_response_state.artifact_notice.is_empty()
-            && self.vault_response_state.error.is_none()
-        {
+        if !self.vault_response_state.has_safe_response_report() {
             return Err(
                 "vault response report save failed: no safe response summary is available"
                     .to_string(),
             );
         }
 
-        write_safe_vault_response_json(
-            &self.vault_response_state,
-            self.vault_response_report_mode(),
-            path,
-        )
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        write_safe_vault_response_json(&self.vault_response_state, path)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn save_vault_response_report_response(&mut self) {
@@ -527,10 +508,7 @@ impl eframe::App for DesktopApp {
                     ui.label(&self.portable_artifact_save_status);
                 }
             }
-            if !self.vault_response_state.summary.is_empty()
-                || !self.vault_response_state.artifact_notice.is_empty()
-                || self.vault_response_state.error.is_some()
-            {
+            if self.vault_response_state.has_safe_response_report() {
                 ui.label("Save safe vault/portable response report JSON");
                 ui.text_edit_singleline(&mut self.vault_response_report_save_path);
                 if ui
@@ -783,6 +761,36 @@ mod tests {
             .contains(path.to_string_lossy().as_ref()));
         assert!(!app.vault_response_report_save_status.contains("jane-doe"));
         assert!(!app.vault_response_report_save_status.contains("12345"));
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_vault_response_report_keeps_rendered_mode_when_request_controls_change() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-vault-response-rendered-mode-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("vault-response-report.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({
+                "record_count": 2,
+                "preview": [
+                    {"record_id": "record-1"},
+                    {"record_id": "record-2"}
+                ]
+            }),
+        );
+        app.portable_request_state.mode = DesktopPortableMode::ImportArtifact;
+        app.vault_response_report_save_path = path.to_string_lossy().to_string();
+
+        app.save_vault_response_report_response();
+
+        let saved = std::fs::read_to_string(&path).expect("safe vault report saved");
+        assert!(saved.contains("\"mode\": \"portable_artifact_inspect\""));
+        assert!(!saved.contains("portable_artifact_import"));
         std::fs::remove_dir_all(dir).expect("remove tempdir");
     }
 
