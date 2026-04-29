@@ -1,6 +1,6 @@
 # Browser JSON Review Downloads Implementation Plan
 
-> **For implementation workers:** REQUIRED SUB-SKILL: Use subagent-driven-development or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementation workers:** REQUIRED SUB-SKILL: Use subagent-driven-development or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`/`- [x]`) syntax for tracking.
 
 **Goal:** Add PHI-safe JSON downloads for browser review/metadata response modes so browser users can save structured review artifacts instead of text-only panes.
 
@@ -26,7 +26,7 @@
 - Modify: `crates/mdid-browser/src/app.rs`
 - Test: existing unit test module in `crates/mdid-browser/src/app.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add these tests near the existing browser output download tests in `crates/mdid-browser/src/app.rs`:
 
@@ -77,7 +77,7 @@ fn portable_review_download_exports_json_without_raw_runtime_body() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -93,7 +93,7 @@ cargo test -p mdid-browser pdf_review_download_exports_structured_json_report --
 cargo test -p mdid-browser portable_review_download_exports_json_without_raw_runtime_body -- --nocapture
 ```
 
-- [ ] **Step 3: Implement minimal code**
+- [x] **Step 3: Implement minimal code**
 
 In `BrowserFlowState`, add:
 
@@ -139,7 +139,7 @@ InputMode::PdfBase64
 
 Do not include `InputMode::VaultExport` in this arm; it must keep exporting only the encrypted portable artifact JSON object already in `result_output`.
 
-- [ ] **Step 4: Run targeted tests to verify GREEN**
+- [x] **Step 4: Run targeted tests to verify GREEN**
 
 Run:
 
@@ -151,7 +151,7 @@ cargo test -p mdid-browser portable_review_download_exports_json_without_raw_run
 
 Expected: both PASS.
 
-- [ ] **Step 5: Run broader browser verification**
+- [x] **Step 5: Run broader browser verification**
 
 Run:
 
@@ -165,7 +165,7 @@ git diff --check
 
 Expected: all PASS, no warnings, no whitespace errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-browser/src/app.rs docs/superpowers/plans/2026-04-29-browser-json-review-downloads.md
@@ -178,7 +178,7 @@ git commit -m "feat(browser): export structured review reports"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-29-browser-json-review-downloads.md`
 
-- [ ] **Step 1: Write the docs update**
+- [x] **Step 1: Write the docs update**
 
 Update `README.md` completion snapshot to mention structured JSON downloads for browser review/metadata response modes. Because this is useful browser download-depth polish but not full upload/download workflow completion, set:
 
@@ -191,7 +191,7 @@ Update `README.md` completion snapshot to mention structured JSON downloads for 
 
 Also update verification evidence to list the exact commands run in Task 1.
 
-- [ ] **Step 2: Verify README truth-sync text**
+- [x] **Step 2: Verify README truth-sync text**
 
 Run:
 
@@ -203,7 +203,7 @@ git diff --check
 
 Expected: completion snapshot lines are present; any forbidden-term hits are only negative limitation text, not roadmap claims; no whitespace errors.
 
-- [ ] **Step 3: Mark this plan completed**
+- [x] **Step 3: Mark this plan completed**
 
 Add a completion evidence section at the end of this plan with:
 
@@ -216,7 +216,7 @@ Add a completion evidence section at the end of this plan with:
 - Verification: `<commands and PASS results>`
 ```
 
-- [ ] **Step 4: Commit docs truth-sync**
+- [x] **Step 4: Commit docs truth-sync**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-29-browser-json-review-downloads.md
@@ -228,3 +228,13 @@ git commit -m "docs: truth-sync browser review downloads completion"
 - Spec coverage: Task 1 adds structured downloads for browser review modes while preserving existing binary/text behavior. Task 2 updates README completion and missing-items narrative.
 - Placeholder scan: no TBD/TODO/fill-in-later language remains.
 - Type consistency: all code references use existing `BrowserFlowState`, `InputMode`, and `BrowserDownloadPayload` names.
+     1|
+     2|## Completion Evidence
+     3|
+     4|- Landed branch: `feature/browser-file-import-download-polish`
+     5|- Task 1 commit: `a762a02 feat(browser): export structured review reports`
+     6|- Quality fix commit: `57f1164 fix(browser): preserve safe review report text`
+     7|- Task 2 commit: pending until docs truth-sync is committed.
+     8|- Verification: `cargo test -p mdid-browser pdf_review_download_exports_structured_json_report -- --nocapture` PASS; `cargo test -p mdid-browser portable_review_download_exports_json_without_raw_runtime_body -- --nocapture` PASS; `cargo test -p mdid-browser output_download -- --nocapture` PASS; `cargo test -p mdid-browser --lib` PASS; `cargo clippy -p mdid-browser --all-targets -- -D warnings` PASS; `git diff --check` PASS.
+     9|- Reviews: Task 1 spec review PASS after quality fix; Task 1 quality review APPROVED after removing the brittle scrubber and preserving already-safe rendered review text.
+    10|
