@@ -672,7 +672,7 @@ impl DesktopWorkflowRequestState {
                 "Ready to submit to {}; this slice can submit prepared envelopes to a localhost runtime, use bounded file import/export helpers, and render runtime-shaped responses locally. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, vault/decode/audit workflow, or full review workflow.",
                 request.route
             ),
-            Err(error) => format!("Not ready: {error:?}"),
+            Err(error) => format!("Not ready: {error}"),
         }
     }
 
@@ -845,6 +845,21 @@ pub enum DesktopWorkflowValidationError {
     InvalidFieldPolicyJson(String),
     BlankSourceName,
     InvalidMediaMetadataJson,
+}
+
+impl std::fmt::Display for DesktopWorkflowValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BlankPayload => write!(f, "Payload is required."),
+            Self::BlankFieldPolicyJson => write!(f, "Field policy JSON is required."),
+            Self::InvalidFieldPolicyJson(message) => write!(f, "Invalid field policy JSON: {message}"),
+            Self::BlankSourceName => write!(f, "Source name is required."),
+            Self::InvalidMediaMetadataJson => write!(
+                f,
+                "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1242,6 +1257,21 @@ mod tests {
         assert_eq!(
             invalid.try_build_request(),
             Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson)
+        );
+    }
+
+    #[test]
+    fn invalid_media_metadata_status_uses_exact_validation_message() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::MediaMetadataJson,
+            payload: "[]".to_string(),
+            field_policy_json: "{}".to_string(),
+            source_name: "local-media-metadata.json".to_string(),
+        };
+
+        assert_eq!(
+            state.status_message(),
+            "Not ready: Media metadata JSON must be a JSON object accepted by the local media review runtime route."
         );
     }
 
