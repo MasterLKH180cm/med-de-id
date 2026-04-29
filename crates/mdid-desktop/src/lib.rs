@@ -802,6 +802,19 @@ pub fn write_portable_artifact_json(
     Ok(path.to_path_buf())
 }
 
+pub fn write_safe_vault_response_json(
+    state: &DesktopVaultResponseState,
+    mode: DesktopVaultResponseMode,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
+    let report_json = serde_json::to_string_pretty(&state.safe_export_json(mode))
+        .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
+    let path = path.as_ref();
+    std::fs::write(path, report_json)
+        .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
 fn vault_response_banner(mode: DesktopVaultResponseMode) -> &'static str {
     match mode {
         DesktopVaultResponseMode::VaultDecode => "bounded vault decode response rendered locally",
@@ -1987,6 +2000,37 @@ mod tests {
         assert_eq!(exported["error"], "runtime failed; details redacted");
         assert!(!exported_text.contains("/secret/artifact.json"));
         assert!(!exported_text.contains("hunter2"));
+    }
+
+    #[test]
+    fn safe_vault_response_json_writer_persists_allowlisted_audit_summary_only() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let target = temp_dir.path().join("vault-audit-report.json");
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "event_count": 4,
+            "returned_event_count": 2,
+            "events": [
+                {"kind": "decode", "detail": "patient Alice decoded for oncology"},
+                {"kind": "export", "detail": "exported C:/vaults/alice.mdid"}
+            ],
+            "vault_path": "C:/vaults/alice.mdid",
+            "vault_passphrase": "correct horse battery staple"
+        });
+        state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
+
+        let written_path =
+            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target)
+                .expect("safe vault response report should be written");
+
+        assert_eq!(written_path, target);
+        let persisted = std::fs::read_to_string(&written_path).expect("read report");
+        assert!(persisted.contains("\"mode\": \"vault_audit\""));
+        assert!(persisted.contains("events returned: 2 / 4"));
+        assert!(!persisted.contains("patient Alice"));
+        assert!(!persisted.contains("C:/vaults/alice.mdid"));
+        assert!(!persisted.contains("correct horse battery staple"));
+        assert!(!persisted.contains("\"events\""));
     }
 
     #[test]
