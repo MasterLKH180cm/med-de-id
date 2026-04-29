@@ -642,6 +642,7 @@ fn derive_key(
     salt: &[u8],
     kdf: &KdfMetadata,
 ) -> Result<[u8; CHACHA20POLY1305_KEY_LEN], VaultError> {
+    validate_approved_kdf_metadata(kdf)?;
     let algorithm = Algorithm::new(&kdf.algorithm)
         .map_err(|_| VaultError::UnsupportedKdfAlgorithm(kdf.algorithm.clone()))?;
     let version = Version::try_from(kdf.version)
@@ -659,6 +660,21 @@ fn derive_key(
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
         .map_err(|_| VaultError::KeyDerivation)?;
     Ok(key)
+}
+
+fn validate_approved_kdf_metadata(kdf: &KdfMetadata) -> Result<(), VaultError> {
+    let approved = default_kdf_metadata();
+    if kdf.algorithm == approved.algorithm
+        && kdf.version == approved.version
+        && kdf.memory_cost_kib == approved.memory_cost_kib
+        && kdf.iterations == approved.iterations
+        && kdf.parallelism == approved.parallelism
+        && kdf.output_len == approved.output_len
+    {
+        Ok(())
+    } else {
+        Err(VaultError::InvalidKdfParameters)
+    }
 }
 
 fn default_kdf_metadata() -> KdfMetadata {
@@ -758,8 +774,60 @@ fn encode_wide_path(path: &Path) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::atomic_write;
+    use super::*;
     use tempfile::tempdir;
+
+    fn portable_artifact_value() -> serde_json::Value {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("vault.mdid");
+        let mut vault = LocalVaultStore::create(&path, "vault-passphrase").unwrap();
+        let record = vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(
+                        Uuid::new_v4(),
+                        Uuid::new_v4(),
+                        "patient.name".to_string(),
+                    ),
+                    phi_type: "NAME".to_string(),
+                    original_value: "Alice Example".to_string(),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+        let artifact = vault
+            .export_portable(
+                &[record.id],
+                "portable-passphrase",
+                SurfaceKind::Cli,
+                "handoff",
+            )
+            .unwrap();
+
+        serde_json::to_value(artifact).unwrap()
+    }
+
+    #[test]
+    fn portable_unlock_rejects_out_of_policy_memory_cost_before_derivation() {
+        let mut artifact_json = portable_artifact_value();
+        artifact_json["kdf"]["memory_cost_kib"] = serde_json::json!(Params::DEFAULT_M_COST + 1);
+        let artifact: PortableVaultArtifact = serde_json::from_value(artifact_json).unwrap();
+
+        let error = artifact.unlock("portable-passphrase").unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidKdfParameters));
+    }
+
+    #[test]
+    fn portable_unlock_rejects_out_of_policy_iterations_before_derivation() {
+        let mut artifact_json = portable_artifact_value();
+        artifact_json["kdf"]["iterations"] = serde_json::json!(Params::DEFAULT_T_COST + 1);
+        let artifact: PortableVaultArtifact = serde_json::from_value(artifact_json).unwrap();
+
+        let error = artifact.unlock("portable-passphrase").unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidKdfParameters));
+    }
 
     #[test]
     fn atomic_write_replaces_existing_file_contents() {
