@@ -1356,6 +1356,24 @@ impl DesktopWorkflowResponseState {
         }
     }
 
+    pub fn suggested_export_file_name_for_source(
+        &self,
+        mode: DesktopWorkflowMode,
+        source_name: Option<&str>,
+    ) -> Option<String> {
+        self.exportable_output()?;
+        let stem = source_name.and_then(safe_source_file_stem);
+        let stem = stem.as_deref().unwrap_or("desktop");
+
+        match mode {
+            DesktopWorkflowMode::CsvText => Some(format!("{stem}-deidentified.csv")),
+            DesktopWorkflowMode::XlsxBase64 => Some(format!("{stem}-deidentified.xlsx.base64.txt")),
+            DesktopWorkflowMode::PdfBase64Review => None,
+            DesktopWorkflowMode::DicomBase64 => Some(format!("{stem}-deidentified.dcm.base64.txt")),
+            DesktopWorkflowMode::MediaMetadataJson => None,
+        }
+    }
+
     pub fn apply_success_json(&mut self, mode: DesktopWorkflowMode, envelope: serde_json::Value) {
         self.banner = match mode {
             DesktopWorkflowMode::CsvText => "CSV text runtime response rendered locally.".to_string(),
@@ -1411,6 +1429,39 @@ impl DesktopWorkflowResponseState {
         self.summary = "No successful runtime summary rendered yet.".to_string();
         self.review_queue = "No review queue rendered yet.".to_string();
         self.error = Some(message.into());
+    }
+}
+
+fn safe_source_file_stem(source_name: &str) -> Option<String> {
+    let filename = source_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(source_name);
+    let stem = filename
+        .rsplit_once('.')
+        .map_or(filename, |(stem, _)| stem)
+        .trim();
+
+    let mut safe = String::new();
+    let mut last_was_dash = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            safe.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !safe.is_empty() {
+            safe.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    while safe.ends_with('-') {
+        safe.pop();
+    }
+
+    if safe.is_empty() {
+        None
+    } else {
+        Some(safe)
     }
 }
 
@@ -3123,6 +3174,59 @@ mod tests {
         assert!(response.summary.contains("ocr_required_pages"));
         assert!(response.review_queue.contains("ocr_required"));
         assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn desktop_export_filename_uses_import_source_stem_for_csv_xlsx_and_dicom() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.output = "rewritten payload".to_string();
+
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::CsvText,
+                Some("/clinic/intake/patient list.csv")
+            ),
+            Some("patient-list-deidentified.csv".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::XlsxBase64,
+                Some("C:\\clinic\\April Census.xlsx")
+            ),
+            Some("April-Census-deidentified.xlsx.base64.txt".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::DicomBase64,
+                Some("brain scan.dcm")
+            ),
+            Some("brain-scan-deidentified.dcm.base64.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn desktop_export_filename_falls_back_when_source_is_empty_or_unsafe() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.output = "rewritten payload".to_string();
+
+        assert_eq!(
+            state.suggested_export_file_name_for_source(DesktopWorkflowMode::CsvText, None),
+            Some("desktop-deidentified.csv".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::CsvText,
+                Some("///.csv")
+            ),
+            Some("desktop-deidentified.csv".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::PdfBase64Review,
+                Some("report.pdf")
+            ),
+            None
+        );
     }
 
     #[test]
