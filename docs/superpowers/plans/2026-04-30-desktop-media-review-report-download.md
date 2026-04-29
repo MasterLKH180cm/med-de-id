@@ -169,7 +169,7 @@ git commit -m "feat(desktop): add media review report downloads"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-30-desktop-media-review-report-download.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Change the snapshot wording to say it is truth-synced after desktop PHI-safe structured media review JSON downloads landed and were verified. Keep CLI at 95%, Browser/web at 73%, raise Desktop app from 64% to 66%, and raise Overall from 92% to 93%. This is modest because it is a helper-layer export for already-rendered responses, not full desktop workflow completion.
 
@@ -177,7 +177,7 @@ Update the Desktop app row to mention PHI-safe helper-layer structured JSON down
 
 Update the Overall row to include desktop media review report JSON downloads and keep >=95% blockers explicit.
 
-- [ ] **Step 2: Verify README scope and completion text**
+- [x] **Step 2: Verify README scope and completion text**
 
 Run:
 
@@ -189,7 +189,7 @@ git diff --check
 
 Expected: completion rows show the updated truthful numbers and media report wording; any forbidden-scope grep hits are historical scope-drift warnings only or absent.
 
-- [ ] **Step 3: Commit docs**
+- [x] **Step 3: Commit docs**
 
 Run:
 
