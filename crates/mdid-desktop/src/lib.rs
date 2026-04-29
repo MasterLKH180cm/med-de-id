@@ -672,7 +672,7 @@ impl DesktopWorkflowRequestState {
                 "Ready to submit to {}; this slice can submit prepared envelopes to a localhost runtime, use bounded file import/export helpers, and render runtime-shaped responses locally. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, vault/decode/audit workflow, or full review workflow.",
                 request.route
             ),
-            Err(error) => format!("Not ready: {error:?}"),
+            Err(error) => format!("Not ready: {error}"),
         }
     }
 
@@ -819,23 +819,11 @@ impl std::fmt::Debug for DesktopWorkflowRequest {
 }
 
 fn redact_sensitive_request_body_fields(body: &serde_json::Value) -> serde_json::Value {
-    let mut redacted = body.clone();
-    if let serde_json::Value::Object(object) = &mut redacted {
-        for key in [
-            "vault_passphrase",
-            "export_passphrase",
-            "portable_passphrase",
-            "artifact",
-        ] {
-            if object.contains_key(key) {
-                object.insert(
-                    key.to_string(),
-                    serde_json::Value::String("<redacted>".to_string()),
-                );
-            }
-        }
+    match body {
+        serde_json::Value::Object(object) if object.is_empty() => body.clone(),
+        serde_json::Value::Null => body.clone(),
+        _ => serde_json::Value::String("<redacted>".to_string()),
     }
-    redacted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -845,6 +833,21 @@ pub enum DesktopWorkflowValidationError {
     InvalidFieldPolicyJson(String),
     BlankSourceName,
     InvalidMediaMetadataJson,
+}
+
+impl std::fmt::Display for DesktopWorkflowValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BlankPayload => write!(f, "Payload is required."),
+            Self::BlankFieldPolicyJson => write!(f, "Field policy JSON is required."),
+            Self::InvalidFieldPolicyJson(message) => write!(f, "Invalid field policy JSON: {message}"),
+            Self::BlankSourceName => write!(f, "Source name is required."),
+            Self::InvalidMediaMetadataJson => write!(
+                f,
+                "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1242,6 +1245,41 @@ mod tests {
         assert_eq!(
             invalid.try_build_request(),
             Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson)
+        );
+    }
+
+    #[test]
+    fn media_metadata_request_debug_redacts_phi_payload() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::MediaMetadataJson,
+            payload: "{\"artifact_label\":\"scan.png\",\"format\":\"image\",\"metadata\":[{\"key\":\"PatientName\",\"value\":\"Jane Patient\"}],\"ocr_or_visual_review_required\":true}".to_string(),
+            field_policy_json: "{}".to_string(),
+            source_name: "local-media-metadata.json".to_string(),
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("valid metadata object should build");
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("/media/conservative/deidentify"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("Jane Patient"));
+        assert!(!debug.contains("PatientName"));
+    }
+
+    #[test]
+    fn invalid_media_metadata_status_uses_exact_validation_message() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::MediaMetadataJson,
+            payload: "[]".to_string(),
+            field_policy_json: "{}".to_string(),
+            source_name: "local-media-metadata.json".to_string(),
+        };
+
+        assert_eq!(
+            state.status_message(),
+            "Not ready: Media metadata JSON must be a JSON object accepted by the local media review runtime route."
         );
     }
 

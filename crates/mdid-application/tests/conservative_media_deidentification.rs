@@ -28,14 +28,18 @@ fn conservative_media_deidentification_routes_metadata_candidates_to_review_with
     assert_eq!(output.summary.review_required_candidates, 1);
     assert!(output.summary.requires_review());
     assert_eq!(output.review_queue.len(), 1);
-    assert_eq!(output.review_queue[0].status, ConservativeMediaScanStatus::OcrOrVisualReviewRequired);
+    assert_eq!(
+        output.review_queue[0].status,
+        ConservativeMediaScanStatus::OcrOrVisualReviewRequired
+    );
     assert_eq!(output.review_queue[0].phi_type, "metadata_identifier");
     assert_eq!(output.review_queue[0].source_value, "Jane Patient");
     assert!(output.rewritten_media_bytes.is_none());
 }
 
 #[test]
-fn conservative_media_deidentification_reports_unsupported_payload_without_fabricating_candidates() {
+fn conservative_media_deidentification_reports_unsupported_payload_without_fabricating_candidates()
+{
     let mut input = sample_input();
     input.unsupported_payload = true;
 
@@ -60,7 +64,10 @@ fn conservative_media_deidentification_surfaces_adapter_errors() {
         .deidentify_metadata(input)
         .expect_err("blank artifact labels must be rejected by the adapter");
 
-    assert!(matches!(error, ApplicationError::ConservativeMediaAdapter(_)));
+    assert!(matches!(
+        error,
+        ApplicationError::ConservativeMediaAdapter(_)
+    ));
 }
 
 #[test]

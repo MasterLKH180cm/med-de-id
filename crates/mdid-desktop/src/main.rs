@@ -146,7 +146,7 @@ impl eframe::App for DesktopApp {
                         }
                         Err(error) => self.response_state.apply_error(format!("{error:?}")),
                     },
-                    Err(error) => self.response_state.apply_error(format!("{error:?}")),
+                    Err(error) => self.response_state.apply_error(format!("{error}")),
                 }
             }
             ui.separator();
