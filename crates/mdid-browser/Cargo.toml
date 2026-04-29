@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 gloo-net = "0.6"
 js-sys = "0.3"
 leptos.workspace = true
