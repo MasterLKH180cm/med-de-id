@@ -1344,12 +1344,15 @@ fn sanitize_review_report_summary_value(value: &serde_json::Value) -> serde_json
         serde_json::Value::Array(items) => serde_json::Value::Array(
             items
                 .iter()
-                .map(sanitize_review_report_summary_value)
+                .filter_map(sanitize_review_report_summary_field)
                 .collect::<Vec<_>>(),
         ),
         serde_json::Value::Object(object) => {
             let mut sanitized = serde_json::Map::new();
             for (key, value) in object {
+                if is_blocked_review_report_summary_key(key) {
+                    continue;
+                }
                 if let Some(value) = sanitize_review_report_summary_field(value) {
                     sanitized.insert(key.clone(), value);
                 }
@@ -1359,13 +1362,7 @@ fn sanitize_review_report_summary_value(value: &serde_json::Value) -> serde_json
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
             value.clone()
         }
-        serde_json::Value::String(text) => {
-            if is_ascii_enum_token(text) {
-                value.clone()
-            } else {
-                serde_json::Value::Null
-            }
-        }
+        serde_json::Value::String(_) => serde_json::Value::Null,
     }
 }
 
@@ -1374,12 +1371,32 @@ fn sanitize_review_report_summary_field(value: &serde_json::Value) -> Option<ser
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
             Some(value.clone())
         }
-        serde_json::Value::String(text) if is_ascii_enum_token(text) => Some(value.clone()),
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
             Some(sanitize_review_report_summary_value(value))
         }
         serde_json::Value::String(_) => None,
     }
+}
+
+fn is_blocked_review_report_summary_key(key: &str) -> bool {
+    const BLOCKED_FRAGMENTS: [&str; 11] = [
+        "source_text",
+        "raw_text",
+        "text",
+        "value",
+        "metadata",
+        "bytes",
+        "base64",
+        "debug",
+        "path",
+        "source",
+        "note",
+    ];
+
+    let key = key.to_ascii_lowercase();
+    BLOCKED_FRAGMENTS
+        .iter()
+        .any(|fragment| key.contains(fragment))
 }
 
 fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::Value {
@@ -3384,9 +3401,11 @@ mod tests {
             DesktopWorkflowMode::PdfBase64Review,
             json!({
                 "summary": {
-                    "pages": 2,
+                    "source_text": 1,
+                    "metadata": {"pages": 1},
+                    "status": "Alice-Patient",
+                    "pages": 1,
                     "ocr_required": false,
-                    "status": "complete",
                     "note": "Alice Patient reviewed on 1/2/1934",
                     "source": "Alice Patient intake.pdf",
                     "path": "/tmp/Alice Patient intake.pdf",
@@ -3402,7 +3421,10 @@ mod tests {
             .expect("pdf review report download");
 
         let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
-        assert!(!text.contains("Alice Patient"));
+        assert!(!text.contains("Alice"));
+        assert!(!text.contains("source_text"));
+        assert!(!text.contains("metadata"));
+        assert!(!text.contains("status"));
         assert!(!text.contains("intake.pdf"));
         let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
         assert_eq!(
@@ -3410,8 +3432,7 @@ mod tests {
             json!({
                 "nested": {"count": 1},
                 "ocr_required": false,
-                "pages": 2,
-                "status": "complete"
+                "pages": 1
             })
         );
     }
