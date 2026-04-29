@@ -544,6 +544,34 @@ impl Default for BrowserFlowState {
     }
 }
 
+fn sanitized_import_stem(file_name: &str) -> String {
+    let file_name = file_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(file_name);
+    let stem = file_name.rsplit_once('.').map_or(file_name, |(stem, _)| stem);
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('-');
+            }
+            sanitized.push(ch.to_ascii_lowercase());
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-output".to_string()
+    } else {
+        sanitized
+    }
+}
+
 impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
@@ -564,7 +592,23 @@ impl BrowserFlowState {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    fn suggested_export_file_name(&self) -> &'static str {
+    fn suggested_export_file_name(&self) -> String {
+        if let Some(imported_file_name) = &self.imported_file_name {
+            let stem = sanitized_import_stem(imported_file_name);
+            match self.input_mode {
+                InputMode::CsvText => return format!("{stem}-deidentified.csv"),
+                InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx.base64.txt"),
+                InputMode::PdfBase64 => return format!("{stem}-review-report.txt"),
+                InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm.base64.txt"),
+                InputMode::MediaMetadataJson => return format!("{stem}-media-review-report.txt"),
+                InputMode::VaultAuditEvents
+                | InputMode::VaultDecode
+                | InputMode::VaultExport
+                | InputMode::PortableArtifactInspect
+                | InputMode::PortableArtifactImport => {}
+            }
+        }
+
         match self.input_mode {
             InputMode::CsvText => "mdid-browser-output.csv",
             InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
@@ -577,6 +621,7 @@ impl BrowserFlowState {
             InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.txt",
             InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt",
         }
+        .to_string()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2040,6 +2085,38 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn imported_csv_suggests_sanitized_deidentified_export_name() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file("Clinic Patient List.csv", "name\nAda", InputMode::CsvText);
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "clinic-patient-list-deidentified.csv"
+        );
+    }
+
+    #[test]
+    fn imported_pdf_suggests_sanitized_review_report_name_without_phi() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file("../Patient #42 Intake.PDF", "JVBERi0=", InputMode::PdfBase64);
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "patient-42-intake-review-report.txt"
+        );
+    }
+
+    #[test]
+    fn manual_vault_export_keeps_static_portable_artifact_name() {
+        let state = BrowserFlowState::default();
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-output.csv"
+        );
+    }
+
+    #[test]
     fn vault_export_mode_uses_existing_runtime_endpoint() {
         assert_eq!(
             InputMode::from_select_value("vault-export"),
@@ -2962,21 +3039,21 @@ mod tests {
         };
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-output.csv"
+            "jane-patient-deidentified.csv"
         );
 
         state.input_mode = InputMode::XlsxBase64;
         state.imported_file_name = Some("clinic workbook.xlsx".to_string());
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-output.xlsx.base64.txt"
+            "clinic-workbook-deidentified.xlsx.base64.txt"
         );
 
         state.input_mode = InputMode::PdfBase64;
         state.imported_file_name = Some("scan.pdf".to_string());
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-review-report.txt"
+            "scan-review-report.txt"
         );
 
         state.input_mode = InputMode::VaultExport;
