@@ -1500,7 +1500,12 @@ fn is_allowed_review_report_phi_type(text: &str) -> bool {
 fn is_allowed_review_report_format(text: &str) -> bool {
     matches!(
         text,
-        "image/jpeg"
+        "image"
+            | "video"
+            | "audio"
+            | "fcs"
+            | "unknown"
+            | "image/jpeg"
             | "image/png"
             | "image/gif"
             | "image/tiff"
@@ -3449,7 +3454,7 @@ mod tests {
                 },
                 "review_queue": [{
                     "kind": "conservative_media",
-                    "format": "image/jpeg",
+                    "format": "image",
                     "status": "ocr_or_visual_review_required",
                     "action": "review",
                     "phi_type": "metadata_identifier",
@@ -3482,7 +3487,7 @@ mod tests {
         assert_eq!(report["summary"]["artifact_count"], 1);
         assert_eq!(report["summary"]["candidate_count"], 1);
         assert_eq!(report["review_queue"][0]["kind"], "conservative_media");
-        assert_eq!(report["review_queue"][0]["format"], "image/jpeg");
+        assert_eq!(report["review_queue"][0]["format"], "image");
         assert_eq!(
             report["review_queue"][0]["status"],
             "ocr_or_visual_review_required"
