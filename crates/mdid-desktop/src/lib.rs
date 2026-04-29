@@ -1320,6 +1320,77 @@ impl DesktopRuntimeClient {
     }
 }
 
+fn sanitize_review_report_queue(value: Option<&serde_json::Value>) -> serde_json::Value {
+    match value {
+        Some(serde_json::Value::Array(items)) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(sanitize_review_report_value)
+                .collect::<Vec<_>>(),
+        ),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn sanitize_review_report_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(sanitize_review_report_value)
+                .collect::<Vec<_>>(),
+        ),
+        serde_json::Value::Object(object) => {
+            let mut sanitized = serde_json::Map::new();
+            for (key, value) in object {
+                if is_safe_review_report_key(key) {
+                    sanitized.insert(key.clone(), sanitize_review_report_value(value));
+                }
+            }
+            serde_json::Value::Object(sanitized)
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => value.clone(),
+    }
+}
+
+fn is_safe_review_report_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    let blocked_fragments = [
+        "source_text",
+        "raw_text",
+        "text",
+        "value",
+        "metadata",
+        "bytes",
+        "base64",
+        "debug",
+        "path",
+    ];
+    if blocked_fragments
+        .iter()
+        .any(|fragment| normalized.contains(fragment))
+    {
+        return false;
+    }
+
+    matches!(
+        normalized.as_str(),
+        "page"
+            | "field"
+            | "reason"
+            | "status"
+            | "kind"
+            | "message"
+            | "phi_type"
+            | "action"
+            | "confidence"
+            | "requires_review"
+    )
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowOutputDownload {
     pub file_name: &'static str,
@@ -1434,10 +1505,7 @@ impl DesktopWorkflowResponseState {
         let report = serde_json::json!({
             "mode": "pdf_review",
             "summary": response.get("summary").cloned().unwrap_or(serde_json::Value::Null),
-            "review_queue": response
-                .get("review_queue")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
+            "review_queue": sanitize_review_report_queue(response.get("review_queue")),
         });
         let bytes = serde_json::to_string_pretty(&report).ok()?.into_bytes();
 
@@ -3219,6 +3287,84 @@ mod tests {
         assert!(report.get("rewritten_pdf_bytes_base64").is_none());
         assert!(report.get("debug_raw_text").is_none());
         assert!(!text.contains("Alice Patient"));
+    }
+
+    #[test]
+    fn pdf_review_report_download_sanitizes_review_queue_phi_fields() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {"pages": 1, "ocr_required": true},
+                "review_queue": [{
+                    "page": 1,
+                    "field": "patient_name",
+                    "reason": "possible name",
+                    "status": "requires_review",
+                    "source_text": "Alice Patient",
+                    "raw_text": "Alice Patient DOB 1/2/1934",
+                    "value": "Alice Patient",
+                    "metadata": {"capture_path": "/tmp/Alice Patient.pdf"},
+                    "debug": {"text": "Alice Patient"},
+                    "nested": {"message": "safe nested message", "source_text": "Alice Patient"}
+                }],
+                "rewritten_pdf_bytes_base64": null
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        assert!(!text.contains("Alice Patient"));
+        assert!(!text.contains("source_text"));
+        assert!(!text.contains("raw_text"));
+        assert!(!text.contains("value"));
+        assert!(!text.contains("metadata"));
+        assert!(!text.contains("debug"));
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(
+            report["review_queue"],
+            json!([{
+                "field": "patient_name",
+                "page": 1,
+                "reason": "possible name",
+                "status": "requires_review"
+            }])
+        );
+    }
+
+    #[test]
+    fn review_report_download_fails_closed_for_stale_error_and_non_review_modes() {
+        let mut state = DesktopWorkflowResponseState::default();
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"csv":"ok","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::CsvText),
+            None
+        );
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({"summary":{},"review_queue":[]}),
+        );
+        state.apply_error("runtime failed");
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
     }
 
     #[test]
