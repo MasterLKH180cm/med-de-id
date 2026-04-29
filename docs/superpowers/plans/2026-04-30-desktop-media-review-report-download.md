@@ -63,7 +63,8 @@ fn media_review_report_download_exports_structured_json_without_metadata_phi() {
         .expect("media metadata review response should produce structured report");
 
     assert_eq!(download.file_name, "desktop-media-review-report.json");
-    let report: serde_json::Value = serde_json::from_str(&download.json).unwrap();
+    let rendered = std::str::from_utf8(&download.bytes).unwrap();
+    let report: serde_json::Value = serde_json::from_str(rendered).unwrap();
     assert_eq!(report["mode"], "media_metadata_json");
     assert_eq!(report["summary"]["artifact_count"], 1);
     assert_eq!(report["summary"]["candidate_count"], 1);
@@ -71,7 +72,6 @@ fn media_review_report_download_exports_structured_json_without_metadata_phi() {
     assert_eq!(report["review_queue"][0]["status"], "review_required");
     assert_eq!(report["review_queue"][0]["phi_type"], "name");
 
-    let rendered = download.json;
     assert!(!rendered.contains("Jane Doe"));
     assert!(!rendered.contains("MRN-12345"));
     assert!(!rendered.contains("PatientName"));
@@ -123,7 +123,7 @@ Update `DesktopWorkflowResponseState::review_report_download(...)` in `crates/md
                 | DesktopWorkflowMode::XlsxBase64
                 | DesktopWorkflowMode::DicomBase64 => return None,
             },
-            json,
+            bytes: json.into_bytes(),
         })
     }
 ```

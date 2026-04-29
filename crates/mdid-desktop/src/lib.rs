@@ -1387,6 +1387,11 @@ fn is_allowed_review_report_summary_key(key: &str) -> bool {
             | "unsupported_count"
             | "unsupported_payload_count"
             | "text_layer_page_count"
+            | "total_items"
+            | "metadata_only_items"
+            | "visual_review_required_items"
+            | "unsupported_items"
+            | "review_required_candidates"
     )
 }
 
@@ -1411,6 +1416,9 @@ fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::V
                 sanitized.insert(key.clone(), value.clone());
             }
             "kind" if value.as_str().is_some_and(is_allowed_review_report_kind) => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "format" if value.as_str().is_some_and(is_allowed_review_report_format) => {
                 sanitized.insert(key.clone(), value.clone());
             }
             "phi_type"
@@ -1444,7 +1452,13 @@ fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::V
 fn is_allowed_review_report_status(text: &str) -> bool {
     matches!(
         text,
-        "review_required" | "reviewed" | "unsupported" | "ok" | "blocked" | "warning"
+        "review_required"
+            | "reviewed"
+            | "unsupported"
+            | "ok"
+            | "blocked"
+            | "warning"
+            | "ocr_or_visual_review_required"
     )
 }
 
@@ -1458,7 +1472,28 @@ fn is_allowed_review_report_kind(text: &str) -> bool {
 fn is_allowed_review_report_phi_type(text: &str) -> bool {
     matches!(
         text,
-        "Name" | "RecordId" | "Date" | "Location" | "Contact" | "FreeText" | "name"
+        "Name"
+            | "RecordId"
+            | "Date"
+            | "Location"
+            | "Contact"
+            | "FreeText"
+            | "name"
+            | "metadata_identifier"
+    )
+}
+
+fn is_allowed_review_report_format(text: &str) -> bool {
+    matches!(
+        text,
+        "image/jpeg"
+            | "image/png"
+            | "image/gif"
+            | "image/tiff"
+            | "application/dicom"
+            | "video/mp4"
+            | "audio/mpeg"
+            | "metadata/json"
     )
 }
 
@@ -3385,6 +3420,11 @@ mod tests {
             DesktopWorkflowMode::MediaMetadataJson,
             serde_json::json!({
                 "summary": {
+                    "total_items": 1,
+                    "metadata_only_items": 1,
+                    "visual_review_required_items": 1,
+                    "unsupported_items": 0,
+                    "review_required_candidates": 1,
                     "artifact_count": 1,
                     "metadata_entry_count": 2,
                     "candidate_count": 1,
@@ -3395,14 +3435,17 @@ mod tests {
                 },
                 "review_queue": [{
                     "kind": "conservative_media",
-                    "status": "review_required",
-                    "decision": "review",
-                    "phi_type": "name",
+                    "format": "image/jpeg",
+                    "status": "ocr_or_visual_review_required",
+                    "action": "review",
+                    "phi_type": "metadata_identifier",
                     "metadata_key": "PatientName",
                     "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                    "field_ref": "dicom.PatientName",
                     "source_value": "Jane Doe MRN-12345"
                 }],
-                "rewritten_media_bytes_base64": null
+                "raw_body": {"patient": "Jane Doe"},
+                "rewritten_media_bytes_base64": "SlBFRyBCWVRFUw=="
             }),
         );
 
@@ -3414,16 +3457,28 @@ mod tests {
         let rendered = std::str::from_utf8(&download.bytes).unwrap();
         let report: serde_json::Value = serde_json::from_str(rendered).unwrap();
         assert_eq!(report["mode"], "media_metadata_json");
+        assert_eq!(report["summary"]["total_items"], 1);
+        assert_eq!(report["summary"]["metadata_only_items"], 1);
+        assert_eq!(report["summary"]["visual_review_required_items"], 1);
+        assert_eq!(report["summary"]["unsupported_items"], 0);
+        assert_eq!(report["summary"]["review_required_candidates"], 1);
         assert_eq!(report["summary"]["artifact_count"], 1);
         assert_eq!(report["summary"]["candidate_count"], 1);
         assert_eq!(report["review_queue"][0]["kind"], "conservative_media");
-        assert_eq!(report["review_queue"][0]["status"], "review_required");
-        assert_eq!(report["review_queue"][0]["phi_type"], "name");
+        assert_eq!(report["review_queue"][0]["format"], "image/jpeg");
+        assert_eq!(
+            report["review_queue"][0]["status"],
+            "ocr_or_visual_review_required"
+        );
+        assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
 
         assert!(!rendered.contains("Jane Doe"));
         assert!(!rendered.contains("MRN-12345"));
         assert!(!rendered.contains("PatientName"));
         assert!(!rendered.contains("Patient-Jane-Doe"));
+        assert!(!rendered.contains("field_ref"));
+        assert!(!rendered.contains("dicom.PatientName"));
+        assert!(!rendered.contains("raw_body"));
         assert!(!rendered.contains("rewritten_media_bytes"));
     }
 
@@ -3612,6 +3667,20 @@ mod tests {
         state.apply_error("runtime failed");
         assert_eq!(
             state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            json!({"summary":{"total_items":1},"review_queue":[]}),
+        );
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+        state.apply_error("media runtime failed");
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::MediaMetadataJson),
             None
         );
     }
