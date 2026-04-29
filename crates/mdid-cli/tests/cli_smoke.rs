@@ -1,25 +1,448 @@
-use std::process::Command;
+use assert_cmd::Command;
+use dicom_core::{Tag, VR};
+use dicom_object::{meta::FileMetaTableBuilder, InMemDicomObject};
+use mdid_adapters::XlsxTabularAdapter;
+use predicates::prelude::*;
+use rust_xlsxwriter::Workbook;
+use serde_json::Value;
+use std::{fs, path::Path};
 
-#[test]
-fn cli_prints_status_banner() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .arg("status")
-        .output()
-        .expect("failed to run mdid-cli");
+use tempfile::tempdir;
 
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("med-de-id CLI ready"));
+fn write_xlsx(path: &Path) {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.write_string(0, 0, "patient_name").unwrap();
+    worksheet.write_string(0, 1, "note").unwrap();
+    worksheet.write_string(1, 0, "Alice Patient").unwrap();
+    worksheet.write_string(1, 1, "needs follow-up").unwrap();
+    workbook.save(path).unwrap();
+}
+
+fn dicom_fixture() -> Vec<u8> {
+    let mut obj = InMemDicomObject::new_empty();
+    obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.7");
+    obj.put_str(
+        Tag(0x0008, 0x0018),
+        VR::UI,
+        "2.25.123456789012345678901234567890123456",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000D),
+        VR::UI,
+        "2.25.123456789012345678901234567890123457",
+    );
+    obj.put_str(
+        Tag(0x0020, 0x000E),
+        VR::UI,
+        "2.25.123456789012345678901234567890123458",
+    );
+    obj.put_str(Tag(0x0010, 0x0010), VR::PN, "Alice^Smith");
+    obj.put_str(Tag(0x0010, 0x0020), VR::LO, "MRN-001");
+    obj.put_str(Tag(0x0028, 0x0301), VR::CS, "NO");
+
+    let file_obj = obj
+        .with_meta(FileMetaTableBuilder::new().transfer_syntax("1.2.840.10008.1.2.1"))
+        .unwrap();
+    let mut bytes = Vec::new();
+    file_obj.write_all(&mut bytes).unwrap();
+    bytes
 }
 
 #[test]
 fn cli_prints_ready_banner_with_no_args() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
-        .output()
-        .expect("failed to run mdid-cli with no args");
+    let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
-    assert!(output.status.success());
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("med-de-id CLI ready"));
+}
+
+#[test]
+fn cli_prints_status_banner() {
+    let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
+
+    cmd.arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("med-de-id CLI ready"));
+}
+
+#[test]
+fn cli_deidentify_csv_writes_rewritten_csv_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("input.csv");
+    let output_path = dir.path().join("output.csv");
+    let vault_path = dir.path().join("vault.json");
+    fs::write(&input_path, "name,notes\nAlice,called\nAlice,follow up\n").unwrap();
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("deidentify-csv")
+        .arg("--csv-path")
+        .arg(&input_path)
+        .arg("--policies-json")
+        .arg(r#"[{"header":"name","phi_type":"name","action":"encode"}]"#)
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .arg("--passphrase")
+        .arg("correct horse battery staple")
+        .arg("--output-path")
+        .arg(&output_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""total_rows":2"#))
+        .stdout(predicate::str::contains(r#""encoded_cells":2"#))
+        .stdout(predicate::str::contains(r#""review_queue_len":0"#))
+        .stdout(predicate::str::contains("Alice").not());
+
+    let _ = assert;
+    let output_csv = fs::read_to_string(&output_path).unwrap();
+    assert!(output_csv.contains("tok-"));
+    assert!(!output_csv.contains("Alice"));
+    assert!(vault_path.exists());
+}
+
+#[test]
+fn cli_deidentify_csv_reports_review_queue_count_without_printing_phi() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("input.csv");
+    let output_path = dir.path().join("output.csv");
+    let vault_path = dir.path().join("vault.json");
+    fs::write(&input_path, "name,notes\nBob,Call Alice today\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("deidentify-csv")
+        .arg("--csv-path")
+        .arg(&input_path)
+        .arg("--policies-json")
+        .arg(r#"[{"header":"notes","phi_type":"note","action":"review"}]"#)
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .arg("--passphrase")
+        .arg("correct horse battery staple")
+        .arg("--output-path")
+        .arg(&output_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""review_queue_len":1"#))
+        .stdout(predicate::str::contains("Alice").not())
+        .stdout(predicate::str::contains("Bob").not());
+
+    let output_csv = fs::read_to_string(&output_path).unwrap();
+    assert!(output_csv.contains("Call Alice today"));
+}
+
+#[test]
+fn cli_deidentify_csv_rejects_malformed_policy_json_without_scope_drift_terms() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("input.csv");
+    let output_path = dir.path().join("output.csv");
+    let vault_path = dir.path().join("vault.json");
+    fs::write(&input_path, "name\nAlice\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("deidentify-csv")
+        .arg("--csv-path")
+        .arg(&input_path)
+        .arg("--policies-json")
+        .arg(r#"[{"header":"name","phi_type":"name","action":"delete"}]"#)
+        .arg("--vault-path")
+        .arg(&vault_path)
+        .arg("--passphrase")
+        .arg("correct horse battery staple")
+        .arg("--output-path")
+        .arg(&output_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid policies JSON"))
+        .stderr(predicate::str::contains("moat").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("agent").not());
+}
+
+#[test]
+fn cli_deidentify_xlsx_writes_rewritten_workbook_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("input.xlsx");
+    let output_path = dir.path().join("output.xlsx");
+    let vault_path = dir.path().join("vault.mdid");
+    write_xlsx(&input_path);
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-xlsx",
+            "--xlsx-path",
+            input_path.to_str().unwrap(),
+            "--policies-json",
+            r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"},{"header":"note","phi_type":"NOTE","action":"review"}]"#,
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice Patient").not())
+        .stdout(predicate::str::contains("correct horse battery staple").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    assert!(output_path.exists());
+    let payload: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "med-de-id CLI ready\n"
+        payload["output_path"],
+        output_path.to_string_lossy().to_string()
     );
+    assert_eq!(payload["summary"]["total_rows"], 1);
+    assert_eq!(payload["summary"]["encoded_cells"], 1);
+    assert_eq!(payload["summary"]["review_required_cells"], 1);
+    assert!(payload["summary"].get("processed_rows").is_none());
+    assert!(payload["summary"].get("review_items").is_none());
+    assert_eq!(payload["review_queue_len"], 1);
+
+    let output_bytes = fs::read(&output_path).unwrap();
+    let extracted = XlsxTabularAdapter::new(Vec::new())
+        .extract(&output_bytes)
+        .unwrap();
+    assert_eq!(extracted.columns[0].name, "patient_name");
+    assert_eq!(extracted.columns[1].name, "note");
+    assert_eq!(extracted.rows.len(), 1);
+    assert!(extracted.rows[0][0].starts_with("tok-"));
+    assert!(!extracted.rows[0][0].contains("Alice Patient"));
+    assert_eq!(extracted.rows[0][1], "needs follow-up");
+}
+
+#[test]
+fn cli_deidentify_xlsx_rejects_invalid_workbook_without_scope_drift_terms() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("invalid.xlsx");
+    let output_path = dir.path().join("output.xlsx");
+    let vault_path = dir.path().join("vault.mdid");
+    fs::write(&input_path, b"not an xlsx workbook").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-xlsx",
+            "--xlsx-path",
+            input_path.to_str().unwrap(),
+            "--policies-json",
+            r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"}]"#,
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to read XLSX workbook"))
+        .stderr(predicate::str::contains("agent").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("moat").not());
+
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn cli_deidentify_dicom_writes_rewritten_dicom_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("Alice-Smith-source.dcm");
+    let output_path = dir.path().join("output.dcm");
+    let vault_path = dir.path().join("vault.json");
+    fs::write(&input_path, dicom_fixture()).unwrap();
+
+    let stdout = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-dicom",
+            "--dicom-path",
+            input_path.to_str().unwrap(),
+            "--private-tag-policy",
+            "remove",
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice").not())
+        .stdout(predicate::str::contains("MRN-001").not())
+        .stdout(predicate::str::contains(input_path.to_string_lossy().as_ref()).not())
+        .stdout(predicate::str::contains("correct horse battery staple").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    assert!(output_path.exists());
+    let rewritten = fs::read(&output_path).unwrap();
+    assert!(!rewritten.is_empty());
+    assert_ne!(rewritten, fs::read(&input_path).unwrap());
+
+    let payload: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(
+        payload["output_path"],
+        output_path.to_string_lossy().to_string()
+    );
+    assert_eq!(payload["sanitized_file_name"], "dicom-output.dcm");
+    assert_eq!(payload["review_queue_len"], 0);
+    assert!(payload.get("summary").is_some());
+    assert_eq!(payload.as_object().unwrap().len(), 4);
+}
+
+#[test]
+fn cli_deidentify_dicom_rejects_invalid_dicom_without_scope_drift_terms() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("invalid.dcm");
+    let output_path = dir.path().join("output.dcm");
+    let vault_path = dir.path().join("vault.json");
+    fs::write(&input_path, b"not a dicom file").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "deidentify-dicom",
+            "--dicom-path",
+            input_path.to_str().unwrap(),
+            "--private-tag-policy",
+            "remove",
+            "--vault-path",
+            vault_path.to_str().unwrap(),
+            "--passphrase",
+            "correct horse battery staple",
+            "--output-path",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to deidentify DICOM"))
+        .stderr(predicate::str::contains("agent").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("moat").not());
+
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn cli_review_media_writes_phi_safe_report() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("media-review.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "review-media",
+            "--artifact-label",
+            "patient-alice-scan.png",
+            "--format",
+            "image",
+            "--metadata-json",
+            r#"[{"key":"DeviceSerialNumber","value":"ABC123"}]"#,
+            "--requires-visual-review",
+            "false",
+            "--unsupported-payload",
+            "false",
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("patient-alice").not())
+        .stdout(predicate::str::contains("ABC123").not());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(!report_text.contains("patient-alice"));
+    assert!(!report_text.contains("ABC123"));
+    assert!(report_text.contains("candidate_index"));
+    assert!(!report_text.contains("field_path"));
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["metadata_only_items"], 1);
+    assert_eq!(report["review_queue_len"], 1);
+    assert_eq!(report["review_queue"][0]["candidate_index"], 0);
+    assert!(report["review_queue"][0].get("field_path").is_none());
+    assert!(report["rewritten_media_bytes"].is_null());
+}
+
+#[test]
+fn cli_review_media_rejects_blank_artifact_label() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("media-review.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "review-media",
+            "--artifact-label",
+            "   ",
+            "--format",
+            "image",
+            "--metadata-json",
+            r#"[{"key":"DeviceSerialNumber","value":"ABC123"}]"#,
+            "--requires-visual-review",
+            "false",
+            "--unsupported-payload",
+            "false",
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn cli_usage_stays_deidentification_scoped() {
+    let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
+
+    cmd.arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage: mdid-cli [status]"))
+        .stderr(predicate::str::contains(
+            "local de-identification automation",
+        ))
+        .stderr(predicate::str::contains("review-media"))
+        .stderr(predicate::str::contains("moat").not())
+        .stderr(predicate::str::contains("controller").not())
+        .stderr(predicate::str::contains("agent").not());
+}
+
+#[test]
+fn cli_rejects_scope_drift_controller_commands() {
+    for args in [
+        vec!["moat"],
+        vec!["moat", "controller-plan", "--history-path", "history.json"],
+        vec![
+            "moat",
+            "controller-step",
+            "--history-path",
+            "history.json",
+            "--agent-id",
+            "agent-1",
+        ],
+        vec!["controller-step"],
+        vec!["claim"],
+        vec!["complete_command"],
+    ] {
+        let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
+
+        cmd.args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unknown command"))
+            .stderr(predicate::str::contains("Usage: mdid-cli [status]"))
+            .stderr(predicate::str::contains("moat").not())
+            .stderr(predicate::str::contains("controller").not())
+            .stderr(predicate::str::contains("agent").not());
+    }
 }

@@ -7,13 +7,15 @@ use serde_json::{from_str, to_string};
 use uuid::Uuid;
 
 #[test]
-fn audit_event_kind_flags_decode_and_export_as_high_risk() {
+fn audit_event_kind_flags_decode_export_and_import_as_high_risk() {
     assert_eq!(AuditEventKind::Encode.as_str(), "encode");
     assert_eq!(AuditEventKind::Decode.as_str(), "decode");
     assert_eq!(AuditEventKind::Export.as_str(), "export");
+    assert_eq!(AuditEventKind::Import.as_str(), "import");
     assert!(!AuditEventKind::Encode.is_high_risk());
     assert!(AuditEventKind::Decode.is_high_risk());
     assert!(AuditEventKind::Export.is_high_risk());
+    assert!(AuditEventKind::Import.is_high_risk());
 }
 
 #[test]
@@ -87,6 +89,7 @@ fn serde_uses_stable_lowercase_wire_values_for_surface_and_audit_kinds() {
     assert_eq!(to_string(&SurfaceKind::Desktop).unwrap(), "\"desktop\"");
     assert_eq!(to_string(&AuditEventKind::Decode).unwrap(), "\"decode\"");
     assert_eq!(to_string(&AuditEventKind::Export).unwrap(), "\"export\"");
+    assert_eq!(to_string(&AuditEventKind::Import).unwrap(), "\"import\"");
     assert_eq!(
         from_str::<SurfaceKind>("\"browser\"").unwrap(),
         SurfaceKind::Browser
@@ -98,6 +101,10 @@ fn serde_uses_stable_lowercase_wire_values_for_surface_and_audit_kinds() {
     assert_eq!(
         from_str::<AuditEventKind>("\"export\"").unwrap(),
         AuditEventKind::Export
+    );
+    assert_eq!(
+        from_str::<AuditEventKind>("\"import\"").unwrap(),
+        AuditEventKind::Import
     );
 }
 

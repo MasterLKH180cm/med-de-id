@@ -49,6 +49,13 @@ pub struct PortableVaultSnapshot {
     pub records: Vec<MappingRecord>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PortableImportResult {
+    pub imported_records: Vec<MappingRecord>,
+    pub duplicate_records: Vec<MappingRecord>,
+    pub audit_event: AuditEvent,
+}
+
 const CHACHA20POLY1305_KEY_LEN: usize = 32;
 const CHACHA20POLY1305_NONCE_LEN: usize = 12;
 
@@ -72,6 +79,8 @@ impl Default for KdfMetadata {
 pub struct PortableVaultArtifact {
     #[serde(default)]
     kdf: KdfMetadata,
+    #[serde(default)]
+    verifier_b64: Option<String>,
     salt_b64: String,
     nonce_b64: String,
     ciphertext_b64: String,
@@ -82,6 +91,7 @@ impl PortableVaultArtifact {
         decrypt_payload(
             passphrase,
             &self.kdf,
+            self.verifier_b64.as_deref(),
             &self.salt_b64,
             &self.nonce_b64,
             &self.ciphertext_b64,
@@ -99,6 +109,8 @@ struct VaultState {
 struct VaultEnvelope {
     #[serde(default)]
     kdf: KdfMetadata,
+    #[serde(default)]
+    verifier_b64: Option<String>,
     salt_b64: String,
     nonce_b64: String,
     ciphertext_b64: String,
@@ -145,6 +157,7 @@ impl LocalVaultStore {
         let state = decrypt_payload(
             passphrase,
             &envelope.kdf,
+            envelope.verifier_b64.as_deref(),
             &envelope.salt_b64,
             &envelope.nonce_b64,
             &envelope.ciphertext_b64,
@@ -291,9 +304,91 @@ impl LocalVaultStore {
 
         Ok(PortableVaultArtifact {
             kdf: encrypted.kdf,
+            verifier_b64: Some(encrypted.verifier_b64),
             salt_b64: encrypted.salt_b64,
             nonce_b64: encrypted.nonce_b64,
             ciphertext_b64: encrypted.ciphertext_b64,
+        })
+    }
+
+    pub fn import_portable(
+        &mut self,
+        artifact: PortableVaultArtifact,
+        portable_passphrase: &str,
+        actor: SurfaceKind,
+        context: &str,
+    ) -> Result<PortableImportResult, VaultError> {
+        ensure_non_blank_passphrase(portable_passphrase)?;
+        ensure_non_blank_import_context(context)?;
+
+        let snapshot = artifact.unlock(portable_passphrase)?;
+        let mut imported_records = Vec::new();
+        let mut duplicate_records = Vec::new();
+        let mut staged_state = self.state.clone();
+
+        for record in snapshot.records {
+            if staged_state
+                .records
+                .iter()
+                .any(|candidate| candidate.id == record.id)
+                || find_exact_mapping_in_records(
+                    &staged_state.records,
+                    &record.scope,
+                    &record.phi_type,
+                    &record.original_value,
+                )
+                .is_some()
+            {
+                duplicate_records.push(record);
+            } else if let Some(existing) = find_mapping_by_value_in_records(
+                &staged_state.records,
+                &record.phi_type,
+                &record.original_value,
+            ) {
+                let mut imported = record;
+                imported.token = existing.token;
+                staged_state.records.push(imported.clone());
+                imported_records.push(imported);
+            } else {
+                staged_state.records.push(record.clone());
+                imported_records.push(record);
+            }
+        }
+
+        let imported_record_ids = imported_records
+            .iter()
+            .map(|record| record.id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let duplicate_record_ids = duplicate_records
+            .iter()
+            .map(|record| record.id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let audit_event = AuditEvent {
+            id: Uuid::new_v4(),
+            kind: AuditEventKind::Import,
+            actor,
+            detail: format!(
+                "portable import context=\"{}\" imported {} record{} with {} duplicate{} imported_record_ids=[{}] duplicate_record_ids=[{}]",
+                context.trim(),
+                imported_records.len(),
+                if imported_records.len() == 1 { "" } else { "s" },
+                duplicate_records.len(),
+                if duplicate_records.len() == 1 { "" } else { "s" },
+                imported_record_ids,
+                duplicate_record_ids,
+            ),
+            recorded_at: Utc::now(),
+        };
+        staged_state.audit_events.push(audit_event.clone());
+        self.flush_state(&staged_state)?;
+        self.state = staged_state;
+
+        Ok(PortableImportResult {
+            imported_records,
+            duplicate_records,
+            audit_event,
         })
     }
 
@@ -349,11 +444,7 @@ impl LocalVaultStore {
     }
 
     fn find_mapping_by_value(&self, phi_type: &str, original_value: &str) -> Option<MappingRecord> {
-        self.state
-            .records
-            .iter()
-            .find(|record| record.phi_type == phi_type && record.original_value == original_value)
-            .cloned()
+        find_mapping_by_value_in_records(&self.state.records, phi_type, original_value)
     }
 
     fn flush(&self) -> Result<(), VaultError> {
@@ -368,6 +459,7 @@ impl LocalVaultStore {
         let encrypted = encrypt_payload(&self.passphrase, state)?;
         let envelope = VaultEnvelope {
             kdf: encrypted.kdf,
+            verifier_b64: Some(encrypted.verifier_b64),
             salt_b64: encrypted.salt_b64,
             nonce_b64: encrypted.nonce_b64,
             ciphertext_b64: encrypted.ciphertext_b64,
@@ -376,6 +468,33 @@ impl LocalVaultStore {
         atomic_write(&self.path, &raw)?;
         Ok(())
     }
+}
+
+fn find_exact_mapping_in_records(
+    records: &[MappingRecord],
+    scope: &MappingScope,
+    phi_type: &str,
+    original_value: &str,
+) -> Option<MappingRecord> {
+    records
+        .iter()
+        .find(|record| {
+            record.scope == *scope
+                && record.phi_type == phi_type
+                && record.original_value == original_value
+        })
+        .cloned()
+}
+
+fn find_mapping_by_value_in_records(
+    records: &[MappingRecord],
+    phi_type: &str,
+    original_value: &str,
+) -> Option<MappingRecord> {
+    records
+        .iter()
+        .find(|record| record.phi_type == phi_type && record.original_value == original_value)
+        .cloned()
 }
 
 #[derive(Debug, Error)]
@@ -388,6 +507,8 @@ pub enum VaultError {
     BlankPassphrase,
     #[error("portable export context must not be blank or whitespace")]
     BlankExportContext,
+    #[error("portable import context must not be blank or whitespace")]
+    BlankImportContext,
     #[error("vault path already exists: {0}")]
     AlreadyExists(PathBuf),
     #[error("unsupported kdf algorithm: {0}")]
@@ -402,8 +523,10 @@ pub enum VaultError {
     KeyDerivation,
     #[error("vault encryption failure")]
     Encrypt,
-    #[error("vault decryption failure")]
-    Decrypt,
+    #[error("vault unlock failed")]
+    UnlockFailed,
+    #[error("vault artifact is malformed or corrupted")]
+    InvalidArtifact,
     #[error("unknown mapping record: {0}")]
     UnknownRecord(Uuid),
     #[error("portable export must include at least one mapping record")]
@@ -413,6 +536,7 @@ pub enum VaultError {
 #[derive(Debug, Clone)]
 struct EncryptedPayload {
     kdf: KdfMetadata,
+    verifier_b64: String,
     salt_b64: String,
     nonce_b64: String,
     ciphertext_b64: String,
@@ -442,6 +566,7 @@ fn encrypt_payload<T: Serialize>(
 
     Ok(EncryptedPayload {
         kdf,
+        verifier_b64: encode_passphrase_verifier(&key)?,
         salt_b64: STANDARD.encode(salt),
         nonce_b64: STANDARD.encode(nonce_bytes),
         ciphertext_b64: STANDARD.encode(ciphertext),
@@ -451,19 +576,22 @@ fn encrypt_payload<T: Serialize>(
 fn decrypt_payload<T: for<'de> Deserialize<'de>>(
     passphrase: &str,
     kdf: &KdfMetadata,
+    verifier_b64: Option<&str>,
     salt_b64: &str,
     nonce_b64: &str,
     ciphertext_b64: &str,
 ) -> Result<T, VaultError> {
     ensure_non_blank_passphrase(passphrase)?;
 
-    let salt = STANDARD.decode(salt_b64).map_err(|_| VaultError::Decrypt)?;
+    let salt = STANDARD
+        .decode(salt_b64)
+        .map_err(|_| VaultError::InvalidArtifact)?;
     let nonce_bytes = STANDARD
         .decode(nonce_b64)
-        .map_err(|_| VaultError::Decrypt)?;
+        .map_err(|_| VaultError::InvalidArtifact)?;
     let ciphertext = STANDARD
         .decode(ciphertext_b64)
-        .map_err(|_| VaultError::Decrypt)?;
+        .map_err(|_| VaultError::InvalidArtifact)?;
 
     if nonce_bytes.len() != CHACHA20POLY1305_NONCE_LEN {
         return Err(VaultError::InvalidNonceLength {
@@ -473,13 +601,40 @@ fn decrypt_payload<T: for<'de> Deserialize<'de>>(
     }
 
     let key = derive_key(passphrase, &salt, kdf)?;
+    if let Some(verifier_b64) = verifier_b64 {
+        verify_passphrase(&key, verifier_b64)?;
+    }
     let cipher = ChaCha20Poly1305::new((&key).into());
     let nonce = Nonce::clone_from_slice(&nonce_bytes);
-    let plaintext = cipher
-        .decrypt(&nonce, ciphertext.as_ref())
-        .map_err(|_| VaultError::Decrypt)?;
+    let plaintext = cipher.decrypt(&nonce, ciphertext.as_ref()).map_err(|_| {
+        if verifier_b64.is_some() {
+            VaultError::InvalidArtifact
+        } else {
+            VaultError::UnlockFailed
+        }
+    })?;
 
-    Ok(serde_json::from_slice(&plaintext)?)
+    serde_json::from_slice(&plaintext).map_err(|_| VaultError::InvalidArtifact)
+}
+
+fn encode_passphrase_verifier(key: &[u8; CHACHA20POLY1305_KEY_LEN]) -> Result<String, VaultError> {
+    let cipher = ChaCha20Poly1305::new(key.into());
+    let nonce = Nonce::from_slice(&[0u8; CHACHA20POLY1305_NONCE_LEN]);
+    let verifier = cipher
+        .encrypt(nonce, b"mdid-vault-passphrase-verifier-v1".as_ref())
+        .map_err(|_| VaultError::Encrypt)?;
+    Ok(STANDARD.encode(verifier))
+}
+
+fn verify_passphrase(
+    key: &[u8; CHACHA20POLY1305_KEY_LEN],
+    verifier_b64: &str,
+) -> Result<(), VaultError> {
+    if encode_passphrase_verifier(key)? == verifier_b64 {
+        Ok(())
+    } else {
+        Err(VaultError::UnlockFailed)
+    }
 }
 
 fn derive_key(
@@ -487,6 +642,7 @@ fn derive_key(
     salt: &[u8],
     kdf: &KdfMetadata,
 ) -> Result<[u8; CHACHA20POLY1305_KEY_LEN], VaultError> {
+    validate_approved_kdf_metadata(kdf)?;
     let algorithm = Algorithm::new(&kdf.algorithm)
         .map_err(|_| VaultError::UnsupportedKdfAlgorithm(kdf.algorithm.clone()))?;
     let version = Version::try_from(kdf.version)
@@ -504,6 +660,21 @@ fn derive_key(
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
         .map_err(|_| VaultError::KeyDerivation)?;
     Ok(key)
+}
+
+fn validate_approved_kdf_metadata(kdf: &KdfMetadata) -> Result<(), VaultError> {
+    let approved = default_kdf_metadata();
+    if kdf.algorithm == approved.algorithm
+        && kdf.version == approved.version
+        && kdf.memory_cost_kib == approved.memory_cost_kib
+        && kdf.iterations == approved.iterations
+        && kdf.parallelism == approved.parallelism
+        && kdf.output_len == approved.output_len
+    {
+        Ok(())
+    } else {
+        Err(VaultError::InvalidKdfParameters)
+    }
 }
 
 fn default_kdf_metadata() -> KdfMetadata {
@@ -528,6 +699,14 @@ fn ensure_non_blank_passphrase(passphrase: &str) -> Result<(), VaultError> {
 fn ensure_non_blank_export_context(context: &str) -> Result<(), VaultError> {
     if context.trim().is_empty() {
         return Err(VaultError::BlankExportContext);
+    }
+
+    Ok(())
+}
+
+fn ensure_non_blank_import_context(context: &str) -> Result<(), VaultError> {
+    if context.trim().is_empty() {
+        return Err(VaultError::BlankImportContext);
     }
 
     Ok(())
@@ -595,8 +774,60 @@ fn encode_wide_path(path: &Path) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::atomic_write;
+    use super::*;
     use tempfile::tempdir;
+
+    fn portable_artifact_value() -> serde_json::Value {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("vault.mdid");
+        let mut vault = LocalVaultStore::create(&path, "vault-passphrase").unwrap();
+        let record = vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(
+                        Uuid::new_v4(),
+                        Uuid::new_v4(),
+                        "patient.name".to_string(),
+                    ),
+                    phi_type: "NAME".to_string(),
+                    original_value: "Alice Example".to_string(),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+        let artifact = vault
+            .export_portable(
+                &[record.id],
+                "portable-passphrase",
+                SurfaceKind::Cli,
+                "handoff",
+            )
+            .unwrap();
+
+        serde_json::to_value(artifact).unwrap()
+    }
+
+    #[test]
+    fn portable_unlock_rejects_out_of_policy_memory_cost_before_derivation() {
+        let mut artifact_json = portable_artifact_value();
+        artifact_json["kdf"]["memory_cost_kib"] = serde_json::json!(Params::DEFAULT_M_COST + 1);
+        let artifact: PortableVaultArtifact = serde_json::from_value(artifact_json).unwrap();
+
+        let error = artifact.unlock("portable-passphrase").unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidKdfParameters));
+    }
+
+    #[test]
+    fn portable_unlock_rejects_out_of_policy_iterations_before_derivation() {
+        let mut artifact_json = portable_artifact_value();
+        artifact_json["kdf"]["iterations"] = serde_json::json!(Params::DEFAULT_T_COST + 1);
+        let artifact: PortableVaultArtifact = serde_json::from_value(artifact_json).unwrap();
+
+        let error = artifact.unlock("portable-passphrase").unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidKdfParameters));
+    }
 
     #[test]
     fn atomic_write_replaces_existing_file_contents() {

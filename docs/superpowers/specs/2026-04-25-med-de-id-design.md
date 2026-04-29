@@ -9,7 +9,7 @@
 `med-de-id` is a Windows-first, local-first medical de-identification platform built around a pure Rust core. It supports reversible de-identification for multiple medical data formats, preserves auditability, and exposes three formal product surfaces:
 
 1. **CLI** — automation, batch, integration, headless execution
-2. **Browser tool** — local-first localhost pipeline/orchestration surface for visual workflow composition and scheduling
+2. **Browser tool** — local-first localhost workflow surface for visual flow composition and run control
 3. **Desktop app** — sensitive workstation for review, vault operations, decode flows, and audit investigation
 
 The system is not a SaaS product. Processing, vault management, scheduling, and high-risk decode operations are designed to run locally and offline by default.
@@ -393,12 +393,12 @@ Owns long-lived runtime behavior:
 - event emission
 - review-task creation
 - retry/resume behavior
-- worker orchestration
+- batch coordination
 
 ### 8.9 Surface crates
 
 - `mdid-cli` — automation surface
-- `mdid-browser` — browser orchestration surface
+- `mdid-browser` — browser workflow surface
 - `mdid-desktop` — sensitive workstation surface
 
 ## 9. Security and Vault Design
@@ -488,7 +488,7 @@ The product uses three formal surfaces with shared core capabilities and special
 ### 10.1 Surface strategy
 
 - **CLI** = automation surface
-- **Browser tool** = pipeline/orchestration surface
+- **Browser tool** = workflow surface
 - **Desktop app** = sensitive workstation surface
 
 All three share the same Rust core, runtime, data model, policy logic, and security controls.
@@ -513,7 +513,7 @@ Browser tool is optimized for:
 - node/function configuration
 - trigger/schedule configuration
 - reusable workflow templates
-- orchestration monitoring
+- workflow monitoring
 - run-level visibility
 
 The browser tool may display summaries, but it is not the primary surface for heavy sensitive-data review or full vault maintenance.
@@ -874,7 +874,7 @@ The spec requires at least these E2E validation flows:
 - auditable decode and export controls
 - broad format-family coverage with explicit depth grading
 - a tri-surface product model
-- a browser-based pipeline/orchestration tool
+- a browser-based workflow tool
 - a desktop sensitive-data workstation
 - a CLI automation surface
 - a controlled DAG pipeline engine with review gates and local scheduling

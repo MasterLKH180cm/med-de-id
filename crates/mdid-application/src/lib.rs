@@ -1,18 +1,17 @@
 use chrono::Utc;
 use mdid_adapters::{
-    sanitize_output_name, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
-    DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy,
-    TabularAdapterError,
+    sanitize_output_name, ConservativeMediaAdapter, ConservativeMediaAdapterError,
+    ConservativeMediaInput, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
+    DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy, PdfAdapter,
+    PdfAdapterError, PdfPageExtraction, TabularAdapterError,
 };
 use mdid_domain::{
-    AgentRole, BatchSummary, BurnedInAnnotationStatus, CompetitorProfile, ContinueDecision,
-    DecisionLogEntry, DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy,
-    LockInReport, MappingScope, MarketMoatSnapshot, MoatMemorySnapshot, MoatRoundSummary,
-    MoatStrategy, MoatTaskGraph, MoatTaskNode, MoatTaskNodeKind, MoatTaskNodeState, PhiCandidate,
-    PipelineDefinition, PipelineRun, PipelineRunState, ResourceBudget, SurfaceKind, TabularColumn,
+    BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
+    DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, MappingScope,
+    PdfExtractionSummary, PdfPhiCandidate, PhiCandidate, PipelineDefinition, PipelineRun,
+    PipelineRunState, SurfaceKind, TabularColumn,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -25,6 +24,10 @@ pub enum ApplicationError {
     PipelineNotFound(Uuid),
     #[error(transparent)]
     DicomAdapter(#[from] DicomAdapterError),
+    #[error(transparent)]
+    PdfAdapter(#[from] PdfAdapterError),
+    #[error(transparent)]
+    ConservativeMediaAdapter(#[from] ConservativeMediaAdapterError),
     #[error(transparent)]
     TabularAdapter(#[from] TabularAdapterError),
     #[error(transparent)]
@@ -117,11 +120,95 @@ impl fmt::Debug for DicomDeidentificationOutput {
     }
 }
 
+#[derive(Clone)]
+pub struct PdfDeidentificationOutput {
+    pub summary: PdfExtractionSummary,
+    pub page_statuses: Vec<PdfPageExtraction>,
+    pub review_queue: Vec<PdfPhiCandidate>,
+    pub rewritten_pdf_bytes: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for PdfDeidentificationOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PdfDeidentificationOutput")
+            .field("summary", &self.summary)
+            .field("page_statuses", &self.page_statuses)
+            .field("review_queue", &"[REDACTED]")
+            .field("review_queue_len", &self.review_queue.len())
+            .field(
+                "rewritten_pdf_bytes",
+                &self.rewritten_pdf_bytes.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct ConservativeMediaDeidentificationOutput {
+    pub summary: ConservativeMediaSummary,
+    pub review_queue: Vec<ConservativeMediaCandidate>,
+    pub rewritten_media_bytes: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for ConservativeMediaDeidentificationOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConservativeMediaDeidentificationOutput")
+            .field("summary", &self.summary)
+            .field("review_queue", &"[REDACTED]")
+            .field("review_queue_len", &self.review_queue.len())
+            .field(
+                "rewritten_media_bytes",
+                &self.rewritten_media_bytes.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TabularDeidentificationService;
 
 #[derive(Clone, Default)]
 pub struct DicomDeidentificationService;
+
+#[derive(Clone, Default)]
+pub struct PdfDeidentificationService;
+
+#[derive(Clone, Default)]
+pub struct ConservativeMediaDeidentificationService {
+    _private: (),
+}
+
+impl ConservativeMediaDeidentificationService {
+    pub fn deidentify_metadata(
+        &self,
+        input: ConservativeMediaInput,
+    ) -> Result<ConservativeMediaDeidentificationOutput, ApplicationError> {
+        let extracted = ConservativeMediaAdapter::extract_metadata(input)?;
+
+        Ok(ConservativeMediaDeidentificationOutput {
+            summary: extracted.summary,
+            review_queue: extracted.candidates,
+            rewritten_media_bytes: None,
+        })
+    }
+}
+
+impl PdfDeidentificationService {
+    pub fn deidentify_bytes(
+        &self,
+        bytes: &[u8],
+        source_name: &str,
+    ) -> Result<PdfDeidentificationOutput, ApplicationError> {
+        let extracted = PdfAdapter::new().extract(bytes, source_name)?;
+
+        Ok(PdfDeidentificationOutput {
+            summary: extracted.summary,
+            page_statuses: extracted.pages,
+            review_queue: extracted.candidates,
+            rewritten_pdf_bytes: None,
+        })
+    }
+}
 
 impl DicomDeidentificationService {
     pub fn deidentify_bytes(
@@ -315,444 +402,3 @@ fn write_csv(columns: &[TabularColumn], rows: &[Vec<String>]) -> Result<String, 
 
 const DICOM_COMMON_PHI_MAPPING_TYPE: &str = "dicom_common_phi";
 const DICOM_UID_MAPPING_TYPE: &str = "dicom_uid";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MoatImprovementThreshold(pub i16);
-
-pub fn select_top_strategies(
-    mut strategies: Vec<MoatStrategy>,
-    max_strategy_candidates: usize,
-) -> Vec<MoatStrategy> {
-    strategies.sort_by(|left, right| {
-        right
-            .expected_moat_gain
-            .cmp(&left.expected_moat_gain)
-            .then_with(|| left.implementation_cost.cmp(&right.implementation_cost))
-    });
-    strategies.truncate(max_strategy_candidates);
-    strategies
-}
-
-pub fn build_moat_spec_handoff_ids(
-    selected_strategies: &[MoatStrategy],
-    max_spec_generations: usize,
-) -> Vec<String> {
-    selected_strategies
-        .iter()
-        .filter_map(|strategy| normalize_moat_strategy_handoff_id(&strategy.strategy_id))
-        .take(max_spec_generations)
-        .map(|strategy_id| format!("moat-spec/{strategy_id}"))
-        .collect()
-}
-
-pub fn render_moat_spec_markdown(
-    handoff_id: &str,
-    summary: &MoatRoundSummary,
-    selected_strategies: &[String],
-) -> Result<String, String> {
-    let slug = parse_safe_moat_spec_handoff_slug(handoff_id)?;
-    let title = title_from_moat_spec_slug(slug);
-
-    if !summary
-        .implemented_specs
-        .iter()
-        .any(|spec| spec == handoff_id)
-    {
-        return Err(format!(
-            "handoff id {handoff_id} not present in summary.implemented_specs: {:?}",
-            summary.implemented_specs
-        ));
-    }
-
-    let selected_strategy_ids = resolve_render_selected_strategies(summary, selected_strategies)?;
-    let selected = if selected_strategy_ids.is_empty() {
-        "<none>".to_string()
-    } else {
-        selected_strategy_ids.join(",")
-    };
-    let improvement_delta = summary.improvement();
-
-    Ok(format!(
-        concat!(
-            "# {title} Moat Spec\n\n",
-            "- handoff_id: `{handoff_id}`\n",
-            "- source_round_id: `{round_id}`\n",
-            "- source_selected_strategies: `{selected}`\n",
-            "- moat_score_before: `{before}`\n",
-            "- moat_score_after: `{after}`\n",
-            "- improvement_delta: `{delta}`\n\n",
-            "## Objective\n\n",
-            "Ship the {slug} moat slice as a bounded engineering increment that preserves the moat gain identified by the latest round.\n\n",
-            "## Required Deliverables\n\n",
-            "- Persist a {slug} artifact inside the local-first med-de-id product surface.\n",
-            "- Expose the artifact through a deterministic operator-facing workflow.\n",
-            "- Add automated verification for the new {slug} behavior.\n\n",
-            "## Acceptance Tests\n\n",
-            "- `{handoff_id}` stays derivable from the selected strategy set `{selected}`.\n",
-            "- Re-rendering the same round preserves handoff `{handoff_id}` and moat delta `{delta}`.\n"
-        ),
-        title = title,
-        handoff_id = handoff_id,
-        round_id = summary.round_id,
-        selected = selected,
-        before = summary.moat_score_before,
-        after = summary.moat_score_after,
-        delta = improvement_delta,
-        slug = slug,
-    ))
-}
-
-pub fn render_moat_plan_markdown(
-    handoff_id: &str,
-    summary: &MoatRoundSummary,
-    selected_strategies: &[String],
-) -> Result<String, String> {
-    let slug = parse_safe_moat_spec_handoff_slug(handoff_id)?;
-    let title = title_from_moat_spec_slug(slug);
-
-    if !summary
-        .implemented_specs
-        .iter()
-        .any(|spec| spec == handoff_id)
-    {
-        return Err(format!(
-            "handoff id {handoff_id} not present in summary.implemented_specs: {:?}",
-            summary.implemented_specs
-        ));
-    }
-
-    let selected_strategy_ids = resolve_render_selected_strategies(summary, selected_strategies)?;
-    let selected = if selected_strategy_ids.is_empty() {
-        "<none>".to_string()
-    } else {
-        selected_strategy_ids.join(",")
-    };
-
-    Ok(format!(
-        concat!(
-            "# {title} Implementation Plan\n\n",
-            "> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan with strict RED -> GREEN -> REFACTOR discipline.\n\n",
-            "**Goal:** Ship the {slug} moat slice from handoff `{handoff_id}` as a bounded SDD/TDD implementation increment.\n\n",
-            "**Architecture:** Start from the deterministic moat spec handoff generated by round `{round_id}`. Keep changes local-first, covered by tests, and limited to the product surfaces needed for `{slug}`. Selected strategies: `{selected}`.\n\n",
-            "### Task 1: Persist {slug} artifact\n\n",
-            "- [ ] RED: Add the smallest failing test that describes the {slug} moat behavior before writing production code.\n",
-            "- [ ] Run targeted tests and confirm they fail for the expected reason: `cargo test -p mdid-application moat_rounds:: -- --nocapture`.\n",
-            "- [ ] GREEN: Implement the minimal production code needed to satisfy the failing test without broad automation or background agents.\n",
-            "- [ ] REFACTOR: Remove duplication while preserving deterministic behavior and local-first constraints.\n",
-            "- [ ] Verify with targeted and relevant broader tests, including `cargo test -p mdid-application moat_rounds::`.\n",
-            "- [ ] Commit with `git commit -m \"feat: add {slug} moat plan\"`.\n"
-        ),
-        title = title,
-        slug = slug,
-        handoff_id = handoff_id,
-        round_id = summary.round_id,
-        selected = selected,
-    ))
-}
-
-fn parse_safe_moat_spec_handoff_slug(handoff_id: &str) -> Result<&str, String> {
-    let slug = handoff_id
-        .strip_prefix("moat-spec/")
-        .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
-
-    if slug.is_empty() {
-        return Err(format!("invalid moat spec handoff slug in {handoff_id}"));
-    }
-
-    let mut previous_was_hyphen = false;
-    for byte in slug.bytes() {
-        match byte {
-            b'a'..=b'z' | b'0'..=b'9' => previous_was_hyphen = false,
-            b'-' if !previous_was_hyphen => previous_was_hyphen = true,
-            _ => return Err(format!("invalid moat spec handoff slug in {handoff_id}")),
-        }
-    }
-
-    if slug.starts_with('-') || slug.ends_with('-') {
-        return Err(format!("invalid moat spec handoff slug in {handoff_id}"));
-    }
-
-    Ok(slug)
-}
-
-fn title_from_moat_spec_slug(slug: &str) -> String {
-    slug.split('-')
-        .map(|segment| {
-            let mut chars = segment.chars();
-            let Some(first) = chars.next() else {
-                return String::new();
-            };
-
-            let mut word = first.to_ascii_uppercase().to_string();
-            word.push_str(chars.as_str());
-            word
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn resolve_render_selected_strategies<'a>(
-    summary: &'a MoatRoundSummary,
-    selected_strategies: &'a [String],
-) -> Result<&'a [String], String> {
-    if selected_strategies.is_empty() {
-        return Ok(&summary.selected_strategies);
-    }
-
-    if selected_strategies != summary.selected_strategies.as_slice() {
-        return Err(format!(
-            "selected strategy mismatch: summary={:?}, argument={:?}",
-            summary.selected_strategies, selected_strategies
-        ));
-    }
-
-    Ok(selected_strategies)
-}
-
-fn normalize_moat_strategy_handoff_id(strategy_id: &str) -> Option<String> {
-    let mut normalized = String::new();
-    let mut last_was_separator = false;
-
-    for character in strategy_id.chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character.to_ascii_lowercase());
-            last_was_separator = false;
-        } else if !normalized.is_empty() && !last_was_separator {
-            normalized.push('-');
-            last_was_separator = true;
-        }
-    }
-
-    while normalized.ends_with('-') {
-        normalized.pop();
-    }
-
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-pub fn evaluate_moat_round(
-    round_id: Uuid,
-    market: &MarketMoatSnapshot,
-    competitor: &CompetitorProfile,
-    lock_in: &LockInReport,
-    selected_strategies: &[MoatStrategy],
-    max_spec_generations: usize,
-    tests_passed: bool,
-    threshold: MoatImprovementThreshold,
-) -> MoatRoundSummary {
-    let moat_score_before = ((market.moat_score as i16 + lock_in.lockin_score as i16)
-        - (competitor.threat_score as i16 / 2))
-        .max(0);
-    let strategy_gain: i16 = selected_strategies
-        .iter()
-        .map(|strategy| strategy.expected_moat_gain)
-        .sum();
-    let moat_score_after = if tests_passed {
-        moat_score_before + strategy_gain
-    } else {
-        moat_score_before
-    };
-    let continue_decision = if tests_passed && (moat_score_after - moat_score_before) >= threshold.0
-    {
-        ContinueDecision::Continue
-    } else {
-        ContinueDecision::Stop
-    };
-
-    MoatRoundSummary {
-        round_id,
-        selected_strategies: selected_strategies
-            .iter()
-            .map(|strategy| strategy.strategy_id.clone())
-            .collect(),
-        implemented_specs: build_moat_spec_handoff_ids(selected_strategies, max_spec_generations),
-        tests_passed,
-        moat_score_before,
-        moat_score_after,
-        continue_decision,
-        stop_reason: if continue_decision == ContinueDecision::Stop {
-            Some(
-                if tests_passed {
-                    "moat improvement below threshold"
-                } else {
-                    "tests failed"
-                }
-                .into(),
-            )
-        } else {
-            None
-        },
-        pivot_reason: None,
-    }
-}
-
-pub fn build_default_moat_task_graph(round_id: Uuid) -> MoatTaskGraph {
-    MoatTaskGraph {
-        round_id,
-        nodes: vec![
-            MoatTaskNode {
-                node_id: "market_scan".into(),
-                title: "Market Scan".into(),
-                role: AgentRole::Planner,
-                kind: MoatTaskNodeKind::MarketScan,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec![],
-                spec_ref: None,
-            },
-            MoatTaskNode {
-                node_id: "competitor_analysis".into(),
-                title: "Competitor Analysis".into(),
-                role: AgentRole::Planner,
-                kind: MoatTaskNodeKind::CompetitorAnalysis,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec![],
-                spec_ref: None,
-            },
-            MoatTaskNode {
-                node_id: "lockin_analysis".into(),
-                title: "Lock-In Analysis".into(),
-                role: AgentRole::Planner,
-                kind: MoatTaskNodeKind::LockInAnalysis,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec![],
-                spec_ref: None,
-            },
-            MoatTaskNode {
-                node_id: "strategy_generation".into(),
-                title: "Strategy Generation".into(),
-                role: AgentRole::Planner,
-                kind: MoatTaskNodeKind::StrategyGeneration,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec![
-                    "market_scan".into(),
-                    "competitor_analysis".into(),
-                    "lockin_analysis".into(),
-                ],
-                spec_ref: None,
-            },
-            MoatTaskNode {
-                node_id: "spec_planning".into(),
-                title: "Spec Planning".into(),
-                role: AgentRole::Planner,
-                kind: MoatTaskNodeKind::SpecPlanning,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec!["strategy_generation".into()],
-                spec_ref: Some(
-                    "docs/superpowers/specs/2026-04-25-med-de-id-moat-loop-design.md".into(),
-                ),
-            },
-            MoatTaskNode {
-                node_id: "implementation".into(),
-                title: "Implementation".into(),
-                role: AgentRole::Coder,
-                kind: MoatTaskNodeKind::Implementation,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec!["spec_planning".into()],
-                spec_ref: None,
-            },
-            MoatTaskNode {
-                node_id: "review".into(),
-                title: "Review".into(),
-                role: AgentRole::Reviewer,
-                kind: MoatTaskNodeKind::Review,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec!["implementation".into()],
-                spec_ref: None,
-            },
-            MoatTaskNode {
-                node_id: "evaluation".into(),
-                title: "Evaluation".into(),
-                role: AgentRole::Reviewer,
-                kind: MoatTaskNodeKind::Evaluation,
-                state: MoatTaskNodeState::Pending,
-                depends_on: vec!["review".into()],
-                spec_ref: None,
-            },
-        ],
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MoatAgentAssignment {
-    pub role: AgentRole,
-    pub node_id: String,
-    pub title: String,
-    pub kind: MoatTaskNodeKind,
-    pub spec_ref: Option<String>,
-}
-
-pub fn project_ready_moat_agent_assignments(
-    graph: &MoatTaskGraph,
-    budget: &ResourceBudget,
-) -> Vec<MoatAgentAssignment> {
-    if budget.max_parallel_tasks == 0 {
-        return Vec::new();
-    }
-
-    let ready_node_ids = graph.ready_node_ids().into_iter().collect::<BTreeSet<_>>();
-
-    graph
-        .nodes
-        .iter()
-        .filter(|node| ready_node_ids.contains(&node.node_id))
-        .take(budget.max_parallel_tasks as usize)
-        .map(|node| MoatAgentAssignment {
-            role: node.role,
-            node_id: node.node_id.clone(),
-            title: node.title.clone(),
-            kind: node.kind,
-            spec_ref: node.spec_ref.clone(),
-        })
-        .collect()
-}
-
-pub fn project_task_graph_progress(
-    mut graph: MoatTaskGraph,
-    executed_tasks: &[String],
-) -> MoatTaskGraph {
-    let executed_tasks = executed_tasks.iter().cloned().collect::<BTreeSet<_>>();
-
-    for node in &mut graph.nodes {
-        node.state = if executed_tasks.contains(&node.node_id) {
-            MoatTaskNodeState::Completed
-        } else {
-            MoatTaskNodeState::Pending
-        };
-    }
-
-    let completed_nodes = graph
-        .nodes
-        .iter()
-        .filter(|node| node.state == MoatTaskNodeState::Completed)
-        .map(|node| node.node_id.clone())
-        .collect::<BTreeSet<_>>();
-
-    for node in &mut graph.nodes {
-        if node.state == MoatTaskNodeState::Pending
-            && node
-                .depends_on
-                .iter()
-                .all(|dependency| completed_nodes.contains(dependency))
-        {
-            node.state = MoatTaskNodeState::Ready;
-        }
-    }
-
-    graph
-}
-
-pub fn summarize_round_memory(
-    summary: &MoatRoundSummary,
-    decisions: Vec<DecisionLogEntry>,
-) -> MoatMemorySnapshot {
-    MoatMemorySnapshot {
-        round_id: summary.round_id,
-        latest_score: summary.moat_score_after,
-        improvement_delta: summary.improvement(),
-        decisions,
-    }
-}

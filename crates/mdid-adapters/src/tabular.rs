@@ -168,6 +168,7 @@ fn build_extracted_data(
     rows: Vec<Vec<String>>,
     policies: &[FieldPolicy],
 ) -> ExtractedTabularData {
+    let headers = normalize_headers(headers);
     let columns = headers
         .iter()
         .enumerate()
@@ -215,6 +216,16 @@ fn build_extracted_data(
         rows,
         candidates,
     }
+}
+
+fn normalize_headers(mut headers: Vec<String>) -> Vec<String> {
+    if let Some(first_header) = headers.first_mut() {
+        if let Some(stripped_header) = first_header.strip_prefix('\u{feff}') {
+            *first_header = stripped_header.to_owned();
+        }
+    }
+
+    headers
 }
 
 fn cell_to_string(cell: &Data) -> String {

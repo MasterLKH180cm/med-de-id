@@ -1,2796 +1,1631 @@
-use mdid_application::{render_moat_plan_markdown, render_moat_spec_markdown, MoatAgentAssignment};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    process,
+};
+
+use mdid_adapters::{
+    ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter, FieldPolicy,
+    FieldPolicyAction, XlsxTabularAdapter,
+};
+use mdid_application::{
+    ConservativeMediaDeidentificationService, DicomDeidentificationService,
+    PdfDeidentificationService, TabularDeidentificationService,
+};
 use mdid_domain::{
-    AgentRole, CompetitorProfile, ContinueDecision, LockInReport, MarketMoatSnapshot, MoatStrategy,
-    MoatTaskNodeKind, MoatTaskNodeState, MoatType, ResourceBudget,
+    AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaFormat, DecodeRequest,
+    DicomPrivateTagPolicy, PdfPageRef, PdfScanStatus, SurfaceKind,
 };
-use mdid_runtime::{
-    moat::{run_bounded_round, MoatRoundInput, MoatRoundReport},
-    moat_history::{
-        CompleteInProgressTaskError, LocalMoatHistoryStore, MoatHistoryEntry, MoatHistorySummary,
-    },
-};
+use mdid_vault::{LocalVaultStore, PortableVaultArtifact};
+use rust_xlsxwriter::Workbook;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct MoatRoundOverrides {
-    strategy_candidates: Option<u8>,
-    spec_generations: Option<u8>,
-    implementation_tasks: Option<u8>,
-    review_loops: Option<u8>,
-    tests_passed: Option<bool>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct MoatRoundCommand {
-    overrides: MoatRoundOverrides,
-    history_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct MoatControlPlaneCommand {
-    overrides: MoatRoundOverrides,
-    history_path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatHistoryCommand {
-    history_path: String,
-    round_id: Option<String>,
-    decision: Option<ContinueDecision>,
-    contains: Option<String>,
-    stop_reason_contains: Option<String>,
-    min_score: Option<u32>,
-    tests_passed: Option<bool>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatDecisionLogCommand {
-    history_path: String,
-    round_id: Option<String>,
-    role: Option<AgentRole>,
-    contains: Option<String>,
-    summary_contains: Option<String>,
-    rationale_contains: Option<String>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatAssignmentsCommand {
-    history_path: String,
-    round_id: Option<String>,
-    role: Option<AgentRole>,
-    state: Option<MoatTaskNodeState>,
-    kind: Option<MoatTaskNodeKind>,
-    node_id: Option<String>,
-    depends_on: Option<String>,
-    no_dependencies: bool,
-    title_contains: Option<String>,
-    spec_ref: Option<String>,
-    contains: Option<String>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatTaskGraphCommand {
-    history_path: String,
-    round_id: Option<String>,
-    role: Option<AgentRole>,
-    state: Option<MoatTaskNodeState>,
-    kind: Option<MoatTaskNodeKind>,
-    node_id: Option<String>,
-    depends_on: Option<String>,
-    no_dependencies: bool,
-    title_contains: Option<String>,
-    spec_ref: Option<String>,
-    contains: Option<String>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatReadyTasksCommand {
-    history_path: String,
-    round_id: Option<String>,
-    role: Option<AgentRole>,
-    kind: Option<MoatTaskNodeKind>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatClaimTaskCommand {
-    history_path: String,
-    round_id: Option<String>,
-    node_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatCompleteTaskCommand {
-    history_path: String,
-    round_id: Option<String>,
-    node_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatReleaseTaskCommand {
-    history_path: String,
-    round_id: Option<String>,
-    node_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatBlockTaskCommand {
-    history_path: String,
-    round_id: Option<String>,
-    node_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MoatUnblockTaskCommand {
-    history_path: String,
-    round_id: Option<String>,
-    node_id: String,
-}
+const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
+const MAX_VAULT_AUDIT_LIMIT: usize = 100;
+/// Maximum local portable vault artifact size accepted by `vault-import`.
+const MAX_PORTABLE_ARTIFACT_BYTES: u64 = 10 * 1024 * 1024;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    match parse_command(&args) {
-        Ok(CliCommand::Status) => println!("med-de-id CLI ready"),
-        Ok(CliCommand::MoatRound(command)) => {
-            if let Err(error) = run_moat_round(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatControlPlane(command)) => {
-            if let Err(error) = run_moat_control_plane(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatHistory(command)) => {
-            if let Err(error) = run_moat_history(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatDecisionLog(command)) => {
-            if let Err(error) = run_moat_decision_log(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatAssignments(command)) => {
-            if let Err(error) = run_moat_assignments(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatTaskGraph(command)) => {
-            if let Err(error) = run_moat_task_graph(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatReadyTasks(command)) => {
-            if let Err(error) = run_moat_ready_tasks(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatClaimTask(command)) => {
-            if let Err(error) = run_moat_claim_task(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatCompleteTask(command)) => {
-            if let Err(error) = run_moat_complete_task(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatReleaseTask(command)) => {
-            if let Err(error) = run_moat_release_task(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatBlockTask(command)) => {
-            if let Err(error) = run_moat_block_task(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatUnblockTask(command)) => {
-            if let Err(error) = run_moat_unblock_task(&command) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatExportSpecs {
-            history_path,
-            output_dir,
-        }) => {
-            if let Err(error) = run_moat_export_specs(&history_path, &output_dir) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatExportPlans {
-            history_path,
-            output_dir,
-        }) => {
-            if let Err(error) = run_moat_export_plans(&history_path, &output_dir) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatContinue {
-            history_path,
-            improvement_threshold,
-        }) => {
-            if let Err(error) = run_moat_continue(&history_path, improvement_threshold) {
-                exit_with_error(error);
-            }
-        }
-        Ok(CliCommand::MoatScheduleNext {
-            history_path,
-            improvement_threshold,
-        }) => {
-            if let Err(error) = run_moat_schedule_next(&history_path, improvement_threshold) {
-                exit_with_error(error);
-            }
-        }
-        Err(error) => exit_with_usage(error),
+    match parse_command(&args).and_then(run_command) {
+        Ok(()) => {}
+        Err(error) => exit_with_usage(&error),
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum CliCommand {
     Status,
-    MoatRound(MoatRoundCommand),
-    MoatControlPlane(MoatControlPlaneCommand),
-    MoatHistory(MoatHistoryCommand),
-    MoatDecisionLog(MoatDecisionLogCommand),
-    MoatAssignments(MoatAssignmentsCommand),
-    MoatTaskGraph(MoatTaskGraphCommand),
-    MoatReadyTasks(MoatReadyTasksCommand),
-    MoatClaimTask(MoatClaimTaskCommand),
-    MoatCompleteTask(MoatCompleteTaskCommand),
-    MoatReleaseTask(MoatReleaseTaskCommand),
-    MoatBlockTask(MoatBlockTaskCommand),
-    MoatUnblockTask(MoatUnblockTaskCommand),
-    MoatExportSpecs {
-        history_path: String,
-        output_dir: String,
-    },
-    MoatExportPlans {
-        history_path: String,
-        output_dir: String,
-    },
-    MoatContinue {
-        history_path: String,
-        improvement_threshold: i16,
-    },
-    MoatScheduleNext {
-        history_path: String,
-        improvement_threshold: i16,
-    },
+    DeidentifyCsv(DeidentifyCsvArgs),
+    DeidentifyXlsx(DeidentifyXlsxArgs),
+    DeidentifyDicom(DeidentifyDicomArgs),
+    DeidentifyPdf(DeidentifyPdfArgs),
+    ReviewMedia(ReviewMediaArgs),
+    VaultAudit(VaultAuditArgs),
+    VaultDecode(VaultDecodeArgs),
+    VaultExport(VaultExportArgs),
+    VaultImport(VaultImportArgs),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DeidentifyCsvArgs {
+    csv_path: PathBuf,
+    policies_json: String,
+    vault_path: PathBuf,
+    passphrase: String,
+    output_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DeidentifyXlsxArgs {
+    xlsx_path: PathBuf,
+    policies_json: String,
+    vault_path: PathBuf,
+    passphrase: String,
+    output_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DeidentifyDicomArgs {
+    dicom_path: PathBuf,
+    private_tag_policy: String,
+    vault_path: PathBuf,
+    passphrase: String,
+    output_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DeidentifyPdfArgs {
+    pdf_path: PathBuf,
+    source_name: String,
+    report_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ReviewMediaArgs {
+    artifact_label: String,
+    format: ConservativeMediaFormat,
+    metadata_json: String,
+    requires_visual_review: bool,
+    unsupported_payload: bool,
+    report_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct VaultAuditArgs {
+    vault_path: PathBuf,
+    passphrase: String,
+    limit: Option<usize>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct VaultDecodeArgs {
+    vault_path: PathBuf,
+    passphrase: String,
+    record_ids_json: String,
+    output_target: String,
+    justification: String,
+    report_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct VaultExportArgs {
+    vault_path: PathBuf,
+    passphrase: String,
+    record_ids_json: String,
+    export_passphrase: String,
+    context: String,
+    artifact_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct VaultImportArgs {
+    vault_path: PathBuf,
+    passphrase: String,
+    artifact_path: PathBuf,
+    portable_passphrase: String,
+    context: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyRequest {
+    header: String,
+    phi_type: String,
+    action: PolicyActionRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PolicyActionRequest {
+    Encode,
+    Review,
+    Ignore,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConservativeMediaMetadataEntryRequest {
+    key: String,
+    value: String,
 }
 
 fn parse_command(args: &[String]) -> Result<CliCommand, String> {
     match args {
         [] => Ok(CliCommand::Status),
         [status] if status == "status" => Ok(CliCommand::Status),
-        [moat, round, rest @ ..] if moat == "moat" && round == "round" => {
-            Ok(CliCommand::MoatRound(parse_moat_round_command(rest)?))
+        [command, rest @ ..] if command == "deidentify-csv" => {
+            parse_deidentify_csv_args(rest).map(CliCommand::DeidentifyCsv)
         }
-        [moat, control_plane, rest @ ..] if moat == "moat" && control_plane == "control-plane" => {
-            Ok(CliCommand::MoatControlPlane(
-                parse_moat_control_plane_command(rest)?,
-            ))
+        [command, rest @ ..] if command == "deidentify-xlsx" => {
+            parse_deidentify_xlsx_args(rest).map(CliCommand::DeidentifyXlsx)
         }
-        [moat, history, rest @ ..] if moat == "moat" && history == "history" => {
-            Ok(CliCommand::MoatHistory(parse_moat_history_command(rest)?))
+        [command, rest @ ..] if command == "deidentify-dicom" => {
+            parse_deidentify_dicom_args(rest).map(CliCommand::DeidentifyDicom)
         }
-        [moat, decision_log, rest @ ..] if moat == "moat" && decision_log == "decision-log" => Ok(
-            CliCommand::MoatDecisionLog(parse_moat_decision_log_command(rest)?),
-        ),
-        [moat, assignments, rest @ ..] if moat == "moat" && assignments == "assignments" => Ok(
-            CliCommand::MoatAssignments(parse_moat_assignments_command(rest)?),
-        ),
-        [moat, task_graph, rest @ ..] if moat == "moat" && task_graph == "task-graph" => Ok(
-            CliCommand::MoatTaskGraph(parse_moat_task_graph_command(rest)?),
-        ),
-        [moat, ready_tasks, rest @ ..] if moat == "moat" && ready_tasks == "ready-tasks" => Ok(
-            CliCommand::MoatReadyTasks(parse_moat_ready_tasks_command(rest)?),
-        ),
-        [moat, claim_task, rest @ ..] if moat == "moat" && claim_task == "claim-task" => Ok(
-            CliCommand::MoatClaimTask(parse_moat_claim_task_command(rest)?),
-        ),
-        [moat, complete_task, rest @ ..] if moat == "moat" && complete_task == "complete-task" => {
-            Ok(CliCommand::MoatCompleteTask(
-                parse_moat_complete_task_command(rest)?,
-            ))
+        [command, rest @ ..] if command == "deidentify-pdf" => {
+            parse_deidentify_pdf_args(rest).map(CliCommand::DeidentifyPdf)
         }
-        [moat, release_task, rest @ ..] if moat == "moat" && release_task == "release-task" => Ok(
-            CliCommand::MoatReleaseTask(parse_moat_release_task_command(rest)?),
-        ),
-        [moat, block_task, rest @ ..] if moat == "moat" && block_task == "block-task" => Ok(
-            CliCommand::MoatBlockTask(parse_moat_block_task_command(rest)?),
-        ),
-        [moat, unblock_task, rest @ ..] if moat == "moat" && unblock_task == "unblock-task" => Ok(
-            CliCommand::MoatUnblockTask(parse_moat_unblock_task_command(rest)?),
-        ),
-        [moat, export_specs, rest @ ..] if moat == "moat" && export_specs == "export-specs" => {
-            parse_moat_export_specs_command(rest)
+        [command, rest @ ..] if command == "review-media" => {
+            parse_review_media_args(rest).map(CliCommand::ReviewMedia)
         }
-        [moat, export_plans, rest @ ..] if moat == "moat" && export_plans == "export-plans" => {
-            parse_moat_export_plans_command(rest)
+        [command, rest @ ..] if command == "vault-audit" => {
+            parse_vault_audit_args(rest).map(CliCommand::VaultAudit)
         }
-        [moat, continue_command, rest @ ..] if moat == "moat" && continue_command == "continue" => {
-            parse_moat_continue_command(rest)
+        [command, rest @ ..] if command == "vault-decode" => {
+            parse_vault_decode_args(rest).map(CliCommand::VaultDecode)
         }
-        [moat, schedule_next, rest @ ..] if moat == "moat" && schedule_next == "schedule-next" => {
-            parse_moat_schedule_next_command(rest)
+        [command, rest @ ..] if command == "vault-export" => {
+            parse_vault_export_args(rest).map(CliCommand::VaultExport)
         }
-        _ => Err(format!("unknown command: {}", format_command(args))),
+        [command, rest @ ..] if command == "vault-import" => {
+            parse_vault_import_args(rest).map(CliCommand::VaultImport)
+        }
+        _ => Err("unknown command".to_string()),
     }
 }
 
-fn parse_moat_round_command(args: &[String]) -> Result<MoatRoundCommand, String> {
-    let (overrides, history_path) = parse_moat_round_overrides(args, true)?;
-    Ok(MoatRoundCommand {
-        overrides,
-        history_path,
-    })
-}
+fn parse_deidentify_csv_args(args: &[String]) -> Result<DeidentifyCsvArgs, String> {
+    let mut csv_path = None;
+    let mut policies_json = None;
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut output_path = None;
 
-fn parse_moat_control_plane_command(args: &[String]) -> Result<MoatControlPlaneCommand, String> {
-    let (overrides, history_path) = parse_moat_round_overrides(args, true)?;
-    if history_path.is_some() && overrides != MoatRoundOverrides::default() {
-        return Err("cannot combine --history-path with control-plane override flags".to_string());
-    }
-    Ok(MoatControlPlaneCommand {
-        overrides,
-        history_path,
-    })
-}
-
-fn parse_moat_history_command(args: &[String]) -> Result<MoatHistoryCommand, String> {
-    let mut history_path = None;
-    let mut round_id = None;
-    let mut decision = None;
-    let mut contains = None;
-    let mut stop_reason_contains = None;
-    let mut min_score = None;
-    let mut tests_passed = None;
-    let mut limit = None;
     let mut index = 0;
-
     while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-                index += 2;
-            }
-            "--decision" => {
-                let value = required_flag_value(args, index, "--decision", false)?;
-                if decision.is_some() {
-                    return Err(duplicate_flag_error("--decision"));
-                }
-                decision = Some(parse_continue_decision_filter(value)?);
-                index += 2;
-            }
-            "--round-id" => {
-                let value = required_flag_value(args, index, "--round-id", false)?;
-                if round_id.is_some() {
-                    return Err(duplicate_flag_error("--round-id"));
-                }
-                round_id = Some(value.clone());
-                index += 2;
-            }
-            "--contains" => {
-                let value = args
-                    .get(index + 1)
-                    .filter(|value| !value.starts_with("--"))
-                    .ok_or_else(|| "--contains requires a value".to_string())?;
-                if contains.is_some() {
-                    return Err(duplicate_flag_error("--contains"));
-                }
-                contains = Some(value.clone());
-                index += 2;
-            }
-            "--stop-reason-contains" => {
-                let value = args
-                    .get(index + 1)
-                    .filter(|value| !value.starts_with("--"))
-                    .ok_or_else(|| "--stop-reason-contains requires a value".to_string())?;
-                if stop_reason_contains.is_some() {
-                    return Err(duplicate_flag_error("--stop-reason-contains"));
-                }
-                stop_reason_contains = Some(value.clone());
-                index += 2;
-            }
-            "--limit" => {
-                let value = required_flag_value(args, index, "--limit", false)?;
-                if limit.is_some() {
-                    return Err(duplicate_flag_error("--limit"));
-                }
-                limit = Some(parse_limit_value(value)?);
-                index += 2;
-            }
-            "--min-score" => {
-                let value = required_flag_value(args, index, "--min-score", true)?;
-                if min_score.is_some() {
-                    return Err(duplicate_flag_error("--min-score"));
-                }
-                min_score = Some(parse_min_score_value(value)?);
-                index += 2;
-            }
-            "--tests-passed" => {
-                let value = required_flag_value(args, index, "--tests-passed", false)?;
-                if tests_passed.is_some() {
-                    return Err(duplicate_flag_error("--tests-passed"));
-                }
-                tests_passed = Some(parse_bool_flag("--tests-passed", value)?);
-                index += 2;
-            }
-            flag => return Err(format!("unknown moat history flag: {flag}")),
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--csv-path" => csv_path = Some(PathBuf::from(value)),
+            "--policies-json" => policies_json = Some(value.clone()),
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--output-path" => output_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
         }
+        index += 2;
     }
 
-    Ok(MoatHistoryCommand {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        round_id,
-        decision,
-        contains,
-        stop_reason_contains,
-        min_score,
-        tests_passed,
-        limit,
+    Ok(DeidentifyCsvArgs {
+        csv_path: csv_path.ok_or_else(|| "missing --csv-path".to_string())?,
+        policies_json: policies_json.ok_or_else(|| "missing --policies-json".to_string())?,
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        output_path: output_path.ok_or_else(|| "missing --output-path".to_string())?,
     })
 }
 
-fn parse_min_score_value(value: &str) -> Result<u32, String> {
-    value.parse::<u32>().map_err(|_| {
-        format!("invalid value for --min-score: expected non-negative integer, got {value}")
+fn parse_deidentify_xlsx_args(args: &[String]) -> Result<DeidentifyXlsxArgs, String> {
+    let mut xlsx_path = None;
+    let mut policies_json = None;
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut output_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--xlsx-path" => xlsx_path = Some(PathBuf::from(value)),
+            "--policies-json" => policies_json = Some(value.clone()),
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--output-path" => output_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(DeidentifyXlsxArgs {
+        xlsx_path: xlsx_path.ok_or_else(|| "missing --xlsx-path".to_string())?,
+        policies_json: policies_json.ok_or_else(|| "missing --policies-json".to_string())?,
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        output_path: output_path.ok_or_else(|| "missing --output-path".to_string())?,
     })
 }
 
-fn parse_continue_decision_filter(value: &str) -> Result<ContinueDecision, String> {
+fn parse_deidentify_dicom_args(args: &[String]) -> Result<DeidentifyDicomArgs, String> {
+    let mut dicom_path = None;
+    let mut private_tag_policy = None;
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut output_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--dicom-path" => dicom_path = Some(PathBuf::from(value)),
+            "--private-tag-policy" => private_tag_policy = Some(value.clone()),
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--output-path" => output_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(DeidentifyDicomArgs {
+        dicom_path: dicom_path.ok_or_else(|| "missing --dicom-path".to_string())?,
+        private_tag_policy: private_tag_policy
+            .ok_or_else(|| "missing --private-tag-policy".to_string())?,
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        output_path: output_path.ok_or_else(|| "missing --output-path".to_string())?,
+    })
+}
+
+fn parse_deidentify_pdf_args(args: &[String]) -> Result<DeidentifyPdfArgs, String> {
+    let mut pdf_path = None;
+    let mut source_name = None;
+    let mut report_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--pdf-path" => pdf_path = Some(PathBuf::from(value)),
+            "--source-name" => source_name = Some(value.clone()),
+            "--report-path" => report_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    let source_name = source_name.ok_or_else(|| "missing --source-name".to_string())?;
+    if source_name.trim().is_empty() {
+        return Err("missing --source-name".to_string());
+    }
+
+    Ok(DeidentifyPdfArgs {
+        pdf_path: pdf_path.ok_or_else(|| "missing --pdf-path".to_string())?,
+        source_name,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+    })
+}
+
+fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
+    let mut artifact_label = None;
+    let mut format = None;
+    let mut metadata_json = None;
+    let mut requires_visual_review = None;
+    let mut unsupported_payload = None;
+    let mut report_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--artifact-label" => artifact_label = Some(value.clone()),
+            "--format" => format = Some(parse_conservative_media_format(value)?),
+            "--metadata-json" => metadata_json = Some(value.clone()),
+            "--requires-visual-review" => requires_visual_review = Some(parse_bool_flag(value)?),
+            "--unsupported-payload" => unsupported_payload = Some(parse_bool_flag(value)?),
+            "--report-path" => report_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    let artifact_label = artifact_label.ok_or_else(|| "missing --artifact-label".to_string())?;
+    if artifact_label.trim().is_empty() {
+        return Err("missing --artifact-label".to_string());
+    }
+
+    Ok(ReviewMediaArgs {
+        artifact_label,
+        format: format.ok_or_else(|| "missing --format".to_string())?,
+        metadata_json: metadata_json.ok_or_else(|| "missing --metadata-json".to_string())?,
+        requires_visual_review: requires_visual_review
+            .ok_or_else(|| "missing --requires-visual-review".to_string())?,
+        unsupported_payload: unsupported_payload
+            .ok_or_else(|| "missing --unsupported-payload".to_string())?,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+    })
+}
+
+fn parse_conservative_media_format(value: &str) -> Result<ConservativeMediaFormat, String> {
     match value {
-        "Continue" => Ok(ContinueDecision::Continue),
-        "Stop" => Ok(ContinueDecision::Stop),
-        "Pivot" => Ok(ContinueDecision::Pivot),
-        other => Err(format!("unknown moat history decision: {other}")),
+        "image" => Ok(ConservativeMediaFormat::Image),
+        "video" => Ok(ConservativeMediaFormat::Video),
+        "fcs" => Ok(ConservativeMediaFormat::Fcs),
+        _ => Err("invalid --format".to_string()),
     }
 }
 
-fn parse_moat_decision_log_command(args: &[String]) -> Result<MoatDecisionLogCommand, String> {
-    let mut history_path = None;
-    let mut round_id = None;
-    let mut role = None;
-    let mut contains = None;
-    let mut summary_contains = None;
-    let mut rationale_contains = None;
-    let mut limit = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--round-id" => {
-                let value = required_flag_value(args, index, "--round-id", true)?;
-                if round_id.is_some() {
-                    return Err(duplicate_flag_error("--round-id"));
-                }
-                round_id = Some(value.to_string());
-            }
-            "--role" => {
-                let value = required_flag_value(args, index, "--role", false)?;
-                if role.is_some() {
-                    return Err(duplicate_flag_error("--role"));
-                }
-                role = Some(parse_agent_role_filter(value)?);
-            }
-            "--contains" => {
-                let value = required_flag_value(args, index, "--contains", true)?;
-                if contains.is_some() {
-                    return Err(duplicate_flag_error("--contains"));
-                }
-                contains = Some(value.clone());
-            }
-            "--summary-contains" => {
-                let value = required_flag_value(args, index, "--summary-contains", true)?;
-                if summary_contains.is_some() {
-                    return Err(duplicate_flag_error("--summary-contains"));
-                }
-                summary_contains = Some(value.clone());
-            }
-            "--rationale-contains" => {
-                let value = required_flag_value(args, index, "--rationale-contains", true)?;
-                if rationale_contains.is_some() {
-                    return Err(duplicate_flag_error("--rationale-contains"));
-                }
-                rationale_contains = Some(value.clone());
-            }
-            "--limit" => {
-                let value = required_flag_value(args, index, "--limit", false)?;
-                if limit.is_some() {
-                    return Err(duplicate_flag_error("--limit"));
-                }
-                limit = Some(parse_positive_usize_flag("--limit", value)?);
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(MoatDecisionLogCommand {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        round_id,
-        role,
-        contains,
-        summary_contains,
-        rationale_contains,
-        limit,
-    })
-}
-
-fn parse_agent_role_filter(value: &str) -> Result<AgentRole, String> {
-    match value {
-        "planner" => Ok(AgentRole::Planner),
-        "coder" => Ok(AgentRole::Coder),
-        "reviewer" => Ok(AgentRole::Reviewer),
-        other => Err(format!("unknown moat decision-log role: {other}")),
-    }
-}
-
-fn parse_moat_assignments_command(args: &[String]) -> Result<MoatAssignmentsCommand, String> {
-    let mut history_path = None;
-    let mut round_id = None;
-    let mut role = None;
-    let mut state = None;
-    let mut kind = None;
-    let mut node_id = None;
-    let mut depends_on = None;
-    let mut no_dependencies = false;
-    let mut title_contains = None;
-    let mut spec_ref = None;
-    let mut contains = None;
-    let mut limit = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--round-id" => {
-                let value = required_flag_value(args, index, "--round-id", true)?;
-                if round_id.is_some() {
-                    return Err(duplicate_flag_error("--round-id"));
-                }
-                round_id = Some(value.to_string());
-            }
-            "--role" => {
-                let value = required_flag_value(args, index, "--role", false)?;
-                if role.is_some() {
-                    return Err(duplicate_flag_error("--role"));
-                }
-                role = Some(parse_moat_assignments_role_filter(value)?);
-            }
-            "--state" => {
-                let value = required_flag_value(args, index, "--state", false)?;
-                if state.is_some() {
-                    return Err(duplicate_flag_error("--state"));
-                }
-                state = Some(parse_moat_assignments_state_filter(value)?);
-            }
-            "--kind" => {
-                let value = required_flag_value(args, index, "--kind", true)?;
-                if kind.is_some() {
-                    return Err(duplicate_flag_error("--kind"));
-                }
-                kind = Some(parse_moat_assignments_kind_filter(value)?);
-            }
-            "--node-id" => {
-                let value = required_flag_value(args, index, "--node-id", false)?;
-                if node_id.is_some() {
-                    return Err(duplicate_flag_error("--node-id"));
-                }
-                node_id = Some(value.clone());
-            }
-            "--depends-on" => {
-                let value = required_flag_value(args, index, "--depends-on", false)
-                    .map_err(|_| "--depends-on requires a value".to_string())?;
-                if depends_on.is_some() {
-                    return Err(duplicate_flag_error("--depends-on"));
-                }
-                depends_on = Some(value.clone());
-            }
-            "--no-dependencies" => {
-                if no_dependencies {
-                    return Err(duplicate_flag_error("--no-dependencies"));
-                }
-                no_dependencies = true;
-                index += 1;
-                continue;
-            }
-            "--title-contains" => {
-                let value = required_flag_value(args, index, "--title-contains", true)?;
-                if title_contains.is_some() {
-                    return Err(duplicate_flag_error("--title-contains"));
-                }
-                title_contains = Some(value.clone());
-            }
-            "--spec-ref" => {
-                let value = required_flag_value(args, index, "--spec-ref", true)?;
-                if spec_ref.is_some() {
-                    return Err(duplicate_flag_error("--spec-ref"));
-                }
-                spec_ref = Some(value.clone());
-            }
-            "--contains" => {
-                let value = required_flag_value(args, index, "--contains", true)?;
-                if contains.is_some() {
-                    return Err(duplicate_flag_error("--contains"));
-                }
-                contains = Some(value.clone());
-            }
-            "--limit" => {
-                let value = required_flag_value(args, index, "--limit", true)?;
-                if limit.is_some() {
-                    return Err(duplicate_flag_error("--limit"));
-                }
-                limit = Some(parse_positive_usize_flag("--limit", value)?);
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(MoatAssignmentsCommand {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        round_id,
-        role,
-        state,
-        kind,
-        node_id,
-        depends_on,
-        no_dependencies,
-        title_contains,
-        spec_ref,
-        contains,
-        limit,
-    })
-}
-
-fn parse_moat_assignments_role_filter(value: &str) -> Result<AgentRole, String> {
-    match value {
-        "planner" => Ok(AgentRole::Planner),
-        "coder" => Ok(AgentRole::Coder),
-        "reviewer" => Ok(AgentRole::Reviewer),
-        other => Err(format!("unknown moat assignments role: {other}")),
-    }
-}
-
-fn parse_moat_assignments_kind_filter(value: &str) -> Result<MoatTaskNodeKind, String> {
-    parse_moat_task_graph_kind_filter(value)
-        .map_err(|_| format!("unknown moat assignments kind: {value}"))
-}
-
-fn parse_moat_assignments_state_filter(value: &str) -> Result<MoatTaskNodeState, String> {
-    match value {
-        "pending" => Ok(MoatTaskNodeState::Pending),
-        "ready" => Ok(MoatTaskNodeState::Ready),
-        "in_progress" => Ok(MoatTaskNodeState::InProgress),
-        "completed" => Ok(MoatTaskNodeState::Completed),
-        "blocked" => Ok(MoatTaskNodeState::Blocked),
-        other => Err(format!("unknown moat assignments state: {other}")),
-    }
-}
-
-fn parse_moat_task_graph_command(args: &[String]) -> Result<MoatTaskGraphCommand, String> {
-    let mut history_path = None;
-    let mut round_id = None;
-    let mut role = None;
-    let mut state = None;
-    let mut kind = None;
-    let mut node_id = None;
-    let mut depends_on = None;
-    let mut no_dependencies = false;
-    let mut title_contains = None;
-    let mut spec_ref = None;
-    let mut contains = None;
-    let mut limit = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--round-id" => {
-                let value = required_flag_value(args, index, "--round-id", true)?;
-                if round_id.is_some() {
-                    return Err(duplicate_flag_error("--round-id"));
-                }
-                round_id = Some(value.to_string());
-            }
-            "--role" => {
-                let value = required_flag_value(args, index, "--role", false)?;
-                if role.is_some() {
-                    return Err(duplicate_flag_error("--role"));
-                }
-                role = Some(parse_moat_task_graph_role_filter(value)?);
-            }
-            "--state" => {
-                let value = required_flag_value(args, index, "--state", false)?;
-                if state.is_some() {
-                    return Err(duplicate_flag_error("--state"));
-                }
-                state = Some(parse_moat_task_graph_state_filter(value)?);
-            }
-            "--kind" => {
-                let value = required_flag_value(args, index, "--kind", true)?;
-                if kind.is_some() {
-                    return Err(duplicate_flag_error("--kind"));
-                }
-                kind = Some(parse_moat_task_graph_kind_filter(value)?);
-            }
-            "--node-id" => {
-                let value = required_flag_value(args, index, "--node-id", false)?;
-                if node_id.is_some() {
-                    return Err(duplicate_flag_error("--node-id"));
-                }
-                node_id = Some(value.clone());
-            }
-            "--depends-on" => {
-                let value = required_flag_value(args, index, "--depends-on", false)?;
-                if depends_on.is_some() {
-                    return Err(duplicate_flag_error("--depends-on"));
-                }
-                depends_on = Some(value.clone());
-            }
-            "--no-dependencies" => {
-                if no_dependencies {
-                    return Err(duplicate_flag_error("--no-dependencies"));
-                }
-                no_dependencies = true;
-                index += 1;
-                continue;
-            }
-            "--title-contains" => {
-                let value = required_flag_value(args, index, "--title-contains", true)?;
-                if title_contains.is_some() {
-                    return Err(duplicate_flag_error("--title-contains"));
-                }
-                title_contains = Some(value.to_string());
-            }
-            "--spec-ref" => {
-                let value = required_flag_value(args, index, "--spec-ref", true)?;
-                if spec_ref.is_some() {
-                    return Err(duplicate_flag_error("--spec-ref"));
-                }
-                spec_ref = Some(value.to_string());
-            }
-            "--contains" => {
-                let value = required_flag_value(args, index, "--contains", true)?;
-                if contains.is_some() {
-                    return Err(duplicate_flag_error("--contains"));
-                }
-                contains = Some(value.to_string());
-            }
-            "--limit" => {
-                let value = required_flag_value(args, index, "--limit", true)?;
-                if limit.is_some() {
-                    return Err(duplicate_flag_error("--limit"));
-                }
-                limit = Some(parse_task_graph_limit_value(value)?);
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(MoatTaskGraphCommand {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        round_id,
-        role,
-        state,
-        kind,
-        node_id,
-        depends_on,
-        no_dependencies,
-        title_contains,
-        spec_ref,
-        contains,
-        limit,
-    })
-}
-
-fn parse_moat_ready_tasks_command(args: &[String]) -> Result<MoatReadyTasksCommand, String> {
-    let mut history_path = None;
-    let mut round_id = None;
-    let mut role = None;
-    let mut kind = None;
-    let mut limit = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--round-id" => {
-                let value = required_flag_value(args, index, "--round-id", true)?;
-                if round_id.is_some() {
-                    return Err(duplicate_flag_error("--round-id"));
-                }
-                round_id = Some(value.to_string());
-            }
-            "--role" => {
-                let value = required_flag_value(args, index, "--role", false)?;
-                if role.is_some() {
-                    return Err(duplicate_flag_error("--role"));
-                }
-                role = Some(parse_moat_task_graph_role_filter(value)?);
-            }
-            "--kind" => {
-                let value = required_flag_value(args, index, "--kind", true)?;
-                if kind.is_some() {
-                    return Err(duplicate_flag_error("--kind"));
-                }
-                kind = Some(parse_moat_task_graph_kind_filter(value)?);
-            }
-            "--limit" => {
-                let value = required_flag_value(args, index, "--limit", true)?;
-                if limit.is_some() {
-                    return Err(duplicate_flag_error("--limit"));
-                }
-                limit = Some(parse_task_graph_limit_value(value)?);
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(MoatReadyTasksCommand {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        round_id,
-        role,
-        kind,
-        limit,
-    })
-}
-
-fn parse_moat_claim_task_command(args: &[String]) -> Result<MoatClaimTaskCommand, String> {
-    let mut history_path = None;
-    let mut round_id = None;
-    let mut node_id = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--round-id" => {
-                let value = required_flag_value(args, index, "--round-id", true)?;
-                if round_id.is_some() {
-                    return Err(duplicate_flag_error("--round-id"));
-                }
-                round_id = Some(value.to_string());
-            }
-            "--node-id" => {
-                let value = required_flag_value(args, index, "--node-id", true)?;
-                if node_id.is_some() {
-                    return Err(duplicate_flag_error("--node-id"));
-                }
-                node_id = Some(value.to_string());
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(MoatClaimTaskCommand {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        round_id,
-        node_id: node_id.ok_or_else(|| "missing required flag: --node-id".to_string())?,
-    })
-}
-
-fn parse_moat_complete_task_command(args: &[String]) -> Result<MoatCompleteTaskCommand, String> {
-    let command = parse_moat_claim_task_command(args)?;
-    Ok(MoatCompleteTaskCommand {
-        history_path: command.history_path,
-        round_id: command.round_id,
-        node_id: command.node_id,
-    })
-}
-
-fn parse_moat_release_task_command(args: &[String]) -> Result<MoatReleaseTaskCommand, String> {
-    let command = parse_moat_claim_task_command(args)?;
-    Ok(MoatReleaseTaskCommand {
-        history_path: command.history_path,
-        round_id: command.round_id,
-        node_id: command.node_id,
-    })
-}
-
-fn parse_moat_block_task_command(args: &[String]) -> Result<MoatBlockTaskCommand, String> {
-    let command = parse_moat_claim_task_command(args)?;
-    Ok(MoatBlockTaskCommand {
-        history_path: command.history_path,
-        round_id: command.round_id,
-        node_id: command.node_id,
-    })
-}
-
-fn parse_moat_unblock_task_command(args: &[String]) -> Result<MoatUnblockTaskCommand, String> {
-    let command = parse_moat_claim_task_command(args)?;
-    Ok(MoatUnblockTaskCommand {
-        history_path: command.history_path,
-        round_id: command.round_id,
-        node_id: command.node_id,
-    })
-}
-
-fn parse_task_graph_limit_value(value: &str) -> Result<usize, String> {
-    let parsed = value.parse::<usize>().map_err(|_| {
-        format!("invalid value for --limit: expected positive integer, got {value}")
-    })?;
-
-    if parsed == 0 {
-        Err(format!(
-            "invalid value for --limit: expected positive integer, got {value}"
-        ))
-    } else {
-        Ok(parsed)
-    }
-}
-
-fn parse_moat_task_graph_role_filter(value: &str) -> Result<AgentRole, String> {
-    match value {
-        "planner" => Ok(AgentRole::Planner),
-        "coder" => Ok(AgentRole::Coder),
-        "reviewer" => Ok(AgentRole::Reviewer),
-        other => Err(format!("unknown moat task-graph role: {other}")),
-    }
-}
-
-fn parse_moat_task_graph_state_filter(value: &str) -> Result<MoatTaskNodeState, String> {
-    match value {
-        "pending" => Ok(MoatTaskNodeState::Pending),
-        "ready" => Ok(MoatTaskNodeState::Ready),
-        "in_progress" => Ok(MoatTaskNodeState::InProgress),
-        "completed" => Ok(MoatTaskNodeState::Completed),
-        "blocked" => Ok(MoatTaskNodeState::Blocked),
-        other => Err(format!("unknown moat task-graph state: {other}")),
-    }
-}
-
-fn parse_moat_task_graph_kind_filter(value: &str) -> Result<MoatTaskNodeKind, String> {
-    match value {
-        "market_scan" => Ok(MoatTaskNodeKind::MarketScan),
-        "competitor_analysis" => Ok(MoatTaskNodeKind::CompetitorAnalysis),
-        "lock_in_analysis" => Ok(MoatTaskNodeKind::LockInAnalysis),
-        "strategy_generation" => Ok(MoatTaskNodeKind::StrategyGeneration),
-        "spec_planning" => Ok(MoatTaskNodeKind::SpecPlanning),
-        "implementation" => Ok(MoatTaskNodeKind::Implementation),
-        "review" => Ok(MoatTaskNodeKind::Review),
-        "evaluation" => Ok(MoatTaskNodeKind::Evaluation),
-        other => Err(format!("unknown moat task-graph kind: {other}")),
-    }
-}
-
-fn parse_moat_export_specs_command(args: &[String]) -> Result<CliCommand, String> {
-    let mut history_path = None;
-    let mut output_dir = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--output-dir" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| "missing value for --output-dir".to_string())?;
-                if value.starts_with("--") {
-                    return Err("missing value for --output-dir".to_string());
-                }
-                if output_dir.is_some() {
-                    return Err(duplicate_flag_error("--output-dir"));
-                }
-                output_dir = Some(value.clone());
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(CliCommand::MoatExportSpecs {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        output_dir: output_dir.ok_or_else(|| "missing required flag: --output-dir".to_string())?,
-    })
-}
-
-fn parse_moat_export_plans_command(args: &[String]) -> Result<CliCommand, String> {
-    let CliCommand::MoatExportSpecs {
-        history_path,
-        output_dir,
-    } = parse_moat_export_specs_command(args)?
-    else {
-        unreachable!("export specs parser returns export specs command")
-    };
-    Ok(CliCommand::MoatExportPlans {
-        history_path,
-        output_dir,
-    })
-}
-
-fn parse_moat_continue_command(args: &[String]) -> Result<CliCommand, String> {
-    let mut history_path = None;
-    let mut improvement_threshold = 3;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--improvement-threshold" => {
-                let value = required_flag_value(args, index, "--improvement-threshold", false)?;
-                improvement_threshold =
-                    parse_non_negative_i16_flag("--improvement-threshold", value)?;
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(CliCommand::MoatContinue {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        improvement_threshold,
-    })
-}
-
-fn parse_moat_schedule_next_command(args: &[String]) -> Result<CliCommand, String> {
-    let mut history_path = None;
-    let mut improvement_threshold = 3;
-    let mut index = 0;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--history-path" => {
-                let value = required_history_path_value(args, index)?.clone();
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error("--history-path"));
-                }
-                history_path = Some(value);
-            }
-            "--improvement-threshold" => {
-                let value = required_flag_value(args, index, "--improvement-threshold", false)?;
-                improvement_threshold =
-                    parse_non_negative_i16_flag("--improvement-threshold", value)?;
-            }
-            flag => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok(CliCommand::MoatScheduleNext {
-        history_path: history_path
-            .ok_or_else(|| "missing required flag: --history-path".to_string())?,
-        improvement_threshold,
-    })
-}
-
-fn parse_moat_round_overrides(
-    args: &[String],
-    allow_history_path: bool,
-) -> Result<(MoatRoundOverrides, Option<String>), String> {
-    let mut overrides = MoatRoundOverrides::default();
-    let mut history_path = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        let flag = &args[index];
-
-        match flag.as_str() {
-            "--strategy-candidates" => {
-                let value = required_flag_value(args, index, flag, allow_history_path)?;
-                overrides.strategy_candidates = Some(parse_u8_flag(flag, value)?);
-            }
-            "--spec-generations" => {
-                let value = required_flag_value(args, index, flag, allow_history_path)?;
-                overrides.spec_generations = Some(parse_u8_flag(flag, value)?);
-            }
-            "--implementation-tasks" => {
-                let value = required_flag_value(args, index, flag, allow_history_path)?;
-                overrides.implementation_tasks = Some(parse_u8_flag(flag, value)?);
-            }
-            "--review-loops" => {
-                let value = required_flag_value(args, index, flag, allow_history_path)?;
-                overrides.review_loops = Some(parse_u8_flag(flag, value)?);
-            }
-            "--tests-passed" => {
-                let value = required_flag_value(args, index, flag, allow_history_path)?;
-                overrides.tests_passed = Some(parse_bool_flag(flag, value)?);
-            }
-            "--history-path" if allow_history_path => {
-                let value = required_flag_value(args, index, flag, allow_history_path)?;
-                if history_path.is_some() {
-                    return Err(duplicate_flag_error(flag));
-                }
-                history_path = Some(value.clone());
-            }
-            _ => return Err(format!("unknown flag: {flag}")),
-        }
-
-        index += 2;
-    }
-
-    Ok((overrides, history_path))
-}
-
-fn required_flag_value<'a>(
-    args: &'a [String],
-    index: usize,
-    flag: &str,
-    allow_history_path: bool,
-) -> Result<&'a String, String> {
-    if allow_history_path && flag == "--history-path" {
-        return required_history_path_value(args, index);
-    }
-
-    let value = args
-        .get(index + 1)
-        .ok_or_else(|| missing_value_error(flag, allow_history_path))?;
-
-    if allow_history_path && value.starts_with("--") {
-        Err(missing_value_error(flag, allow_history_path))
-    } else {
-        Ok(value)
-    }
-}
-
-fn required_history_path_value<'a>(args: &'a [String], index: usize) -> Result<&'a String, String> {
-    let value = args
-        .get(index + 1)
-        .ok_or_else(|| "missing value for --history-path".to_string())?;
-
-    if history_path_value_is_missing(value) {
-        Err("missing value for --history-path".to_string())
-    } else {
-        Ok(value)
-    }
-}
-
-fn history_path_value_is_missing(value: &str) -> bool {
-    value.starts_with("--")
-}
-
-fn missing_value_error(flag: &str, allow_history_path: bool) -> String {
-    if allow_history_path && flag == "--history-path" {
-        "missing value for --history-path".to_string()
-    } else {
-        format!("missing value for {flag}")
-    }
-}
-
-fn duplicate_flag_error(flag: &str) -> String {
-    format!("duplicate flag: {flag}")
-}
-
-fn parse_u8_flag(flag: &str, value: &str) -> Result<u8, String> {
-    value
-        .parse::<u8>()
-        .map_err(|_| format!("invalid value for {flag}: {value}"))
-}
-
-fn parse_non_negative_i16_flag(flag: &str, value: &str) -> Result<i16, String> {
-    let parsed = value
-        .parse::<i16>()
-        .map_err(|_| format!("invalid value for {flag}: {value}"))?;
-
-    if parsed < 0 {
-        Err(format!("invalid value for {flag}: {value}"))
-    } else {
-        Ok(parsed)
-    }
-}
-
-fn parse_positive_usize_flag(flag: &str, value: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| format!("invalid value for {flag}: {value}"))?;
-
-    if parsed == 0 {
-        Err(format!("{flag} must be greater than 0"))
-    } else {
-        Ok(parsed)
-    }
-}
-
-fn parse_limit_value(value: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| format!("invalid value for --limit: {value}"))?;
-
-    if parsed == 0 {
-        Err("limit must be greater than zero".to_string())
-    } else {
-        Ok(parsed)
-    }
-}
-
-fn parse_bool_flag(flag: &str, value: &str) -> Result<bool, String> {
+fn parse_bool_flag(value: &str) -> Result<bool, String> {
     match value {
         "true" => Ok(true),
         "false" => Ok(false),
-        _ => Err(format!("invalid value for {flag}: {value}")),
+        _ => Err("invalid boolean flag".to_string()),
     }
 }
 
-fn run_moat_round(command: &MoatRoundCommand) -> Result<(), String> {
-    let report = sample_round_report(&command.overrides);
+fn parse_vault_audit_args(args: &[String]) -> Result<VaultAuditArgs, String> {
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut limit = None;
 
-    if let Some(history_path) = &command.history_path {
-        append_report_to_history(history_path, &report)?;
-    }
-
-    println!("moat round complete");
-    println!(
-        "continue_decision={}",
-        format_continue_decision(report.summary.continue_decision)
-    );
-    println!("executed_tasks={}", report.executed_tasks.join(","));
-    println!(
-        "implemented_specs={}",
-        format_string_list(&report.summary.implemented_specs)
-    );
-    println!("moat_score_before={}", report.summary.moat_score_before);
-    println!("moat_score_after={}", report.summary.moat_score_after);
-    println!(
-        "stop_reason={}",
-        report.stop_reason.as_deref().unwrap_or("<none>")
-    );
-
-    if let Some(history_path) = &command.history_path {
-        println!("history_saved_to={history_path}");
-    }
-
-    Ok(())
-}
-
-fn append_report_to_history(history_path: &str, report: &MoatRoundReport) -> Result<(), String> {
-    let mut store = LocalMoatHistoryStore::open(history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    store
-        .append(std::time::SystemTime::now().into(), report.clone())
-        .map_err(|error| format!("failed to append moat history entry: {error}"))
-}
-
-fn run_moat_control_plane(command: &MoatControlPlaneCommand) -> Result<(), String> {
-    if let Some(history_path) = &command.history_path {
-        return run_persisted_moat_control_plane(history_path);
-    }
-
-    let report = sample_round_report(&command.overrides);
-    print_control_plane_snapshot("sample", None, None, &report);
-    Ok(())
-}
-
-fn run_persisted_moat_control_plane(history_path: &str) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let latest = store.entries().last().ok_or_else(|| {
-        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
-    })?;
-
-    let latest_round_id = latest.report.summary.round_id.to_string();
-    print_control_plane_snapshot(
-        "history",
-        Some(history_path),
-        Some(latest_round_id.as_str()),
-        &latest.report,
-    );
-    Ok(())
-}
-
-fn print_control_plane_snapshot(
-    source: &str,
-    history_path: Option<&str>,
-    latest_round_id: Option<&str>,
-    report: &MoatRoundReport,
-) {
-    let control_plane = &report.control_plane;
-    let ready_nodes = format_ready_nodes(&control_plane.task_graph.ready_node_ids());
-    let latest_decision_summary = control_plane
-        .memory
-        .latest_decision_summary()
-        .unwrap_or_else(|| "<none>".to_string());
-    let task_states = format_task_states(&control_plane.task_graph.nodes);
-
-    println!("moat control plane snapshot");
-    println!("source={source}");
-    if let Some(latest_round_id) = latest_round_id {
-        println!("latest_round_id={latest_round_id}");
-    }
-    if let Some(history_path) = history_path {
-        println!("history_path={history_path}");
-    }
-    println!("ready_nodes={ready_nodes}");
-    println!("latest_decision_summary={latest_decision_summary}");
-    println!(
-        "improvement_delta={}",
-        control_plane.memory.improvement_delta
-    );
-    println!(
-        "agent_assignments={}",
-        format_agent_assignments(&control_plane.agent_assignments)
-    );
-    println!("task_states={task_states}");
-}
-
-fn run_moat_history(command: &MoatHistoryCommand) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let entries = store.entries();
-    let mut filtered_entries = entries
-        .iter()
-        .filter(|entry| {
-            command
-                .round_id
-                .as_ref()
-                .map(|round_id| entry.report.summary.round_id.to_string() == *round_id)
-                .unwrap_or(true)
-        })
-        .filter(|entry| {
-            command
-                .decision
-                .map(|decision| entry.report.summary.continue_decision == decision)
-                .unwrap_or(true)
-        })
-        .filter(|entry| {
-            command
-                .contains
-                .as_ref()
-                .map(|needle| moat_history_entry_search_text(entry).contains(needle))
-                .unwrap_or(true)
-        })
-        .filter(|entry| {
-            command
-                .stop_reason_contains
-                .as_ref()
-                .map(|needle| {
-                    entry
-                        .report
-                        .stop_reason
-                        .as_deref()
-                        .map(|stop_reason| stop_reason.contains(needle))
-                        .unwrap_or(false)
-                })
-                .unwrap_or(true)
-        })
-        .filter(|entry| {
-            command
-                .min_score
-                .map(|min_score| {
-                    u32::try_from(entry.report.summary.moat_score_after)
-                        .map(|score_after| score_after >= min_score)
-                        .unwrap_or(false)
-                })
-                .unwrap_or(true)
-        })
-        .filter(|entry| {
-            command
-                .tests_passed
-                .map(|tests_passed| entry.report.summary.tests_passed == tests_passed)
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-
-    if command.contains.is_some()
-        || command.stop_reason_contains.is_some()
-        || command.min_score.is_some()
-        || command.tests_passed.is_some()
-    {
-        if filtered_entries.is_empty() {
-            print_empty_filtered_history_summary();
-        } else {
-            print_filtered_history_summary(&filtered_entries);
-        }
-    } else {
-        print_history_summary(&store.summary());
-    }
-
-    if command.limit.is_some() || command.round_id.is_some() || command.tests_passed.is_some() {
-        if let Some(limit) = command.limit {
-            let excess = filtered_entries.len().saturating_sub(limit);
-            if excess > 0 {
-                filtered_entries.drain(0..excess);
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--limit" => {
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid --limit".to_string())?;
+                if parsed == 0 {
+                    return Err("invalid --limit".to_string());
+                }
+                limit = Some(parsed);
             }
+            _ => return Err("unknown flag".to_string()),
         }
-        println!("history_rounds={}", filtered_entries.len());
-        for entry in filtered_entries {
-            println!(
-                "round={}|{}|{}|{}",
-                entry.report.summary.round_id,
-                format_continue_decision(entry.report.summary.continue_decision),
-                entry.report.summary.moat_score_after,
-                entry
-                    .report
-                    .stop_reason
-                    .as_deref()
-                    .map(escape_assignment_output_field)
-                    .unwrap_or_else(|| "<none>".to_string())
-            );
+        index += 2;
+    }
+
+    Ok(VaultAuditArgs {
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        limit,
+    })
+}
+
+fn parse_vault_decode_args(args: &[String]) -> Result<VaultDecodeArgs, String> {
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut record_ids_json = None;
+    let mut output_target = None;
+    let mut justification = None;
+    let mut report_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--record-ids-json" => record_ids_json = Some(value.clone()),
+            "--output-target" => output_target = Some(value.clone()),
+            "--justification" => justification = Some(value.clone()),
+            "--report-path" => report_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
         }
+        index += 2;
     }
 
-    Ok(())
+    let output_target = output_target.ok_or_else(|| "missing --output-target".to_string())?;
+    if output_target.trim().is_empty() {
+        return Err("missing --output-target".to_string());
+    }
+    let justification = justification.ok_or_else(|| "missing --justification".to_string())?;
+    if justification.trim().is_empty() {
+        return Err("missing --justification".to_string());
+    }
+
+    Ok(VaultDecodeArgs {
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        record_ids_json: record_ids_json.ok_or_else(|| "missing --record-ids-json".to_string())?,
+        output_target,
+        justification,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+    })
 }
 
-fn run_moat_decision_log(command: &MoatDecisionLogCommand) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let maybe_entry = match command.round_id.as_deref() {
-        Some(round_id) => store
-            .entries()
-            .iter()
-            .find(|entry| entry.report.summary.round_id.to_string() == round_id),
-        None => Some(store.entries().last().ok_or_else(|| {
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string()
-        })?),
-    };
-    let Some(latest) = maybe_entry else {
-        println!("decision_log_entries=0");
-        return Ok(());
-    };
-    let mut decisions = latest
-        .report
-        .control_plane
-        .memory
-        .decisions
-        .iter()
-        .filter(|decision| {
-            command
-                .role
-                .map(|role| decision.author_role == role)
-                .unwrap_or(true)
-        })
-        .filter(|decision| {
-            command
-                .contains
-                .as_ref()
-                .map(|needle| {
-                    decision.summary.contains(needle) || decision.rationale.contains(needle)
-                })
-                .unwrap_or(true)
-        })
-        .filter(|decision| {
-            command
-                .summary_contains
-                .as_ref()
-                .map(|needle| decision.summary.contains(needle))
-                .unwrap_or(true)
-        })
-        .filter(|decision| {
-            command
-                .rationale_contains
-                .as_ref()
-                .map(|needle| decision.rationale.contains(needle))
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-    if let Some(limit) = command.limit {
-        let excess = decisions.len().saturating_sub(limit);
-        if excess > 0 {
-            decisions.drain(..excess);
+fn parse_vault_export_args(args: &[String]) -> Result<VaultExportArgs, String> {
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut record_ids_json = None;
+    let mut export_passphrase = None;
+    let mut context = None;
+    let mut artifact_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--record-ids-json" => record_ids_json = Some(value.clone()),
+            "--export-passphrase" => export_passphrase = Some(value.clone()),
+            "--context" => context = Some(value.clone()),
+            "--artifact-path" => artifact_path = Some(PathBuf::from(value)),
+            _ => return Err("unknown flag".to_string()),
         }
+        index += 2;
     }
 
-    println!("decision_log_entries={}", decisions.len());
-    for decision in decisions {
-        println!(
-            "decision={}|{}|{}",
-            format_agent_role(decision.author_role),
-            escape_assignment_output_field(&decision.summary),
-            escape_assignment_output_field(&decision.rationale)
-        );
-    }
-
-    Ok(())
+    Ok(VaultExportArgs {
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        record_ids_json: record_ids_json.ok_or_else(|| "missing --record-ids-json".to_string())?,
+        export_passphrase: export_passphrase
+            .ok_or_else(|| "missing --export-passphrase".to_string())?,
+        context: context.ok_or_else(|| "missing --context".to_string())?,
+        artifact_path: artifact_path.ok_or_else(|| "missing --artifact-path".to_string())?,
+    })
 }
 
-fn run_moat_assignments(command: &MoatAssignmentsCommand) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let maybe_entry = match command.round_id.as_deref() {
-        Some(round_id) => store
-            .entries()
-            .iter()
-            .find(|entry| entry.report.summary.round_id.to_string() == round_id),
-        None => Some(store.entries().last().ok_or_else(|| {
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string()
-        })?),
-    };
-    let Some(latest) = maybe_entry else {
-        println!("moat assignments");
-        println!("assignment_entries=0");
-        return Ok(());
-    };
+fn parse_vault_import_args(args: &[String]) -> Result<VaultImportArgs, String> {
+    let mut vault_path = None;
+    let mut passphrase = None;
+    let mut artifact_path = None;
+    let mut portable_passphrase = None;
+    let mut context = None;
 
-    let mut assignments = latest
-        .report
-        .control_plane
-        .agent_assignments
-        .iter()
-        .filter(|assignment| {
-            command
-                .role
-                .map(|role| assignment.role == role)
-                .unwrap_or(true)
-        })
-        .filter(|assignment| {
-            command
-                .state
-                .map(|expected_state| {
-                    latest
-                        .report
-                        .control_plane
-                        .task_graph
-                        .nodes
-                        .iter()
-                        .find(|node| node.node_id == assignment.node_id)
-                        .map(|node| node.state == expected_state)
-                        .unwrap_or(false)
-                })
-                .unwrap_or(true)
-        })
-        .filter(|assignment| {
-            command
-                .kind
-                .map(|kind| assignment.kind == kind)
-                .unwrap_or(true)
-        })
-        .filter(|assignment| {
-            command
-                .node_id
-                .as_ref()
-                .map(|node_id| assignment.node_id == *node_id)
-                .unwrap_or(true)
-        })
-        .filter(|assignment| {
-            command
-                .depends_on
-                .as_deref()
-                .map(|expected_dependency| {
-                    latest
-                        .report
-                        .control_plane
-                        .task_graph
-                        .nodes
-                        .iter()
-                        .find(|node| node.node_id == assignment.node_id)
-                        .map(|node| {
-                            node.depends_on
-                                .iter()
-                                .any(|dependency| dependency == expected_dependency)
-                        })
-                        .unwrap_or(false)
-                })
-                .unwrap_or(true)
-        })
-        .filter(|assignment| {
-            if command.no_dependencies {
-                latest
-                    .report
-                    .control_plane
-                    .task_graph
-                    .nodes
-                    .iter()
-                    .find(|node| node.node_id == assignment.node_id)
-                    .map(|node| node.depends_on.is_empty())
-                    .unwrap_or(false)
-            } else {
-                true
-            }
-        })
-        .filter(|assignment| {
-            command
-                .title_contains
-                .as_deref()
-                .map(|expected_title| assignment.title.contains(expected_title))
-                .unwrap_or(true)
-        })
-        .filter(|assignment| {
-            command
-                .spec_ref
-                .as_deref()
-                .map(|expected_spec_ref| assignment.spec_ref.as_deref() == Some(expected_spec_ref))
-                .unwrap_or(true)
-        })
-        .filter(|assignment| {
-            command
-                .contains
-                .as_deref()
-                .map(|needle| {
-                    assignment.node_id.contains(needle)
-                        || assignment.title.contains(needle)
-                        || assignment
-                            .spec_ref
-                            .as_deref()
-                            .map(|spec_ref| spec_ref.contains(needle))
-                            .unwrap_or(false)
-                })
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
-
-    if let Some(limit) = command.limit {
-        assignments.truncate(limit);
-    }
-
-    println!("moat assignments");
-    println!("assignment_entries={}", assignments.len());
-    for assignment in assignments {
-        println!(
-            "assignment={}|{}|{}|{}|{}",
-            format_agent_role(assignment.role),
-            escape_assignment_output_field(&assignment.node_id),
-            escape_assignment_output_field(&assignment.title),
-            format_moat_task_kind(assignment.kind),
-            escape_assignment_output_field(assignment.spec_ref.as_deref().unwrap_or("<none>"))
-        );
-    }
-
-    Ok(())
-}
-
-fn run_moat_task_graph(command: &MoatTaskGraphCommand) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    if store.entries().is_empty() {
-        return Err(
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string(),
-        );
-    }
-    let selected = if let Some(round_id) = command.round_id.as_deref() {
-        store
-            .entries()
-            .iter()
-            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
-    } else {
-        Some(store.entries().last().ok_or_else(|| {
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string()
-        })?)
-    };
-    let Some(latest) = selected else {
-        println!("moat task graph");
-        return Ok(());
-    };
-
-    println!("moat task graph");
-    let limit = command.limit.unwrap_or(usize::MAX);
-    for node in latest
-        .report
-        .control_plane
-        .task_graph
-        .nodes
-        .iter()
-        .filter(|node| command.role.map(|role| node.role == role).unwrap_or(true))
-        .filter(|node| {
-            command
-                .state
-                .map(|state| node.state == state)
-                .unwrap_or(true)
-        })
-        .filter(|node| command.kind.map(|kind| node.kind == kind).unwrap_or(true))
-        .filter(|node| {
-            command
-                .node_id
-                .as_ref()
-                .map(|node_id| node.node_id == *node_id)
-                .unwrap_or(true)
-        })
-        .filter(|node| {
-            command
-                .depends_on
-                .as_ref()
-                .map(|dependency| {
-                    node.depends_on
-                        .iter()
-                        .any(|candidate| candidate == dependency)
-                })
-                .unwrap_or(true)
-        })
-        .filter(|node| {
-            if command.no_dependencies {
-                node.depends_on.is_empty()
-            } else {
-                true
-            }
-        })
-        .filter(|node| {
-            command
-                .title_contains
-                .as_deref()
-                .map(|expected_title| node.title.contains(expected_title))
-                .unwrap_or(true)
-        })
-        .filter(|node| {
-            command
-                .spec_ref
-                .as_deref()
-                .map(|expected_spec_ref| node.spec_ref.as_deref() == Some(expected_spec_ref))
-                .unwrap_or(true)
-        })
-        .filter(|node| {
-            command
-                .contains
-                .as_deref()
-                .map(|needle| task_graph_node_contains(node, needle))
-                .unwrap_or(true)
-        })
-        .take(limit)
-    {
-        println!(
-            "node={}|{}|{}|{}|{}|{}|{}",
-            format_agent_role(node.role),
-            escape_assignment_output_field(&node.node_id),
-            escape_assignment_output_field(&node.title),
-            format_moat_task_kind(node.kind),
-            format_task_node_state(node.state),
-            format_task_graph_dependencies(&node.depends_on),
-            node.spec_ref
-                .as_deref()
-                .map(escape_assignment_output_field)
-                .unwrap_or_else(|| "<none>".to_string())
-        );
-    }
-
-    Ok(())
-}
-
-fn run_moat_claim_task(command: &MoatClaimTaskCommand) -> Result<(), String> {
-    let mut store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    if store.entries().is_empty() {
-        return Err(
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string(),
-        );
-    }
-
-    let selected_round_id = if let Some(round_id) = command.round_id.as_deref() {
-        let entry = store
-            .entries()
-            .iter()
-            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
-            .ok_or_else(|| format!("moat round not found: {round_id}"))?;
-        entry.report.summary.round_id.to_string()
-    } else {
-        store
-            .entries()
-            .last()
-            .ok_or_else(|| {
-                "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                    .to_string()
-            })?
-            .report
-            .summary
-            .round_id
-            .to_string()
-    };
-
-    store
-        .claim_ready_task(command.round_id.as_deref(), &command.node_id)
-        .map_err(|error| format!("failed to claim moat task: {error}"))?;
-
-    println!("moat task claimed");
-    println!("round_id={selected_round_id}");
-    println!("node_id={}", command.node_id);
-    println!("previous_state=ready");
-    println!("new_state=in_progress");
-    println!("history_path={}", command.history_path);
-
-    Ok(())
-}
-
-fn run_moat_complete_task(command: &MoatCompleteTaskCommand) -> Result<(), String> {
-    let mut store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    if store.entries().is_empty() {
-        return Err(
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string(),
-        );
-    }
-
-    let selected_round_id = store
-        .complete_in_progress_task(command.round_id.as_deref(), &command.node_id)
-        .map_err(|error| format!("failed to complete moat task: {error}"))?;
-
-    println!("moat task completed");
-    println!("round_id={selected_round_id}");
-    println!("node_id={}", command.node_id);
-    println!("previous_state=in_progress");
-    println!("new_state=completed");
-    println!("history_path={}", command.history_path);
-
-    let updated_store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to reload moat history store: {error}"))?;
-    let updated_entry = updated_store
-        .entries()
-        .iter()
-        .find(|entry| entry.report.summary.round_id.to_string() == selected_round_id)
-        .ok_or_else(|| format!("moat round not found after completion: {selected_round_id}"))?;
-    let ready_ids = updated_entry
-        .report
-        .control_plane
-        .task_graph
-        .ready_node_ids();
-    let next_ready_nodes = updated_entry
-        .report
-        .control_plane
-        .task_graph
-        .nodes
-        .iter()
-        .filter(|node| ready_ids.iter().any(|ready_id| ready_id == &node.node_id))
-        .collect::<Vec<_>>();
-
-    println!("next_ready_task_entries={}", next_ready_nodes.len());
-    for node in next_ready_nodes {
-        println!(
-            "next_ready_task={}|{}|{}|{}|{}",
-            format_agent_role(node.role),
-            escape_assignment_output_field(&node.node_id),
-            escape_assignment_output_field(&node.title),
-            format_moat_task_kind(node.kind),
-            node.spec_ref
-                .as_deref()
-                .map(escape_assignment_output_field)
-                .unwrap_or_else(|| "<none>".to_string())
-        );
-    }
-
-    Ok(())
-}
-
-fn run_moat_release_task(command: &MoatReleaseTaskCommand) -> Result<(), String> {
-    let mut store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    if store.entries().is_empty() {
-        return Err(
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string(),
-        );
-    }
-
-    let selected_round_id = store
-        .release_in_progress_task(command.round_id.as_deref(), &command.node_id)
-        .map_err(|error| match error {
-            CompleteInProgressTaskError::NodeNotInProgress { node_id, state, .. } => format!(
-                "failed to release moat task: node '{node_id}' is {}, expected in_progress",
-                format_task_node_state(state)
-            ),
-            other => format!("failed to release moat task: {other}"),
-        })?;
-
-    println!("moat task released");
-    println!("round_id={selected_round_id}");
-    println!("node_id={}", command.node_id);
-
-    Ok(())
-}
-
-fn run_moat_block_task(command: &MoatBlockTaskCommand) -> Result<(), String> {
-    let mut store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    if store.entries().is_empty() {
-        return Err(
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string(),
-        );
-    }
-
-    let selected_round_id = store
-        .block_in_progress_task(command.round_id.as_deref(), &command.node_id)
-        .map_err(|error| format!("failed to block moat task: {error}"))?;
-
-    println!("moat task blocked");
-    println!("round_id={selected_round_id}");
-    println!("node_id={}", command.node_id);
-    println!("previous_state=in_progress");
-    println!("new_state=blocked");
-    println!("history_path={}", command.history_path);
-
-    Ok(())
-}
-
-fn run_moat_unblock_task(command: &MoatUnblockTaskCommand) -> Result<(), String> {
-    let mut store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    if store.entries().is_empty() {
-        return Err(
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string(),
-        );
-    }
-
-    let selected_round_id = store
-        .unblock_blocked_task(command.round_id.as_deref(), &command.node_id)
-        .map_err(|error| match error {
-            CompleteInProgressTaskError::NodeNotInExpectedState {
-                node_id,
-                state,
-                expected_state,
-                ..
-            } => format!(
-                "error: node '{node_id}' is {}, expected {}",
-                format_task_node_state(state),
-                format_task_node_state(expected_state)
-            ),
-            other => format!("failed to unblock moat task: {other}"),
-        })?;
-
-    println!("moat task unblocked");
-    println!("round_id={selected_round_id}");
-    println!("node_id={}", command.node_id);
-    println!("previous_state=blocked");
-    println!("new_state=ready");
-    println!("history_path={}", command.history_path);
-
-    Ok(())
-}
-
-fn run_moat_ready_tasks(command: &MoatReadyTasksCommand) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(&command.history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    if store.entries().is_empty() {
-        return Err(
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string(),
-        );
-    }
-
-    let selected = if let Some(round_id) = command.round_id.as_deref() {
-        store
-            .entries()
-            .iter()
-            .find(|entry| entry.report.summary.round_id.to_string() == round_id)
-    } else {
-        Some(store.entries().last().ok_or_else(|| {
-            "moat history is empty; run `mdid-cli moat round --history-path <path>` first"
-                .to_string()
-        })?)
-    };
-
-    let Some(entry) = selected else {
-        println!("moat ready tasks");
-        println!("ready_task_entries=0");
-        return Ok(());
-    };
-
-    let ready_ids = entry.report.control_plane.task_graph.ready_node_ids();
-    let mut ready_nodes = entry
-        .report
-        .control_plane
-        .task_graph
-        .nodes
-        .iter()
-        .filter(|node| ready_ids.iter().any(|ready_id| ready_id == &node.node_id))
-        .filter(|node| command.role.map(|role| node.role == role).unwrap_or(true))
-        .filter(|node| command.kind.map(|kind| node.kind == kind).unwrap_or(true))
-        .collect::<Vec<_>>();
-
-    if let Some(limit) = command.limit {
-        ready_nodes.truncate(limit);
-    }
-
-    println!("moat ready tasks");
-    println!("ready_task_entries={}", ready_nodes.len());
-    for node in ready_nodes {
-        println!(
-            "ready_task={}|{}|{}|{}|{}",
-            format_agent_role(node.role),
-            format_moat_task_kind(node.kind),
-            escape_assignment_output_field(&node.node_id),
-            escape_assignment_output_field(&node.title),
-            node.spec_ref
-                .as_deref()
-                .map(escape_assignment_output_field)
-                .unwrap_or_else(|| "<none>".to_string())
-        );
-    }
-
-    Ok(())
-}
-
-fn task_graph_node_contains(node: &mdid_domain::MoatTaskNode, needle: &str) -> bool {
-    node.node_id.contains(needle)
-        || node.title.contains(needle)
-        || format_moat_task_kind(node.kind).contains(needle)
-        || format_task_node_state(node.state).contains(needle)
-        || node
-            .depends_on
-            .iter()
-            .any(|dependency| dependency.contains(needle))
-        || node
-            .spec_ref
-            .as_deref()
-            .map(|spec_ref| spec_ref.contains(needle))
-            .unwrap_or(false)
-}
-
-fn format_task_graph_dependencies(depends_on: &[String]) -> String {
-    if depends_on.is_empty() {
-        "<none>".to_string()
-    } else {
-        depends_on
-            .iter()
-            .map(|dependency| escape_assignment_output_field(dependency))
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn escape_assignment_output_field(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('|', "\\|")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-}
-
-fn run_moat_continue(history_path: &str, improvement_threshold: i16) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let gate = store.continuation_gate(improvement_threshold);
-
-    println!("moat continuation gate");
-    println!(
-        "latest_round_id={}",
-        gate.latest_round_id.as_deref().unwrap_or("<none>")
-    );
-    println!(
-        "latest_continue_decision={}",
-        gate.latest_continue_decision
-            .map(format_continue_decision)
-            .unwrap_or("<none>")
-    );
-    println!(
-        "latest_tests_passed={}",
-        format_optional_bool(gate.latest_tests_passed)
-    );
-    println!(
-        "latest_improvement_delta={}",
-        format_optional_i16(gate.latest_improvement_delta)
-    );
-    println!(
-        "latest_stop_reason={}",
-        gate.latest_stop_reason.as_deref().unwrap_or("<none>")
-    );
-    println!(
-        "evaluation_completed={}",
-        if gate.evaluation_completed {
-            "true"
-        } else {
-            "false"
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--vault-path" => vault_path = Some(PathBuf::from(value)),
+            "--passphrase" => passphrase = Some(value.clone()),
+            "--artifact-path" => artifact_path = Some(PathBuf::from(value)),
+            "--portable-passphrase" => portable_passphrase = Some(value.clone()),
+            "--context" => context = Some(value.clone()),
+            _ => return Err("unknown flag".to_string()),
         }
-    );
-    println!(
-        "can_continue={}",
-        if gate.can_continue { "true" } else { "false" }
-    );
-    println!("reason={}", gate.reason);
-    println!(
-        "required_improvement_threshold={}",
-        gate.required_improvement_threshold
-    );
+        index += 2;
+    }
 
+    Ok(VaultImportArgs {
+        vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
+        passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
+        artifact_path: artifact_path.ok_or_else(|| "missing --artifact-path".to_string())?,
+        portable_passphrase: portable_passphrase
+            .ok_or_else(|| "missing --portable-passphrase".to_string())?,
+        context: context.ok_or_else(|| "missing --context".to_string())?,
+    })
+}
+
+fn run_command(command: CliCommand) -> Result<(), String> {
+    match command {
+        CliCommand::Status => {
+            println!("med-de-id CLI ready");
+            Ok(())
+        }
+        CliCommand::DeidentifyCsv(args) => run_deidentify_csv(args),
+        CliCommand::DeidentifyXlsx(args) => run_deidentify_xlsx(args),
+        CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
+        CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
+        CliCommand::ReviewMedia(args) => run_review_media(args),
+        CliCommand::VaultAudit(args) => run_vault_audit(args),
+        CliCommand::VaultDecode(args) => run_vault_decode(args),
+        CliCommand::VaultExport(args) => run_vault_export(args),
+        CliCommand::VaultImport(args) => run_vault_import(args),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PdfPageStatusReport {
+    page: PdfPageRef,
+    status: PdfScanStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct ConservativeMediaCandidateReport {
+    candidate_index: usize,
+    format: ConservativeMediaFormat,
+    phi_type: String,
+    confidence: f32,
+    status: mdid_domain::ConservativeMediaScanStatus,
+}
+
+fn run_review_media(args: ReviewMediaArgs) -> Result<(), String> {
+    let metadata: Vec<ConservativeMediaMetadataEntryRequest> =
+        serde_json::from_str(&args.metadata_json)
+            .map_err(|err| format!("invalid metadata JSON: {err}"))?;
+    let metadata = metadata
+        .into_iter()
+        .map(|entry| ConservativeMediaMetadataEntry {
+            key: entry.key,
+            value: entry.value,
+        })
+        .collect();
+
+    let output = ConservativeMediaDeidentificationService::default()
+        .deidentify_metadata(ConservativeMediaInput {
+            artifact_label: args.artifact_label,
+            format: args.format,
+            metadata,
+            requires_visual_review: args.requires_visual_review,
+            unsupported_payload: args.unsupported_payload,
+        })
+        .map_err(|err| format!("failed to review media: {err}"))?;
+
+    let review_queue_len = output.review_queue.len();
+    let review_queue: Vec<ConservativeMediaCandidateReport> = output
+        .review_queue
+        .into_iter()
+        .enumerate()
+        .map(
+            |(candidate_index, candidate)| ConservativeMediaCandidateReport {
+                candidate_index,
+                format: candidate.format,
+                phi_type: candidate.phi_type,
+                confidence: candidate.confidence,
+                status: candidate.status,
+            },
+        )
+        .collect();
+    let report = json!({
+        "summary": output.summary,
+        "review_queue_len": review_queue_len,
+        "rewritten_media_bytes": serde_json::Value::Null,
+        "review_queue": review_queue,
+    });
+
+    fs::write(
+        &args.report_path,
+        serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("failed to render media report: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write media report: {err}"))?;
+
+    let stdout = json!({
+        "report_path": args.report_path,
+        "summary": report["summary"].clone(),
+        "review_queue_len": report["review_queue_len"].clone(),
+        "rewritten_media_bytes": serde_json::Value::Null,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&stdout).map_err(|err| format!("failed to render summary: {err}"))?
+    );
     Ok(())
 }
 
-fn run_moat_schedule_next(history_path: &str, improvement_threshold: i16) -> Result<(), String> {
-    let mut store = LocalMoatHistoryStore::open_existing(history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let gate = store.continuation_gate(improvement_threshold);
-    let mut scheduled_round_id = None;
+fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
+    let bytes = fs::read(&args.pdf_path).map_err(|err| format!("failed to read PDF: {err}"))?;
+    let output = PdfDeidentificationService
+        .deidentify_bytes(&bytes, args.source_name.trim())
+        .map_err(|err| format!("failed to review PDF: {err}"))?;
 
-    if gate.can_continue {
-        let report = sample_round_report(&MoatRoundOverrides::default());
-        scheduled_round_id = Some(report.summary.round_id.to_string());
-        store
-            .append(std::time::SystemTime::now().into(), report)
-            .map_err(|error| format!("failed to append moat history entry: {error}"))?;
-    }
+    let review_queue_len = output.review_queue.len();
+    let page_statuses: Vec<PdfPageStatusReport> = output
+        .page_statuses
+        .into_iter()
+        .map(|page_status| PdfPageStatusReport {
+            page: page_status.page,
+            status: page_status.status,
+        })
+        .collect();
+    let report = json!({
+        "summary": output.summary,
+        "page_statuses": page_statuses,
+        "review_queue_len": review_queue_len,
+        "rewrite_available": false,
+        "rewritten_pdf_bytes": serde_json::Value::Null,
+    });
+    fs::write(
+        &args.report_path,
+        serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("failed to render PDF report: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write PDF report: {err}"))?;
 
-    println!("moat schedule next");
+    let stdout = json!({
+        "report_path": args.report_path,
+        "summary": report["summary"].clone(),
+        "review_queue_len": report["review_queue_len"].clone(),
+        "rewrite_available": false,
+    });
     println!(
-        "scheduled={}",
-        if gate.can_continue { "true" } else { "false" }
+        "{}",
+        serde_json::to_string(&stdout).map_err(|err| format!("failed to render summary: {err}"))?
     );
-    println!("reason={}", gate.reason);
-    println!(
-        "scheduled_round_id={}",
-        scheduled_round_id.as_deref().unwrap_or("<none>")
-    );
-    println!("history_path={history_path}");
-
     Ok(())
 }
 
-fn run_moat_export_specs(history_path: &str, output_dir: &str) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let latest = store.entries().last().ok_or_else(|| {
-        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
-    })?;
+#[derive(Debug, Serialize)]
+struct VaultAuditReport {
+    event_count: usize,
+    returned_event_count: usize,
+    events: Vec<VaultAuditEventReport>,
+}
 
-    if latest.report.summary.implemented_specs.is_empty() {
-        return Err("latest moat round does not contain implemented_specs handoffs".to_string());
+#[derive(Debug, Serialize)]
+struct VaultAuditEventReport {
+    id: String,
+    kind: String,
+    actor: SurfaceKind,
+    detail: String,
+    recorded_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VaultDecodeReport {
+    decoded_value_count: usize,
+    values: Vec<VaultDecodeValueReport>,
+    audit_event: AuditEvent,
+}
+
+#[derive(Debug, Serialize)]
+struct VaultDecodeValueReport {
+    record_id: String,
+    token: String,
+    original_value: String,
+}
+
+fn parse_record_ids_json(record_ids_json: &str) -> Result<Vec<Uuid>, String> {
+    let record_ids: Vec<Uuid> = serde_json::from_str(record_ids_json)
+        .map_err(|err| format!("invalid record ids JSON: {err}"))?;
+    if record_ids.is_empty() {
+        return Err("decode scope must include at least one record id".to_string());
     }
+    Ok(record_ids)
+}
 
-    std::fs::create_dir_all(output_dir)
-        .map_err(|error| format!("failed to create export directory: {error}"))?;
-
-    let mut written_files = Vec::new();
-    for handoff_id in &latest.report.summary.implemented_specs {
-        let markdown = render_moat_spec_markdown(
-            handoff_id,
-            &latest.report.summary,
-            &latest.report.summary.selected_strategies,
-        )?;
-        let file_name = format!(
-            "{}.md",
-            handoff_id
-                .strip_prefix("moat-spec/")
-                .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?
-        );
-        let output_path = std::path::Path::new(output_dir).join(&file_name);
-        std::fs::write(&output_path, markdown)
-            .map_err(|error| format!("failed to write exported spec markdown: {error}"))?;
-        written_files.push(file_name);
-    }
-
-    println!("moat spec export complete");
-    println!("round_id={}", latest.report.summary.round_id);
-    println!(
-        "exported_specs={}",
-        latest.report.summary.implemented_specs.join(",")
-    );
-    println!("written_files={}", written_files.join(","));
-
+fn run_vault_export(args: VaultExportArgs) -> Result<(), String> {
+    println!("{}", run_vault_export_for_summary(args)?);
     Ok(())
 }
 
-fn run_moat_export_plans(history_path: &str, output_dir: &str) -> Result<(), String> {
-    let store = LocalMoatHistoryStore::open_existing(history_path)
-        .map_err(|error| format!("failed to open moat history store: {error}"))?;
-    let latest = store.entries().last().ok_or_else(|| {
-        "moat history is empty; run `mdid-cli moat round --history-path <path>` first".to_string()
-    })?;
-
-    if latest.report.summary.implemented_specs.is_empty() {
-        return Err("latest moat round does not contain implemented_specs handoffs".to_string());
-    }
-
-    std::fs::create_dir_all(output_dir)
-        .map_err(|error| format!("failed to create export directory: {error}"))?;
-
-    let mut written_files = Vec::new();
-    for handoff_id in &latest.report.summary.implemented_specs {
-        let markdown = render_moat_plan_markdown(
-            handoff_id,
-            &latest.report.summary,
-            &latest.report.summary.selected_strategies,
-        )?;
-        let slug = handoff_id
-            .strip_prefix("moat-spec/")
-            .ok_or_else(|| format!("expected moat-spec/ handoff id, got {handoff_id}"))?;
-        let file_name = format!("{slug}-implementation-plan.md");
-        let output_path = std::path::Path::new(output_dir).join(&file_name);
-        std::fs::write(&output_path, markdown)
-            .map_err(|error| format!("failed to write exported plan markdown: {error}"))?;
-        written_files.push(file_name);
-    }
-
-    println!("moat plan export");
-    println!(
-        "exported_plans={}",
-        latest.report.summary.implemented_specs.join(",")
-    );
-    println!("written_files={}", written_files.join(","));
-    println!("output_dir={output_dir}");
-
+fn run_vault_import(args: VaultImportArgs) -> Result<(), String> {
+    println!("{}", run_vault_import_for_summary(args)?);
     Ok(())
 }
 
-fn print_empty_filtered_history_summary() {
-    println!("moat history summary");
-    println!("entries=0");
-    println!("latest_round_id=none");
-    println!("latest_decision=none");
+fn read_bounded_portable_artifact(path: &Path) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path)
+        .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
+    let mut reader = file.take(MAX_PORTABLE_ARTIFACT_BYTES + 1);
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
+    if bytes.len() as u64 > MAX_PORTABLE_ARTIFACT_BYTES {
+        return Err("portable artifact exceeds maximum size".to_string());
+    }
+    Ok(bytes)
 }
 
-fn print_filtered_history_summary(entries: &[&MoatHistoryEntry]) {
-    let latest = entries
+fn run_vault_import_for_summary(args: VaultImportArgs) -> Result<String, String> {
+    let artifact_bytes = read_bounded_portable_artifact(&args.artifact_path)?;
+    let artifact: PortableVaultArtifact = serde_json::from_slice(&artifact_bytes)
+        .map_err(|err| format!("failed to parse vault import artifact: {err}"))?;
+    let mut vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+        .map_err(|err| format!("failed to open vault: {err}"))?;
+    let result = vault
+        .import_portable(
+            artifact,
+            &args.portable_passphrase,
+            SurfaceKind::Cli,
+            &args.context,
+        )
+        .map_err(|err| format!("failed to import vault records: {err}"))?;
+    let stdout = json!({
+        "command": "vault-import",
+        "imported_records": result.imported_records.len(),
+        "duplicate_records": result.duplicate_records.len(),
+        "audit_event_id": result.audit_event.id.to_string(),
+    });
+    serde_json::to_string(&stdout).map_err(|err| format!("failed to render import summary: {err}"))
+}
+
+fn run_vault_export_for_summary(args: VaultExportArgs) -> Result<String, String> {
+    let record_ids = parse_record_ids_json(&args.record_ids_json)?;
+    let mut vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+        .map_err(|err| format!("failed to open vault: {err}"))?;
+    let artifact = vault
+        .export_portable(
+            &record_ids,
+            &args.export_passphrase,
+            SurfaceKind::Cli,
+            &args.context,
+        )
+        .map_err(|err| format!("failed to export vault records: {err}"))?;
+    fs::write(
+        &args.artifact_path,
+        serde_json::to_vec_pretty(&artifact)
+            .map_err(|err| format!("failed to render vault export artifact: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write vault export artifact: {err}"))?;
+    let audit_event_id = vault
+        .audit_events()
         .last()
-        .expect("filtered history summary should have at least one entry");
-    let summary = MoatHistorySummary {
-        entry_count: entries.len(),
-        latest_round_id: Some(latest.report.summary.round_id.to_string()),
-        latest_continue_decision: Some(latest.report.summary.continue_decision),
-        latest_stop_reason: latest.report.summary.stop_reason.clone(),
-        latest_decision_summary: latest.report.control_plane.memory.latest_decision_summary(),
-        latest_implemented_specs: latest.report.summary.implemented_specs.clone(),
-        latest_moat_score_after: Some(latest.report.summary.moat_score_after),
-        best_moat_score_after: entries
-            .iter()
-            .map(|entry| entry.report.summary.moat_score_after)
-            .max(),
-        improvement_deltas: entries
-            .iter()
-            .map(|entry| entry.report.summary.improvement())
-            .collect(),
-    };
-    print_history_summary(&summary);
+        .map(|event| event.id.to_string())
+        .ok_or_else(|| "missing vault export audit event".to_string())?;
+    let stdout = json!({
+        "command": "vault-export",
+        "exported_records": record_ids.len(),
+        "artifact_path": args.artifact_path,
+        "audit_event_id": audit_event_id,
+    });
+    serde_json::to_string(&stdout).map_err(|err| format!("failed to render export summary: {err}"))
 }
 
-fn moat_history_entry_search_text(entry: &MoatHistoryEntry) -> String {
-    let summary = &entry.report.summary;
-    let mut text = format!(
-        "round id {} selected strategies {} implemented specs {} tests_passed={} moat score before {} moat score after {} continue decision {}",
-        summary.round_id,
-        summary.selected_strategies.join(" "),
-        summary.implemented_specs.join(" "),
-        summary.tests_passed,
-        summary.moat_score_before,
-        summary.moat_score_after,
-        format_continue_decision(summary.continue_decision)
-    );
-
-    if let Some(reason) = &summary.stop_reason {
-        text.push(' ');
-        text.push_str(reason);
-    }
-    if let Some(reason) = &summary.pivot_reason {
-        text.push(' ');
-        text.push_str(reason);
-    }
-    if let Some(decision_summary) = entry.report.control_plane.memory.latest_decision_summary() {
-        text.push(' ');
-        text.push_str(&decision_summary);
-    }
-    for decision in &entry.report.control_plane.memory.decisions {
-        text.push(' ');
-        text.push_str(&decision.summary);
-        text.push(' ');
-        text.push_str(&decision.rationale);
-    }
-    text.push(' ');
-    text.push_str(&format!("{:?}", entry.report));
-    text
-}
-
-fn print_history_summary(summary: &MoatHistorySummary) {
-    println!("moat history summary");
-    println!("entries={}", summary.entry_count);
-    println!(
-        "latest_round_id={}",
-        summary.latest_round_id.as_deref().unwrap_or("<none>")
-    );
-    println!(
-        "latest_continue_decision={}",
-        summary
-            .latest_continue_decision
-            .map(format_continue_decision)
-            .unwrap_or("<none>")
-    );
-    println!(
-        "latest_stop_reason={}",
-        summary.latest_stop_reason.as_deref().unwrap_or("<none>")
-    );
-    println!(
-        "latest_decision_summary={}",
-        summary
-            .latest_decision_summary
-            .as_deref()
-            .unwrap_or("<none>")
-    );
-    println!(
-        "latest_implemented_specs={}",
-        format_string_list(&summary.latest_implemented_specs)
-    );
-    println!(
-        "latest_moat_score_after={}",
-        format_optional_i16(summary.latest_moat_score_after)
-    );
-    println!(
-        "best_moat_score_after={}",
-        format_optional_i16(summary.best_moat_score_after)
-    );
-    println!(
-        "improvement_deltas={}",
-        format_improvement_deltas(&summary.improvement_deltas)
-    );
-}
-
-fn format_optional_i16(value: Option<i16>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "<none>".to_string())
-}
-
-fn format_optional_bool(value: Option<bool>) -> &'static str {
-    match value {
-        Some(true) => "true",
-        Some(false) => "false",
-        None => "<none>",
-    }
-}
-
-fn format_improvement_deltas(values: &[i16]) -> String {
-    if values.is_empty() {
-        "<none>".to_string()
-    } else {
-        values
-            .iter()
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn format_string_list(values: &[String]) -> String {
-    if values.is_empty() {
-        "<none>".to_string()
-    } else {
-        values.join(",")
-    }
-}
-
-fn sample_round_report(overrides: &MoatRoundOverrides) -> MoatRoundReport {
-    run_bounded_round(sample_round_input(overrides))
-}
-
-fn format_continue_decision(continue_decision: ContinueDecision) -> &'static str {
-    match continue_decision {
-        ContinueDecision::Continue => "Continue",
-        ContinueDecision::Stop => "Stop",
-        ContinueDecision::Pivot => "Pivot",
-    }
-}
-
-fn format_ready_nodes(ready_nodes: &[String]) -> String {
-    if ready_nodes.is_empty() {
-        "<none>".to_string()
-    } else {
-        ready_nodes.join(",")
-    }
-}
-
-fn format_task_states(nodes: &[mdid_domain::MoatTaskNode]) -> String {
-    nodes
-        .iter()
-        .map(|node| format!("{}:{}", node.node_id, format_task_node_state(node.state)))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn format_agent_assignments(assignments: &[MoatAgentAssignment]) -> String {
-    if assignments.is_empty() {
-        "<none>".to_string()
-    } else {
-        assignments
-            .iter()
-            .map(|assignment| {
-                format!(
-                    "{}:{}",
-                    format_agent_role(assignment.role),
-                    assignment.node_id
-                )
+fn run_vault_decode(args: VaultDecodeArgs) -> Result<(), String> {
+    let record_ids = parse_record_ids_json(&args.record_ids_json)?;
+    let request = DecodeRequest::new(
+        record_ids,
+        args.output_target,
+        args.justification,
+        SurfaceKind::Cli,
+    )
+    .map_err(|err| err.to_string())?;
+    let mut vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+        .map_err(|err| format!("failed to open vault: {err}"))?;
+    let result = vault
+        .decode(request)
+        .map_err(|err| format!("failed to decode vault records: {err}"))?;
+    let report = VaultDecodeReport {
+        decoded_value_count: result.values.len(),
+        values: result
+            .values
+            .into_iter()
+            .map(|value| VaultDecodeValueReport {
+                record_id: value.record_id.to_string(),
+                token: value.token,
+                original_value: value.original_value,
             })
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn format_agent_role(role: AgentRole) -> &'static str {
-    match role {
-        AgentRole::Planner => "planner",
-        AgentRole::Coder => "coder",
-        AgentRole::Reviewer => "reviewer",
-    }
-}
-
-fn format_task_node_state(state: MoatTaskNodeState) -> &'static str {
-    match state {
-        MoatTaskNodeState::Pending => "pending",
-        MoatTaskNodeState::Ready => "ready",
-        MoatTaskNodeState::InProgress => "in_progress",
-        MoatTaskNodeState::Completed => "completed",
-        MoatTaskNodeState::Blocked => "blocked",
-    }
-}
-
-fn format_moat_task_kind(kind: MoatTaskNodeKind) -> &'static str {
-    match kind {
-        MoatTaskNodeKind::MarketScan => "market_scan",
-        MoatTaskNodeKind::CompetitorAnalysis => "competitor_analysis",
-        MoatTaskNodeKind::LockInAnalysis => "lock_in_analysis",
-        MoatTaskNodeKind::StrategyGeneration => "strategy_generation",
-        MoatTaskNodeKind::SpecPlanning => "spec_planning",
-        MoatTaskNodeKind::Implementation => "implementation",
-        MoatTaskNodeKind::Review => "review",
-        MoatTaskNodeKind::Evaluation => "evaluation",
-    }
-}
-
-fn sample_round_input(overrides: &MoatRoundOverrides) -> MoatRoundInput {
-    let mut input = MoatRoundInput {
-        market: MarketMoatSnapshot {
-            market_id: "healthcare-deid".into(),
-            moat_score: 45,
-            ..MarketMoatSnapshot::default()
-        },
-        competitor: CompetitorProfile {
-            competitor_id: "comp-1".into(),
-            threat_score: 30,
-            ..CompetitorProfile::default()
-        },
-        lock_in: LockInReport {
-            lockin_score: 60,
-            workflow_dependency_strength: 72,
-            ..LockInReport::default()
-        },
-        strategies: vec![MoatStrategy {
-            strategy_id: "workflow-audit".into(),
-            title: "Workflow audit moat".into(),
-            target_moat_type: MoatType::WorkflowLockIn,
-            implementation_cost: 2,
-            expected_moat_gain: 8,
-            ..MoatStrategy::default()
-        }],
-        budget: ResourceBudget {
-            max_round_minutes: 30,
-            max_parallel_tasks: 3,
-            max_strategy_candidates: 2,
-            max_spec_generations: 1,
-            max_implementation_tasks: 1,
-            max_review_loops: 1,
-        },
-        improvement_threshold: 3,
-        tests_passed: true,
+            .collect(),
+        audit_event: result.audit_event,
     };
-
-    if let Some(value) = overrides.strategy_candidates {
-        input.budget.max_strategy_candidates = value;
-    }
-    if let Some(value) = overrides.spec_generations {
-        input.budget.max_spec_generations = value;
-    }
-    if let Some(value) = overrides.implementation_tasks {
-        input.budget.max_implementation_tasks = value;
-    }
-    if let Some(value) = overrides.review_loops {
-        input.budget.max_review_loops = value;
-    }
-    if let Some(value) = overrides.tests_passed {
-        input.tests_passed = value;
-    }
-
-    input
+    fs::write(
+        &args.report_path,
+        serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("failed to render vault decode report: {err}"))?,
+    )
+    .map_err(|err| format!("failed to write vault decode report: {err}"))?;
+    println!("{}", build_vault_decode_stdout(&args.report_path, &report)?);
+    Ok(())
 }
 
-fn format_command(args: &[String]) -> String {
-    if args.is_empty() {
-        "<none>".to_string()
-    } else {
-        args.join(" ")
+fn build_vault_decode_stdout(
+    report_path: &PathBuf,
+    report: &VaultDecodeReport,
+) -> Result<String, String> {
+    let audit_event = vault_audit_event_report(&report.audit_event);
+    let stdout = json!({
+        "report_path": report_path,
+        "decoded_value_count": report.decoded_value_count,
+        "audit_event": audit_event,
+    });
+    serde_json::to_string(&stdout).map_err(|err| format!("failed to render decode summary: {err}"))
+}
+
+fn run_vault_audit(args: VaultAuditArgs) -> Result<(), String> {
+    let vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+        .map_err(|err| format!("failed to open vault: {err}"))?;
+    let report = build_vault_audit_report(vault.audit_events(), args.limit);
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|err| format!("failed to render audit report: {err}"))?
+    );
+    Ok(())
+}
+
+fn build_vault_audit_report(events: &[AuditEvent], limit: Option<usize>) -> VaultAuditReport {
+    let event_count = events.len();
+    let limit = limit
+        .unwrap_or(DEFAULT_VAULT_AUDIT_LIMIT)
+        .min(MAX_VAULT_AUDIT_LIMIT);
+    let selected = events.iter().rev().take(limit);
+    let events = selected.map(vault_audit_event_report).collect::<Vec<_>>();
+    VaultAuditReport {
+        event_count,
+        returned_event_count: events.len(),
+        events,
     }
+}
+
+fn vault_audit_event_report(event: &AuditEvent) -> VaultAuditEventReport {
+    VaultAuditEventReport {
+        id: event.id.to_string(),
+        kind: event.kind.as_str().to_string(),
+        actor: event.actor.clone(),
+        detail: sanitized_audit_detail(event),
+        recorded_at: event.recorded_at.to_rfc3339(),
+    }
+}
+
+fn sanitized_audit_detail(event: &AuditEvent) -> String {
+    match event.kind {
+        AuditEventKind::Encode => "encoded mapping".to_string(),
+        AuditEventKind::Decode => "decode event".to_string(),
+        AuditEventKind::Export => "portable export event".to_string(),
+        AuditEventKind::Import => "portable import event".to_string(),
+    }
+}
+
+fn parse_private_tag_policy(policy: &str) -> Result<DicomPrivateTagPolicy, String> {
+    match policy {
+        "remove" => Ok(DicomPrivateTagPolicy::Remove),
+        "review" | "review-required" | "required" => Ok(DicomPrivateTagPolicy::ReviewRequired),
+        "keep" => Ok(DicomPrivateTagPolicy::Keep),
+        _ => Err("invalid --private-tag-policy".to_string()),
+    }
+}
+
+fn run_deidentify_dicom(args: DeidentifyDicomArgs) -> Result<(), String> {
+    let policy = parse_private_tag_policy(&args.private_tag_policy)?;
+    let bytes = fs::read(&args.dicom_path).map_err(|err| format!("failed to read DICOM: {err}"))?;
+    let mut vault = if args.vault_path.exists() {
+        LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+    } else {
+        LocalVaultStore::create(&args.vault_path, &args.passphrase)
+    }
+    .map_err(|err| format!("failed to open vault: {err}"))?;
+
+    let output = DicomDeidentificationService
+        .deidentify_bytes(
+            &bytes,
+            "dicom-input.dcm",
+            policy,
+            &mut vault,
+            SurfaceKind::Cli,
+        )
+        .map_err(|err| format!("failed to deidentify DICOM: {err}"))?;
+    fs::write(&args.output_path, &output.bytes)
+        .map_err(|err| format!("failed to write output DICOM: {err}"))?;
+
+    let payload = json!({
+        "output_path": args.output_path,
+        "sanitized_file_name": output.sanitized_file_name,
+        "summary": output.summary,
+        "review_queue_len": output.review_queue.len(),
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&payload)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn run_deidentify_csv(args: DeidentifyCsvArgs) -> Result<(), String> {
+    let policies = parse_policies(&args.policies_json)?;
+    let csv =
+        fs::read_to_string(&args.csv_path).map_err(|err| format!("failed to read CSV: {err}"))?;
+    let mut vault = if args.vault_path.exists() {
+        LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+    } else {
+        LocalVaultStore::create(&args.vault_path, &args.passphrase)
+    }
+    .map_err(|err| format!("failed to open vault: {err}"))?;
+
+    let output = TabularDeidentificationService
+        .deidentify_csv(&csv, &policies, &mut vault, SurfaceKind::Cli)
+        .map_err(|err| format!("failed to deidentify CSV: {err}"))?;
+    fs::write(&args.output_path, &output.csv)
+        .map_err(|err| format!("failed to write output CSV: {err}"))?;
+
+    print_summary(
+        &args.output_path,
+        &output.summary,
+        output.review_queue.len(),
+    )?;
+    Ok(())
+}
+
+fn run_deidentify_xlsx(args: DeidentifyXlsxArgs) -> Result<(), String> {
+    let policies = parse_policies(&args.policies_json)?;
+    let workbook_bytes =
+        fs::read(&args.xlsx_path).map_err(|err| format!("failed to read XLSX workbook: {err}"))?;
+    let extracted = XlsxTabularAdapter::new(policies)
+        .extract(&workbook_bytes)
+        .map_err(|err| format!("failed to read XLSX workbook: {err}"))?;
+    let mut vault = if args.vault_path.exists() {
+        LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
+    } else {
+        LocalVaultStore::create(&args.vault_path, &args.passphrase)
+    }
+    .map_err(|err| format!("failed to open vault: {err}"))?;
+
+    let output = TabularDeidentificationService
+        .deidentify_extracted(extracted, &mut vault, SurfaceKind::Cli)
+        .map_err(|err| format!("failed to deidentify XLSX: {err}"))?;
+    let rendered = render_xlsx_output(&output.csv)
+        .map_err(|err| format!("failed to render XLSX output: {err}"))?;
+    fs::write(&args.output_path, rendered)
+        .map_err(|err| format!("failed to write output XLSX: {err}"))?;
+
+    print_summary(
+        &args.output_path,
+        &output.summary,
+        output.review_queue.len(),
+    )?;
+    Ok(())
+}
+
+fn render_xlsx_output(csv: &str) -> Result<Vec<u8>, String> {
+    let extracted = CsvTabularAdapter::new(Vec::new())
+        .extract(csv.as_bytes())
+        .map_err(|err| err.to_string())?;
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    for (column_index, column) in extracted.columns.iter().enumerate() {
+        worksheet
+            .write_string(0, column_index as u16, &column.name)
+            .map_err(|err| err.to_string())?;
+    }
+    for (row_index, row) in extracted.rows.iter().enumerate() {
+        for (column_index, value) in row.iter().enumerate() {
+            worksheet
+                .write_string((row_index + 1) as u32, column_index as u16, value)
+                .map_err(|err| err.to_string())?;
+        }
+    }
+    workbook.save_to_buffer().map_err(|err| err.to_string())
+}
+
+fn parse_policies(policies_json: &str) -> Result<Vec<FieldPolicy>, String> {
+    let requests: Vec<PolicyRequest> = serde_json::from_str(policies_json)
+        .map_err(|err| format!("invalid policies JSON: {err}"))?;
+    Ok(requests
+        .into_iter()
+        .map(|request| FieldPolicy {
+            header: request.header,
+            phi_type: request.phi_type,
+            action: match request.action {
+                PolicyActionRequest::Encode => FieldPolicyAction::Encode,
+                PolicyActionRequest::Review => FieldPolicyAction::Review,
+                PolicyActionRequest::Ignore => FieldPolicyAction::Ignore,
+            },
+        })
+        .collect())
+}
+
+fn print_summary(
+    output_path: &PathBuf,
+    summary: &BatchSummary,
+    review_queue_len: usize,
+) -> Result<(), String> {
+    let payload = json!({
+        "output_path": output_path,
+        "summary": summary,
+        "review_queue_len": review_queue_len,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&payload)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn exit_with_usage(error: &str) -> ! {
+    eprintln!("{error}");
+    eprintln!();
+    eprintln!("{}", usage());
+    process::exit(2);
 }
 
 fn usage() -> &'static str {
-    "usage: mdid-cli [status | moat round [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] [--history-path PATH] | moat control-plane [--history-path PATH] [--strategy-candidates N] [--spec-generations N] [--implementation-tasks N] [--review-loops N] [--tests-passed true|false] | moat history --history-path PATH [--round-id ROUND_ID] [--decision Continue|Stop|Pivot] [--contains TEXT] [--stop-reason-contains TEXT] [--min-score N] [--tests-passed true|false] [--limit N] | moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT] [--limit N] | moat assignments --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--depends-on NODE_ID] [--no-dependencies] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N] | moat ready-tasks --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--limit N] | moat claim-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat complete-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat release-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat block-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat unblock-task --history-path PATH --node-id NODE_ID [--round-id ROUND_ID] | moat continue --history-path PATH [--improvement-threshold N] | moat schedule-next --history-path PATH [--improvement-threshold N] | moat export-specs --history-path PATH --output-dir DIR | moat export-plans --history-path PATH --output-dir DIR]"
-}
-
-fn exit_with_usage(message: String) -> ! {
-    eprintln!("{message}");
-    eprintln!("{}", usage());
-    std::process::exit(1);
-}
-
-fn exit_with_error(message: String) -> ! {
-    eprintln!("{message}");
-    std::process::exit(1);
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary."
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdid_domain::ContinueDecision;
+    use mdid_domain::MappingScope;
+    use mdid_vault::NewMappingRecord;
 
     #[test]
-    fn continue_decision_formatter_uses_stable_contract_strings() {
-        assert_eq!(
-            format_continue_decision(ContinueDecision::Continue),
-            "Continue"
-        );
-        assert_eq!(format_continue_decision(ContinueDecision::Stop), "Stop");
-        assert_eq!(format_continue_decision(ContinueDecision::Pivot), "Pivot");
-    }
-
-    #[test]
-    fn task_node_state_formatter_uses_stable_contract_strings() {
-        assert_eq!(
-            format_task_node_state(MoatTaskNodeState::Pending),
-            "pending"
-        );
-        assert_eq!(format_task_node_state(MoatTaskNodeState::Ready), "ready");
-        assert_eq!(
-            format_task_node_state(MoatTaskNodeState::InProgress),
-            "in_progress"
-        );
-        assert_eq!(
-            format_task_node_state(MoatTaskNodeState::Completed),
-            "completed"
-        );
-        assert_eq!(
-            format_task_node_state(MoatTaskNodeState::Blocked),
-            "blocked"
-        );
-    }
-
-    #[test]
-    fn format_string_list_uses_none_for_empty_and_commas_for_values() {
-        assert_eq!(format_string_list(&[]), "<none>");
-        assert_eq!(
-            format_string_list(&[
-                "moat-spec/workflow-audit".to_string(),
-                "moat-spec/compliance-ledger".to_string(),
-            ]),
-            "moat-spec/workflow-audit,moat-spec/compliance-ledger"
-        );
-    }
-
-    #[test]
-    fn parse_command_maps_round_control_plane_history_and_continue_commands() {
-        assert_eq!(
-            parse_command(&[
-                "moat".into(),
-                "round".into(),
-                "--review-loops".into(),
-                "0".into(),
-            ])
-            .unwrap(),
-            CliCommand::MoatRound(MoatRoundCommand {
-                overrides: MoatRoundOverrides {
-                    review_loops: Some(0),
-                    ..MoatRoundOverrides::default()
-                },
-                history_path: None,
-            })
-        );
-        assert_eq!(
-            parse_command(&[
-                "moat".into(),
-                "control-plane".into(),
-                "--strategy-candidates".into(),
-                "0".into(),
-            ])
-            .unwrap(),
-            CliCommand::MoatControlPlane(MoatControlPlaneCommand {
-                overrides: MoatRoundOverrides {
-                    strategy_candidates: Some(0),
-                    ..MoatRoundOverrides::default()
-                },
-                history_path: None,
-            })
-        );
-        assert_eq!(
-            parse_command(&[
-                "moat".into(),
-                "history".into(),
-                "--history-path".into(),
-                "history.json".into(),
-            ])
-            .unwrap(),
-            CliCommand::MoatHistory(MoatHistoryCommand {
-                history_path: "history.json".into(),
-                round_id: None,
-                decision: None,
-                contains: None,
-                stop_reason_contains: None,
-                tests_passed: None,
-                min_score: None,
-                limit: None,
-            })
-        );
-        assert_eq!(
-            parse_command(&[
-                "moat".into(),
-                "history".into(),
-                "--history-path".into(),
-                "history.json".into(),
-                "--stop-reason-contains".into(),
-                "budget".into(),
-            ])
-            .unwrap(),
-            CliCommand::MoatHistory(MoatHistoryCommand {
-                history_path: "history.json".into(),
-                round_id: None,
-                decision: None,
-                contains: None,
-                stop_reason_contains: Some("budget".into()),
-                tests_passed: None,
-                min_score: None,
-                limit: None,
-            })
-        );
-        assert_eq!(
-            parse_command(&[
-                "moat".into(),
-                "continue".into(),
-                "--history-path".into(),
-                "history.json".into(),
-                "--improvement-threshold".into(),
-                "4".into(),
-            ])
-            .unwrap(),
-            CliCommand::MoatContinue {
-                history_path: "history.json".into(),
-                improvement_threshold: 4,
-            }
-        );
-        assert_eq!(
-            parse_command(&[
-                "moat".into(),
-                "schedule-next".into(),
-                "--history-path".into(),
-                "history.json".into(),
-                "--improvement-threshold".into(),
-                "5".into(),
-            ])
-            .unwrap(),
-            CliCommand::MoatScheduleNext {
-                history_path: "history.json".into(),
-                improvement_threshold: 5,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_moat_history_command_parses_stop_reason_contains() {
-        assert_eq!(
-            parse_moat_history_command(&[
-                "--history-path".into(),
-                "history.json".into(),
-                "--stop-reason-contains".into(),
-                "budget".into(),
-                "--limit".into(),
-                "5".into(),
-            ])
-            .unwrap(),
-            MoatHistoryCommand {
-                history_path: "history.json".into(),
-                round_id: None,
-                decision: None,
-                contains: None,
-                stop_reason_contains: Some("budget".into()),
-                tests_passed: None,
-                min_score: None,
-                limit: Some(5),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_moat_history_command_parses_round_id() {
-        assert_eq!(
-            parse_moat_history_command(&[
-                "--history-path".into(),
-                "history.json".into(),
-                "--round-id".into(),
-                "round-123".into(),
-            ])
-            .unwrap(),
-            MoatHistoryCommand {
-                history_path: "history.json".into(),
-                round_id: Some("round-123".into()),
-                decision: None,
-                contains: None,
-                stop_reason_contains: None,
-                tests_passed: None,
-                min_score: None,
-                limit: None,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_moat_decision_log_rejects_flag_like_round_id_value() {
-        assert_eq!(
-            parse_moat_decision_log_command(&[
-                "--history-path".into(),
-                "history.json".into(),
-                "--round-id".into(),
-                "--role".into(),
-                "planner".into(),
-            ]),
-            Err("missing value for --round-id".into())
-        );
-    }
-
-    #[test]
-    fn parses_moat_release_task_command() {
+    fn parses_deidentify_csv_command_without_requiring_debug() {
+        let policies_json = r#"[{"header":"n","phi_type":"NAME","action":"encode"}]"#;
         let args = vec![
-            "moat".to_string(),
-            "release-task".to_string(),
-            "--history-path".to_string(),
-            "history.json".to_string(),
-            "--round-id".to_string(),
-            "round-1".to_string(),
-            "--node-id".to_string(),
-            "strategy_generation".to_string(),
+            "deidentify-csv".to_string(),
+            "--csv-path".to_string(),
+            "input.csv".to_string(),
+            "--policies-json".to_string(),
+            policies_json.to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--output-path".to_string(),
+            "output.csv".to_string(),
         ];
 
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyCsv(DeidentifyCsvArgs {
+                    csv_path: PathBuf::from("input.csv"),
+                    policies_json: policies_json.to_string(),
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    output_path: PathBuf::from("output.csv"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_deidentify_xlsx_command_without_requiring_debug() {
+        let policies_json = r#"[{"header":"patient_name","phi_type":"NAME","action":"encode"}]"#;
+        let args = vec![
+            "deidentify-xlsx".to_string(),
+            "--xlsx-path".to_string(),
+            "input.xlsx".to_string(),
+            "--policies-json".to_string(),
+            policies_json.to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--output-path".to_string(),
+            "output.xlsx".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyXlsx(DeidentifyXlsxArgs {
+                    xlsx_path: PathBuf::from("input.xlsx"),
+                    policies_json: policies_json.to_string(),
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    output_path: PathBuf::from("output.xlsx"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_deidentify_pdf_command_without_requiring_debug() {
+        let args = vec![
+            "deidentify-pdf".to_string(),
+            "--pdf-path".to_string(),
+            "input.pdf".to_string(),
+            "--source-name".to_string(),
+            "scan.pdf".to_string(),
+            "--report-path".to_string(),
+            "report.json".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyPdf(DeidentifyPdfArgs {
+                    pdf_path: PathBuf::from("input.pdf"),
+                    source_name: "scan.pdf".to_string(),
+                    report_path: PathBuf::from("report.json"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_vault_decode_command() {
+        let record_ids_json = r#"["00000000-0000-0000-0000-000000000001"]"#;
+        let args = vec![
+            "vault-decode".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--record-ids-json".to_string(),
+            record_ids_json.to_string(),
+            "--output-target".to_string(),
+            "report-only".to_string(),
+            "--justification".to_string(),
+            "patient request".to_string(),
+            "--report-path".to_string(),
+            "decode-report.json".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultDecode(VaultDecodeArgs {
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    record_ids_json: record_ids_json.to_string(),
+                    output_target: "report-only".to_string(),
+                    justification: "patient request".to_string(),
+                    report_path: PathBuf::from("decode-report.json"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_vault_export_command() {
+        let record_ids_json = r#"["00000000-0000-0000-0000-000000000001"]"#;
+        let args = vec![
+            "vault-export".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--record-ids-json".to_string(),
+            record_ids_json.to_string(),
+            "--export-passphrase".to_string(),
+            "portable-secret".to_string(),
+            "--context".to_string(),
+            "handoff".to_string(),
+            "--artifact-path".to_string(),
+            "portable-export.json".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultExport(VaultExportArgs {
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    record_ids_json: record_ids_json.to_string(),
+                    export_passphrase: "portable-secret".to_string(),
+                    context: "handoff".to_string(),
+                    artifact_path: PathBuf::from("portable-export.json"),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_vault_import_command() {
+        let args = vec![
+            "vault-import".to_string(),
+            "--vault-path".to_string(),
+            "target-vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "target-secret".to_string(),
+            "--artifact-path".to_string(),
+            "portable-export.json".to_string(),
+            "--portable-passphrase".to_string(),
+            "portable-secret".to_string(),
+            "--context".to_string(),
+            "import".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultImport(VaultImportArgs {
+                    vault_path: PathBuf::from("target-vault.mdid"),
+                    passphrase: "target-secret".to_string(),
+                    artifact_path: PathBuf::from("portable-export.json"),
+                    portable_passphrase: "portable-secret".to_string(),
+                    context: "import".to_string(),
+                }))
+        );
+    }
+
+    #[test]
+    fn vault_export_writes_artifact_and_returns_phi_safe_summary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_path = temp_dir.path().join("vault.mdid");
+        let artifact_path = temp_dir.path().join("portable-export.json");
+        let mut vault = LocalVaultStore::create(&vault_path, "secret-passphrase").unwrap();
+        let record = vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(
+                        Uuid::new_v4(),
+                        Uuid::new_v4(),
+                        "patient.name".to_string(),
+                    ),
+                    phi_type: "NAME".to_string(),
+                    original_value: "Alice Example".to_string(),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+
+        let summary = run_vault_export_for_summary(VaultExportArgs {
+            vault_path,
+            passphrase: "secret-passphrase".to_string(),
+            record_ids_json: format!(r#"["{}"]"#, record.id),
+            export_passphrase: "portable-secret".to_string(),
+            context: "handoff".to_string(),
+            artifact_path: artifact_path.clone(),
+        })
+        .unwrap();
+
+        assert!(artifact_path.exists());
+        let artifact_json = fs::read_to_string(&artifact_path).unwrap();
+        assert!(artifact_json.contains("ciphertext_b64"));
+        let summary_json: serde_json::Value = serde_json::from_str(&summary).unwrap();
+        assert_eq!(summary_json["command"], "vault-export");
+        assert_eq!(summary_json["exported_records"], 1);
         assert_eq!(
-            parse_command(&args),
-            Ok(CliCommand::MoatReleaseTask(MoatReleaseTaskCommand {
-                history_path: "history.json".to_string(),
-                round_id: Some("round-1".to_string()),
-                node_id: "strategy_generation".to_string(),
+            summary_json["artifact_path"].as_str().unwrap(),
+            artifact_path.to_string_lossy()
+        );
+        assert!(Uuid::parse_str(summary_json["audit_event_id"].as_str().unwrap()).is_ok());
+        for secret in ["Alice Example", "secret-passphrase", "portable-secret"] {
+            assert!(!summary.contains(secret));
+        }
+    }
+
+    #[test]
+    fn vault_import_bounded_read_rejects_sparse_oversized_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let artifact_path = temp_dir
+            .path()
+            .join("sparse-oversized-portable-export.json");
+        std::fs::File::create(&artifact_path)
+            .unwrap()
+            .set_len(MAX_PORTABLE_ARTIFACT_BYTES + 1)
+            .unwrap();
+
+        let error = read_bounded_portable_artifact(&artifact_path).unwrap_err();
+
+        assert_eq!(error, "portable artifact exceeds maximum size");
+    }
+
+    #[test]
+    fn vault_import_rejects_oversized_artifact_before_parsing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_path = temp_dir.path().join("target-vault.mdid");
+        let artifact_path = temp_dir.path().join("oversized-portable-export.json");
+        LocalVaultStore::create(&vault_path, "target-secret").unwrap();
+        std::fs::File::create(&artifact_path)
+            .unwrap()
+            .set_len(MAX_PORTABLE_ARTIFACT_BYTES + 1)
+            .unwrap();
+
+        let error = run_vault_import_for_summary(VaultImportArgs {
+            vault_path,
+            passphrase: "target-secret".to_string(),
+            artifact_path,
+            portable_passphrase: "portable-secret".to_string(),
+            context: "import".to_string(),
+        })
+        .unwrap_err();
+
+        assert!(
+            error.contains("portable artifact exceeds maximum size"),
+            "unexpected error: {error}"
+        );
+        for secret in ["target-secret", "portable-secret"] {
+            assert!(!error.contains(secret));
+        }
+    }
+
+    #[test]
+    fn vault_import_after_export_returns_phi_safe_summary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_vault_path = temp_dir.path().join("source-vault.mdid");
+        let target_vault_path = temp_dir.path().join("target-vault.mdid");
+        let artifact_path = temp_dir.path().join("portable-export.json");
+        let mut source_vault =
+            LocalVaultStore::create(&source_vault_path, "source-secret").unwrap();
+        LocalVaultStore::create(&target_vault_path, "target-secret").unwrap();
+        let record = source_vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(
+                        Uuid::new_v4(),
+                        Uuid::new_v4(),
+                        "patient.name".to_string(),
+                    ),
+                    phi_type: "NAME".to_string(),
+                    original_value: "Alice Example".to_string(),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+        run_vault_export_for_summary(VaultExportArgs {
+            vault_path: source_vault_path,
+            passphrase: "source-secret".to_string(),
+            record_ids_json: format!(r#"["{}"]"#, record.id),
+            export_passphrase: "portable-secret".to_string(),
+            context: "handoff".to_string(),
+            artifact_path: artifact_path.clone(),
+        })
+        .unwrap();
+
+        let summary = run_vault_import_for_summary(VaultImportArgs {
+            vault_path: target_vault_path,
+            passphrase: "target-secret".to_string(),
+            artifact_path,
+            portable_passphrase: "portable-secret".to_string(),
+            context: "import".to_string(),
+        })
+        .unwrap();
+
+        let summary_json: serde_json::Value = serde_json::from_str(&summary).unwrap();
+        assert_eq!(summary_json["command"], "vault-import");
+        assert_eq!(summary_json["imported_records"], 1);
+        assert_eq!(summary_json["duplicate_records"], 0);
+        assert!(Uuid::parse_str(summary_json["audit_event_id"].as_str().unwrap()).is_ok());
+        for secret in [
+            "Alice Example",
+            "source-secret",
+            "target-secret",
+            "portable-secret",
+        ] {
+            assert!(!summary.contains(secret));
+        }
+    }
+
+    #[test]
+    fn vault_import_rerun_reports_duplicates_without_leaking_values() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_vault_path = temp_dir.path().join("source-vault.mdid");
+        let target_vault_path = temp_dir.path().join("target-vault.mdid");
+        let artifact_path = temp_dir.path().join("portable-export.json");
+        let mut source_vault =
+            LocalVaultStore::create(&source_vault_path, "source-secret").unwrap();
+        LocalVaultStore::create(&target_vault_path, "target-secret").unwrap();
+        let record = source_vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(
+                        Uuid::new_v4(),
+                        Uuid::new_v4(),
+                        "patient.name".to_string(),
+                    ),
+                    phi_type: "NAME".to_string(),
+                    original_value: "Alice Example".to_string(),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+        run_vault_export_for_summary(VaultExportArgs {
+            vault_path: source_vault_path,
+            passphrase: "source-secret".to_string(),
+            record_ids_json: format!(r#"["{}"]"#, record.id),
+            export_passphrase: "portable-secret".to_string(),
+            context: "handoff".to_string(),
+            artifact_path: artifact_path.clone(),
+        })
+        .unwrap();
+        let args = VaultImportArgs {
+            vault_path: target_vault_path,
+            passphrase: "target-secret".to_string(),
+            artifact_path,
+            portable_passphrase: "portable-secret".to_string(),
+            context: "import".to_string(),
+        };
+        run_vault_import_for_summary(args.clone()).unwrap();
+
+        let duplicate_summary = run_vault_import_for_summary(args).unwrap();
+
+        let summary_json: serde_json::Value = serde_json::from_str(&duplicate_summary).unwrap();
+        assert_eq!(summary_json["command"], "vault-import");
+        assert_eq!(summary_json["imported_records"], 0);
+        assert_eq!(summary_json["duplicate_records"], 1);
+        for secret in [
+            "Alice Example",
+            "MDID-NAME",
+            "source-secret",
+            "target-secret",
+            "portable-secret",
+        ] {
+            assert!(!duplicate_summary.contains(secret));
+        }
+    }
+
+    #[test]
+    fn parses_vault_audit_command_without_requiring_debug() {
+        let args = vec![
+            "vault-audit".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--limit".to_string(),
+            "10".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultAudit(VaultAuditArgs {
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    limit: Some(10),
+                }))
+        );
+    }
+
+    #[test]
+    fn parses_record_ids_json_for_vault_decode() {
+        let ids = parse_record_ids_json(
+            r#"["00000000-0000-0000-0000-000000000001","00000000-0000-0000-0000-000000000002"]"#,
+        )
+        .unwrap();
+
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0].to_string(), "00000000-0000-0000-0000-000000000001");
+        assert_eq!(ids[1].to_string(), "00000000-0000-0000-0000-000000000002");
+    }
+
+    #[test]
+    fn rejects_empty_record_ids_json_for_vault_decode() {
+        assert_eq!(
+            parse_record_ids_json("[]"),
+            Err("decode scope must include at least one record id".to_string())
+        );
+    }
+
+    #[test]
+    fn vault_decode_report_keeps_values_in_report_but_not_stdout_summary() {
+        let report_path = PathBuf::from("decode-report.json");
+        let report = VaultDecodeReport {
+            decoded_value_count: 1,
+            values: vec![VaultDecodeValueReport {
+                record_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                token: "MDID-NAME-000001".to_string(),
+                original_value: "Alice Example".to_string(),
+            }],
+            audit_event: serde_json::from_value(json!({
+                "id":"00000000-0000-0000-0000-000000000000",
+                "kind":"decode",
+                "actor":"cli",
+                "detail":"approved disclosure for Alice Example; case packet for Alice Example",
+                "recorded_at":"2026-04-29T00:00:00Z"
             }))
+            .unwrap(),
+        };
+
+        let report_json = serde_json::to_string(&report).unwrap();
+        let stdout_json = build_vault_decode_stdout(&report_path, &report).unwrap();
+
+        assert!(report_json.contains("Alice Example"));
+        assert!(report_json.contains("original_value"));
+        assert!(!stdout_json.contains("Alice Example"));
+        assert!(!stdout_json.contains("original_value"));
+        assert!(!stdout_json.contains("approved disclosure for Alice Example"));
+        assert!(!stdout_json.contains("case packet for Alice Example"));
+        assert!(stdout_json.contains("decode event"));
+        assert!(stdout_json.contains("decoded_value_count"));
+        assert!(stdout_json.contains("audit_event"));
+    }
+
+    #[test]
+    fn rejects_invalid_and_zero_vault_audit_limits() {
+        for limit in ["0", "not-a-number"] {
+            let args = vec![
+                "vault-audit".to_string(),
+                "--vault-path".to_string(),
+                "vault.mdid".to_string(),
+                "--passphrase".to_string(),
+                "secret-passphrase".to_string(),
+                "--limit".to_string(),
+                limit.to_string(),
+            ];
+
+            assert!(parse_command(&args) == Err("invalid --limit".to_string()));
+        }
+    }
+
+    #[test]
+    fn vault_audit_report_applies_default_and_max_limit_bounds() {
+        let events = vault_audit_events(150, AuditEventKind::Encode);
+
+        let default_report = build_vault_audit_report(&events, None);
+        let clamped_report = build_vault_audit_report(&events, Some(150));
+
+        assert_eq!(default_report.event_count, 150);
+        assert_eq!(default_report.returned_event_count, 100);
+        assert_eq!(default_report.events.len(), 100);
+        assert_eq!(clamped_report.returned_event_count, 100);
+        assert_eq!(clamped_report.events.len(), 100);
+    }
+
+    #[test]
+    fn vault_audit_report_returns_multiple_events_in_reverse_chronological_order() {
+        let events = vault_audit_events(4, AuditEventKind::Encode);
+
+        let report = build_vault_audit_report(&events, Some(3));
+
+        assert_eq!(report.returned_event_count, 3);
+        assert_eq!(report.events[0].recorded_at, "2026-04-29T00:03:00+00:00");
+        assert_eq!(report.events[1].recorded_at, "2026-04-29T00:02:00+00:00");
+        assert_eq!(report.events[2].recorded_at, "2026-04-29T00:01:00+00:00");
+    }
+
+    #[test]
+    fn vault_audit_report_uses_stable_kinds_and_sanitizes_all_details() {
+        let events: Vec<mdid_domain::AuditEvent> = serde_json::from_value(json!([
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"encode","actor":"cli","detail":"Alice Example encoded","recorded_at":"2026-04-29T00:00:00Z"},
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"decode","actor":"cli","detail":"decoded Bob Example","recorded_at":"2026-04-29T00:01:00Z"},
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"export","actor":"cli","detail":"exported Carol Example","recorded_at":"2026-04-29T00:02:00Z"},
+            {"id":"00000000-0000-0000-0000-000000000000","kind":"import","actor":"cli","detail":"imported Dan Example","recorded_at":"2026-04-29T00:03:00Z"}
+        ]))
+        .unwrap();
+
+        let report = build_vault_audit_report(&events, Some(4));
+        let rendered = serde_json::to_string(&report).unwrap();
+
+        assert_eq!(
+            report
+                .events
+                .iter()
+                .map(|event| (event.kind.as_str(), event.detail.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("import", "portable import event"),
+                ("export", "portable export event"),
+                ("decode", "decode event"),
+                ("encode", "encoded mapping"),
+            ]
+        );
+        for phi in [
+            "Alice", "Bob", "Carol", "Dan", "Encode", "Decode", "Export", "Import",
+        ] {
+            assert!(!rendered.contains(phi));
+        }
+    }
+
+    fn vault_audit_events(count: usize, kind: AuditEventKind) -> Vec<mdid_domain::AuditEvent> {
+        (0..count)
+            .map(|index| {
+                serde_json::from_value(json!({
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "kind": kind.as_str(),
+                    "actor": "cli",
+                    "detail": format!("raw detail {index} Alice Example"),
+                    "recorded_at": format!("2026-04-29T00:{:02}:00Z", index % 60)
+                }))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parses_deidentify_dicom_command_without_requiring_debug() {
+        let args = vec![
+            "deidentify-dicom".to_string(),
+            "--dicom-path".to_string(),
+            "input.dcm".to_string(),
+            "--private-tag-policy".to_string(),
+            "review".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--output-path".to_string(),
+            "output.dcm".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::DeidentifyDicom(DeidentifyDicomArgs {
+                    dicom_path: PathBuf::from("input.dcm"),
+                    private_tag_policy: "review".to_string(),
+                    vault_path: PathBuf::from("vault.mdid"),
+                    passphrase: "secret-passphrase".to_string(),
+                    output_path: PathBuf::from("output.dcm"),
+                }))
         );
     }
 }

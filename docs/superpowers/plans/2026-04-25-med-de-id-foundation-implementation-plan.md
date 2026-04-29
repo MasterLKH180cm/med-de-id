@@ -1,6 +1,6 @@
 # med-de-id Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution note:** Implement this plan task-by-task with small verified commits. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Establish a testable Rust workspace skeleton for `med-de-id` with shared domain/application/runtime foundations plus the first CLI, browser, and desktop entry points.
 
@@ -711,7 +711,7 @@ pub fn App() -> impl IntoView {
     view! {
         <main>
             <h1>"med-de-id browser tool"</h1>
-            <p>"Pipeline/orchestration surface skeleton"</p>
+            <p>"Workflow surface skeleton"</p>
         </main>
     }
 }

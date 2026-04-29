@@ -6,18 +6,29 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
+calamine.workspace = true
 chrono.workspace = true
+mdid-adapters = { path = "../mdid-adapters" }
 mdid-application = { path = "../mdid-application" }
 mdid-domain = { path = "../mdid-domain" }
+mdid-vault = { path = "../mdid-vault" }
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+xmltree.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+dicom-core = "0.9.0"
+dicom-object = "0.9.1"
+mdid-adapters = { path = "../mdid-adapters" }
+rust_xlsxwriter = "0.94"
 tokio.workspace = true
 tower.workspace = true
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }

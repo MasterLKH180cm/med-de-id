@@ -23,6 +23,19 @@ fn csv_adapter_infers_schema_and_marks_review_columns() {
 }
 
 #[test]
+fn utf8_bom_prefixed_first_header_matches_field_policy() {
+    let csv_input = "\u{feff}patient_id,patient_name\nMRN-001,Alice Smith\n";
+    let adapter = CsvTabularAdapter::new(vec![FieldPolicy::encode("patient_id", "patient_id")]);
+
+    let extracted = adapter.extract(csv_input.as_bytes()).unwrap();
+
+    assert_eq!(extracted.columns[0].name, "patient_id");
+    assert_eq!(extracted.candidates.len(), 1);
+    assert_eq!(extracted.candidates[0].cell.header, "patient_id");
+    assert_eq!(extracted.candidates[0].value, "MRN-001");
+}
+
+#[test]
 fn field_policy_helpers_assign_expected_actions() {
     let encode = FieldPolicy::encode("patient_id", "patient_id");
     let review = FieldPolicy::review("patient_name", "patient_name");

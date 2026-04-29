@@ -1,6 +1,6 @@
 # med-de-id
 
-Windows-first, local-first medical de-identification platform with a pure Rust core.
+Windows-first, local-first medical de-identification system with a pure Rust core.
 
 ## What it is
 
@@ -9,7 +9,7 @@ Windows-first, local-first medical de-identification platform with a pure Rust c
 The product has three formal surfaces:
 
 1. **CLI** — automation, batch, integration, headless execution
-2. **Browser tool** — localhost pipeline/orchestration workbench for workflow composition and scheduling
+2. **Browser tool** — local-first browser surface, currently limited to bounded tabular de-identification and PDF review pages served on localhost
 3. **Desktop app** — sensitive workstation for review, vault operations, decode flows, and audit investigation
 
 ## Core workflow
@@ -33,8 +33,9 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 | Format family | v1 depth | Notes |
 |---|---|---|
 | DICOM | L3 | tag-level handling, UID remap, private-tag policy, burned-in suspicion flagging |
-| CSV / Excel | L3 | schema-aware reversible mapping and batch consistency |
-| PDF / scanned records | L2 | text extraction, OCR, review, governed rewrite/export |
+| CSV | L3 | schema-aware reversible mapping and batch consistency |
+| Excel (XLSX, bounded) | L2 | schema-aware reversible mapping on only the first non-empty worksheet; runtime XLSX output is bounded to that route's rewritten workbook behavior, while CLI XLSX output is a normalized single-sheet workbook generated from de-identified tabular rows and does not preserve original workbook metadata, formatting, formulas, sheet names, or multiple sheets |
+| PDF / scanned records | L1/L2 foundation | text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure; no full OCR, visual redaction, handwriting handling, or final PDF rewrite/export yet |
 | FCS | L2/L3 metadata-first | TEXT/metadata identifier handling |
 | Images | L1 | filename/path/metadata cleanup, OCR-assisted suspicion |
 | Videos | L1 | filename/path/container metadata and sidecar handling |
@@ -60,20 +61,50 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, and the first Slice 3 tabular workflow and adapter work.
+Completion snapshot, based only on landed repository features and verification state:
+
+| Area | Completion | Status |
+|---|---:|---|
+| CLI | 84% | Early automation surface with local de-identification readiness, bounded `deidentify-csv`, `deidentify-xlsx`, and `deidentify-dicom` commands for local file rewriting through explicit policies and the local application/vault stack, plus a bounded `deidentify-pdf` command that writes a PHI-safe review report only, a bounded PHI-safe `review-media` command for conservative image/video/FCS metadata review reports without media rewriting, a bounded read-only `vault-audit` command that prints PHI-safe audit metadata, a bounded `vault-decode` command that unlocks a local vault, decodes explicit record ids, writes a local JSON report containing decoded values, records an audit event, and prints only a PHI-safe summary, and bounded `vault-export`/`vault-import` commands for encrypted portable artifact creation/import with explicit passphrases and bounded local artifact reads; generalized transfer workflows, richer workflows, conservative-media rewrite/export, OCR/visual redaction, and packaging/hardening remain unimplemented. |
+| Browser/web | 38% | Bounded localhost tabular de-identification page plus bounded PDF review mode and DICOM tag-level helper backed by local runtime routes, with bounded CSV/XLSX/PDF/DICOM file import/export helper controls; not a broader browser governance workspace. |
+| Desktop app | 38% | Bounded sensitive-workstation foundation prepares CSV, XLSX, PDF review, DICOM, bounded vault decode/audit, and portable artifact export/inspect/import request envelopes for existing localhost runtime routes, can apply bounded CSV/XLSX/PDF/DICOM file import/export helpers, submit prepared non-vault and portable helper envelopes to a localhost runtime, render response panes with honest disclosures, and now has PHI-safe vault/portable response rendering helpers for decode/audit/portable runtime envelopes; deeper desktop vault browsing, full decode workflow execution UX, audit investigation/execution workflow polish, generalized portable transfer workflow UX, desktop PDF flow beyond request preparation and bounded review/export helper naming, desktop DICOM flow beyond bounded request/response/import/export helpers, auth/session, and full governance/review queues remain missing. |
+| Overall | 69% | Core workspace, vault MVP, tabular path, bounded DICOM/PDF/runtime slices, conservative media/FCS domain models, adapter/application review foundation, bounded runtime metadata review/PDF review/DICOM/vault decode/audit/portable export/import entries, browser tabular/PDF review/DICOM helper surface with bounded CSV/XLSX/PDF/DICOM import/export helpers, desktop request-preparation/localhost-submit/response workbench foundation with bounded CSV/XLSX/PDF/DICOM file import/export helpers and PHI-safe vault/portable response rendering helpers, and CLI automation for CSV/XLSX/DICOM/PDF/conservative-media/vault audit/decode/portable import/export are present; deeper detection/policy, richer browser/desktop workflows, OCR/visual redaction, full desktop vault/decode/audit execution UX, and governance polish remain. |
+
+Missing items include distance to >90% completion: deeper detection/policy, richer browser/desktop workflows, OCR/visual redaction, full desktop vault/decode/audit execution UX, governance polish, deeper policy/detection crates, full review/governance workflows, richer browser UX and upload/download depth beyond the bounded CSV/XLSX/PDF/DICOM import/export helpers, deeper desktop vault browsing, desktop decode workflow execution UX, audit investigation/execution workflow polish, generalized portable transfer workflow UX, desktop PDF flow beyond request preparation and bounded review/export helper naming, desktop DICOM flow beyond bounded request/response/import/export helper support, broader import/export and upload flows, handwriting handling, full PDF rewrite/export, FCS semantic parsing, media rewrite/export, generalized spreadsheet handling, auth/session handling where needed, additional real de-identification CLI workflow commands beyond bounded CSV/XLSX/DICOM, the PDF review report, PHI-safe conservative media metadata review report, read-only vault-audit, bounded vault-decode, and bounded vault-export/vault-import; remaining CLI gaps include conservative-media rewrite/export, generalized transfer workflows, verification/audit polish, richer workflows, and production packaging/hardening.
+
+This repository currently contains the Slice 1 workspace foundation, the Slice 2 vault MVP, the first Slice 3 tabular workflow and adapter work, the bounded Slice 5/6 PDF support foundation, and bounded runtime HTTP entries for DICOM de-identification, tabular CSV/XLSX de-identification, PDF review, conservative media metadata review, vault decode, bounded vault audit browsing, bounded portable subset export, bounded portable artifact inspection, and bounded portable artifact import into a local vault.
 
 Implemented so far:
 
 - Shared domain models for pipeline, review, vault mapping, decode requests, audit events, and tabular workflow state
-- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, and repeated-value token reuse
+- Conservative media/FCS domain workflow models, bounded adapter foundation, and application-layer review routing now distinguish image/video/FCS metadata-only status, OCR-or-visual-review-required status, unsupported payloads, review-required metadata candidates, honest summary counts, and redacted candidate/reference/output debug; this does not implement OCR, visual redaction, FCS semantic parsing, rewrite/export, or browser/desktop flows
+- An encrypted `mdid-vault` crate with local file-backed storage, explicit decode-by-record-id, audit recording, portable subset export, bounded portable artifact import, deterministic duplicate/normalization handling via the shared import contract, and repeated-value token reuse
 - An implemented `mdid-adapters` crate with shared tabular extraction for CSV/XLSX inputs, schema inference, field-level PHI candidate policies, and blank-cell handling parity
-- Tabular application orchestration that composes the adapters with vault-backed reversible encoding and honest batch summaries
-- Initial `mdid-runtime`, `mdid-cli`, `mdid-browser`, and `mdid-desktop` scaffolding from the foundation slice
+- CSV/tabular import hardening strips a leading UTF-8 BOM from the first header before policy matching, so BOM-prefixed CSV exports still match explicit field policies; this is a narrow adapter normalization and does not broaden upload/import workflows
+- Tabular application behavior that composes the adapters with vault-backed reversible encoding and honest batch summaries
+- Bounded PDF support for text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure
+- Current PDF support does not yet perform full OCR, visual redaction, handwriting handling, or final PDF rewrite/export
+- `mdid-runtime` now exposes a bounded local HTTP DICOM de-identification entry that accepts local/base64-transported DICOM bytes, applies the existing private-tag policy service logic, returns rewritten DICOM bytes plus a review summary/review queue, and honestly rejects invalid DICOM payloads
+- `mdid-runtime` also exposes bounded local HTTP tabular de-identification entries: one accepts CSV text plus explicit field policies and returns rewritten CSV plus a summary and review queue; another accepts base64-transported XLSX workbook bytes plus explicit field policies and returns rewritten workbook bytes plus a summary and review queue, but only extracts and rewrites the first non-empty worksheet and does not offer caller-controlled sheet selection. These entries still do not imply multipart upload flows, generalized spreadsheet browsing/import/export APIs, workbook-wide fidelity guarantees, or any auth/session handling
+- `mdid-runtime` also exposes a bounded local HTTP `/pdf/deidentify` review entry that accepts base64 PDF bytes plus a source name, delegates to the existing PDF application service, reports the existing text-layer/OCR-required summary, page statuses, and review queue, and returns `rewritten_pdf_bytes_base64: null`; it does not perform OCR, handwriting handling, visual redaction, PDF rewrite/export, desktop PDF flow, auth/session handling, generalized upload workflows, or broader workflow behavior
+- `mdid-runtime` exposes a bounded local HTTP conservative media review entry accepting image/video/FCS metadata JSON, routes through the application review service, returns a summary/review queue and `rewritten_media_bytes_base64: null`; it explicitly does not implement OCR, visual redaction, FCS semantic parsing, media rewrite/export, multipart upload, browser/desktop flows, auth/session, or generalized media workflow behavior
+- `mdid-runtime` also exposes a bounded local HTTP vault decode entry that unlocks a local vault with an explicit passphrase, decodes only the requested record scope, returns decoded values plus the resulting audit event, and honestly rejects wrong passphrases, unknown records, invalid decode requests, and unusable vault targets
+- `mdid-runtime` also exposes a bounded local HTTP vault audit browsing entry that unlocks a local vault with an explicit passphrase, returns persisted audit events in reverse chronological order with bounded filtering, supports filtering by event kind and actor, and remains read-only
+- `mdid-runtime` also exposes a bounded local HTTP portable export entry that unlocks a local vault with an explicit passphrase, exports only the requested bounded record subset into an encrypted portable artifact, records the resulting export audit event, and remains scoped to local export creation rather than import or transfer workflows
+- `mdid-runtime` also exposes a bounded local HTTP portable artifact inspection entry that locally unlocks an encrypted portable artifact with an explicit portable passphrase and returns a bounded preview of persisted record fields from the encrypted artifact contents, including sensitive persisted values already stored in the artifact such as tokens and original values
+- `mdid-runtime` also exposes a bounded local HTTP portable artifact import entry that unlocks a local vault with an explicit vault passphrase, imports an encrypted portable artifact into that local vault, skips duplicate record ids and existing semantic duplicates while deterministically normalizing shared-value token reuse through the shared import contract, records the resulting import audit event, and returns bounded imported/duplicate counts rather than artifact contents or generalized transfer state
+- `mdid-browser` is no longer only a scaffold: it now provides a local-first browser page for a bounded tabular de-identification flow that submits CSV text or base64-transported XLSX workbook bytes plus explicit field policies to the local `mdid-runtime` on localhost and renders the bounded rewritten result, summary, and review queue that come back; it also provides a bounded PDF review mode backed by `/pdf/deidentify` that submits base64 PDF bytes plus a source name and renders the review-only summary, page statuses, and review queue; it now also provides a bounded DICOM helper that uses the existing local runtime tag-level `/dicom/deidentify` route, submits base64-transported DICOM bytes plus a source name, renders the returned summary and review queue, and exports the rewritten DICOM base64 text. These CSV/XLSX/PDF/DICOM file import/export helper controls do not broaden the localhost runtime contracts
+- `mdid-browser` still does not provide DICOM pixel redaction, OCR, visual redaction, handwriting handling, PDF rewrite/export, vault browsing, richer browser upload/download UX depth, desktop PDF flow, auth/session handling, generalized workflow behavior, a generalized workflow builder, or any broader browser governance workspace
+- `mdid-desktop` now renders a bounded sensitive-workstation foundation for preparing local runtime CSV, XLSX, PDF review, DICOM, vault decode/audit, and portable artifact export/inspect/import requests with endpoint previews, validation status, mode-specific disclosures, bounded CSV/XLSX/PDF/DICOM file import/export helpers, localhost runtime submission, and local runtime-shaped summary, review queue, rewritten-output/review-notice, and error panes. It still does not implement deeper desktop vault browsing, decode workflow execution UX, audit investigation workflow, portable transfer execution UX, OCR, visual redaction, PDF rewrite/export, desktop DICOM flow beyond bounded request/response/import/export helper support, full DICOM review workflow, or full review workflows
+- `mdid-cli` remains an early de-identification automation surface and now includes bounded `deidentify-csv`, `deidentify-xlsx`, `deidentify-dicom`, `deidentify-pdf`, `review-media`, `vault-audit`, `vault-decode`, `vault-export`, and `vault-import` commands. CSV/XLSX/DICOM commands read a local file, apply explicit field/private-tag policy through the application/vault stack, write local de-identified output, and print a PHI-safe JSON summary. CSV output is rewritten CSV. XLSX CLI output is a normalized single-sheet XLSX generated from de-identified tabular rows; it does not preserve original workbook metadata, formatting, formulas, sheet names, or multiple sheets. DICOM CLI output rewrites local DICOM bytes with a PHI-safe summary only. PDF CLI output is only a PHI-safe JSON review report from the existing text-layer/OCR-required review service; it does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export. Review-media CLI output is only a PHI-safe conservative image/video/FCS metadata review report with non-identifying candidate indexes; it does not expose artifact labels, metadata keys, metadata values, OCR/visual redaction, FCS semantic parsing, or media rewrite/export. Vault-audit CLI output is bounded, read-only, and limited to PHI-safe persisted audit metadata. Vault-decode unlocks a local vault, decodes explicit record ids through the existing vault decode path, writes a local JSON report containing decoded values, records an audit event, and prints only a PHI-safe summary. Vault-export unlocks a local vault and creates an encrypted portable artifact for an explicit bounded record subset. Vault-import unlocks a local vault, reads a bounded encrypted portable artifact, imports through the shared portable import contract, skips duplicates, records an audit event, and prints bounded counts. Remaining CLI gaps include conservative-media rewrite/export, generalized transfer workflows, richer workflows, OCR/visual redaction, and packaging/hardening commands.
+
+The current runtime HTTP slice is intentionally narrow: it is still bounded to local request bodies for DICOM, CSV/tabular, base64-transported XLSX workbook bytes, base64-transported PDF review, conservative media metadata review, vault decode, bounded audit browsing, bounded portable export creation, bounded portable artifact inspection, and bounded portable artifact import into a local vault. The XLSX route is limited to returning rewritten workbook bytes plus a summary/review queue for only the first non-empty worksheet that it extracts and rewrites; it does not let callers choose a worksheet and should not be read as workbook-wide Excel handling. The PDF route is limited to accepting base64 PDF bytes plus a source name and returning existing text-layer/OCR-required summary, page statuses, review queue, and `rewritten_pdf_bytes_base64: null`; the browser PDF mode is only a bounded local client for that route and does not perform OCR, handwriting handling, visual redaction, PDF rewrite/export, browser upload UX, desktop PDF flow, auth/session handling, generalized upload workflows, or broader workflow behavior. The conservative media route is limited to image/video/FCS metadata JSON review through the application service and returns summary/review queue data with `rewritten_media_bytes_base64: null`; it does not perform OCR, visual redaction, FCS semantic parsing, media rewrite/export, multipart upload, browser/desktop flows, auth/session, or generalized media workflow behavior. The import route is limited to local vault persistence of encrypted portable artifacts with bounded imported/duplicate counts plus an audit event. These routes do not add multipart upload handling, generalized spreadsheet browsing/import/export APIs, auth/session handling, or any broader multi-step transfer flow.
 
 Planned next from the design:
 
 - Additional policy and detection crates
-- Deeper application orchestration and surface behavior beyond the current scaffolds
+- Deeper application behavior and de-identification surface behavior beyond the current scaffolds
+- Continue keeping scope-drift CLI concepts out of product-facing docs and roadmap claims while building real de-identification CLI workflows
 
 Available docs:
 
@@ -82,168 +113,9 @@ Available docs:
 - Slice 2 vault/decode MVP plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-2-vault-encode-decode-mvp.md`
 - Slice 3 tabular deep-support plan: `docs/superpowers/plans/2026-04-25-med-de-id-slice-3-tabular-deep-support.md`
 
-## Moat Loop Foundation
+## Roadmap
 
-`med-de-id` now includes a local-first moat-loop foundation for deterministic bounded strategy rounds. The shipped slice models market snapshots, competitor profiles, lock-in analysis artifacts, moat strategies, deterministic moat scoring, a bounded control-plane snapshot for canonical task-state inspection, and bounded local round-history persistence/inspection through the CLI.
-
-Run the default bounded round with:
-
-```bash
-cargo run -p mdid-cli -- moat round
-```
-
-The round command prints a deterministic report containing:
-
-- `continue_decision=Continue|Stop|Pivot`
-- `executed_tasks=market_scan,competitor_analysis,lockin_analysis,strategy_generation,spec_planning,implementation,review,evaluation`
-- `implemented_specs=<none>|moat-spec/<normalized-strategy-id>[,...]`
-- `moat_score_before`
-- `moat_score_after`
-- `stop_reason=<none>|...`
-
-`implemented_specs` is a bounded handoff surface: it exposes normalized stable IDs derived from selected strategy IDs (for example `moat-spec/workflow-audit`). The CLI can now export markdown spec files for the latest persisted round, but it still does **not** automatically dispatch coding/review agents from the CLI output.
-
-Persist the produced round report locally only when you explicitly provide a history path:
-
-```bash
-cargo run -p mdid-cli -- moat round --history-path .mdid/moat-history.json
-```
-
-When `--history-path PATH` is used, the round output stays the same and adds one extra line:
-
-- `history_saved_to=PATH`
-
-Run bounded stop-path scenarios by overriding the deterministic sample budgets, for example:
-
-```bash
-cargo run -p mdid-cli -- moat round --review-loops 0
-cargo run -p mdid-cli -- moat control-plane --strategy-candidates 0
-```
-
-Inspect the bounded control-plane snapshot with:
-
-```bash
-cargo run -p mdid-cli -- moat control-plane
-```
-
-The control-plane command prints a deterministic snapshot containing:
-
-- `source=sample|history`
-- `latest_round_id` when inspecting persisted history
-- `history_path` when inspecting persisted history
-- `ready_nodes`
-- `latest_decision_summary`
-- `improvement_delta`
-- `agent_assignments=<none>|planner:<node_id>|coder:<node_id>|reviewer:<node_id>[,...]`
-- `task_states=market_scan:...,competitor_analysis:...,lockin_analysis:...,strategy_generation:...,spec_planning:...,implementation:...,review:...,evaluation:...`
-
-Inspect the latest persisted moat control-plane snapshot with:
-
-```bash
-cargo run -p mdid-cli -- moat control-plane --history-path .mdid/moat-history.json
-```
-
-This read-only local operator surface reports the latest persisted task states, ready-node visibility, decision-memory summary, improvement delta, and inspection-only agent assignment projection for ready nodes. `agent_assignments` is a projection only: it does not launch agents, start a daemon, dispatch Planner/Coder/Reviewer work, write code, schedule work, append rounds, crawl the web, or automate code changes.
-
-Inspect persisted local history with:
-
-```bash
-cargo run -p mdid-cli -- moat history --history-path .mdid/moat-history.json
-```
-
-`moat history` is a read-only inspection path: the history file must already exist, and a missing or typoed path fails instead of creating a brand-new empty file.
-
-Use `mdid-cli moat history --history-path PATH [--decision Continue|Stop|Pivot] [--contains TEXT] [--min-score N] [--limit N]` to inspect only persisted history. `--decision Continue|Stop|Pivot` filters detailed history rows by persisted continuation decision. The optional `--min-score N` filter accepts a non-negative integer and keeps entries whose persisted `entry.report.summary.moat_score_after >= N`; it is conjunctive with `--decision` and `--contains`, applies before `--limit`, and never runs rounds, appends history, schedules work, launches agents, opens PRs, or creates cron jobs.
-
-The history command prints a bounded summary containing:
-
-- `entries`
-- `latest_round_id`
-- `latest_continue_decision`
-- `latest_stop_reason`
-- `latest_decision_summary`
-- `latest_implemented_specs=<none>|moat-spec/<normalized-strategy-id>[,...]`
-- `latest_moat_score_after`
-- `best_moat_score_after`
-- `improvement_deltas`
-
-Inspect the latest persisted round's decision log without running or appending a new round with:
-
-```bash
-cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json
-```
-
-Filter that read-only inspection to one bounded role and/or a decision text substring with:
-
-```bash
-cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --role reviewer
-cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --contains "approved bounded"
-cargo run -p mdid-cli -- moat decision-log --history-path .mdid/moat-history.json --summary-contains "review approved"
-```
-
-`moat decision-log` is read-only: the history file must already exist, and it prints `decision_log_entries=N` followed by each persisted decision as `decision=<role>|<summary>|<rationale>`. The `<summary>` and `<rationale>` output fields are escaped for pipe-delimited output (`\\` as `\\\\`, `|` as `\\|`, newline as `\\n`, carriage return as `\\r`). Use `mdid-cli moat decision-log --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--contains TEXT] [--summary-contains TEXT] [--rationale-contains TEXT]` to inspect a persisted round. When `--round-id ROUND_ID` is present, it exact-matches the persisted `entry.report.summary.round_id`, applies before the role/text/summary/rationale/limit filters, and prints exactly `decision_log_entries=0` when no persisted round matches; when absent, decision-log inspects the latest persisted round. The optional `--contains TEXT` filter performs a case-sensitive substring match over each persisted, unescaped decision summary or rationale before rendering; the optional `--summary-contains TEXT` and `--rationale-contains TEXT` filters match persisted, unescaped summary or rationale text only. When combined with `--round-id` and `--role`, filters are conjunctive and must all match. Inspection never runs or appends a new round.
-
-- `mdid-cli moat assignments --history-path PATH [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF] [--contains TEXT] [--limit N]` inspects the latest persisted read-only Planner/Coder/Reviewer assignment projection and prints deterministic `assignment=<role>|<node_id>|<title>|<kind>|<spec_ref>` rows. The optional filters are conjunctive; `--state` accepts only the exact persisted task-node state wire values shown in usage and does not normalize input, `--kind` accepts only the exact persisted task-node kind wire values listed in the usage, and `--spec-ref SPEC_REF` performs an exact match against persisted `assignment.spec_ref`. The optional `--contains TEXT` filter performs a case-sensitive substring match over raw persisted assignment `node_id`, `title`, or `spec_ref` before escaping; it is conjunctive with `--role`, `--state`, `--kind`, `--node-id`, `--title-contains`, and `--spec-ref`. The optional `--limit N` filter accepts positive integers only, is applied after all other assignment filters, and keeps the first `N` rows in deterministic persisted assignment order. Inspection opens an existing history file only and never appends or runs a new round. Persisted `node_id`, `title`, and `spec_ref` fields are escaped for pipe-delimited output (`\\` as `\\\\`, `|` as `\\|`, newline as `\\n`, carriage return as `\\r`); bounded enum fields are not escaped. `moat assignments` is read-only and latest-round scoped. `--role` filters by bounded agent role, `--node-id` performs an exact match against the persisted assignment node ID, and `--title-contains TEXT` performs a case-sensitive substring match over persisted assignment titles. Filters are conjunctive; `--title-contains`, `--spec-ref`, and `--contains` combine with `--role`, `--state`, `--kind`, and `--node-id`, and if no assignment matches, the command prints `assignment_entries=0` and does not error or mutate history. It uses existing moat history only, never creates missing history files, never appends rounds, never schedules work, never launches agents, and never creates cron jobs.
-
-- `mdid-cli moat task-graph --history-path PATH [--round-id ROUND_ID] [--role planner|coder|reviewer] [--state pending|ready|in_progress|completed|blocked] [--kind market_scan|competitor_analysis|lock_in_analysis|strategy_generation|spec_planning|implementation|review|evaluation] [--node-id NODE_ID] [--title-contains TEXT] [--spec-ref SPEC_REF]` inspects the selected persisted task graph read-only, defaulting to the latest persisted round when `--round-id` is absent and exact-matching persisted `entry.report.summary.round_id` when provided, and prints `moat task graph` followed by deterministic `node=<role>|<node_id>|<title>|<kind>|<state>|<dependencies>|<spec_ref>` rows. Missing dependency/spec fields print `<none>`, dependency lists are comma-joined, and pipe-delimited string fields are escaped. Filters are conjunctive; `--kind` accepts only the exact persisted task-node kind wire values shown in usage and does not normalize input. `--node-id` matches exact persisted task graph node IDs with no normalization, `--title-contains` performs case-sensitive substring matching against persisted node titles without normalization or mutation, and `--spec-ref SPEC_REF` exact-matches the persisted optional task graph node `spec_ref` field without matching the escaped output, `<none>`, substrings, or normalized forms. It prints only the header when no persisted node matches. It opens only existing history, so missing paths fail without creating files; inspection is read-only and never appends history, schedules work, launches agents, opens PRs, creates cron jobs, runs agents, or launches background work.
-
-Inspect whether the latest persisted round is eligible to start another bounded round with:
-
-```bash
-cargo run -p mdid-cli -- moat continue --history-path .mdid/moat-history.json
-```
-
-`moat continue` requires an already-existing history file created by `moat round --history-path ...` and fails for missing paths instead of creating a new history file during inspection.
-
-The continuation command prints a bounded gate summary containing:
-
-- `latest_round_id`
-- `latest_continue_decision`
-- `latest_tests_passed`
-- `latest_improvement_delta`
-- `latest_stop_reason`
-- `evaluation_completed=true|false`
-- `can_continue=true|false`
-- `reason`
-- `required_improvement_threshold`
-
-This is an inspection surface only. It does not auto-schedule or launch the next round.
-
-Schedule exactly one next bounded round when the continuation gate allows it with:
-
-```bash
-cargo run -p mdid-cli -- moat schedule-next --history-path .mdid/moat-history.json
-```
-
-`moat schedule-next` is a one-shot local scheduler control: it requires an existing history file, checks the same continuation gate as `moat continue`, appends one deterministic bounded round only when `can_continue=true`, and otherwise leaves history unchanged. It does not create a cron job, background daemon, live crawler, or unrestricted autonomous loop.
-
-Export the latest persisted implemented-spec handoffs as markdown with:
-
-```bash
-cargo run -p mdid-cli -- moat export-specs --history-path .mdid/moat-history.json --output-dir .mdid/moat-specs
-```
-
-`moat export-specs` requires an already-existing history file, fails when the history is empty, fails when the latest round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one markdown file per latest handoff such as `workflow-audit.md` for `moat-spec/workflow-audit`.
-
-The export command prints a deterministic summary containing:
-
-- `round_id`
-- `exported_specs=<comma-list>`
-- `written_files=<comma-list>`
-
-Export deterministic implementation-plan markdown for the latest persisted handoffs with:
-
-```bash
-cargo run -p mdid-cli -- moat export-plans --history-path .mdid/moat-history.json --output-dir docs/superpowers/plans/generated
-```
-
-`moat export-plans --history-path PATH --output-dir DIR` is also one-shot and local: it requires an already-existing history file, fails when the history is empty or the latest round has no `implemented_specs` handoffs, creates the output directory when needed, and writes one `*-implementation-plan.md` file per latest handoff. It does not start background agents, create cron jobs, open PRs, or run an unrestricted autonomous loop.
-
-This foundation is still intentionally narrow. It now supports bounded local JSON-backed history persistence and inspection, inspection-only continuation-gate reporting, one-shot bounded local scheduler control via `moat schedule-next`, and markdown export of latest persisted moat-spec handoffs plus implementation plans, but it still does not perform live market crawling, background scheduler/daemon control, PR automation, or a full autonomous multi-agent runtime over external data.
-
-## Roadmap shape
-
-- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV/Excel + DICOM tag-level support, medium PDF/OCR support, conservative image/video/FCS support
+- **v1**: governed workflow core, vault/decode controls, audit trail, tri-surface skeleton, deep CSV support, bounded XLSX runtime support, DICOM tag-level support, bounded PDF/scanned-record foundation, conservative image/video/FCS support
 - **v1.5**: detection quality/provenance upgrades, PDF/DICOM policy depth, parity and workflow polish
 - **v2**: AI/NLP detectors, stronger media handling, richer custom node/plugin model, enterprise controls
 
