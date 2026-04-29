@@ -1445,6 +1445,10 @@ fn safe_source_file_stem(source_name: &str) -> Option<String> {
     let mut safe = String::new();
     let mut last_was_dash = false;
     for ch in stem.chars() {
+        if safe.len() >= 64 {
+            break;
+        }
+
         if ch.is_ascii_alphanumeric() {
             safe.push(ch);
             last_was_dash = false;
@@ -3201,6 +3205,22 @@ mod tests {
                 Some("brain scan.dcm")
             ),
             Some("brain-scan-deidentified.dcm.base64.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn desktop_export_filename_caps_source_stem_at_64_sanitized_chars() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.output = "rewritten payload".to_string();
+        let source_name = format!("{}.csv", "a".repeat(80));
+        let expected = format!("{}-deidentified.csv", "a".repeat(64));
+
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::CsvText,
+                Some(&source_name)
+            ),
+            Some(expected)
         );
     }
 
