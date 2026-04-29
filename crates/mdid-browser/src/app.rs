@@ -133,11 +133,11 @@ impl InputMode {
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
-            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or workflow/controller semantics."),
+            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
             Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
-            Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, controller/agent/orchestration, or moat workflow functionality."),
+            Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, or broader platform workflow functionality."),
         }
     }
 
@@ -565,7 +565,7 @@ impl BrowserFlowState {
             InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
             InputMode::VaultAuditEvents => "mdid-browser-vault-audit-events.json",
             InputMode::VaultDecode => "mdid-browser-vault-decode-response.json",
-            InputMode::VaultExport => "mdid-browser-vault-export-notice.txt",
+            InputMode::VaultExport => "mdid-browser-portable-artifact.json",
             InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.txt",
             InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt",
         }
@@ -1177,16 +1177,31 @@ fn parse_runtime_success(
         InputMode::VaultExport => {
             let parsed: serde_json::Value = serde_json::from_str(response_body)
                 .map_err(|_| "Failed to parse runtime success response.".to_string())?;
-            if !parsed
+            let artifact = parsed
                 .get("artifact")
-                .is_some_and(serde_json::Value::is_object)
+                .filter(|artifact| artifact.is_object())
+                .ok_or("Vault export response missing artifact object.".to_string())?;
+            if !artifact
+                .get("salt_b64")
+                .is_some_and(serde_json::Value::is_string)
+                || !artifact
+                    .get("nonce_b64")
+                    .is_some_and(serde_json::Value::is_string)
+                || !artifact
+                    .get("ciphertext_b64")
+                    .is_some_and(serde_json::Value::is_string)
             {
-                return Err("Vault export response missing artifact object.".to_string());
+                return Err(
+                    "Vault export response missing encrypted portable artifact fields.".to_string(),
+                );
             }
+            let rewritten_output = serde_json::to_string_pretty(artifact)
+                .map_err(|error| format!("Failed to render portable artifact: {error}"))?;
             Ok(RuntimeResponseEnvelope {
-                rewritten_output: "Portable artifact created by bounded localhost runtime request. Artifact contents are hidden for PHI safety.".to_string(),
-                summary: "Portable artifact created.".to_string(),
-                review_queue: "No review items returned.".to_string(),
+                rewritten_output,
+                summary: "Portable artifact created and available for local download.".to_string(),
+                review_queue: "encrypted portable artifact available. Decoded PHI is not rendered."
+                    .to_string(),
             })
         }
         InputMode::PortableArtifactInspect => {
@@ -2085,11 +2100,14 @@ mod tests {
 
     #[test]
     fn portable_artifact_payloads_map_form_to_runtime_contract() {
-        let artifact_json = r#"{"version":1,"records":[]}"#;
+        let artifact_json = r#"{"kdf":{"algorithm":"argon2id","version":19,"memory_cost_kib":19456,"iterations":2,"parallelism":1,"output_len":32},"verifier_b64":"dmVyaWZpZXI=","salt_b64":"c2FsdA==","nonce_b64":"bm9uY2U=","ciphertext_b64":"ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"}"#;
         let inspect =
             build_portable_artifact_inspect_request_payload(artifact_json, " portable secret ")
                 .expect("inspect payload");
-        assert_eq!(inspect["artifact"]["version"], 1);
+        assert_eq!(
+            inspect["artifact"]["ciphertext_b64"],
+            "ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"
+        );
         assert_eq!(inspect["portable_passphrase"], "portable secret");
 
         let import = build_portable_artifact_import_request_payload(
@@ -2102,7 +2120,10 @@ mod tests {
         .expect("import payload");
         assert_eq!(import["vault_path"], "/tmp/vault.json");
         assert_eq!(import["vault_passphrase"], "vault secret");
-        assert_eq!(import["artifact"]["version"], 1);
+        assert_eq!(
+            import["artifact"]["ciphertext_b64"],
+            "ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"
+        );
         assert_eq!(import["portable_passphrase"], "portable secret");
         assert_eq!(import["context"], "import for local review");
         assert_eq!(import["requested_by"], "browser");
@@ -2134,15 +2155,22 @@ mod tests {
     #[test]
     fn portable_artifact_runtime_success_hides_artifact_values_and_raw_audit_detail() {
         let export = json!({
-            "artifact": {"version": 1, "ciphertext": "patient Jane token", "salt": "secret salt", "nonce": "secret nonce"}
+            "artifact": {"kdf":{"algorithm":"argon2id","version":19,"memory_cost_kib":19456,"iterations":2,"parallelism":1,"output_len":32}, "verifier_b64":"dmVyaWZpZXI=", "salt_b64":"c2FsdC1ieXRlcw==", "nonce_b64":"bm9uY2UtYnl0ZXM=", "ciphertext_b64":"bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM="}
         });
         let rendered_export = parse_runtime_success(InputMode::VaultExport, &export.to_string())
             .expect("export render");
         assert!(rendered_export
-            .rewritten_output
+            .summary
             .contains("Portable artifact created"));
-        assert!(!rendered_export.rewritten_output.contains("patient Jane"));
-        assert!(!rendered_export.rewritten_output.contains("ciphertext"));
+        assert!(rendered_export
+            .review_queue
+            .contains("encrypted portable artifact"));
+        assert!(rendered_export.rewritten_output.contains("ciphertext_b64"));
+        assert!(rendered_export
+            .rewritten_output
+            .contains("bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM="));
+        assert!(!rendered_export.summary.contains("secret salt"));
+        assert!(!rendered_export.review_queue.contains("secret nonce"));
 
         let inspect = json!({
             "record_count": 1,
@@ -2169,6 +2197,42 @@ mod tests {
     }
 
     #[test]
+    fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
+        let export = json!({
+            "artifact": {
+                "kdf": {
+                    "algorithm": "argon2id",
+                    "version": 19,
+                    "memory_cost_kib": 19456,
+                    "iterations": 2,
+                    "parallelism": 1,
+                    "output_len": 32
+                },
+                "verifier_b64": "dmVyaWZpZXI=",
+                "salt_b64": "c2FsdA==",
+                "nonce_b64": "bm9uY2U=",
+                "ciphertext_b64": "ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"
+            }
+        });
+
+        let rendered = parse_runtime_success(InputMode::VaultExport, &export.to_string())
+            .expect("valid vault export success renders artifact JSON");
+
+        assert!(rendered.summary.contains("Portable artifact created"));
+        assert!(rendered
+            .review_queue
+            .contains("encrypted portable artifact"));
+        assert!(rendered.rewritten_output.contains("\"ciphertext_b64\""));
+        assert!(rendered
+            .rewritten_output
+            .contains("ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"));
+        assert!(!rendered
+            .summary
+            .contains("ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"));
+        assert!(!rendered.review_queue.contains("MDID-1"));
+    }
+
+    #[test]
     fn vault_export_runtime_success_rejects_malformed_contract() {
         let malformed = json!({
             "message": "exported record 11111111-1111-1111-1111-111111111111 for Jane Patient",
@@ -2181,6 +2245,23 @@ mod tests {
         assert!(error.contains("Vault export response missing artifact object"));
         assert!(!error.contains("Jane Patient"));
         assert!(!error.contains("11111111-1111-1111-1111-111111111111"));
+    }
+
+    #[test]
+    fn vault_export_runtime_success_rejects_object_artifact_without_encrypted_fields() {
+        let malformed = json!({
+            "artifact": {
+                "original_value": "Jane Patient",
+                "token": "MDID-SECRET-TOKEN"
+            }
+        });
+
+        let error = parse_runtime_success(InputMode::VaultExport, &malformed.to_string())
+            .expect_err("object-shaped PHI artifact should fail closed");
+
+        assert!(error.contains("missing encrypted portable artifact fields"));
+        assert!(!error.contains("Jane Patient"));
+        assert!(!error.contains("MDID-SECRET-TOKEN"));
     }
 
     #[test]
@@ -2843,6 +2924,12 @@ mod tests {
             state.suggested_export_file_name(),
             "mdid-browser-review-report.txt"
         );
+
+        state.input_mode = InputMode::VaultExport;
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
+        );
     }
 
     #[test]
@@ -3134,7 +3221,7 @@ mod tests {
                 "code": "portable_artifact_failure",
                 "message": "failed passphrase portable secret for MRN 123 Jane Patient token TOKEN-1 at /tmp/vault.json record 11111111-1111-1111-1111-111111111111"
             },
-            "artifact": {"ciphertext": "artifact JSON secret"},
+            "artifact": {"ciphertext_b64": "artifact JSON secret"},
             "audit_event": {"detail": "audit detail with vault path"}
         })
         .to_string();
