@@ -226,7 +226,7 @@ git commit -m "feat(desktop): detect portable artifact json imports"
 - Modify: `README.md`
 - Test: `crates/mdid-desktop/src/main.rs` module tests where practical; otherwise library tests plus clippy verify compile-time wiring.
 
-- [ ] **Step 1: Write failing UI handoff test**
+- [x] **Step 1: Write failing UI handoff test**
 
 If `MdidDesktopApp` import handling is testable through an existing helper, add a test that imports `mdid-browser-portable-artifact.json` and asserts `portable_request_state.mode == DesktopPortableMode::InspectArtifact` and `portable_request_state.artifact_json` contains the artifact JSON while workflow payload remains unchanged. If no helper exists, add a small private method `apply_file_import_target(...)` and test it:
 
@@ -251,13 +251,13 @@ fn app_file_import_target_populates_portable_artifact_inspect_state() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop app_file_import_target_populates_portable_artifact_inspect_state -- --nocapture`
 
 Expected: FAIL because `apply_file_import_target(...)` is not wired yet.
 
-- [ ] **Step 3: Implement minimal UI wiring**
+- [x] **Step 3: Implement minimal UI wiring**
 
 In `crates/mdid-desktop/src/main.rs`, import `DesktopFileImportTarget` and `DesktopPortableFileImportPayload` if needed. Replace file import calls that use `DesktopFileImportPayload::from_bytes(...)` with `DesktopFileImportPayload::from_bytes_target(...)`.
 
@@ -291,7 +291,7 @@ Update README snapshot:
 - Change Overall to 83%.
 - Add a missing-item note that desktop still lacks full portable transfer workflow UX and vault browsing.
 
-- [ ] **Step 4: Run targeted and broad verification**
+- [x] **Step 4: Run targeted and broad verification**
 
 Run:
 
@@ -307,7 +307,7 @@ grep -n "Completion snapshot\|CLI | 84%\|Browser/web | 61%\|Desktop app | 52%\|O
 
 Expected: all cargo commands PASS, diff check PASS, grep shows updated README snapshot.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 Run:
 

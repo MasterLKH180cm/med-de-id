@@ -1,7 +1,8 @@
 use mdid_desktop::{
-    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
-    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
-    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseState, DesktopWorkflowMode,
+    DesktopFileImportPayload, DesktopFileImportTarget, DesktopPortableMode,
+    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
+    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
+    DesktopVaultRequestState, DesktopVaultResponseState, DesktopWorkflowMode,
     DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -86,6 +87,53 @@ impl DesktopApp {
             }
         }
     }
+    fn apply_file_import_target(&mut self, imported: DesktopFileImportTarget) {
+        match imported {
+            DesktopFileImportTarget::Workflow(payload) => {
+                self.request_state.apply_imported_file(payload);
+            }
+            DesktopFileImportTarget::PortableArtifactInspect(payload) => {
+                self.portable_request_state.mode = payload.mode;
+                self.portable_request_state.artifact_json = payload.artifact_json;
+            }
+        }
+    }
+
+    fn import_dropped_files(&mut self, ctx: &egui::Context) {
+        let files = ctx.input(|input| input.raw.dropped_files.clone());
+        for file in files {
+            let source_name = file
+                .path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+                .unwrap_or(file.name);
+            let bytes = if let Some(bytes) = file.bytes {
+                bytes.to_vec()
+            } else if let Some(path) = file.path {
+                match std::fs::read(path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.response_state
+                            .apply_error(format!("file import failed: {error}"));
+                        continue;
+                    }
+                }
+            } else {
+                self.response_state
+                    .apply_error("file import failed: no file bytes available".to_string());
+                continue;
+            };
+
+            match DesktopFileImportPayload::from_bytes_target(source_name, &bytes) {
+                Ok(imported) => self.apply_file_import_target(imported),
+                Err(error) => self
+                    .response_state
+                    .apply_error(format!("file import failed: {error:?}")),
+            }
+        }
+    }
     fn start_runtime_submission(
         &mut self,
         mode: DesktopRuntimeSubmissionMode,
@@ -124,6 +172,7 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_runtime_submission();
+        self.import_dropped_files(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("med-de-id desktop workstation");
             ui.label("Bounded sensitive-workstation request preparation for local runtime routes.");
@@ -398,6 +447,27 @@ mod tests {
             runtime_submission_mode: Some(mode),
             ..DesktopApp::default()
         }
+    }
+
+    #[test]
+    fn app_file_import_target_populates_portable_artifact_inspect_state() {
+        let artifact_json = r#"{"artifact":{"ciphertext":"secret"}}"#;
+        let imported = mdid_desktop::DesktopFileImportPayload::from_bytes_target(
+            "mdid-browser-portable-artifact.json",
+            artifact_json.as_bytes(),
+        )
+        .expect("portable artifact import target");
+        let mut app = DesktopApp::default();
+
+        app.apply_file_import_target(imported);
+
+        assert_eq!(
+            app.portable_request_state.mode,
+            DesktopPortableMode::InspectArtifact
+        );
+        assert_eq!(app.portable_request_state.artifact_json, artifact_json);
+        assert_eq!(app.request_state.mode, DesktopWorkflowMode::CsvText);
+        assert!(app.request_state.payload.is_empty());
     }
 
     #[test]
