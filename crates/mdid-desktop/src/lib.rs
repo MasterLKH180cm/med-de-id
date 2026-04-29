@@ -834,24 +834,17 @@ impl DesktopVaultResponseState {
         &self,
         source_name: Option<&str>,
     ) -> Result<DesktopVaultResponseReportDownload, DesktopPortableArtifactSaveError> {
-        if !matches!(
-            self.rendered_mode,
-            Some(
-                DesktopVaultResponseMode::InspectArtifact
-                    | DesktopVaultResponseMode::ImportArtifact
-            )
-        ) {
-            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
-        }
-
-        let json = serde_json::to_string_pretty(&self.safe_response_report_json()?)
+        let mode = self
+            .safe_response_report_mode()
+            .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
+        let json = serde_json::to_string_pretty(&self.safe_export_json(mode))
             .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
         let stem = source_name
             .and_then(safe_source_file_stem)
             .unwrap_or_else(|| "desktop".to_string());
 
         Ok(DesktopVaultResponseReportDownload {
-            file_name: format!("{stem}-portable-response-report.json"),
+            file_name: format!("{stem}-response-report.json"),
             bytes: json.into_bytes(),
         })
     }
@@ -1918,12 +1911,15 @@ fn safe_source_file_stem(source_name: &str) -> Option<String> {
         }
 
         if ch.is_ascii_alphanumeric()
-            || (ch == '.' && !safe.is_empty() && !safe.ends_with('.') && !last_was_dash)
+            || ((ch == '.' || ch == '-')
+                && !safe.is_empty()
+                && !safe.ends_with(['.', '-'])
+                && !last_was_dash)
         {
             safe.push(ch);
             last_was_dash = false;
         } else if !last_was_dash && !safe.is_empty() {
-            safe.push('-');
+            safe.push('_');
             last_was_dash = true;
         }
     }
@@ -2102,7 +2098,7 @@ mod tests {
             .expect("portable inspect response should create a safe report download");
         assert_eq!(
             inspect_report.file_name,
-            "Clinic-Batch.mdid-portable-portable-response-report.json"
+            "Clinic_Batch.mdid-portable-response-report.json"
         );
         let inspect_text = std::str::from_utf8(&inspect_report.bytes).expect("report is utf8 json");
         assert!(inspect_text.contains("bounded portable artifact response rendered locally"));
@@ -2139,7 +2135,7 @@ mod tests {
             .expect("portable import response should create a safe report download");
         assert_eq!(
             import_report.file_name,
-            "Partner-Export.mdid-portable-portable-response-report.json"
+            "Partner_Export.mdid-portable-response-report.json"
         );
         let import_text = std::str::from_utf8(&import_report.bytes).expect("report is utf8 json");
         assert!(import_text.contains("bounded portable artifact response rendered locally"));
@@ -2151,29 +2147,80 @@ mod tests {
     }
 
     #[test]
-    fn desktop_portable_response_report_for_source_rejects_non_portable_modes() {
-        for mode in [
+    fn safe_response_report_download_uses_source_stem_for_vault_decode() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
             DesktopVaultResponseMode::VaultDecode,
-            DesktopVaultResponseMode::VaultAudit,
-            DesktopVaultResponseMode::VaultExport,
-        ] {
-            let mut state = DesktopVaultResponseState::default();
-            state.apply_success(
-                mode,
-                &serde_json::json!({
-                    "decoded_value_count": 1,
-                    "returned_event_count": 1,
-                    "event_count": 1,
-                    "record_count": 1,
-                    "artifact_path": "/tmp/non-portable-source.json"
-                }),
-            );
+            &serde_json::json!({ "decoded_value_count": 2 }),
+        );
 
-            assert_eq!(
-                state.safe_response_report_download_for_source(Some("source.mdid-portable.json")),
-                Err(DesktopPortableArtifactSaveError::NotVaultExport)
-            );
-        }
+        let download = state
+            .safe_response_report_download_for_source(Some(
+                "C:/Vault Exports/Patient Alpha.mdid-vault.json",
+            ))
+            .expect("decode report download should be available");
+
+        assert_eq!(
+            download.file_name,
+            "Patient_Alpha.mdid-vault-response-report.json"
+        );
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["summary"], "decoded values: 2");
+    }
+
+    #[test]
+    fn safe_response_report_download_uses_source_stem_for_vault_audit() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({ "returned_event_count": 3, "event_count": 8 }),
+        );
+
+        let download = state
+            .safe_response_report_download_for_source(Some("audit export.json"))
+            .expect("audit report download should be available");
+
+        assert_eq!(download.file_name, "audit_export-response-report.json");
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+        assert_eq!(report["mode"], "vault_audit");
+        assert_eq!(report["summary"], "events returned: 3 / 8");
+    }
+
+    #[test]
+    fn safe_response_report_download_uses_source_stem_for_vault_export() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultExport,
+            &serde_json::json!({ "record_count": 4, "artifact_path": "/sensitive/path/export.json" }),
+        );
+
+        let download = state
+            .safe_response_report_download_for_source(Some("portable subset.mdid-portable.json"))
+            .expect("export report download should be available");
+
+        assert_eq!(
+            download.file_name,
+            "portable_subset.mdid-portable-response-report.json"
+        );
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+        assert_eq!(report["mode"], "vault_export");
+        assert_eq!(report["summary"], "records: 4");
+        assert_eq!(
+            report["artifact_notice"],
+            "artifact path returned; full path hidden"
+        );
+        assert!(report.get("artifact_path").is_none());
+    }
+
+    #[test]
+    fn desktop_response_report_for_source_rejects_missing_rendered_report() {
+        let state = DesktopVaultResponseState::default();
+
+        assert_eq!(
+            state.safe_response_report_download_for_source(Some("source.mdid-portable.json")),
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        );
     }
 
     #[test]
