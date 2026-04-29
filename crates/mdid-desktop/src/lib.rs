@@ -829,6 +829,16 @@ impl DesktopVaultResponseState {
         &self,
         source_name: Option<&str>,
     ) -> Result<DesktopVaultResponseReportDownload, DesktopPortableArtifactSaveError> {
+        if !matches!(
+            self.rendered_mode,
+            Some(
+                DesktopVaultResponseMode::InspectArtifact
+                    | DesktopVaultResponseMode::ImportArtifact
+            )
+        ) {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
         let json = serde_json::to_string_pretty(&self.safe_response_report_json()?)
             .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
         let stem = source_name
@@ -2056,15 +2066,24 @@ mod tests {
 
     #[test]
     fn desktop_portable_response_report_for_source_uses_safe_imported_artifact_filename() {
+        let inspect_response = serde_json::json!({
+            "record_count": 2,
+            "records": [{
+                "record_id": "inspect-raw-patient-123",
+                "token": "inspect-raw-token-secret",
+                "payload": "inspect-raw-phi-payload"
+            }],
+            "artifact_path": "C:\\vaults\\sensitive\\Inspect Raw Clinic Batch.mdid-portable.json"
+        });
+        let inspect_input_text =
+            serde_json::to_string(&inspect_response).expect("fixture serializes");
+        assert!(inspect_input_text.contains("Inspect Raw Clinic Batch"));
+        assert!(inspect_input_text.contains("inspect-raw-patient-123"));
+        assert!(inspect_input_text.contains("inspect-raw-token-secret"));
+        assert!(inspect_input_text.contains("inspect-raw-phi-payload"));
+
         let mut inspect_state = DesktopVaultResponseState::default();
-        inspect_state.apply_success(
-            DesktopVaultResponseMode::InspectArtifact,
-            &serde_json::json!({
-                "record_count": 2,
-                "records": [{"record_id": "patient-123", "token": "tok-secret"}],
-                "artifact_path": "C:\\vaults\\sensitive\\Clinic Batch.mdid-portable.json"
-            }),
-        );
+        inspect_state.apply_success(DesktopVaultResponseMode::InspectArtifact, &inspect_response);
 
         let inspect_report = inspect_state
             .safe_response_report_download_for_source(Some(
@@ -2078,19 +2097,30 @@ mod tests {
         let inspect_text = std::str::from_utf8(&inspect_report.bytes).expect("report is utf8 json");
         assert!(inspect_text.contains("bounded portable artifact response rendered locally"));
         assert!(inspect_text.contains("artifact path returned; full path hidden"));
-        assert!(!inspect_text.contains("Clinic Batch"));
-        assert!(!inspect_text.contains("patient-123"));
-        assert!(!inspect_text.contains("tok-secret"));
+        assert!(!inspect_text.contains("Inspect Raw Clinic Batch"));
+        assert!(!inspect_text.contains("inspect-raw-patient-123"));
+        assert!(!inspect_text.contains("inspect-raw-token-secret"));
+        assert!(!inspect_text.contains("inspect-raw-phi-payload"));
+
+        let import_response = serde_json::json!({
+            "imported_record_count": 1,
+            "duplicate_record_count": 1,
+            "imported_records": [{
+                "record_id": "import-raw-patient-456",
+                "token": "import-raw-token-secret",
+                "payload": "import-raw-phi-payload"
+            }],
+            "artifact_path": "/tmp/Import Raw Partner Export.mdid-portable.json"
+        });
+        let import_input_text =
+            serde_json::to_string(&import_response).expect("fixture serializes");
+        assert!(import_input_text.contains("Import Raw Partner Export"));
+        assert!(import_input_text.contains("import-raw-patient-456"));
+        assert!(import_input_text.contains("import-raw-token-secret"));
+        assert!(import_input_text.contains("import-raw-phi-payload"));
 
         let mut import_state = DesktopVaultResponseState::default();
-        import_state.apply_success(
-            DesktopVaultResponseMode::ImportArtifact,
-            &serde_json::json!({
-                "imported_record_count": 1,
-                "duplicate_record_count": 1,
-                "artifact_path": "/tmp/Partner Export.mdid-portable.json"
-            }),
-        );
+        import_state.apply_success(DesktopVaultResponseMode::ImportArtifact, &import_response);
 
         let import_report = import_state
             .safe_response_report_download_for_source(Some(
@@ -2101,6 +2131,39 @@ mod tests {
             import_report.file_name,
             "Partner-Export.mdid-portable-portable-response-report.json"
         );
+        let import_text = std::str::from_utf8(&import_report.bytes).expect("report is utf8 json");
+        assert!(import_text.contains("bounded portable artifact response rendered locally"));
+        assert!(import_text.contains("artifact path returned; full path hidden"));
+        assert!(!import_text.contains("Import Raw Partner Export"));
+        assert!(!import_text.contains("import-raw-patient-456"));
+        assert!(!import_text.contains("import-raw-token-secret"));
+        assert!(!import_text.contains("import-raw-phi-payload"));
+    }
+
+    #[test]
+    fn desktop_portable_response_report_for_source_rejects_non_portable_modes() {
+        for mode in [
+            DesktopVaultResponseMode::VaultDecode,
+            DesktopVaultResponseMode::VaultAudit,
+            DesktopVaultResponseMode::VaultExport,
+        ] {
+            let mut state = DesktopVaultResponseState::default();
+            state.apply_success(
+                mode,
+                &serde_json::json!({
+                    "decoded_value_count": 1,
+                    "returned_event_count": 1,
+                    "event_count": 1,
+                    "record_count": 1,
+                    "artifact_path": "/tmp/non-portable-source.json"
+                }),
+            );
+
+            assert_eq!(
+                state.safe_response_report_download_for_source(Some("source.mdid-portable.json")),
+                Err(DesktopPortableArtifactSaveError::NotVaultExport)
+            );
+        }
     }
 
     #[test]
