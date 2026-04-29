@@ -424,6 +424,8 @@ pub enum DesktopVaultMode {
 }
 
 impl DesktopVaultMode {
+    pub const ALL: [Self; 2] = [Self::Decode, Self::AuditEvents];
+
     pub fn route(self) -> &'static str {
         match self {
             Self::Decode => "/vault/decode",
@@ -859,6 +861,53 @@ pub enum DesktopRuntimeSubmitError {
     InvalidJson(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopRuntimeSubmissionMode {
+    Workflow(DesktopWorkflowMode),
+    Vault(DesktopVaultMode),
+    Portable(DesktopPortableMode),
+}
+
+impl DesktopRuntimeSubmissionMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Workflow(mode) => mode.label(),
+            Self::Vault(DesktopVaultMode::Decode) => "Vault decode",
+            Self::Vault(DesktopVaultMode::AuditEvents) => "Vault audit events",
+            Self::Portable(DesktopPortableMode::VaultExport) => "Portable vault export",
+            Self::Portable(DesktopPortableMode::InspectArtifact) => "Portable artifact inspect",
+            Self::Portable(DesktopPortableMode::ImportArtifact) => "Portable artifact import",
+        }
+    }
+
+    pub fn route(self) -> &'static str {
+        match self {
+            Self::Workflow(mode) => mode.route(),
+            Self::Vault(mode) => mode.route(),
+            Self::Portable(mode) => mode.route(),
+        }
+    }
+
+    pub fn vault_response_mode(self) -> Option<DesktopVaultResponseMode> {
+        match self {
+            Self::Workflow(_) => None,
+            Self::Vault(DesktopVaultMode::Decode) => Some(DesktopVaultResponseMode::VaultDecode),
+            Self::Vault(DesktopVaultMode::AuditEvents) => {
+                Some(DesktopVaultResponseMode::VaultAudit)
+            }
+            Self::Portable(DesktopPortableMode::VaultExport) => {
+                Some(DesktopVaultResponseMode::VaultExport)
+            }
+            Self::Portable(DesktopPortableMode::InspectArtifact) => {
+                Some(DesktopVaultResponseMode::InspectArtifact)
+            }
+            Self::Portable(DesktopPortableMode::ImportArtifact) => {
+                Some(DesktopVaultResponseMode::ImportArtifact)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopRuntimeSubmissionSnapshot {
     pub in_flight: bool,
@@ -873,7 +922,7 @@ impl DesktopRuntimeSubmissionSnapshot {
         }
     }
 
-    pub fn started(mode: DesktopWorkflowMode) -> Self {
+    pub fn started(mode: DesktopRuntimeSubmissionMode) -> Self {
         Self {
             in_flight: true,
             route: Some(mode.route()),
@@ -984,6 +1033,9 @@ impl DesktopRuntimeClient {
         let approved = DesktopWorkflowMode::ALL
             .iter()
             .any(|mode| route == mode.route())
+            || DesktopVaultMode::ALL
+                .iter()
+                .any(|mode| route == mode.route())
             || DesktopPortableMode::ALL
                 .iter()
                 .any(|mode| route == mode.route());
@@ -1176,6 +1228,59 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn vault_and_portable_submission_modes_map_to_phi_safe_response_modes() {
+        assert_eq!(
+            DesktopRuntimeSubmissionMode::Vault(DesktopVaultMode::Decode).vault_response_mode(),
+            Some(DesktopVaultResponseMode::VaultDecode)
+        );
+        assert_eq!(
+            DesktopRuntimeSubmissionMode::Vault(DesktopVaultMode::AuditEvents)
+                .vault_response_mode(),
+            Some(DesktopVaultResponseMode::VaultAudit)
+        );
+        assert_eq!(
+            DesktopRuntimeSubmissionMode::Portable(DesktopPortableMode::VaultExport)
+                .vault_response_mode(),
+            Some(DesktopVaultResponseMode::VaultExport)
+        );
+        assert_eq!(
+            DesktopRuntimeSubmissionMode::Portable(DesktopPortableMode::InspectArtifact)
+                .vault_response_mode(),
+            Some(DesktopVaultResponseMode::InspectArtifact)
+        );
+        assert_eq!(
+            DesktopRuntimeSubmissionMode::Portable(DesktopPortableMode::ImportArtifact)
+                .vault_response_mode(),
+            Some(DesktopVaultResponseMode::ImportArtifact)
+        );
+        assert_eq!(
+            DesktopRuntimeSubmissionMode::Workflow(DesktopWorkflowMode::CsvText)
+                .vault_response_mode(),
+            None
+        );
+    }
+
+    #[test]
+    fn vault_runtime_success_handoff_uses_safe_summary_not_raw_response_values() {
+        let response = serde_json::json!({
+            "decoded_value_count": 1,
+            "values": [{"original_value": "Alice Patient", "token": "PATIENT_TOKEN"}],
+            "audit_event": {"kind": "decode", "detail": "released to Dr Patient"}
+        });
+        let mut state = DesktopVaultResponseState::default();
+        let mode = DesktopRuntimeSubmissionMode::Vault(DesktopVaultMode::Decode)
+            .vault_response_mode()
+            .expect("vault response mode");
+
+        state.apply_success(mode, &response);
+
+        assert!(state.summary.contains("decoded values: 1"));
+        assert!(!state.summary.contains("Alice Patient"));
+        assert!(!state.summary.contains("PATIENT_TOKEN"));
+        assert!(!state.summary.contains("Dr Patient"));
+    }
 
     #[test]
     fn media_metadata_mode_uses_bounded_runtime_route_and_copy() {
@@ -2168,8 +2273,9 @@ mod tests {
         assert_eq!(idle.submit_button_label(), "Submit to local runtime");
         assert_eq!(idle.progress_banner(), None);
 
-        let started =
-            DesktopRuntimeSubmissionSnapshot::started(DesktopWorkflowMode::PdfBase64Review);
+        let started = DesktopRuntimeSubmissionSnapshot::started(
+            DesktopRuntimeSubmissionMode::Workflow(DesktopWorkflowMode::PdfBase64Review),
+        );
         assert!(started.submit_button_disabled());
         assert_eq!(
             started.submit_button_label(),
