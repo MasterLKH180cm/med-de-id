@@ -2495,6 +2495,7 @@ mod tests {
         assert!(!serialized.contains("/phi/vault"));
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("MDID-123"));
+        assert!(!serialized.contains("\"token\""));
         assert!(!serialized.contains("decoded_values"));
         assert!(!serialized.contains("audit_event"));
     }
