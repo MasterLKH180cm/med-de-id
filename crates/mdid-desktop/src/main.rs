@@ -13,7 +13,15 @@ use std::time::Duration;
 type RuntimeSubmissionResult = Result<serde_json::Value, DesktopRuntimeSubmitError>;
 
 const DROPPED_FILE_READ_ERROR: &str = "file import failed: unable to read dropped file";
+const DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH: &str = "desktop-deidentified-output.bin";
 const DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH: &str = "desktop-vault-response-report.json";
+
+fn is_replaceable_workflow_output_save_path(path: &str, generated_path: Option<&str>) -> bool {
+    let path = path.trim();
+    path.is_empty()
+        || path == DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH
+        || generated_path.is_some_and(|generated| path == generated.trim())
+}
 
 fn is_replaceable_vault_response_report_save_path(
     path: &str,
@@ -88,6 +96,7 @@ struct DesktopApp {
     runtime_submission_receiver: Option<Receiver<RuntimeSubmissionResult>>,
     runtime_submission_mode: Option<DesktopRuntimeSubmissionMode>,
     workflow_output_save_path: String,
+    generated_workflow_output_save_path: Option<String>,
     workflow_output_save_status: String,
     portable_artifact_save_path: String,
     portable_artifact_save_status: String,
@@ -108,7 +117,8 @@ impl Default for DesktopApp {
             vault_response_state: DesktopVaultResponseState::default(),
             runtime_submission_receiver: None,
             runtime_submission_mode: None,
-            workflow_output_save_path: "desktop-deidentified-output.bin".to_string(),
+            workflow_output_save_path: DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH.to_string(),
+            generated_workflow_output_save_path: None,
             workflow_output_save_status: String::new(),
             portable_artifact_save_path: "desktop-portable-artifact.mdid-portable.json".to_string(),
             portable_artifact_save_status: String::new(),
@@ -154,6 +164,7 @@ impl DesktopApp {
                 } else if let DesktopRuntimeSubmissionMode::Workflow(workflow_mode) = mode {
                     self.response_state
                         .apply_success_json(workflow_mode, envelope);
+                    self.refresh_workflow_output_save_path();
                 }
             }
             Ok(Err(error)) => {
@@ -211,6 +222,26 @@ impl DesktopApp {
                 self.portable_artifact_save_status = error.to_string();
             }
         }
+    }
+
+    fn refresh_workflow_output_save_path(&mut self) {
+        if !is_replaceable_workflow_output_save_path(
+            &self.workflow_output_save_path,
+            self.generated_workflow_output_save_path.as_deref(),
+        ) {
+            self.generated_workflow_output_save_path = None;
+            return;
+        }
+
+        let next_path = self
+            .response_state
+            .workflow_output_download(self.request_state.mode)
+            .map(|download| download.file_name.to_string())
+            .unwrap_or_else(|| DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH.to_string());
+        let next_generated_path =
+            (next_path != DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH).then(|| next_path.clone());
+        self.workflow_output_save_path = next_path;
+        self.generated_workflow_output_save_path = next_generated_path;
     }
 
     fn save_vault_response_report(&self, path: impl AsRef<Path>) -> Result<(), String> {
@@ -642,6 +673,7 @@ impl eframe::App for DesktopApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     fn app_with_disconnected_submission(mode: DesktopRuntimeSubmissionMode) -> DesktopApp {
         let (_sender, receiver) = std::sync::mpsc::channel();
@@ -667,6 +699,70 @@ mod tests {
             }),
         );
         state
+    }
+
+    #[test]
+    fn workflow_output_save_path_refreshes_default_after_csv_success() {
+        let mut app = DesktopApp::default();
+        app.request_state.mode = DesktopWorkflowMode::CsvText;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            serde_json::json!({"csv": "name\nTOKEN-1\n", "summary": {}}),
+        );
+
+        app.refresh_workflow_output_save_path();
+
+        assert_eq!(app.workflow_output_save_path, "desktop-deidentified.csv");
+        assert_eq!(
+            app.generated_workflow_output_save_path.as_deref(),
+            Some("desktop-deidentified.csv")
+        );
+    }
+
+    #[test]
+    fn workflow_output_save_path_preserves_user_override_after_dicom_success() {
+        let mut app = DesktopApp {
+            workflow_output_save_path: "C:\\exports\\custom-output.dcm".to_string(),
+            ..DesktopApp::default()
+        };
+        app.request_state.mode = DesktopWorkflowMode::DicomBase64;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            serde_json::json!({
+                "rewritten_dicom_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"dicom"),
+                "summary": {}
+            }),
+        );
+
+        app.refresh_workflow_output_save_path();
+
+        assert_eq!(
+            app.workflow_output_save_path,
+            "C:\\exports\\custom-output.dcm"
+        );
+        assert_eq!(app.generated_workflow_output_save_path, None);
+    }
+
+    #[test]
+    fn workflow_output_save_path_resets_generated_path_when_no_binary_output() {
+        let mut app = DesktopApp {
+            workflow_output_save_path: "desktop-deidentified.csv".to_string(),
+            generated_workflow_output_save_path: Some("desktop-deidentified.csv".to_string()),
+            ..DesktopApp::default()
+        };
+        app.request_state.mode = DesktopWorkflowMode::PdfBase64Review;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            serde_json::json!({"summary": {}, "page_statuses": [], "review_queue": []}),
+        );
+
+        app.refresh_workflow_output_save_path();
+
+        assert_eq!(
+            app.workflow_output_save_path,
+            DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH
+        );
+        assert_eq!(app.generated_workflow_output_save_path, None);
     }
 
     #[test]
