@@ -133,11 +133,11 @@ impl InputMode {
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
-            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or workflow/controller semantics."),
+            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
             Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
-            Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, controller/agent/orchestration, or moat workflow functionality."),
+            Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, or broader platform workflow functionality."),
         }
     }
 
@@ -565,7 +565,7 @@ impl BrowserFlowState {
             InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
             InputMode::VaultAuditEvents => "mdid-browser-vault-audit-events.json",
             InputMode::VaultDecode => "mdid-browser-vault-decode-response.json",
-            InputMode::VaultExport => "mdid-browser-vault-export-notice.txt",
+            InputMode::VaultExport => "mdid-browser-portable-artifact.json",
             InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.txt",
             InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt",
         }
@@ -1181,6 +1181,15 @@ fn parse_runtime_success(
                 .get("artifact")
                 .filter(|artifact| artifact.is_object())
                 .ok_or("Vault export response missing artifact object.".to_string())?;
+            if !artifact.get("version").is_some_and(serde_json::Value::is_number)
+                || !artifact
+                    .get("ciphertext")
+                    .is_some_and(serde_json::Value::is_string)
+            {
+                return Err(
+                    "Vault export response missing encrypted portable artifact fields.".to_string(),
+                );
+            }
             let rewritten_output = serde_json::to_string_pretty(artifact)
                 .map_err(|error| format!("Failed to render portable artifact: {error}"))?;
             Ok(RuntimeResponseEnvelope {
@@ -2135,7 +2144,7 @@ mod tests {
     #[test]
     fn portable_artifact_runtime_success_hides_artifact_values_and_raw_audit_detail() {
         let export = json!({
-            "artifact": {"version": 1, "ciphertext": "patient Jane token", "salt": "secret salt", "nonce": "secret nonce"}
+            "artifact": {"version": 1, "ciphertext": "bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM=", "salt": "c2FsdC1ieXRlcw==", "nonce": "bm9uY2UtYnl0ZXM="}
         });
         let rendered_export = parse_runtime_success(InputMode::VaultExport, &export.to_string())
             .expect("export render");
@@ -2146,9 +2155,7 @@ mod tests {
         assert!(rendered_export.rewritten_output.contains("ciphertext"));
         assert!(rendered_export
             .rewritten_output
-            .contains("patient Jane token"));
-        assert!(!rendered_export.summary.contains("patient Jane"));
-        assert!(!rendered_export.review_queue.contains("patient Jane"));
+            .contains("bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM="));
         assert!(!rendered_export.summary.contains("secret salt"));
         assert!(!rendered_export.review_queue.contains("secret nonce"));
 
@@ -2184,7 +2191,7 @@ mod tests {
                 "records": [
                     {"record_id": "11111111-1111-1111-1111-111111111111", "token": "MDID-1"}
                 ],
-                "ciphertext": "encrypted-local-artifact"
+                "ciphertext": "bW9jay1hZXMtZ2NtLXBvcnRhYmxlLWFydGlmYWN0"
             }
         });
 
@@ -2194,11 +2201,15 @@ mod tests {
         assert!(rendered.summary.contains("Portable artifact created"));
         assert!(rendered.review_queue.contains("encrypted portable artifact"));
         assert!(rendered.rewritten_output.contains("\"version\": 1"));
-        assert!(rendered.rewritten_output.contains("encrypted-local-artifact"));
+        assert!(rendered
+            .rewritten_output
+            .contains("bW9jay1hZXMtZ2NtLXBvcnRhYmxlLWFydGlmYWN0"));
         assert!(rendered
             .rewritten_output
             .contains("11111111-1111-1111-1111-111111111111"));
-        assert!(!rendered.summary.contains("encrypted-local-artifact"));
+        assert!(!rendered
+            .summary
+            .contains("bW9jay1hZXMtZ2NtLXBvcnRhYmxlLWFydGlmYWN0"));
         assert!(!rendered.review_queue.contains("MDID-1"));
     }
 
@@ -2215,6 +2226,23 @@ mod tests {
         assert!(error.contains("Vault export response missing artifact object"));
         assert!(!error.contains("Jane Patient"));
         assert!(!error.contains("11111111-1111-1111-1111-111111111111"));
+    }
+
+    #[test]
+    fn vault_export_runtime_success_rejects_object_artifact_without_encrypted_fields() {
+        let malformed = json!({
+            "artifact": {
+                "original_value": "Jane Patient",
+                "token": "MDID-SECRET-TOKEN"
+            }
+        });
+
+        let error = parse_runtime_success(InputMode::VaultExport, &malformed.to_string())
+            .expect_err("object-shaped PHI artifact should fail closed");
+
+        assert!(error.contains("missing encrypted portable artifact fields"));
+        assert!(!error.contains("Jane Patient"));
+        assert!(!error.contains("MDID-SECRET-TOKEN"));
     }
 
     #[test]
@@ -2876,6 +2904,12 @@ mod tests {
         assert_eq!(
             state.suggested_export_file_name(),
             "mdid-browser-review-report.txt"
+        );
+
+        state.input_mode = InputMode::VaultExport;
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
         );
     }
 
