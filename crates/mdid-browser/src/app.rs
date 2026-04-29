@@ -767,7 +767,9 @@ impl BrowserFlowState {
                 }
                 InputMode::VaultExport => {
                     let stem = sanitized_vault_export_stem(imported_file_name);
-                    return format!("{stem}-portable-artifact.json");
+                    if stem != "mdid-browser-output" {
+                        return format!("{stem}-portable-artifact.json");
+                    }
                 }
             }
         }
@@ -2673,6 +2675,20 @@ mod tests {
         assert_eq!(
             state.suggested_export_file_name(),
             "Clinic_Vault_Backup_2026-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    fn browser_vault_export_download_falls_back_when_source_stem_is_default() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("***.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
         );
     }
 
