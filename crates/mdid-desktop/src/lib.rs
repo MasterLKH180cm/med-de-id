@@ -3410,8 +3410,10 @@ mod tests {
 
     #[test]
     fn desktop_export_filename_uses_import_source_stem_for_csv_xlsx_and_dicom() {
-        let mut state = DesktopWorkflowResponseState::default();
-        state.output = "rewritten payload".to_string();
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
 
         assert_eq!(
             state.suggested_export_file_name_for_source(
@@ -3438,8 +3440,10 @@ mod tests {
 
     #[test]
     fn desktop_export_filename_caps_source_stem_at_64_sanitized_chars() {
-        let mut state = DesktopWorkflowResponseState::default();
-        state.output = "rewritten payload".to_string();
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
         let source_name = format!("{}.csv", "a".repeat(80));
         let expected = format!("{}-deidentified.csv", "a".repeat(64));
 
@@ -3454,8 +3458,10 @@ mod tests {
 
     #[test]
     fn desktop_export_filename_falls_back_when_source_is_empty_or_unsafe() {
-        let mut state = DesktopWorkflowResponseState::default();
-        state.output = "rewritten payload".to_string();
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
 
         assert_eq!(
             state.suggested_export_file_name_for_source(DesktopWorkflowMode::CsvText, None),

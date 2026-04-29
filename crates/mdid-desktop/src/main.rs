@@ -41,6 +41,8 @@ struct DesktopApp {
     vault_response_state: DesktopVaultResponseState,
     runtime_submission_receiver: Option<Receiver<RuntimeSubmissionResult>>,
     runtime_submission_mode: Option<DesktopRuntimeSubmissionMode>,
+    workflow_output_save_path: String,
+    workflow_output_save_status: String,
     portable_artifact_save_path: String,
     portable_artifact_save_status: String,
 }
@@ -56,6 +58,8 @@ impl Default for DesktopApp {
             vault_response_state: DesktopVaultResponseState::default(),
             runtime_submission_receiver: None,
             runtime_submission_mode: None,
+            workflow_output_save_path: "desktop-deidentified-output.bin".to_string(),
+            workflow_output_save_status: String::new(),
             portable_artifact_save_path: "desktop-portable-artifact.mdid-portable.json".to_string(),
             portable_artifact_save_status: String::new(),
         }
@@ -145,7 +149,6 @@ impl DesktopApp {
         }
     }
 
-    #[allow(dead_code)]
     fn save_workflow_output(&self, path: impl AsRef<Path>) -> Result<(), String> {
         let download = self
             .response_state
@@ -154,6 +157,17 @@ impl DesktopApp {
                 "workflow output save failed: no rewritten output is available".to_string()
             })?;
         mdid_desktop::write_workflow_output_file(path, &download)
+    }
+
+    fn save_workflow_output_response(&mut self) {
+        match self.save_workflow_output(self.workflow_output_save_path.trim()) {
+            Ok(()) => {
+                self.workflow_output_save_status = "Rewritten workflow output saved.".to_string();
+            }
+            Err(error) => {
+                self.workflow_output_save_status = error;
+            }
+        }
     }
 
     fn import_dropped_files(&mut self, ctx: &egui::Context) {
@@ -497,6 +511,21 @@ impl eframe::App for DesktopApp {
                     .interactive(false),
             );
 
+            if self
+                .response_state
+                .workflow_output_download(self.request_state.mode)
+                .is_some()
+            {
+                ui.label("Save rewritten workflow output");
+                ui.text_edit_singleline(&mut self.workflow_output_save_path);
+                if ui.button("Save rewritten workflow output").clicked() {
+                    self.save_workflow_output_response();
+                }
+                if !self.workflow_output_save_status.is_empty() {
+                    ui.label(&self.workflow_output_save_status);
+                }
+            }
+
             ui.label(
                 "Not implemented in this desktop slice: file picker upload/download UX beyond bounded helper import/export, vault browsing, full decode workflow execution UX, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
             );
@@ -549,6 +578,63 @@ mod tests {
             b"patient_name\n<NAME-1>\n"
         );
         std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_workflow_output_action_sets_phi_safe_success_status() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-workflow-output-status-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("patient-jane-doe-mrn-12345-deidentified.csv");
+        let mut app = DesktopApp::default();
+        app.request_state.mode = DesktopWorkflowMode::CsvText;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            serde_json::json!({
+                "csv": "patient_name\n<NAME-1>\n",
+                "summary": {"encoded_fields": 1},
+                "review_queue": []
+            }),
+        );
+        app.workflow_output_save_path = path.to_string_lossy().to_string();
+
+        app.save_workflow_output_response();
+
+        assert_eq!(
+            app.workflow_output_save_status,
+            "Rewritten workflow output saved."
+        );
+        assert!(!app
+            .workflow_output_save_status
+            .contains(path.to_string_lossy().as_ref()));
+        assert!(!app.workflow_output_save_status.contains("jane-doe"));
+        assert!(!app.workflow_output_save_status.contains("12345"));
+        assert_eq!(
+            std::fs::read(&path).expect("saved output readable"),
+            b"patient_name\n<NAME-1>\n"
+        );
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_workflow_output_action_sets_phi_safe_no_output_status() {
+        let path = "/tmp/patient-jane-doe-mrn-12345-deidentified.csv";
+        let mut app = DesktopApp {
+            workflow_output_save_path: path.to_string(),
+            ..DesktopApp::default()
+        };
+
+        app.save_workflow_output_response();
+
+        assert_eq!(
+            app.workflow_output_save_status,
+            "workflow output save failed: no rewritten output is available"
+        );
+        assert!(!app.workflow_output_save_status.contains(path));
+        assert!(!app.workflow_output_save_status.contains("jane-doe"));
+        assert!(!app.workflow_output_save_status.contains("12345"));
     }
 
     #[test]
