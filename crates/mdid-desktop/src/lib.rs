@@ -760,7 +760,7 @@ impl std::fmt::Display for DesktopPortableArtifactSaveError {
             ),
             Self::MissingArtifact => write!(
                 f,
-                "vault export response did not include a portable artifact object"
+                "safe response report or portable artifact is unavailable"
             ),
             Self::Io(_) => write!(f, "portable artifact JSON could not be written"),
             Self::InvalidJson(_) => write!(f, "portable artifact JSON could not be prepared"),

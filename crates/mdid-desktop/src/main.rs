@@ -806,8 +806,8 @@ mod tests {
                 &portable_inspect_report_state(),
             ),
             (
-                "Clinic-Batch.mdid-portable-portable-response-report.json".to_string(),
-                Some("Clinic-Batch.mdid-portable-portable-response-report.json".to_string())
+                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic_Batch.mdid-portable-response-report.json".to_string())
             )
         );
     }
@@ -816,14 +816,14 @@ mod tests {
     fn portable_response_report_path_refreshes_previous_generated_portable_path() {
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic-Batch.mdid-portable-portable-response-report.json",
-                Some("Clinic-Batch.mdid-portable-portable-response-report.json"),
+                "Clinic_Batch.mdid-portable-response-report.json",
+                Some("Clinic_Batch.mdid-portable-response-report.json"),
                 Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
                 &portable_inspect_report_state(),
             ),
             (
-                "Partner-Export.mdid-portable-portable-response-report.json".to_string(),
-                Some("Partner-Export.mdid-portable-portable-response-report.json".to_string())
+                "Partner_Export.mdid-portable-response-report.json".to_string(),
+                Some("Partner_Export.mdid-portable-response-report.json".to_string())
             )
         );
     }
@@ -832,20 +832,20 @@ mod tests {
     fn portable_response_report_path_preserves_generated_shaped_path_without_marker() {
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic-Batch.mdid-portable-portable-response-report.json",
+                "Clinic_Batch.mdid-portable-response-report.json",
                 None,
                 Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
                 &portable_inspect_report_state(),
             ),
             (
-                "Clinic-Batch.mdid-portable-portable-response-report.json".to_string(),
+                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
                 None
             )
         );
     }
 
     #[test]
-    fn portable_response_report_path_resets_previous_generated_portable_path_for_non_portable_report_modes(
+    fn portable_response_report_path_refreshes_previous_generated_path_for_non_portable_report_modes(
     ) {
         let mut state = DesktopVaultResponseState::default();
         state.apply_success(
@@ -859,12 +859,15 @@ mod tests {
 
         assert_eq!(
             next_vault_response_report_save_path(
-                "Clinic-Batch.mdid-portable-portable-response-report.json",
-                Some("Clinic-Batch.mdid-portable-portable-response-report.json"),
+                "Clinic_Batch.mdid-portable-response-report.json",
+                Some("Clinic_Batch.mdid-portable-response-report.json"),
                 Some("C:\\\\vaults\\\\Clinic Batch.mdid-portable.json"),
                 &state,
             ),
-            (DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(), None)
+            (
+                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic_Batch.mdid-portable-response-report.json".to_string())
+            )
         );
     }
 
@@ -895,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_response_report_path_keeps_generic_path_for_non_portable_report_modes() {
+    fn portable_response_report_path_uses_sanitized_source_for_non_portable_report_modes() {
         let mut state = DesktopVaultResponseState::default();
         state.apply_success(
             DesktopVaultResponseMode::VaultDecode,
@@ -913,7 +916,10 @@ mod tests {
                 Some("C:\\vaults\\Clinic Batch.mdid-portable.json"),
                 &state,
             ),
-            (DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(), None)
+            (
+                "Clinic_Batch.mdid-portable-response-report.json".to_string(),
+                Some("Clinic_Batch.mdid-portable-response-report.json".to_string())
+            )
         );
     }
 
@@ -1130,7 +1136,7 @@ mod tests {
 
         assert_eq!(
             app.vault_response_report_save_status,
-            "vault export response did not include a portable artifact object"
+            "safe response report or portable artifact is unavailable"
         );
         assert!(!app.vault_response_report_save_status.contains(path));
         assert!(!app.vault_response_report_save_status.contains("jane-doe"));
