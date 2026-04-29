@@ -25,7 +25,7 @@
 - Modify: `crates/mdid-browser/src/app.rs`
 - Test: `crates/mdid-browser/src/app.rs` existing unit-test module
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add these tests inside the existing `#[cfg(test)] mod tests` in `crates/mdid-browser/src/app.rs`:
 
@@ -63,7 +63,7 @@ fn manual_vault_export_keeps_static_portable_artifact_name() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -73,7 +73,7 @@ RUSTFLAGS='-C link-arg=-fuse-ld=bfd' cargo test -j1 -p mdid-browser imported_csv
 
 Expected: FAIL because `suggested_export_file_name()` currently returns static filenames and cannot produce import-aware names.
 
-- [ ] **Step 3: Implement minimal filename helper and state method**
+- [x] **Step 3: Implement minimal filename helper and state method**
 
 Change `BrowserFlowState::suggested_export_file_name()` in `crates/mdid-browser/src/app.rs` to return `String`. Add a helper that uses only ASCII alphanumeric characters, converts other runs to a single `-`, lowercases, trims separators, removes the final extension from the imported file name, and falls back to `mdid-browser-output` when no safe stem remains.
 
@@ -94,7 +94,7 @@ InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt"
 
 Manual/no-import flows must retain the current static names.
 
-- [ ] **Step 4: Run targeted browser tests to verify GREEN**
+- [x] **Step 4: Run targeted browser tests to verify GREEN**
 
 Run:
 
@@ -104,7 +104,7 @@ RUSTFLAGS='-C link-arg=-fuse-ld=bfd' cargo test -j1 -p mdid-browser imported_csv
 
 Expected: PASS.
 
-- [ ] **Step 5: Run relevant crate tests**
+- [x] **Step 5: Run relevant crate tests**
 
 Run:
 
@@ -114,7 +114,7 @@ RUSTFLAGS='-C link-arg=-fuse-ld=bfd' cargo test -j1 -p mdid-browser -- --nocaptu
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-browser/src/app.rs
@@ -126,11 +126,11 @@ git commit -m "feat(browser): derive export filenames from imports"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Update the truth-sync line to mention the browser import-aware export filename improvement. Increase Browser/web completion from 61% to 63% and Overall from 86% to 87%. Keep CLI at 93% and Desktop app at 58%. In the missing-items section, replace “file picker/upload-download depth” with “remaining file picker/upload-download depth beyond bounded import-aware export naming”.
 
-- [ ] **Step 2: Run verification commands**
+- [x] **Step 2: Run verification commands**
 
 Run:
 
@@ -140,7 +140,7 @@ RUSTFLAGS='-C link-arg=-fuse-ld=bfd' cargo test -j1 -p mdid-browser -- --nocaptu
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-29-browser-export-filenames.md
