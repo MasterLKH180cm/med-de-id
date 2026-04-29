@@ -1,10 +1,10 @@
 use mdid_desktop::{
     write_portable_artifact_json, write_safe_vault_response_json, DesktopFileImportPayload,
-    DesktopFileImportTarget, DesktopPortableMode, DesktopPortableRequestState,
-    DesktopRuntimeSettings, DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot,
-    DesktopRuntimeSubmitError, DesktopVaultMode, DesktopVaultRequestState,
-    DesktopVaultResponseMode, DesktopVaultResponseState, DesktopWorkflowMode,
-    DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    DesktopFileImportTarget, DesktopPortableArtifactSaveError, DesktopPortableMode,
+    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
+    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
+    DesktopVaultRequestState, DesktopVaultResponseMode, DesktopVaultResponseState,
+    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -21,6 +21,22 @@ fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> 
     }
 
     std::fs::read(path).map_err(|_| DROPPED_FILE_READ_ERROR)
+}
+
+fn vault_response_report_save_error_status(error: DesktopPortableArtifactSaveError) -> String {
+    match error {
+        DesktopPortableArtifactSaveError::MissingArtifact => {
+            "vault response report save failed: no safe response summary is available"
+        }
+        DesktopPortableArtifactSaveError::Io(_) => {
+            "vault response report save failed: report JSON could not be written"
+        }
+        DesktopPortableArtifactSaveError::InvalidJson(_)
+        | DesktopPortableArtifactSaveError::NotVaultExport => {
+            "vault response report save failed: report JSON could not be prepared"
+        }
+    }
+    .to_string()
 }
 
 fn main() -> eframe::Result<()> {
@@ -163,7 +179,7 @@ impl DesktopApp {
 
         write_safe_vault_response_json(&self.vault_response_state, path)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(vault_response_report_save_error_status)
     }
 
     fn save_vault_response_report_response(&mut self) {
@@ -809,6 +825,46 @@ mod tests {
             "vault response report save failed: no safe response summary is available"
         );
         assert!(!app.vault_response_report_save_status.contains(path));
+        assert!(!app.vault_response_report_save_status.contains("jane-doe"));
+        assert!(!app.vault_response_report_save_status.contains("12345"));
+    }
+
+    #[test]
+    fn app_save_vault_response_report_action_sets_report_specific_phi_safe_write_error_status() {
+        let path = std::env::temp_dir()
+            .join(format!("mdid-missing-jane-doe-{}", uuid::Uuid::new_v4()))
+            .join("patient-mrn-12345")
+            .join("report.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            mdid_desktop::DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 1,
+                "returned_event_count": 1,
+                "events": [
+                    {
+                        "event_id": "evt-1",
+                        "kind": "decode",
+                        "actor": "clinician-a",
+                        "record_id": "record-7",
+                        "scope": ["patient_name"],
+                        "occurred_at": "2026-04-30T01:00:00Z",
+                        "detail": "decoded Jane Doe with MRN 12345"
+                    }
+                ]
+            }),
+        );
+        app.vault_response_report_save_path = path.to_string_lossy().to_string();
+
+        app.save_vault_response_report_response();
+
+        assert_eq!(
+            app.vault_response_report_save_status,
+            "vault response report save failed: report JSON could not be written"
+        );
+        assert!(!app
+            .vault_response_report_save_status
+            .contains(path.to_string_lossy().as_ref()));
         assert!(!app.vault_response_report_save_status.contains("jane-doe"));
         assert!(!app.vault_response_report_save_status.contains("12345"));
     }
