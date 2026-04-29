@@ -1,10 +1,10 @@
 use mdid_desktop::{
     write_portable_artifact_json, write_safe_vault_response_json, DesktopFileImportPayload,
-    DesktopFileImportTarget, DesktopPortableArtifactSaveError, DesktopPortableMode,
-    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
-    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
-    DesktopVaultRequestState, DesktopVaultResponseMode, DesktopVaultResponseState,
-    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    DesktopFileImportTarget, DesktopPortableMode, DesktopPortableRequestState,
+    DesktopRuntimeSettings, DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot,
+    DesktopRuntimeSubmitError, DesktopVaultMode, DesktopVaultRequestState,
+    DesktopVaultResponseMode, DesktopVaultResponseState, DesktopWorkflowMode,
+    DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -59,22 +59,6 @@ fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> 
     }
 
     std::fs::read(path).map_err(|_| DROPPED_FILE_READ_ERROR)
-}
-
-fn vault_response_report_save_error_status(error: DesktopPortableArtifactSaveError) -> String {
-    match error {
-        DesktopPortableArtifactSaveError::MissingArtifact => {
-            "vault response report save failed: no safe response summary is available"
-        }
-        DesktopPortableArtifactSaveError::Io(_) => {
-            "vault response report save failed: report JSON could not be written"
-        }
-        DesktopPortableArtifactSaveError::InvalidJson(_)
-        | DesktopPortableArtifactSaveError::NotVaultExport => {
-            "vault response report save failed: report JSON could not be prepared"
-        }
-    }
-    .to_string()
 }
 
 fn main() -> eframe::Result<()> {
@@ -245,24 +229,14 @@ impl DesktopApp {
     }
 
     fn save_vault_response_report(&self, path: impl AsRef<Path>) -> Result<(), String> {
-        if !self.vault_response_state.has_safe_response_report() {
-            return Err(
-                "vault response report save failed: no safe response summary is available"
-                    .to_string(),
-            );
-        }
-
         let mode = self
             .vault_response_state
             .safe_response_report_mode()
-            .ok_or_else(|| {
-                "vault response report save failed: no safe response summary is available"
-                    .to_string()
-            })?;
+            .unwrap_or(DesktopVaultResponseMode::VaultAudit);
 
         write_safe_vault_response_json(&self.vault_response_state, mode, path)
             .map(|_| ())
-            .map_err(vault_response_report_save_error_status)
+            .map_err(|error| error.to_string())
     }
 
     fn save_vault_response_report_response(&mut self) {
@@ -1125,7 +1099,7 @@ mod tests {
 
         assert_eq!(
             app.vault_response_report_save_status,
-            "vault response report save failed: no safe response summary is available"
+            "vault export response did not include a portable artifact object"
         );
         assert!(!app.vault_response_report_save_status.contains(path));
         assert!(!app.vault_response_report_save_status.contains("jane-doe"));
@@ -1163,7 +1137,7 @@ mod tests {
 
         assert_eq!(
             app.vault_response_report_save_status,
-            "vault response report save failed: report JSON could not be written"
+            "portable artifact JSON could not be written"
         );
         assert!(!app
             .vault_response_report_save_status
