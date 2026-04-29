@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
 const MAX_VAULT_AUDIT_LIMIT: usize = 100;
-/// Maximum local portable vault artifact size accepted by `vault-import`.
+/// Maximum local portable vault artifact size accepted by portable artifact commands.
 const MAX_PORTABLE_ARTIFACT_BYTES: u64 = 10 * 1024 * 1024;
 
 fn main() {
@@ -49,6 +49,7 @@ enum CliCommand {
     VaultDecode(VaultDecodeArgs),
     VaultExport(VaultExportArgs),
     VaultImport(VaultImportArgs),
+    VaultInspectArtifact(VaultInspectArtifactArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -131,6 +132,12 @@ struct VaultImportArgs {
     context: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VaultInspectArtifactArgs {
+    artifact_path: PathBuf,
+    portable_passphrase: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct PolicyRequest {
     header: String,
@@ -182,6 +189,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "vault-import" => {
             parse_vault_import_args(rest).map(CliCommand::VaultImport)
+        }
+        [command, rest @ ..] if command == "vault-inspect-artifact" => {
+            parse_vault_inspect_artifact_args(rest).map(CliCommand::VaultInspectArtifact)
         }
         _ => Err("unknown command".to_string()),
     }
@@ -530,6 +540,31 @@ fn parse_vault_import_args(args: &[String]) -> Result<VaultImportArgs, String> {
     })
 }
 
+fn parse_vault_inspect_artifact_args(args: &[String]) -> Result<VaultInspectArtifactArgs, String> {
+    let mut artifact_path = None;
+    let mut portable_passphrase = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--artifact-path" => artifact_path = Some(PathBuf::from(value)),
+            "--portable-passphrase" => portable_passphrase = Some(value.clone()),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(VaultInspectArtifactArgs {
+        artifact_path: artifact_path.ok_or_else(|| "missing --artifact-path".to_string())?,
+        portable_passphrase: portable_passphrase
+            .ok_or_else(|| "missing --portable-passphrase".to_string())?,
+    })
+}
+
 fn run_command(command: CliCommand) -> Result<(), String> {
     match command {
         CliCommand::Status => {
@@ -545,6 +580,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultDecode(args) => run_vault_decode(args),
         CliCommand::VaultExport(args) => run_vault_export(args),
         CliCommand::VaultImport(args) => run_vault_import(args),
+        CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
     }
 }
 
@@ -718,6 +754,11 @@ fn run_vault_import(args: VaultImportArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn run_vault_inspect_artifact(args: VaultInspectArtifactArgs) -> Result<(), String> {
+    println!("{}", run_vault_inspect_artifact_for_summary(args)?);
+    Ok(())
+}
+
 fn read_bounded_portable_artifact(path: &Path) -> Result<Vec<u8>, String> {
     let file = fs::File::open(path)
         .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
@@ -730,6 +771,23 @@ fn read_bounded_portable_artifact(path: &Path) -> Result<Vec<u8>, String> {
         return Err("portable artifact exceeds maximum size".to_string());
     }
     Ok(bytes)
+}
+
+fn run_vault_inspect_artifact_for_summary(
+    args: VaultInspectArtifactArgs,
+) -> Result<String, String> {
+    let artifact_bytes = read_bounded_portable_artifact(&args.artifact_path)?;
+    let artifact: PortableVaultArtifact = serde_json::from_slice(&artifact_bytes)
+        .map_err(|err| format!("failed to parse portable artifact: {err}"))?;
+    let snapshot = artifact
+        .unlock(&args.portable_passphrase)
+        .map_err(|err| format!("failed to inspect portable artifact: {err}"))?;
+    let stdout = json!({
+        "command": "vault-inspect-artifact",
+        "record_count": snapshot.records.len(),
+    });
+    serde_json::to_string(&stdout)
+        .map_err(|err| format!("failed to render portable inspect summary: {err}"))
 }
 
 fn run_vault_import_for_summary(args: VaultImportArgs) -> Result<String, String> {
@@ -1046,7 +1104,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary."
+    "Usage: mdid-cli [status]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]
@@ -1271,6 +1329,82 @@ mod tests {
         assert!(Uuid::parse_str(summary_json["audit_event_id"].as_str().unwrap()).is_ok());
         for secret in ["Alice Example", "secret-passphrase", "portable-secret"] {
             assert!(!summary.contains(secret));
+        }
+    }
+
+    #[test]
+    fn parses_vault_inspect_artifact_command() {
+        let args = vec![
+            "vault-inspect-artifact".to_string(),
+            "--artifact-path".to_string(),
+            "portable-export.json".to_string(),
+            "--portable-passphrase".to_string(),
+            "portable-secret".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::VaultInspectArtifact(VaultInspectArtifactArgs {
+                    artifact_path: PathBuf::from("portable-export.json"),
+                    portable_passphrase: "portable-secret".to_string(),
+                }))
+        );
+    }
+
+    #[test]
+    fn vault_inspect_artifact_returns_phi_safe_record_count() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_vault_path = temp_dir.path().join("source-vault.mdid");
+        let artifact_path = temp_dir.path().join("portable-export.json");
+        let mut source_vault =
+            LocalVaultStore::create(&source_vault_path, "source-secret").unwrap();
+        let record = source_vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: MappingScope::new(
+                        Uuid::new_v4(),
+                        Uuid::new_v4(),
+                        "patient.name".to_string(),
+                    ),
+                    phi_type: "NAME".to_string(),
+                    original_value: "Alice Example".to_string(),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+        run_vault_export_for_summary(VaultExportArgs {
+            vault_path: source_vault_path.clone(),
+            passphrase: "source-secret".to_string(),
+            record_ids_json: format!(r#"["{}"]"#, record.id),
+            export_passphrase: "portable-secret".to_string(),
+            context: "handoff".to_string(),
+            artifact_path: artifact_path.clone(),
+        })
+        .unwrap();
+
+        let summary = run_vault_inspect_artifact_for_summary(VaultInspectArtifactArgs {
+            artifact_path: artifact_path.clone(),
+            portable_passphrase: "portable-secret".to_string(),
+        })
+        .unwrap();
+
+        let summary_json: serde_json::Value = serde_json::from_str(&summary).unwrap();
+        assert_eq!(summary_json["command"], "vault-inspect-artifact");
+        assert_eq!(summary_json["record_count"], 1);
+        for secret in [
+            "Alice Example",
+            "source-secret",
+            "portable-secret",
+            "MDID-NAME",
+            &source_vault_path.to_string_lossy(),
+            "ciphertext_b64",
+            "nonce_b64",
+            "salt_b64",
+        ] {
+            assert!(
+                !summary.contains(secret),
+                "summary leaked {secret}: {summary}"
+            );
         }
     }
 
