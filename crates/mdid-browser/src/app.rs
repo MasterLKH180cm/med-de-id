@@ -127,6 +127,16 @@ impl InputMode {
         }
     }
 
+    fn safe_vault_report_mode_label(self) -> &'static str {
+        match self {
+            Self::VaultAuditEvents => "vault_audit_events",
+            Self::VaultDecode => "vault_decode",
+            Self::PortableArtifactInspect => "portable_artifact_inspect",
+            Self::PortableArtifactImport => "portable_artifact_import",
+            _ => self.label(),
+        }
+    }
+
     fn payload_hint(self) -> &'static str {
         match self {
             Self::CsvText => "Paste CSV rows here",
@@ -747,6 +757,17 @@ impl BrowserFlowState {
         .map_err(|_| "Browser output download could not encode review report JSON.".to_string())
     }
 
+    fn safe_vault_response_download_json(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mode": self.input_mode.safe_vault_report_mode_label(),
+            "summary": self.summary,
+            "review_queue": self.review_queue,
+        }))
+        .map_err(|_| {
+            "Browser output download could not encode safe vault response JSON.".to_string()
+        })
+    }
+
     fn media_review_report_download_json(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec_pretty(&serde_json::json!({
             "mode": "media_metadata_review",
@@ -793,14 +814,19 @@ impl BrowserFlowState {
                 bytes: self.media_review_report_download_json()?,
                 is_text: true,
             }),
-            InputMode::PdfBase64
-            | InputMode::VaultAuditEvents
+            InputMode::PdfBase64 => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "application/json;charset=utf-8",
+                bytes: self.review_report_download_json()?,
+                is_text: true,
+            }),
+            InputMode::VaultAuditEvents
             | InputMode::VaultDecode
             | InputMode::PortableArtifactInspect
             | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "application/json;charset=utf-8",
-                bytes: self.review_report_download_json()?,
+                bytes: self.safe_vault_response_download_json()?,
                 is_text: true,
             }),
             _ => Ok(BrowserDownloadPayload {
@@ -2439,6 +2465,41 @@ mod tests {
     }
 
     #[test]
+    fn browser_vault_response_download_is_structured_and_phi_safe() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            summary: "Decoded 2 requested records; values hidden in browser response.".to_string(),
+            review_queue: "Review queue: no browser-visible decoded values.".to_string(),
+            result_output: serde_json::json!({
+                "decoded_values": {"patient-1": {"name": "Alice Example"}},
+                "vault_path": "/phi/vault",
+                "passphrase": "secret",
+                "token": "MDID-123",
+                "audit_event": {"kind": "decode", "record_ids": ["patient-1"]}
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json report");
+
+        assert_eq!(payload.file_name, "mdid-browser-vault-decode-response.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["summary"], state.summary);
+        assert_eq!(report["review_queue"], state.review_queue);
+        assert!(report.get("output").is_none());
+        let serialized = serde_json::to_string(&report).expect("serialized report");
+        assert!(!serialized.contains("Alice Example"));
+        assert!(!serialized.contains("/phi/vault"));
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("MDID-123"));
+        assert!(!serialized.contains("decoded_values"));
+        assert!(!serialized.contains("audit_event"));
+    }
+
+    #[test]
     fn portable_review_download_exports_json_without_raw_runtime_body() {
         let state = BrowserFlowState {
             input_mode: InputMode::PortableArtifactInspect,
@@ -2461,7 +2522,7 @@ mod tests {
         );
         assert_eq!(payload.mime_type, "application/json;charset=utf-8");
         assert!(payload.is_text);
-        assert_eq!(json["mode"], "Portable artifact inspect");
+        assert_eq!(json["mode"], "portable_artifact_inspect");
         assert_eq!(
             json["review_queue"],
             "Portable artifact inspection completed without rendering original values or tokens."
