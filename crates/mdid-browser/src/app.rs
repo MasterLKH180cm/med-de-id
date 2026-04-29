@@ -735,6 +735,13 @@ impl BrowserFlowState {
             }
         }
 
+        if self.input_mode == InputMode::PdfBase64 && !self.source_name.trim().is_empty() {
+            let stem = sanitized_import_stem(&self.source_name);
+            if stem != "mdid-browser-output" {
+                return format!("{stem}-review-report.json");
+            }
+        }
+
         match self.input_mode {
             InputMode::CsvText => "mdid-browser-output.csv",
             InputMode::XlsxBase64 => "mdid-browser-output.xlsx",
@@ -2435,6 +2442,28 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("review-only PDF analysis"));
+    }
+
+    #[test]
+    fn pdf_review_download_uses_safe_source_name_when_no_imported_file_exists() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            source_name: "C:/records/Patient Jane MRI Scan.pdf".to_string(),
+            result_output: "review only".to_string(),
+            summary: "PDF review summary".to_string(),
+            review_queue: "review queue".to_string(),
+            ..BrowserFlowState::default()
+        };
+        state.imported_file_name = None;
+
+        let payload = state.prepared_download_payload().expect("download payload");
+
+        assert_eq!(
+            payload.file_name,
+            "patient-jane-mri-scan-review-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
     }
 
     #[test]
