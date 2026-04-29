@@ -560,6 +560,18 @@ pub enum DesktopVaultResponseMode {
     ImportArtifact,
 }
 
+impl DesktopVaultResponseMode {
+    fn safe_export_label(self) -> &'static str {
+        match self {
+            Self::VaultDecode => "vault_decode",
+            Self::VaultAudit => "vault_audit",
+            Self::VaultExport => "vault_export",
+            Self::InspectArtifact => "portable_artifact_inspect",
+            Self::ImportArtifact => "portable_artifact_import",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopVaultResponseState {
     pub banner: String,
@@ -592,6 +604,16 @@ impl DesktopVaultResponseState {
         self.error = Some(redact_desktop_vault_error(message.as_ref()));
         self.summary.clear();
         self.artifact_notice.clear();
+    }
+
+    pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
+        serde_json::json!({
+            "mode": mode.safe_export_label(),
+            "banner": self.banner,
+            "summary": self.summary,
+            "artifact_notice": self.artifact_notice,
+            "error": self.error,
+        })
     }
 }
 
@@ -1280,6 +1302,63 @@ mod tests {
         assert!(!state.summary.contains("Alice Patient"));
         assert!(!state.summary.contains("PATIENT_TOKEN"));
         assert!(!state.summary.contains("Dr Patient"));
+    }
+
+    #[test]
+    fn vault_response_safe_export_omits_decoded_values_paths_and_raw_audit_detail() {
+        let response = serde_json::json!({
+            "decoded_value_count": 2,
+            "report_path": "/sensitive/patient/alice-decode.json",
+            "decoded_values": [
+                {"record_id": "patient-1", "field": "name", "value": "Alice Example"}
+            ],
+            "audit_event": {"kind": "decode", "detail": "released Alice Example to oncology"}
+        });
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let exported = state.safe_export_json(DesktopVaultResponseMode::VaultDecode);
+        let exported_text = serde_json::to_string(&exported).expect("safe export serializes");
+
+        assert_eq!(exported["mode"], "vault_decode");
+        assert_eq!(
+            exported["banner"],
+            "bounded vault decode response rendered locally"
+        );
+        assert_eq!(exported["summary"], "decoded values: 2");
+        assert_eq!(
+            exported["artifact_notice"],
+            "artifact path returned; full path hidden"
+        );
+        assert_eq!(exported["error"], serde_json::Value::Null);
+        assert!(!exported_text.contains("Alice Example"));
+        assert!(!exported_text.contains("/sensitive/patient"));
+        assert!(!exported_text.contains("released Alice"));
+        assert!(!exported_text.contains("decoded_values"));
+        assert!(!exported_text.contains("audit_event"));
+    }
+
+    #[test]
+    fn vault_response_safe_export_keeps_runtime_errors_redacted() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_error(
+            DesktopVaultResponseMode::InspectArtifact,
+            "failed to open /secret/artifact.json with passphrase hunter2",
+        );
+
+        let exported = state.safe_export_json(DesktopVaultResponseMode::InspectArtifact);
+        let exported_text = serde_json::to_string(&exported).expect("safe export serializes");
+
+        assert_eq!(exported["mode"], "portable_artifact_inspect");
+        assert_eq!(
+            exported["banner"],
+            "bounded portable artifact response rendered locally"
+        );
+        assert_eq!(exported["summary"], "");
+        assert_eq!(exported["artifact_notice"], "");
+        assert_eq!(exported["error"], "runtime failed; details redacted");
+        assert!(!exported_text.contains("/secret/artifact.json"));
+        assert!(!exported_text.contains("hunter2"));
     }
 
     #[test]
