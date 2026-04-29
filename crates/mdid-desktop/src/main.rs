@@ -332,6 +332,9 @@ impl eframe::App for DesktopApp {
                     let actor = self.vault_request_state.audit_actor.get_or_insert_with(String::new);
                     ui.label("Audit actor filter");
                     ui.text_edit_singleline(actor);
+                    let limit = self.vault_request_state.audit_limit.get_or_insert_with(String::new);
+                    ui.label("Audit limit (optional)");
+                    ui.text_edit_singleline(limit);
                 }
             }
             if ui
