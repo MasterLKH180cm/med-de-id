@@ -61,7 +61,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-Completion snapshot, based only on landed repository features and verification state:
+Completion snapshot, based only on landed repository features and verification state (truth-synced 2026-04-29 after conservative media test-format verification; completion percentages unchanged because this round landed test-format/readability cleanup only):
 
 | Area | Completion | Status |
 |---|---:|---|
