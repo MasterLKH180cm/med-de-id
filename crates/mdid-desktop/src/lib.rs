@@ -652,6 +652,7 @@ pub struct DesktopVaultResponseState {
     pub error: Option<String>,
     pub summary: String,
     pub artifact_notice: String,
+    last_success_response: Option<serde_json::Value>,
 }
 
 impl Default for DesktopVaultResponseState {
@@ -661,8 +662,17 @@ impl Default for DesktopVaultResponseState {
             error: None,
             summary: String::new(),
             artifact_notice: String::new(),
+            last_success_response: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopPortableArtifactSaveError {
+    NotVaultExport,
+    MissingArtifact,
+    Io(String),
+    InvalidJson(String),
 }
 
 impl DesktopVaultResponseState {
@@ -671,6 +681,7 @@ impl DesktopVaultResponseState {
         self.summary = vault_response_summary(mode, response);
         self.artifact_notice = vault_response_artifact_notice(response);
         self.error = None;
+        self.last_success_response = Some(response.clone());
     }
 
     pub fn apply_error(&mut self, mode: DesktopVaultResponseMode, message: impl AsRef<str>) {
@@ -678,6 +689,26 @@ impl DesktopVaultResponseState {
         self.error = Some(redact_desktop_vault_error(message.as_ref()));
         self.summary.clear();
         self.artifact_notice.clear();
+        self.last_success_response = None;
+    }
+
+    pub fn portable_artifact_download_json(
+        &self,
+        mode: DesktopVaultResponseMode,
+    ) -> Result<String, DesktopPortableArtifactSaveError> {
+        if mode != DesktopVaultResponseMode::VaultExport {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
+        let artifact = self
+            .last_success_response
+            .as_ref()
+            .and_then(|response| response.get("artifact"))
+            .filter(|artifact| artifact.is_object())
+            .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
+
+        serde_json::to_string_pretty(artifact)
+            .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))
     }
 
     pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
@@ -689,6 +720,18 @@ impl DesktopVaultResponseState {
             "error": self.error,
         })
     }
+}
+
+pub fn write_portable_artifact_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
+    let artifact_json =
+        state.portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)?;
+    let path = path.as_ref();
+    std::fs::write(path, artifact_json)
+        .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
 }
 
 fn vault_response_banner(mode: DesktopVaultResponseMode) -> &'static str {
@@ -1319,8 +1362,44 @@ fn pretty_json_field(envelope: &serde_json::Value, field: &str) -> String {
 }
 
 #[cfg(test)]
+mod tempfile {
+    use std::path::{Path, PathBuf};
+
+    pub struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    pub fn tempdir() -> std::io::Result<TempDir> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "mdid-desktop-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path)?;
+        Ok(TempDir { path })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tempfile;
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
@@ -1771,6 +1850,80 @@ mod tests {
             assert!(!debug.contains("Alice"));
             assert!(!debug.contains("Bob"));
         }
+    }
+
+    #[test]
+    fn vault_export_download_json_contains_only_artifact_object() {
+        let response = serde_json::json!({
+            "artifact": {"version": 1, "ciphertext": "encrypted-payload", "nonce": "safe-nonce"},
+            "record_count": 1,
+            "vault_path": "/sensitive/Alice-vault.json",
+            "vault_passphrase": "hunter2",
+            "audit_event": {"detail": "exported Alice Example MRN 123"},
+            "original_value": "Alice Example"
+        });
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(DesktopVaultResponseMode::VaultExport, &response);
+
+        let artifact_json = state
+            .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)
+            .expect("valid artifact JSON should be available");
+
+        assert!(artifact_json.contains("encrypted-payload"));
+        assert!(artifact_json.contains("safe-nonce"));
+        assert!(!artifact_json.contains("Alice Example"));
+        assert!(!artifact_json.contains("/sensitive"));
+        assert!(!artifact_json.contains("hunter2"));
+        assert!(!artifact_json.contains("audit_event"));
+        assert!(!artifact_json.contains("original_value"));
+    }
+
+    #[test]
+    fn vault_export_download_json_fails_closed_for_malformed_or_non_export_responses() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({"record_count": 3}),
+        );
+        assert_eq!(
+            state.portable_artifact_download_json(DesktopVaultResponseMode::InspectArtifact),
+            Err(DesktopPortableArtifactSaveError::NotVaultExport)
+        );
+
+        let mut export_state = DesktopVaultResponseState::default();
+        export_state.apply_success(
+            DesktopVaultResponseMode::VaultExport,
+            &serde_json::json!({"artifact": "not an object"}),
+        );
+        assert_eq!(
+            export_state.portable_artifact_download_json(DesktopVaultResponseMode::VaultExport),
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        );
+    }
+
+    #[test]
+    fn write_portable_artifact_json_writes_pretty_artifact_without_sensitive_runtime_envelope() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("export.mdid-portable.json");
+        let response = serde_json::json!({
+            "artifact": {"version": 1, "ciphertext": "encrypted-payload"},
+            "audit_event": {"detail": "patient Alice handoff"},
+            "vault_path": "/secret/patient.vault"
+        });
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(DesktopVaultResponseMode::VaultExport, &response);
+
+        let written = write_portable_artifact_json(&state, &path).expect("artifact write succeeds");
+        let persisted = std::fs::read_to_string(&path).expect("artifact file exists");
+
+        assert_eq!(written, path);
+        assert_eq!(
+            persisted,
+            "{\n  \"ciphertext\": \"encrypted-payload\",\n  \"version\": 1\n}"
+        );
+        assert!(!persisted.contains("Alice"));
+        assert!(!persisted.contains("/secret"));
+        assert!(!persisted.contains("audit_event"));
     }
 
     #[test]
