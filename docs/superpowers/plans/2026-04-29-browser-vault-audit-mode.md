@@ -1,10 +1,10 @@
-# Browser Vault Audit Mode Implementation Plan
+# Browser Vault Audit Mode Historical Record
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Historical status: completed. This document is retained as implementation evidence for the bounded browser vault audit request mode.
 
 **Goal:** Add a bounded browser-side vault audit request mode that prepares and submits PHI-safe audit event browsing requests to the existing localhost runtime.
 
-**Architecture:** Reuse the existing `mdid-browser` single-page local-first workflow and add one narrowly scoped `InputMode` for `/vault/audit/events`. The browser surface will collect a local vault path, passphrase, optional event kind/actor filters, and a limit, then render only the runtime response JSON with disclosures that this is read-only audit browsing and not vault decode/export, governance orchestration, or controller workflow behavior.
+**Architecture:** Reuse the existing `mdid-browser` single-page local-first workflow and add one narrowly scoped `InputMode` for `/vault/audit/events`. The browser surface collects a local vault path, passphrase, optional event kind/actor filters, and a limit, then renders only the runtime response JSON with disclosures that this is read-only audit browsing and not vault decode/export or workflow behavior.
 
 **Tech Stack:** Rust, Leptos, serde/serde_json, existing `mdid-runtime` HTTP contract, Cargo test harness.
 
@@ -19,13 +19,20 @@
 - Modify: `README.md`
   - Truth-sync browser/web and overall completion after landed implementation and verification.
 
+## Completion Evidence
+
+- Implementation completed in commit `480b2cc` (`feat(browser): add bounded vault audit request mode`).
+- README truth-sync completed in commit `205b315` (`docs: truth-sync browser vault audit completion`).
+- Targeted verification run: `cargo test -p mdid-browser vault_audit -- --nocapture`.
+- Broader browser verification run: `cargo test -p mdid-browser -- --nocapture`.
+
 ### Task 1: Browser vault audit event mode
 
 **Files:**
 - Modify: `crates/mdid-browser/src/app.rs`
 - Test: existing unit tests in `crates/mdid-browser/src/app.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add tests in `crates/mdid-browser/src/app.rs` under the existing `#[cfg(test)] mod tests` block:
 
@@ -97,13 +104,13 @@ fn vault_audit_payload_rejects_invalid_limit() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `cargo test -p mdid-browser vault_audit -- --nocapture`
 
 Expected: FAIL because `InputMode::VaultAuditEvents` and `build_vault_audit_request_payload` do not exist yet.
 
-- [ ] **Step 3: Implement minimal browser mode and payload helper**
+- [x] **Step 3: Implement minimal browser mode and payload helper**
 
 In `crates/mdid-browser/src/app.rs`:
 
@@ -155,21 +162,21 @@ fn build_vault_audit_request_payload(
 }
 ```
 
-4. Wire the existing browser form state minimally so selecting Vault audit events shows read-only disclosure and can submit the helper-built JSON body to `/vault/audit/events`. Do not add decode/export, agent/controller, claim, or workflow semantics.
+4. Wire the existing browser form state minimally so selecting Vault audit events shows read-only disclosure and can submit the helper-built JSON body to `/vault/audit/events`. Do not add decode/export or workflow semantics.
 
-- [ ] **Step 4: Run targeted tests to verify GREEN**
+- [x] **Step 4: Run targeted tests to verify GREEN**
 
 Run: `cargo test -p mdid-browser vault_audit -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run broader browser tests**
+- [x] **Step 5: Run broader browser tests**
 
 Run: `cargo test -p mdid-browser -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-browser/src/app.rs
@@ -181,9 +188,9 @@ git commit -m "feat(browser): add bounded vault audit request mode"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update completion snapshot text**
+- [x] **Step 1: Update completion snapshot text**
 
-Change the README completion snapshot to truthfully describe the landed bounded browser vault audit mode. Raise browser/web and overall only if controller-visible tests pass. Keep CLI and desktop unchanged unless this task changes them.
+Change the README completion snapshot to truthfully describe the landed bounded browser vault audit mode. Raise browser/web and overall only if visible tests pass. Keep CLI and desktop unchanged unless this task changes them.
 
 Use this factual completion basis:
 - CLI: unchanged at 84%.
@@ -191,13 +198,13 @@ Use this factual completion basis:
 - Desktop app: unchanged at 41%.
 - Overall: 72% after adding one real browser workflow surface for existing vault audit runtime capability.
 
-- [ ] **Step 2: Run README grep verification**
+- [x] **Step 2: Run README grep verification**
 
 Run: `grep -n "Completion snapshot\|Browser/web\|Overall\|vault audit" README.md`
 
 Expected: README mentions browser bounded vault audit event browsing and overall 72%.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-29-browser-vault-audit-mode.md
