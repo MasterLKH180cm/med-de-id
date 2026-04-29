@@ -8,6 +8,10 @@ const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
 const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; media metadata JSON files also load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. Media metadata JSON sends metadata only, not media bytes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+const MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS: usize = 64;
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+const EXPORT_FILENAME_WARNING_COPY: &str = "Browser suggested download filenames for imported files are derived from imported filenames for local UX only. If an original filename contains PHI, rename the downloaded file locally before sharing or storing it.";
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FETCH_UNAVAILABLE_MESSAGE: &str =
     "Runtime submission is only available from a wasm32 browser build.";
@@ -544,6 +548,40 @@ impl Default for BrowserFlowState {
     }
 }
 
+fn sanitized_import_stem(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('-');
+            }
+            sanitized.push(ch.to_ascii_lowercase());
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('-') {
+            sanitized.pop();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-output".to_string()
+    } else {
+        sanitized
+    }
+}
+
 impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
@@ -564,7 +602,23 @@ impl BrowserFlowState {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    fn suggested_export_file_name(&self) -> &'static str {
+    fn suggested_export_file_name(&self) -> String {
+        if let Some(imported_file_name) = &self.imported_file_name {
+            let stem = sanitized_import_stem(imported_file_name);
+            match self.input_mode {
+                InputMode::CsvText => return format!("{stem}-deidentified.csv"),
+                InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx.base64.txt"),
+                InputMode::PdfBase64 => return format!("{stem}-review-report.txt"),
+                InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm.base64.txt"),
+                InputMode::MediaMetadataJson => return format!("{stem}-media-review-report.txt"),
+                InputMode::VaultAuditEvents
+                | InputMode::VaultDecode
+                | InputMode::VaultExport
+                | InputMode::PortableArtifactInspect
+                | InputMode::PortableArtifactImport => {}
+            }
+        }
+
         match self.input_mode {
             InputMode::CsvText => "mdid-browser-output.csv",
             InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
@@ -577,6 +631,7 @@ impl BrowserFlowState {
             InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.txt",
             InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt",
         }
+        .to_string()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2005,6 +2060,9 @@ pub fn App() -> impl IntoView {
                     "Suggested export file: "
                     <code>{export_file_name}</code>
                 </p>
+                <p class="export-filename-warning">
+                    {EXPORT_FILENAME_WARNING_COPY}
+                </p>
                 <button disabled=move || !can_export_output() on:click=on_export type="button">
                     "Export current result output text"
                 </button>
@@ -2034,10 +2092,112 @@ mod tests {
         format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
         validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
         RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
-        DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
-        MAX_BROWSER_IMPORT_BYTES,
+        DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY, FETCH_UNAVAILABLE_MESSAGE,
+        IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    fn imported_csv_suggests_sanitized_deidentified_export_name() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file("Clinic Patient List.csv", "name\nAda", InputMode::CsvText);
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "clinic-patient-list-deidentified.csv"
+        );
+    }
+
+    #[test]
+    fn imported_pdf_suggests_sanitized_review_report_name_without_phi() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file(
+            "../Patient #42 Intake.PDF",
+            "JVBERi0=",
+            InputMode::PdfBase64,
+        );
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "patient-42-intake-review-report.txt"
+        );
+    }
+
+    #[test]
+    fn manual_default_csv_keeps_static_browser_output_name() {
+        let state = BrowserFlowState::default();
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-output.csv"
+        );
+    }
+
+    #[test]
+    fn imported_vault_export_keeps_static_portable_artifact_name() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file(
+            "Patient Portable Artifact.json",
+            r#"{"record_count":1}"#,
+            InputMode::VaultExport,
+        );
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    fn imported_dicom_and_media_metadata_suggest_mode_specific_export_names() {
+        let mut dicom_state = BrowserFlowState::default();
+        dicom_state.apply_imported_file(
+            "C:\\scans\\Patient MRI 2026.dicom",
+            "ZGljb20=",
+            InputMode::DicomBase64,
+        );
+
+        assert_eq!(
+            dicom_state.suggested_export_file_name(),
+            "patient-mri-2026-deidentified.dcm.base64.txt"
+        );
+
+        let mut media_state = BrowserFlowState::default();
+        media_state.apply_imported_file(
+            "../Clinic Video Metadata.JSON",
+            r#"{"objects":[]}"#,
+            InputMode::MediaMetadataJson,
+        );
+
+        assert_eq!(
+            media_state.suggested_export_file_name(),
+            "clinic-video-metadata-media-review-report.txt"
+        );
+    }
+
+    #[test]
+    fn imported_filename_stem_is_bounded_without_trailing_hyphen() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-Patient Name.csv",
+            "name\nAda",
+            InputMode::CsvText,
+        );
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-deidentified.csv"
+        );
+    }
+
+    #[test]
+    fn export_filename_phi_warning_copy_is_static_and_bounded() {
+        assert!(EXPORT_FILENAME_WARNING_COPY.contains("suggested download filenames"));
+        assert!(EXPORT_FILENAME_WARNING_COPY.contains("imported filenames"));
+        assert!(EXPORT_FILENAME_WARNING_COPY.contains("rename"));
+        assert!(!EXPORT_FILENAME_WARNING_COPY.contains("vault passphrase"));
+        assert!(!EXPORT_FILENAME_WARNING_COPY.contains("decoded"));
+    }
 
     #[test]
     fn vault_export_mode_uses_existing_runtime_endpoint() {
@@ -2962,22 +3122,19 @@ mod tests {
         };
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-output.csv"
+            "jane-patient-deidentified.csv"
         );
 
         state.input_mode = InputMode::XlsxBase64;
         state.imported_file_name = Some("clinic workbook.xlsx".to_string());
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-output.xlsx.base64.txt"
+            "clinic-workbook-deidentified.xlsx.base64.txt"
         );
 
         state.input_mode = InputMode::PdfBase64;
         state.imported_file_name = Some("scan.pdf".to_string());
-        assert_eq!(
-            state.suggested_export_file_name(),
-            "mdid-browser-review-report.txt"
-        );
+        assert_eq!(state.suggested_export_file_name(), "scan-review-report.txt");
 
         state.input_mode = InputMode::VaultExport;
         assert_eq!(
