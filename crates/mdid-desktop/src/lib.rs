@@ -534,6 +534,111 @@ pub enum DesktopVaultValidationError {
     InvalidRecordIdsJson(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopVaultResponseMode {
+    VaultDecode,
+    VaultAudit,
+    VaultExport,
+    InspectArtifact,
+    ImportArtifact,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopVaultResponseState {
+    pub banner: String,
+    pub error: Option<String>,
+    pub summary: String,
+    pub artifact_notice: String,
+}
+
+impl Default for DesktopVaultResponseState {
+    fn default() -> Self {
+        Self {
+            banner: "No bounded vault or portable response rendered yet.".to_string(),
+            error: None,
+            summary: String::new(),
+            artifact_notice: String::new(),
+        }
+    }
+}
+
+impl DesktopVaultResponseState {
+    pub fn apply_success(&mut self, mode: DesktopVaultResponseMode, response: &serde_json::Value) {
+        self.banner = vault_response_banner(mode).to_string();
+        self.summary = vault_response_summary(mode, response);
+        self.artifact_notice = vault_response_artifact_notice(response);
+        self.error = None;
+    }
+
+    pub fn apply_error(&mut self, mode: DesktopVaultResponseMode, message: impl AsRef<str>) {
+        self.banner = vault_response_banner(mode).to_string();
+        self.error = Some(redact_desktop_vault_error(message.as_ref()));
+        self.summary.clear();
+        self.artifact_notice.clear();
+    }
+}
+
+fn vault_response_banner(mode: DesktopVaultResponseMode) -> &'static str {
+    match mode {
+        DesktopVaultResponseMode::VaultDecode => "bounded vault decode response rendered locally",
+        DesktopVaultResponseMode::VaultAudit => "bounded vault audit response rendered locally",
+        DesktopVaultResponseMode::VaultExport
+        | DesktopVaultResponseMode::InspectArtifact
+        | DesktopVaultResponseMode::ImportArtifact => {
+            "bounded portable artifact response rendered locally"
+        }
+    }
+}
+
+fn vault_response_summary(mode: DesktopVaultResponseMode, response: &serde_json::Value) -> String {
+    match mode {
+        DesktopVaultResponseMode::VaultDecode => format!(
+            "decoded values: {}",
+            response_u64(response, "decoded_value_count")
+        ),
+        DesktopVaultResponseMode::VaultAudit => format!(
+            "events returned: {} / {}",
+            response_u64(response, "returned_event_count"),
+            response_u64(response, "event_count")
+        ),
+        DesktopVaultResponseMode::VaultExport | DesktopVaultResponseMode::InspectArtifact => {
+            format!("records: {}", response_u64(response, "record_count"))
+        }
+        DesktopVaultResponseMode::ImportArtifact => format!(
+            "imported records: {}",
+            response_u64(response, "imported_record_count")
+        ),
+    }
+}
+
+fn vault_response_artifact_notice(response: &serde_json::Value) -> String {
+    if response
+        .get("report_path")
+        .or_else(|| response.get("artifact_path"))
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
+        "artifact path returned; full path hidden".to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn response_u64(response: &serde_json::Value, field: &str) -> u64 {
+    response
+        .get(field)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default()
+}
+
+fn redact_desktop_vault_error(message: &str) -> String {
+    if message.trim().is_empty() {
+        "runtime failed".to_string()
+    } else {
+        "runtime failed; details redacted".to_string()
+    }
+}
+
 impl Default for DesktopWorkflowRequestState {
     fn default() -> Self {
         Self {
@@ -1263,6 +1368,127 @@ mod tests {
             assert!(!debug.contains("Alice"));
             assert!(!debug.contains("Bob"));
         }
+    }
+
+    #[test]
+    fn vault_response_state_renders_decode_summary_without_decoded_values() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_value_count": 2,
+            "report_path": "/tmp/Alice-Smith-decode-report.json",
+            "audit_event": {"kind": "decode", "detail": "patient Alice decoded for oncology"},
+            "decoded_values": [{"original_value": "Alice Smith", "token": format!("PHI-TOKEN-{}", 1)}]
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        assert!(state.banner.contains("bounded vault decode response"));
+        assert!(state.summary.contains("decoded values: 2"));
+        assert!(state
+            .artifact_notice
+            .contains("artifact path returned; full path hidden"));
+        let rendered = format!(
+            "{} {} {}",
+            state.banner, state.summary, state.artifact_notice
+        );
+        assert!(!rendered.contains("Alice Smith"));
+        assert!(!rendered.contains("Alice-Smith"));
+        assert!(!rendered.contains("/tmp/Alice-Smith-decode-report.json"));
+        assert!(!rendered.contains("patient Alice"));
+        assert!(!rendered.contains("PHI-TOKEN-1"));
+    }
+
+    #[test]
+    fn vault_response_state_renders_audit_counts_without_raw_details() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "event_count": 200,
+            "returned_event_count": 100,
+            "events": [
+                {"kind": "decode", "detail": "patient Bob release"},
+                {"kind": "encode", "detail": "encoded patient Carol"}
+            ]
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
+
+        assert!(state.banner.contains("bounded vault audit response"));
+        assert!(state.summary.contains("events returned: 100 / 200"));
+        let rendered = format!(
+            "{} {} {}",
+            state.banner, state.summary, state.artifact_notice
+        );
+        assert!(!rendered.contains("patient Bob"));
+        assert!(!rendered.contains("patient Carol"));
+    }
+
+    #[test]
+    fn vault_response_state_renders_portable_artifact_without_raw_artifact_json() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "artifact_path": "/tmp/MRN-123-portable-artifact.json",
+            "record_count": 3,
+            "artifact_json": {"records": [{"original_value": "MRN-123"}]},
+            "imported_record_count": 3
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultExport, &response);
+        assert!(state.banner.contains("bounded portable artifact response"));
+        assert!(state.summary.contains("records: 3"));
+        assert!(state
+            .artifact_notice
+            .contains("artifact path returned; full path hidden"));
+
+        state.apply_success(DesktopVaultResponseMode::ImportArtifact, &response);
+        assert!(state.summary.contains("imported records: 3"));
+
+        let rendered = format!(
+            "{} {} {}",
+            state.banner, state.summary, state.artifact_notice
+        );
+        assert!(!rendered.contains("MRN-123"));
+        assert!(!rendered.contains("/tmp/MRN-123-portable-artifact.json"));
+    }
+
+    #[test]
+    fn vault_response_state_records_error_without_stale_phi() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({"decoded_value_count": 1, "report_path": "/tmp/safe.json", "decoded_values": [{"original_value": "Alice Smith"}]});
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        state.apply_error(
+            DesktopVaultResponseMode::VaultDecode,
+            "runtime failed for patient Alice Smith",
+        );
+
+        assert!(state.banner.contains("bounded vault decode response"));
+        assert!(state
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("runtime failed"));
+        assert!(!state
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("patient Alice Smith"));
+        assert!(state.summary.is_empty());
+        assert!(state.artifact_notice.is_empty());
+    }
+
+    #[test]
+    fn vault_response_state_redacts_arbitrary_runtime_error_content() {
+        let mut state = DesktopVaultResponseState::default();
+
+        state.apply_error(
+            DesktopVaultResponseMode::VaultAudit,
+            "unable to process MRN-123 Alice Smith",
+        );
+
+        let error = state.error.as_deref().unwrap_or_default();
+        assert!(error.contains("runtime failed"));
+        assert!(!error.contains("MRN-123"));
+        assert!(!error.contains("Alice Smith"));
     }
 
     #[test]
