@@ -164,17 +164,17 @@ git commit -m "fix(desktop): refresh workflow output save paths"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update completion snapshot**
+- [x] **Step 1: Update completion snapshot**
 
 Update `README.md` current repository status to mention the desktop app-shell now refreshes generated rewritten workflow output save suggestions from the latest already-received CSV/XLSX/DICOM output filename while preserving explicit user overrides. Keep CLI and browser percentages unchanged. Increase desktop only if justified by landed behavior; overall may remain unchanged if the blocker list is still dominated by larger UX gaps.
 
-- [ ] **Step 2: Verify docs diff**
+- [x] **Step 2: Verify docs diff**
 
 Run: `git diff -- README.md`
 
 Expected: README claims match landed code/tests and do not overclaim file-picker UX, PDF/media rewrite/export, OCR, raw decoded value display, vault browsing, or agent/controller behavior.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-30-desktop-workflow-output-save-path-refresh.md
