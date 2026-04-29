@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
 const MAX_VAULT_AUDIT_LIMIT: usize = 100;
+/// Maximum local portable vault artifact size accepted by `vault-import`.
+const MAX_PORTABLE_ARTIFACT_BYTES: u64 = 10 * 1024 * 1024;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -554,6 +556,12 @@ fn run_vault_import(args: VaultImportArgs) -> Result<(), String> {
 }
 
 fn run_vault_import_for_summary(args: VaultImportArgs) -> Result<String, String> {
+    let artifact_len = fs::metadata(&args.artifact_path)
+        .map_err(|err| format!("failed to read vault import artifact metadata: {err}"))?
+        .len();
+    if artifact_len > MAX_PORTABLE_ARTIFACT_BYTES {
+        return Err("portable artifact exceeds maximum size".to_string());
+    }
     let artifact_bytes = fs::read(&args.artifact_path)
         .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
     let artifact: PortableVaultArtifact = serde_json::from_slice(&artifact_bytes)
@@ -1093,6 +1101,35 @@ mod tests {
         assert!(Uuid::parse_str(summary_json["audit_event_id"].as_str().unwrap()).is_ok());
         for secret in ["Alice Example", "secret-passphrase", "portable-secret"] {
             assert!(!summary.contains(secret));
+        }
+    }
+
+    #[test]
+    fn vault_import_rejects_oversized_artifact_before_parsing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_path = temp_dir.path().join("target-vault.mdid");
+        let artifact_path = temp_dir.path().join("oversized-portable-export.json");
+        LocalVaultStore::create(&vault_path, "target-secret").unwrap();
+        std::fs::File::create(&artifact_path)
+            .unwrap()
+            .set_len(MAX_PORTABLE_ARTIFACT_BYTES + 1)
+            .unwrap();
+
+        let error = run_vault_import_for_summary(VaultImportArgs {
+            vault_path,
+            passphrase: "target-secret".to_string(),
+            artifact_path,
+            portable_passphrase: "portable-secret".to_string(),
+            context: "import".to_string(),
+        })
+        .unwrap_err();
+
+        assert!(
+            error.contains("portable artifact exceeds maximum size"),
+            "unexpected error: {error}"
+        );
+        for secret in ["target-secret", "portable-secret"] {
+            assert!(!error.contains(secret));
         }
     }
 
