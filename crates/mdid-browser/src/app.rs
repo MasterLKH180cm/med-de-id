@@ -2,32 +2,6 @@ use leptos::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
-mod uuid {
-    pub struct Uuid;
-
-    impl Uuid {
-        pub fn parse_str(value: &str) -> Result<(), ()> {
-            let bytes = value.as_bytes();
-            if bytes.len() != 36 {
-                return Err(());
-            }
-
-            for (index, byte) in bytes.iter().enumerate() {
-                if matches!(index, 8 | 13 | 18 | 23) {
-                    if *byte != b'-' {
-                        return Err(());
-                    }
-                } else if !byte.is_ascii_hexdigit() {
-                    return Err(());
-                }
-            }
-
-            Ok(())
-        }
-    }
-}
-
 const DEFAULT_FIELD_POLICY_JSON: &str = "[\n  {\n    \"header\": \"patient_id\",\n    \"phi_type\": \"patient_id\",\n    \"action\": \"encode\"\n  },\n  {\n    \"header\": \"patient_name\",\n    \"phi_type\": \"patient_name\",\n    \"action\": \"review\"\n  }\n]";
 const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
@@ -765,6 +739,25 @@ struct PdfReviewCandidate {
     decision: String,
 }
 
+#[derive(Deserialize)]
+struct VaultDecodeRuntimeSuccessResponse {
+    values: Vec<VaultDecodeValueResponse>,
+    audit_event: VaultDecodeAuditEventResponse,
+}
+
+#[derive(Deserialize)]
+struct VaultDecodeValueResponse {
+    #[allow(dead_code)]
+    original_value: String,
+    #[allow(dead_code)]
+    token: String,
+}
+
+#[derive(Deserialize)]
+struct VaultDecodeAuditEventResponse {
+    kind: String,
+}
+
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 struct ErrorEnvelope {
@@ -938,11 +931,18 @@ fn parse_runtime_success(
             summary: "Vault audit events returned by read-only runtime endpoint.".to_string(),
             review_queue: "No review items returned.".to_string(),
         }),
-        InputMode::VaultDecode => Ok(RuntimeResponseEnvelope {
-            rewritten_output: response_body.trim().to_string(),
-            summary: "Vault decode response returned by bounded runtime endpoint.".to_string(),
-            review_queue: "No review items returned.".to_string(),
-        }),
+        InputMode::VaultDecode => {
+            let parsed: VaultDecodeRuntimeSuccessResponse = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            let value_count = parsed.values.len();
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: format!(
+                    "Decoded values hidden for PHI safety. {value_count} value(s) decoded by bounded runtime endpoint."
+                ),
+                summary: format!("Vault decode completed for {value_count} value(s)."),
+                review_queue: format!("- {}", parsed.audit_event.kind),
+            })
+        },
     }
 }
 
@@ -1731,6 +1731,44 @@ mod tests {
         assert!(body.get("policies").is_none());
         assert!(body.get("field_policies").is_none());
         assert!(body.get("source_name").is_none());
+    }
+
+    #[test]
+    fn parse_vault_decode_runtime_success_hides_decoded_values_and_audit_detail() {
+        let decode_token = concat!("MDID", "-", "123");
+        let response = parse_runtime_success(
+            InputMode::VaultDecode,
+            &json!({
+                "values": [
+                    {
+                        "record_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "phi_type": "patient_name",
+                        "original_value": "Jane Patient",
+                        "token": decode_token
+                    }
+                ],
+                "audit_event": {
+                    "kind": "vault_decode",
+                    "detail": "decoded Jane Patient for oncology board"
+                },
+                "output_target": "local-output.json",
+                "justification": "oncology board"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(response.summary, "Vault decode completed for 1 value(s).");
+        assert_eq!(response.review_queue, "- vault_decode");
+        assert!(response.rewritten_output.contains("Decoded values hidden"));
+
+        let rendered = format!(
+            "{}\n{}\n{}",
+            response.summary, response.review_queue, response.rewritten_output
+        );
+        assert!(!rendered.contains("Jane Patient"));
+        assert!(!rendered.contains("MDID-123"));
+        assert!(!rendered.contains("oncology"));
     }
 
     #[test]
