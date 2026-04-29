@@ -1,8 +1,8 @@
 # Browser Portable Artifact Download Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let the browser vault export flow turn a successful localhost `/vault/export` response into a downloadable encrypted portable artifact JSON file without showing decoded PHI or turning med-de-id into an agent/controller platform.
+**Goal:** Let the browser vault export flow turn a successful localhost `/vault/export` response into a downloadable encrypted portable artifact JSON file without showing decoded PHI or expanding med-de-id beyond its bounded local-first workflow scope.
 
 **Architecture:** Keep the existing browser flow and runtime contract intact. Add a small browser-side formatter that accepts only object-shaped encrypted portable artifacts, pretty-prints the artifact JSON for the existing download button, and keeps summary/review copy PHI-safe and explicit about bounded localhost export semantics.
 
@@ -13,13 +13,13 @@
 ## File Structure
 
 - Modify: `crates/mdid-browser/src/app.rs`
-  - Extend `parse_runtime_success(InputMode::VaultExport, ...)` behavior so a valid object-valued `artifact` is rendered as pretty JSON in `RuntimeRenderResult.rewritten_output` for download/copy.
+  - Extend `parse_runtime_success(InputMode::VaultExport, ...)` behavior so a valid object-valued `artifact` is rendered as pretty JSON in `RuntimeResponseEnvelope.rewritten_output` for download/copy.
   - Keep malformed export responses fail-closed.
   - Keep decoded/original value disclosure out of summary/review copy.
   - Add tests in the existing `#[cfg(test)] mod tests`.
 - Modify: `README.md`
   - Truth-sync the browser/web and overall completion snapshot after the landed browser export-download improvement.
-  - Preserve explicit missing items and no agent/controller/moat roadmap semantics.
+  - Preserve explicit missing items and avoid broad platform roadmap semantics.
 
 ### Task 1: Browser portable artifact download rendering
 
@@ -27,7 +27,7 @@
 - Modify: `crates/mdid-browser/src/app.rs`
 - Test: `crates/mdid-browser/src/app.rs` existing unit tests
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add this test inside the existing `mod tests` in `crates/mdid-browser/src/app.rs`, near the other portable artifact runtime tests:
 
@@ -36,11 +36,11 @@ Add this test inside the existing `mod tests` in `crates/mdid-browser/src/app.rs
 fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
     let export = json!({
         "artifact": {
-            "version": 1,
-            "records": [
-                {"record_id": "11111111-1111-1111-1111-111111111111", "token": "MDID-1"}
-            ],
-            "ciphertext": "encrypted-local-artifact"
+            "kdf": "argon2id",
+            "verifier_b64": "dmVyaWZpZXI=",
+            "salt_b64": "c2FsdA==",
+            "nonce_b64": "bm9uY2U=",
+            "ciphertext_b64": "ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"
         }
     });
 
@@ -49,15 +49,17 @@ fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
 
     assert!(rendered.summary.contains("Portable artifact created"));
     assert!(rendered.review_queue.contains("encrypted portable artifact"));
-    assert!(rendered.rewritten_output.contains("\"version\": 1"));
-    assert!(rendered.rewritten_output.contains("encrypted-local-artifact"));
-    assert!(rendered.rewritten_output.contains("11111111-1111-1111-1111-111111111111"));
-    assert!(!rendered.summary.contains("encrypted-local-artifact"));
+    assert!(rendered.rewritten_output.contains("\"kdf\": \"argon2id\""));
+    assert!(rendered.rewritten_output.contains("\"verifier_b64\": \"dmVyaWZpZXI=\""));
+    assert!(rendered.rewritten_output.contains("\"salt_b64\": \"c2FsdA==\""));
+    assert!(rendered.rewritten_output.contains("\"nonce_b64\": \"bm9uY2U=\""));
+    assert!(rendered.rewritten_output.contains("\"ciphertext_b64\": \"ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0\""));
+    assert!(!rendered.summary.contains("ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"));
     assert!(!rendered.review_queue.contains("MDID-1"));
 }
 ```
 
-- [ ] **Step 2: Run the focused test to verify RED**
+- [x] **Step 2: Run the focused test to verify RED**
 
 Run:
 
@@ -67,27 +69,40 @@ cargo test -p mdid-browser vault_export_runtime_success_renders_downloadable_enc
 
 Expected: FAIL because `parse_runtime_success` currently returns a notice instead of artifact JSON in `rewritten_output`.
 
-- [ ] **Step 3: Implement minimal rendering behavior**
+- [x] **Step 3: Implement minimal rendering behavior**
 
-In `parse_runtime_success` for `InputMode::VaultExport`, replace the current hard-coded hidden notice with object validation plus pretty JSON rendering:
+In `parse_runtime_success` for `InputMode::VaultExport`, replace the current hard-coded hidden notice with object validation plus pretty JSON rendering. Validation requires an object-valued `artifact` with string `salt_b64`, `nonce_b64`, and `ciphertext_b64`; render the full artifact object as pretty JSON for download/copy:
 
 ```rust
 let artifact = value
     .get("artifact")
     .filter(|artifact| artifact.is_object())
     .ok_or("Vault export response missing artifact object.".to_string())?;
+if !artifact
+    .get("salt_b64")
+    .is_some_and(serde_json::Value::is_string)
+    || !artifact
+        .get("nonce_b64")
+        .is_some_and(serde_json::Value::is_string)
+    || !artifact
+        .get("ciphertext_b64")
+        .is_some_and(serde_json::Value::is_string)
+{
+    return Err("Vault export response missing encrypted portable artifact fields.".to_string());
+}
 let artifact_json = serde_json::to_string_pretty(artifact)
-    .map_err(|error| format!("Failed to render portable artifact JSON: {error}"))?;
-Ok(RuntimeRenderResult {
+    .map_err(|error| format!("Failed to render portable artifact: {error}"))?;
+Ok(RuntimeResponseEnvelope {
     rewritten_output: artifact_json,
-    summary: "Portable artifact created. Use the download button to save the encrypted portable artifact JSON locally.".to_string(),
-    review_queue: "Encrypted portable artifact is available for local download/copy. Decoded PHI is not rendered by this browser export view.".to_string(),
+    summary: "Portable artifact created and available for local download.".to_string(),
+    review_queue: "encrypted portable artifact available. Decoded PHI is not rendered."
+        .to_string(),
 })
 ```
 
-Keep the existing malformed-contract rejection path and do not add any agent/controller/planner/moat terminology.
+Keep the existing malformed-contract rejection path and avoid broad platform terminology.
 
-- [ ] **Step 4: Run the focused browser test**
+- [x] **Step 4: Run the focused browser test**
 
 Run:
 
@@ -97,7 +112,7 @@ cargo test -p mdid-browser vault_export_runtime_success_renders_downloadable_enc
 
 Expected: PASS.
 
-- [ ] **Step 5: Run related browser tests**
+- [x] **Step 5: Run related browser tests**
 
 Run:
 
@@ -108,7 +123,9 @@ cargo test -p mdid-browser vault_export -- --nocapture
 
 Expected: PASS. If the older test `portable_artifact_runtime_success_hides_artifact_values_and_raw_audit_detail` conflicts with the new bounded encrypted-artifact-download behavior, update only its vault-export assertions so it verifies decoded/original PHI stays out of summary/review copy while encrypted artifact JSON is intentionally downloadable.
 
-- [ ] **Step 6: Commit**
+Also include regression coverage for malformed object responses: object-valued artifacts that omit required runtime-shape fields or provide non-string `salt_b64`, `nonce_b64`, or `ciphertext_b64` must fail closed without leaking response values.
+
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -160,4 +177,4 @@ git commit -m "docs: truth-sync browser portable artifact download status"
 
 - Spec coverage: Task 1 implements downloadable encrypted portable artifact JSON for browser vault export. Task 2 updates README completion and missing-items truthfully.
 - Placeholder scan: No TBD/TODO/fill-in placeholders are present.
-- Type consistency: `InputMode::VaultExport`, `parse_runtime_success`, and `RuntimeRenderResult.rewritten_output/summary/review_queue` match existing code names.
+- Type consistency: `InputMode::VaultExport`, `parse_runtime_success`, and `RuntimeResponseEnvelope.rewritten_output/summary/review_queue` match existing code names.
