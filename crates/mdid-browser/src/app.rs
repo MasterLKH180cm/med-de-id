@@ -57,6 +57,11 @@ impl InputMode {
             Some(Self::PdfBase64)
         } else if file_name.ends_with(".dcm") || file_name.ends_with(".dicom") {
             Some(Self::DicomBase64)
+        } else if file_name == "mdid-browser-portable-artifact.json"
+            || file_name.ends_with(".mdid-portable.json")
+            || file_name.ends_with("-mdid-portable.json")
+        {
+            Some(Self::PortableArtifactInspect)
         } else if file_name.ends_with(".json") {
             Some(Self::MediaMetadataJson)
         } else {
@@ -2611,6 +2616,38 @@ mod tests {
             Some(InputMode::PdfBase64)
         );
         assert_eq!(InputMode::from_file_name("archive.zip"), None);
+    }
+
+    #[test]
+    fn portable_artifact_json_filenames_select_inspect_mode() {
+        assert_eq!(
+            InputMode::from_file_name("mdid-browser-portable-artifact.json"),
+            Some(InputMode::PortableArtifactInspect)
+        );
+        assert_eq!(
+            InputMode::from_file_name("clinic-export.MDID-PORTABLE.JSON"),
+            Some(InputMode::PortableArtifactInspect)
+        );
+        assert_eq!(
+            InputMode::from_file_name("clinic.export.mdid-portable.json"),
+            Some(InputMode::PortableArtifactInspect)
+        );
+    }
+
+    #[test]
+    fn ordinary_json_filenames_still_select_media_metadata_mode() {
+        assert_eq!(
+            InputMode::from_file_name("media-metadata.json"),
+            Some(InputMode::MediaMetadataJson)
+        );
+        assert_eq!(
+            InputMode::from_file_name("portable-not-artifact.json"),
+            Some(InputMode::MediaMetadataJson)
+        );
+        assert_eq!(
+            InputMode::from_file_name("not-mdid-browser-portable-artifact.json"),
+            Some(InputMode::MediaMetadataJson)
+        );
     }
 
     #[test]
