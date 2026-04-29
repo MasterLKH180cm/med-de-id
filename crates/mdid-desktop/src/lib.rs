@@ -1,3 +1,5 @@
+use base64::Engine as _;
+
 pub const DESKTOP_FILE_IMPORT_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -175,53 +177,9 @@ fn encode_base64(bytes: &[u8]) -> String {
 }
 
 fn decode_base64(value: &str) -> Option<Vec<u8>> {
-    let value = value.trim();
-    if !value.len().is_multiple_of(4) {
-        return None;
-    }
-
-    let mut decoded = Vec::with_capacity(value.len() / 4 * 3);
-    let chunks = value.as_bytes().chunks_exact(4);
-    if !chunks.remainder().is_empty() {
-        return None;
-    }
-
-    for (chunk_index, chunk) in chunks.enumerate() {
-        let last_chunk = (chunk_index + 1) * 4 == value.len();
-        let pad = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
-        if pad > 2 || (pad > 0 && !last_chunk) {
-            return None;
-        }
-        if chunk[..4 - pad].contains(&b'=') {
-            return None;
-        }
-
-        let a = base64_value(chunk[0])?;
-        let b = base64_value(chunk[1])?;
-        let c = if pad >= 2 { 0 } else { base64_value(chunk[2])? };
-        let d = if pad >= 1 { 0 } else { base64_value(chunk[3])? };
-
-        decoded.push((a << 2) | (b >> 4));
-        if pad < 2 {
-            decoded.push((b << 4) | (c >> 2));
-        }
-        if pad < 1 {
-            decoded.push((c << 6) | d);
-        }
-    }
-
-    Some(decoded)
-}
-
-fn base64_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
+    base64::engine::general_purpose::STANDARD
+        .decode(value.trim())
+        .ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3258,6 +3216,16 @@ mod tests {
         );
         assert_eq!(
             malformed.workflow_output_download(DesktopWorkflowMode::XlsxBase64),
+            None
+        );
+
+        let mut non_canonical_padded = DesktopWorkflowResponseState::default();
+        non_canonical_padded.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            json!({"rewritten_dicom_bytes_base64":"/x==","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            non_canonical_padded.workflow_output_download(DesktopWorkflowMode::DicomBase64),
             None
         );
 

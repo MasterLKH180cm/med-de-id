@@ -3141,6 +3141,7 @@ dependencies = [
 name = "mdid-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "eframe",
  "egui",
  "serde_json",

@@ -16,6 +16,8 @@
   - Add a small `DesktopWorkflowOutputDownload` value carrying `file_name` and `bytes` with redacted `Debug`.
   - Add `DesktopWorkflowResponseState::workflow_output_download(...)` that fail-closed extracts CSV text, XLSX base64, or DICOM base64 from the latest runtime success for the matching workflow mode.
   - Add `write_workflow_output_file(...)` that writes extracted bytes and returns PHI-safe generic errors.
+- Modify: `crates/mdid-desktop/Cargo.toml`
+  - Use the workspace `base64` dependency for strict standard base64 decoding of downloaded XLSX/DICOM outputs.
 - Modify: `crates/mdid-desktop/src/main.rs`
   - Add app-level helper around `workflow_output_download(...)` + `write_workflow_output_file(...)` for tests and future UI wiring.
   - Keep UI copy narrow: bounded helper save only; no full file picker/upload-download workflow claims.
@@ -141,6 +143,8 @@ Add stored response provenance if not already present; `workflow_output_download
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop workflow_output_download -- --nocapture`
 
 Expected: PASS.
+
+Quality-fix evidence (2026-04-29): added a regression case for non-canonical padded DICOM base64 `/x==`, verified RED against the permissive local decoder, then switched download decoding to `base64::engine::general_purpose::STANDARD.decode(...)` via the workspace `base64` crate. GREEN: `cargo test -p mdid-desktop workflow_output_download_fails_closed_for_pdf_errors_malformed_and_mode_mismatch`, `cargo test -p mdid-desktop workflow_output_download`, and `cargo test -p mdid-desktop` all passed.
 
 - [ ] **Step 5: Commit**
 
