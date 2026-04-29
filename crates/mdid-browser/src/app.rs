@@ -767,7 +767,7 @@ impl BrowserFlowState {
                 }
                 InputMode::VaultExport => {
                     let stem = sanitized_vault_export_stem(imported_file_name);
-                    if stem != "mdid-browser-output" {
+                    if stem != "mdid-browser-output" && stem != "mdid_browser_output" {
                         return format!("{stem}-portable-artifact.json");
                     }
                 }
@@ -2683,6 +2683,20 @@ mod tests {
         let state = BrowserFlowState {
             input_mode: InputMode::VaultExport,
             imported_file_name: Some("***.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    fn browser_vault_export_download_falls_back_when_source_stem_matches_default() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("mdid-browser-output.vault".to_string()),
             ..BrowserFlowState::default()
         };
 
