@@ -127,7 +127,7 @@ git commit -m "feat(cli): add bounded portable artifact inspect"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update completion snapshot text**
+- [x] **Step 1: Update completion snapshot text**
 
 Update the completion snapshot to mention `vault-inspect-artifact` as a landed CLI portable artifact inspection command. Conservatively raise CLI completion only if tests pass and the command is committed; browser/web and desktop percentages should remain unchanged unless this task lands additional browser/desktop code.
 
@@ -139,17 +139,17 @@ Use these completion numbers if Task 1 lands and verification passes:
 
 Preserve explicit gaps: no OCR/visual redaction/PDF rewrite, no generalized transfer workflow UX, no vault browsing, no auth/session, no controller/agent/orchestration semantics.
 
-- [ ] **Step 2: Verify README mentions are truthful**
+- [x] **Step 2: Verify README mentions are truthful**
 
 Run: `grep -n "vault-inspect-artifact\|Completion snapshot\|Overall" README.md`
 Expected: README lists the new command and the updated snapshot date/context.
 
-- [ ] **Step 3: Run regression tests**
+- [x] **Step 3: Run regression tests**
 
 Run: `cargo test -p mdid-cli -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md
