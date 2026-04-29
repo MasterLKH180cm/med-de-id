@@ -106,7 +106,7 @@ impl InputMode {
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64 => "/pdf/deidentify",
             Self::DicomBase64 => "/dicom/deidentify",
-            Self::MediaMetadataJson => "/media/review",
+            Self::MediaMetadataJson => "/media/conservative/deidentify",
         }
     }
 
@@ -403,31 +403,37 @@ struct DicomSubmitRequest {
     private_tag_policy: &'static str,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct MediaRuntimeSuccessResponse {
     summary: MediaRuntimeSummary,
     review_queue: Vec<MediaReviewCandidate>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-struct MediaRuntimeSummary {
-    media_type: String,
-    metadata_fields: usize,
-    review_required_fields: usize,
-    unsupported_fields: usize,
-    ocr_required: bool,
-    visual_redaction_required: bool,
-    #[allow(dead_code)]
     rewritten_media_bytes_base64: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct MediaRuntimeSummary {
+    total_items: usize,
+    metadata_only_items: usize,
+    visual_review_required_items: usize,
+    unsupported_items: usize,
+    review_required_candidates: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct MediaReviewCandidate {
-    field_path: String,
+    field_ref: MediaReviewFieldRef,
+    format: String,
     phi_type: String,
-    decision: String,
     #[allow(dead_code)]
-    value: String,
+    source_value: String,
+    confidence: f32,
+    status: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct MediaReviewFieldRef {
+    artifact_label: String,
+    metadata_key: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -705,7 +711,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string(),
-                summary: format_media_summary(&parsed.summary),
+                summary: format_media_summary(&parsed.summary, parsed.rewritten_media_bytes_base64.as_deref()),
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
         }
@@ -812,15 +818,16 @@ fn format_dicom_review_queue(review_queue: &[DicomReviewCandidate]) -> String {
         .join("\n")
 }
 
-fn format_media_summary(summary: &MediaRuntimeSummary) -> String {
+fn format_media_summary(summary: &MediaRuntimeSummary, rewritten_media_bytes_base64: Option<&str>) -> String {
+    let rewritten_media_bytes_base64 = rewritten_media_bytes_base64.unwrap_or("null");
     format!(
-        "media_type: {}\nmetadata_fields: {}\nreview_required_fields: {}\nunsupported_fields: {}\nocr_required: {}\nvisual_redaction_required: {}",
-        summary.media_type,
-        summary.metadata_fields,
-        summary.review_required_fields,
-        summary.unsupported_fields,
-        summary.ocr_required,
-        summary.visual_redaction_required
+        "total_items: {}\nmetadata_only_items: {}\nvisual_review_required_items: {}\nunsupported_items: {}\nreview_required_candidates: {}\nrewritten_media_bytes_base64: {}",
+        summary.total_items,
+        summary.metadata_only_items,
+        summary.visual_review_required_items,
+        summary.unsupported_items,
+        summary.review_required_candidates,
+        rewritten_media_bytes_base64
     )
 }
 
@@ -833,8 +840,11 @@ fn format_media_review_queue(review_queue: &[MediaReviewCandidate]) -> String {
         .iter()
         .map(|candidate| {
             format!(
-                "- {} / {} / {} / value: <redacted>",
-                candidate.field_path, candidate.phi_type, candidate.decision
+                "- {} / {} / {} / confidence {} / value: <redacted>",
+                candidate.field_ref.metadata_key,
+                candidate.format,
+                candidate.phi_type,
+                candidate.confidence
             )
         })
         .collect::<Vec<_>>()
@@ -1501,7 +1511,7 @@ mod tests {
     fn media_metadata_mode_uses_json_text_and_bounded_runtime_route() {
         assert_eq!(InputMode::from_select_value("media-metadata-json"), InputMode::MediaMetadataJson);
         assert_eq!(InputMode::MediaMetadataJson.select_value(), "media-metadata-json");
-        assert_eq!(InputMode::MediaMetadataJson.endpoint(), "/media/review");
+        assert_eq!(InputMode::MediaMetadataJson.endpoint(), "/media/conservative/deidentify");
         assert_eq!(InputMode::MediaMetadataJson.browser_file_read_mode(), BrowserFileReadMode::Text);
         assert_eq!(InputMode::from_file_name("metadata.JSON"), Some(InputMode::MediaMetadataJson));
     }
@@ -1510,16 +1520,19 @@ mod tests {
     fn media_metadata_mode_builds_runtime_request_without_field_policies() {
         let request = build_submit_request(
             InputMode::MediaMetadataJson,
-            r#"{"media_type":"image","metadata":{"PatientName":"Jane Patient"}}"#,
+            r#"{"artifact_label":"local-media-metadata.json","format":"image","metadata":[{"key":"PatientName","value":"Jane Patient"}],"ocr_or_visual_review_required":true}"#,
             "local-media-metadata.json",
             "",
         )
         .unwrap();
 
-        assert_eq!(request.endpoint, "/media/review");
+        assert_eq!(request.endpoint, "/media/conservative/deidentify");
         let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
-        assert_eq!(body["media_type"], "image");
-        assert_eq!(body["metadata"]["PatientName"], "Jane Patient");
+        assert_eq!(body["artifact_label"], "local-media-metadata.json");
+        assert_eq!(body["format"], "image");
+        assert_eq!(body["metadata"][0]["key"], "PatientName");
+        assert_eq!(body["metadata"][0]["value"], "Jane Patient");
+        assert_eq!(body["ocr_or_visual_review_required"], true);
         assert!(body.get("policies").is_none());
         assert!(body.get("field_policies").is_none());
     }
@@ -1537,22 +1550,23 @@ mod tests {
             InputMode::MediaMetadataJson,
             &json!({
                 "summary": {
-                    "media_type": "image",
-                    "metadata_fields": 3,
-                    "review_required_fields": 1,
-                    "unsupported_fields": 0,
-                    "ocr_required": true,
-                    "visual_redaction_required": true,
-                    "rewritten_media_bytes_base64": null
+                    "total_items": 1,
+                    "metadata_only_items": 0,
+                    "visual_review_required_items": 1,
+                    "unsupported_items": 0,
+                    "review_required_candidates": 1
                 },
                 "review_queue": [
                     {
-                        "field_path": "metadata.PatientName",
-                        "phi_type": "patient_name",
-                        "decision": "needs_review",
-                        "value": "Jane Patient"
+                        "field_ref": {"artifact_label": "patient-jane-face.jpg", "metadata_key": "PatientName"},
+                        "format": "image",
+                        "phi_type": "metadata_identifier",
+                        "source_value": "Jane Patient",
+                        "confidence": 0.92,
+                        "status": "ocr_or_visual_review_required"
                     }
-                ]
+                ],
+                "rewritten_media_bytes_base64": null
             })
             .to_string(),
         )
@@ -1562,12 +1576,13 @@ mod tests {
             response.rewritten_output,
             "Media rewrite/export unavailable: runtime returned metadata-only conservative review."
         );
-        assert!(response.summary.contains("media_type: image"));
-        assert!(response.summary.contains("metadata_fields: 3"));
-        assert!(response.summary.contains("ocr_required: true"));
+        assert!(response.summary.contains("total_items: 1"));
+        assert!(response.summary.contains("visual_review_required_items: 1"));
+        assert!(response.summary.contains("review_required_candidates: 1"));
+        assert!(response.summary.contains("rewritten_media_bytes_base64: null"));
         assert_eq!(
             response.review_queue,
-            "- metadata.PatientName / patient_name / needs_review / value: <redacted>"
+            "- PatientName / image / metadata_identifier / confidence 0.92 / value: <redacted>"
         );
         assert!(!response.review_queue.contains("Jane Patient"));
     }
