@@ -42,7 +42,7 @@ Implement:
 - parser for flags: `--artifact-label`, `--format` (`image`, `video`, `fcs`), `--metadata-json`, `--requires-visual-review`, `--unsupported-payload`, `--report-path`
 - metadata parser into `ConservativeMediaMetadataEntry`
 - `run_review_media` calling `ConservativeMediaDeidentificationService::default().deidentify_metadata(ConservativeMediaInput { ... })`
-- report JSON containing `summary`, `review_queue_len`, `rewritten_media_bytes: null`, and review queue entries with `field_path`, `format`, `phi_type`, `confidence`, `status` only.
+- report JSON containing `summary`, `review_queue_len`, `rewritten_media_bytes: null`, and review queue entries with non-identifying `candidate_index`, `format`, `phi_type`, `confidence`, `status` only; omit artifact labels, metadata keys, metadata values, and artifact-label-derived field paths.
 
 - [ ] **Step 4: Run targeted tests to verify GREEN**
 
