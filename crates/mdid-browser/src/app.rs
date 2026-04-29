@@ -2100,7 +2100,7 @@ mod tests {
 
     #[test]
     fn portable_artifact_payloads_map_form_to_runtime_contract() {
-        let artifact_json = r#"{"kdf":"argon2id","verifier_b64":"dmVyaWZpZXI=","salt_b64":"c2FsdA==","nonce_b64":"bm9uY2U=","ciphertext_b64":"ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"}"#;
+        let artifact_json = r#"{"kdf":{"algorithm":"argon2id","version":19,"memory_cost_kib":19456,"iterations":2,"parallelism":1,"output_len":32},"verifier_b64":"dmVyaWZpZXI=","salt_b64":"c2FsdA==","nonce_b64":"bm9uY2U=","ciphertext_b64":"ZW5jcnlwdGVkLXBvcnRhYmxlLWFydGlmYWN0"}"#;
         let inspect =
             build_portable_artifact_inspect_request_payload(artifact_json, " portable secret ")
                 .expect("inspect payload");
@@ -2155,7 +2155,7 @@ mod tests {
     #[test]
     fn portable_artifact_runtime_success_hides_artifact_values_and_raw_audit_detail() {
         let export = json!({
-            "artifact": {"kdf":"argon2id", "verifier_b64":"dmVyaWZpZXI=", "salt_b64":"c2FsdC1ieXRlcw==", "nonce_b64":"bm9uY2UtYnl0ZXM=", "ciphertext_b64":"bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM="}
+            "artifact": {"kdf":{"algorithm":"argon2id","version":19,"memory_cost_kib":19456,"iterations":2,"parallelism":1,"output_len":32}, "verifier_b64":"dmVyaWZpZXI=", "salt_b64":"c2FsdC1ieXRlcw==", "nonce_b64":"bm9uY2UtYnl0ZXM=", "ciphertext_b64":"bW9jay1hZXMtZ2NtLWNpcGhlcnRleHQtYnl0ZXM="}
         });
         let rendered_export = parse_runtime_success(InputMode::VaultExport, &export.to_string())
             .expect("export render");
@@ -2200,7 +2200,14 @@ mod tests {
     fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
         let export = json!({
             "artifact": {
-                "kdf": "argon2id",
+                "kdf": {
+                    "algorithm": "argon2id",
+                    "version": 19,
+                    "memory_cost_kib": 19456,
+                    "iterations": 2,
+                    "parallelism": 1,
+                    "output_len": 32
+                },
                 "verifier_b64": "dmVyaWZpZXI=",
                 "salt_b64": "c2FsdA==",
                 "nonce_b64": "bm9uY2U=",

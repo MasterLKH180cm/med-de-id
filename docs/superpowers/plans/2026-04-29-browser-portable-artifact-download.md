@@ -56,7 +56,8 @@ fn vault_export_runtime_success_renders_downloadable_encrypted_artifact_json() {
 
     assert!(rendered.summary.contains("Portable artifact created"));
     assert!(rendered.review_queue.contains("encrypted portable artifact"));
-    assert!(rendered.rewritten_output.contains("\"kdf\": \"argon2id\""));
+    assert!(rendered.rewritten_output.contains("\"algorithm\": \"argon2id\""));
+    assert!(rendered.rewritten_output.contains("\"memory_cost_kib\": 19456"));
     assert!(rendered.rewritten_output.contains("\"verifier_b64\": \"dmVyaWZpZXI=\""));
     assert!(rendered.rewritten_output.contains("\"salt_b64\": \"c2FsdA==\""));
     assert!(rendered.rewritten_output.contains("\"nonce_b64\": \"bm9uY2U=\""));
