@@ -344,7 +344,7 @@ fn cli_review_media_writes_phi_safe_report() {
         .args([
             "review-media",
             "--artifact-label",
-            "scan-1.png",
+            "patient-alice-scan.png",
             "--format",
             "image",
             "--metadata-json",
@@ -358,13 +358,19 @@ fn cli_review_media_writes_phi_safe_report() {
         ])
         .assert()
         .success()
+        .stdout(predicate::str::contains("patient-alice").not())
         .stdout(predicate::str::contains("ABC123").not());
 
     let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(!report_text.contains("patient-alice"));
     assert!(!report_text.contains("ABC123"));
+    assert!(report_text.contains("candidate_index"));
+    assert!(!report_text.contains("field_path"));
     let report: Value = serde_json::from_str(&report_text).unwrap();
     assert_eq!(report["summary"]["metadata_only_items"], 1);
     assert_eq!(report["review_queue_len"], 1);
+    assert_eq!(report["review_queue"][0]["candidate_index"], 0);
+    assert!(report["review_queue"][0].get("field_path").is_none());
     assert!(report["rewritten_media_bytes"].is_null());
 }
 
@@ -405,6 +411,7 @@ fn cli_usage_stays_deidentification_scoped() {
         .stderr(predicate::str::contains(
             "local de-identification automation",
         ))
+        .stderr(predicate::str::contains("review-media"))
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());
