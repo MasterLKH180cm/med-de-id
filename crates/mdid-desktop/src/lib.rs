@@ -218,10 +218,10 @@ impl DesktopWorkflowMode {
 
     pub fn disclosure(self) -> &'static str {
         match self {
-            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; no generalized workflow orchestrator is included.",
-            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; no generalized workflow orchestrator is included.",
-            Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; no generalized workflow orchestrator and no OCR/PDF rewrite are included.",
-            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; no generalized workflow orchestrator is included.",
+            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; it stays limited to this local de-identification request surface.",
+            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it stays limited to this local de-identification request surface.",
+            Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
+            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; it stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
         }
     }
@@ -249,7 +249,7 @@ pub struct DesktopWorkflowRequestState {
     pub source_name: String,
 }
 
-pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, and does not add controller, agent, or orchestration behavior.";
+pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, or add unrelated background workflow behavior.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopPortableMode {
@@ -275,9 +275,9 @@ impl DesktopPortableMode {
 
     pub fn disclosure(self) -> &'static str {
         match self {
-            Self::VaultExport => "bounded desktop portable export request preparation for the existing local /vault/export runtime route; no generalized workflow orchestration behavior is included.",
-            Self::InspectArtifact => "bounded desktop portable artifact inspection request preparation for the existing local /portable-artifacts/inspect runtime route; no generalized workflow orchestration behavior is included.",
-            Self::ImportArtifact => "bounded desktop portable artifact import request preparation for the existing local /portable-artifacts/import runtime route; no generalized workflow orchestration behavior is included.",
+            Self::VaultExport => "bounded desktop portable export request preparation for the existing local /vault/export runtime route; no unrelated background workflow behavior is included.",
+            Self::InspectArtifact => "bounded desktop portable artifact inspection request preparation for the existing local /portable-artifacts/inspect runtime route; no unrelated background workflow behavior is included.",
+            Self::ImportArtifact => "bounded desktop portable artifact import request preparation for the existing local /portable-artifacts/import runtime route; no unrelated background workflow behavior is included.",
         }
     }
 }
@@ -652,6 +652,8 @@ pub struct DesktopVaultResponseState {
     pub error: Option<String>,
     pub summary: String,
     pub artifact_notice: String,
+    last_success_mode: Option<DesktopVaultResponseMode>,
+    last_success_response: Option<serde_json::Value>,
 }
 
 impl Default for DesktopVaultResponseState {
@@ -661,9 +663,38 @@ impl Default for DesktopVaultResponseState {
             error: None,
             summary: String::new(),
             artifact_notice: String::new(),
+            last_success_mode: None,
+            last_success_response: None,
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopPortableArtifactSaveError {
+    NotVaultExport,
+    MissingArtifact,
+    Io(String),
+    InvalidJson(String),
+}
+
+impl std::fmt::Display for DesktopPortableArtifactSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVaultExport => write!(
+                f,
+                "portable artifact save is only available for vault export responses"
+            ),
+            Self::MissingArtifact => write!(
+                f,
+                "vault export response did not include a portable artifact object"
+            ),
+            Self::Io(_) => write!(f, "portable artifact JSON could not be written"),
+            Self::InvalidJson(_) => write!(f, "portable artifact JSON could not be prepared"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopPortableArtifactSaveError {}
 
 impl DesktopVaultResponseState {
     pub fn apply_success(&mut self, mode: DesktopVaultResponseMode, response: &serde_json::Value) {
@@ -671,6 +702,8 @@ impl DesktopVaultResponseState {
         self.summary = vault_response_summary(mode, response);
         self.artifact_notice = vault_response_artifact_notice(response);
         self.error = None;
+        self.last_success_mode = Some(mode);
+        self.last_success_response = Some(response.clone());
     }
 
     pub fn apply_error(&mut self, mode: DesktopVaultResponseMode, message: impl AsRef<str>) {
@@ -678,6 +711,31 @@ impl DesktopVaultResponseState {
         self.error = Some(redact_desktop_vault_error(message.as_ref()));
         self.summary.clear();
         self.artifact_notice.clear();
+        self.last_success_mode = None;
+        self.last_success_response = None;
+    }
+
+    pub fn portable_artifact_download_json(
+        &self,
+        mode: DesktopVaultResponseMode,
+    ) -> Result<String, DesktopPortableArtifactSaveError> {
+        if mode != DesktopVaultResponseMode::VaultExport {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
+        if self.last_success_mode != Some(DesktopVaultResponseMode::VaultExport) {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
+        let artifact = self
+            .last_success_response
+            .as_ref()
+            .and_then(|response| response.get("artifact"))
+            .filter(|artifact| artifact.is_object())
+            .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
+
+        serde_json::to_string_pretty(artifact)
+            .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))
     }
 
     pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
@@ -689,6 +747,18 @@ impl DesktopVaultResponseState {
             "error": self.error,
         })
     }
+}
+
+pub fn write_portable_artifact_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
+    let artifact_json =
+        state.portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)?;
+    let path = path.as_ref();
+    std::fs::write(path, artifact_json)
+        .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
 }
 
 fn vault_response_banner(mode: DesktopVaultResponseMode) -> &'static str {
@@ -1319,11 +1389,79 @@ fn pretty_json_field(envelope: &serde_json::Value, field: &str) -> String {
 }
 
 #[cfg(test)]
+mod tempfile {
+    use std::path::{Path, PathBuf};
+
+    pub struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    pub fn tempdir() -> std::io::Result<TempDir> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "mdid-desktop-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path)?;
+        Ok(TempDir { path })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tempfile;
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn desktop_product_copy_avoids_scope_drift_terms() {
+        const FORBIDDEN_TERMS: [&str; 4] = ["controller", "agent", "orchestrator", "orchestration"];
+
+        let mut copy = vec![DESKTOP_VAULT_WORKBENCH_COPY];
+        copy.extend(
+            DesktopWorkflowMode::ALL
+                .iter()
+                .map(|mode| mode.disclosure()),
+        );
+        copy.extend(
+            DesktopWorkflowMode::ALL
+                .iter()
+                .map(|mode| mode.payload_hint()),
+        );
+        copy.extend(
+            DesktopPortableMode::ALL
+                .iter()
+                .map(|mode| mode.disclosure()),
+        );
+
+        for text in copy {
+            let normalized = text.to_ascii_lowercase();
+            for forbidden in FORBIDDEN_TERMS {
+                assert!(
+                    !normalized.contains(forbidden),
+                    "desktop product copy contains forbidden scope drift term {forbidden:?}: {text}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn vault_and_portable_submission_modes_map_to_phi_safe_response_modes() {
@@ -1555,9 +1693,9 @@ mod tests {
         assert!(DesktopPortableMode::VaultExport
             .disclosure()
             .contains("bounded"));
-        assert!(!DesktopPortableMode::VaultExport
+        assert!(DesktopPortableMode::VaultExport
             .disclosure()
-            .contains("controller"));
+            .contains("existing local /vault/export runtime route"));
     }
 
     #[test]
@@ -1771,6 +1909,91 @@ mod tests {
             assert!(!debug.contains("Alice"));
             assert!(!debug.contains("Bob"));
         }
+    }
+
+    #[test]
+    fn vault_export_download_json_contains_only_artifact_object() {
+        let response = serde_json::json!({
+            "artifact": {"version": 1, "ciphertext": "encrypted-payload", "nonce": "safe-nonce"},
+            "record_count": 1,
+            "vault_path": "/sensitive/Alice-vault.json",
+            "vault_passphrase": "hunter2",
+            "audit_event": {"detail": "exported Alice Example MRN 123"},
+            "original_value": "Alice Example"
+        });
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(DesktopVaultResponseMode::VaultExport, &response);
+
+        let artifact_json = state
+            .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)
+            .expect("valid artifact JSON should be available");
+
+        assert!(artifact_json.contains("encrypted-payload"));
+        assert!(artifact_json.contains("safe-nonce"));
+        assert!(!artifact_json.contains("Alice Example"));
+        assert!(!artifact_json.contains("/sensitive"));
+        assert!(!artifact_json.contains("hunter2"));
+        assert!(!artifact_json.contains("audit_event"));
+        assert!(!artifact_json.contains("original_value"));
+    }
+
+    #[test]
+    fn vault_export_download_json_fails_closed_for_malformed_or_non_export_responses() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({"record_count": 3}),
+        );
+        assert_eq!(
+            state.portable_artifact_download_json(DesktopVaultResponseMode::InspectArtifact),
+            Err(DesktopPortableArtifactSaveError::NotVaultExport)
+        );
+
+        let mut inspect_state_with_artifact = DesktopVaultResponseState::default();
+        inspect_state_with_artifact.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({"artifact": {"version": 1, "ciphertext": "inspect-payload"}}),
+        );
+        assert_eq!(
+            inspect_state_with_artifact
+                .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport),
+            Err(DesktopPortableArtifactSaveError::NotVaultExport)
+        );
+
+        let mut export_state = DesktopVaultResponseState::default();
+        export_state.apply_success(
+            DesktopVaultResponseMode::VaultExport,
+            &serde_json::json!({"artifact": "not an object"}),
+        );
+        assert_eq!(
+            export_state.portable_artifact_download_json(DesktopVaultResponseMode::VaultExport),
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        );
+    }
+
+    #[test]
+    fn write_portable_artifact_json_writes_pretty_artifact_without_sensitive_runtime_envelope() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("export.mdid-portable.json");
+        let response = serde_json::json!({
+            "artifact": {"version": 1, "ciphertext": "encrypted-payload"},
+            "audit_event": {"detail": "patient Alice handoff"},
+            "vault_path": "/secret/patient.vault"
+        });
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(DesktopVaultResponseMode::VaultExport, &response);
+
+        let written = write_portable_artifact_json(&state, &path).expect("artifact write succeeds");
+        let persisted = std::fs::read_to_string(&path).expect("artifact file exists");
+
+        assert_eq!(written, path);
+        assert_eq!(
+            persisted,
+            "{\n  \"ciphertext\": \"encrypted-payload\",\n  \"version\": 1\n}"
+        );
+        assert!(!persisted.contains("Alice"));
+        assert!(!persisted.contains("/secret"));
+        assert!(!persisted.contains("audit_event"));
     }
 
     #[test]
@@ -2052,8 +2275,7 @@ mod tests {
     fn desktop_vault_workbench_copy_is_bounded_and_non_orchestrating() {
         assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("existing localhost runtime vault routes"));
         assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("does not persist passphrases"));
-        assert!(DESKTOP_VAULT_WORKBENCH_COPY
-            .contains("does not add controller, agent, or orchestration behavior"));
+        assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("unrelated background workflow behavior"));
     }
 
     #[test]
@@ -2298,7 +2520,7 @@ mod tests {
 
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
     }
 
     #[test]
@@ -2358,7 +2580,7 @@ mod tests {
 
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
         assert!(disclosure.contains("no OCR/PDF rewrite"));
     }
 
@@ -2387,7 +2609,7 @@ mod tests {
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
         assert!(disclosure.contains("tag-level DICOM de-identification"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
     }
 
     #[test]
