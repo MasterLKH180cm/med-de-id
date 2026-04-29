@@ -1375,13 +1375,17 @@ fn is_allowed_review_report_summary_key(key: &str) -> bool {
             | "row_count"
             | "metadata_fields"
             | "metadata_field_count"
+            | "metadata_entry_count"
+            | "artifact_count"
             | "ocr_required"
             | "ocr_or_visual_review_required"
             | "review_required"
+            | "review_required_count"
             | "reviewed_field_count"
             | "candidate_count"
             | "finding_count"
             | "unsupported_count"
+            | "unsupported_payload_count"
             | "text_layer_page_count"
     )
 }
@@ -1454,7 +1458,7 @@ fn is_allowed_review_report_kind(text: &str) -> bool {
 fn is_allowed_review_report_phi_type(text: &str) -> bool {
     matches!(
         text,
-        "Name" | "RecordId" | "Date" | "Location" | "Contact" | "FreeText"
+        "Name" | "RecordId" | "Date" | "Location" | "Contact" | "FreeText" | "name"
     )
 }
 
@@ -1471,6 +1475,7 @@ pub struct DesktopWorkflowOutputDownload {
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowReviewReportDownload {
     pub file_name: &'static str,
+    pub json: String,
     pub bytes: Vec<u8>,
 }
 
@@ -1565,8 +1570,10 @@ impl DesktopWorkflowResponseState {
         &self,
         mode: DesktopWorkflowMode,
     ) -> Option<DesktopWorkflowReviewReportDownload> {
-        if mode != DesktopWorkflowMode::PdfBase64Review
-            || self.error.is_some()
+        if !matches!(
+            mode,
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson
+        ) || self.error.is_some()
             || self.last_success_mode != Some(mode)
         {
             return None;
@@ -1574,14 +1581,28 @@ impl DesktopWorkflowResponseState {
 
         let response = self.last_success_response.as_ref()?;
         let report = serde_json::json!({
-            "mode": "pdf_review",
+            "mode": match mode {
+                DesktopWorkflowMode::PdfBase64Review => "pdf_review",
+                DesktopWorkflowMode::MediaMetadataJson => "media_metadata_json",
+                DesktopWorkflowMode::CsvText
+                | DesktopWorkflowMode::XlsxBase64
+                | DesktopWorkflowMode::DicomBase64 => return None,
+            },
             "summary": sanitize_review_report_summary(response.get("summary")),
             "review_queue": sanitize_review_report_queue(response.get("review_queue")),
         });
-        let bytes = serde_json::to_string_pretty(&report).ok()?.into_bytes();
+        let json = serde_json::to_string_pretty(&report).ok()?;
+        let bytes = json.as_bytes().to_vec();
 
         Some(DesktopWorkflowReviewReportDownload {
-            file_name: "desktop-pdf-review-report.json",
+            file_name: match mode {
+                DesktopWorkflowMode::PdfBase64Review => "desktop-pdf-review-report.json",
+                DesktopWorkflowMode::MediaMetadataJson => "desktop-media-review-report.json",
+                DesktopWorkflowMode::CsvText
+                | DesktopWorkflowMode::XlsxBase64
+                | DesktopWorkflowMode::DicomBase64 => return None,
+            },
+            json,
             bytes,
         })
     }
@@ -3358,6 +3379,55 @@ mod tests {
         assert!(report.get("rewritten_pdf_bytes_base64").is_none());
         assert!(report.get("debug_raw_text").is_none());
         assert!(!text.contains("Alice Patient"));
+    }
+
+    #[test]
+    fn media_review_report_download_exports_structured_json_without_metadata_phi() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            serde_json::json!({
+                "summary": {
+                    "artifact_count": 1,
+                    "metadata_entry_count": 2,
+                    "candidate_count": 1,
+                    "review_required_count": 1,
+                    "unsupported_payload_count": 0,
+                    "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                    "free_text_note": "MRN-12345"
+                },
+                "review_queue": [{
+                    "kind": "conservative_media",
+                    "status": "review_required",
+                    "decision": "review",
+                    "phi_type": "name",
+                    "metadata_key": "PatientName",
+                    "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                    "source_value": "Jane Doe MRN-12345"
+                }],
+                "rewritten_media_bytes_base64": null
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::MediaMetadataJson)
+            .expect("media metadata review response should produce structured report");
+
+        assert_eq!(download.file_name, "desktop-media-review-report.json");
+        let report: serde_json::Value = serde_json::from_str(&download.json).unwrap();
+        assert_eq!(report["mode"], "media_metadata_json");
+        assert_eq!(report["summary"]["artifact_count"], 1);
+        assert_eq!(report["summary"]["candidate_count"], 1);
+        assert_eq!(report["review_queue"][0]["kind"], "conservative_media");
+        assert_eq!(report["review_queue"][0]["status"], "review_required");
+        assert_eq!(report["review_queue"][0]["phi_type"], "name");
+
+        let rendered = download.json;
+        assert!(!rendered.contains("Jane Doe"));
+        assert!(!rendered.contains("MRN-12345"));
+        assert!(!rendered.contains("PatientName"));
+        assert!(!rendered.contains("Patient-Jane-Doe"));
+        assert!(!rendered.contains("rewritten_media_bytes"));
     }
 
     #[test]
