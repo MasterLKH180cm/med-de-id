@@ -19,6 +19,11 @@ enum InputMode {
     PdfBase64,
     DicomBase64,
     MediaMetadataJson,
+    VaultAuditEvents,
+    VaultDecode,
+    VaultExport,
+    PortableArtifactInspect,
+    PortableArtifactImport,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,6 +34,17 @@ enum BrowserFileReadMode {
 }
 
 impl InputMode {
+    fn redacts_runtime_error_details(self) -> bool {
+        matches!(
+            self,
+            Self::VaultAuditEvents
+                | Self::VaultDecode
+                | Self::VaultExport
+                | Self::PortableArtifactInspect
+                | Self::PortableArtifactImport
+        )
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn from_file_name(file_name: &str) -> Option<Self> {
         let file_name = file_name.to_lowercase();
@@ -54,6 +70,11 @@ impl InputMode {
             "pdf-base64" => Self::PdfBase64,
             "dicom-base64" => Self::DicomBase64,
             "media-metadata-json" => Self::MediaMetadataJson,
+            "vault-audit-events" => Self::VaultAuditEvents,
+            "vault-decode" => Self::VaultDecode,
+            "vault-export" => Self::VaultExport,
+            "portable-artifact-inspect" => Self::PortableArtifactInspect,
+            "portable-artifact-import" => Self::PortableArtifactImport,
             _ => Self::CsvText,
         }
     }
@@ -65,6 +86,11 @@ impl InputMode {
             Self::PdfBase64 => "pdf-base64",
             Self::DicomBase64 => "dicom-base64",
             Self::MediaMetadataJson => "media-metadata-json",
+            Self::VaultAuditEvents => "vault-audit-events",
+            Self::VaultDecode => "vault-decode",
+            Self::VaultExport => "vault-export",
+            Self::PortableArtifactInspect => "portable-artifact-inspect",
+            Self::PortableArtifactImport => "portable-artifact-import",
         }
     }
 
@@ -75,6 +101,11 @@ impl InputMode {
             Self::PdfBase64 => "PDF base64",
             Self::DicomBase64 => "DICOM base64",
             Self::MediaMetadataJson => "Media metadata JSON",
+            Self::VaultAuditEvents => "Vault audit events",
+            Self::VaultDecode => "Vault decode",
+            Self::VaultExport => "Vault export",
+            Self::PortableArtifactInspect => "Portable artifact inspect",
+            Self::PortableArtifactImport => "Portable artifact import",
         }
     }
 
@@ -85,6 +116,13 @@ impl InputMode {
             Self::PdfBase64 => "Paste base64-encoded PDF content here",
             Self::DicomBase64 => "Paste base64-encoded DICOM content here",
             Self::MediaMetadataJson => "Paste media metadata JSON here",
+            Self::VaultAuditEvents => "Vault audit request fields are rendered by the browser form",
+            Self::VaultDecode => "Vault decode request fields are rendered by the browser form",
+            Self::VaultExport => "Vault export request fields are rendered by the browser form",
+            Self::PortableArtifactInspect => "Paste portable artifact JSON here",
+            Self::PortableArtifactImport => {
+                "Portable artifact import request fields are rendered by the browser form"
+            }
         }
     }
 
@@ -97,6 +135,9 @@ impl InputMode {
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
             Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or workflow/controller semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
+            Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
+            Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
+            Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, controller/agent/orchestration, or moat workflow functionality."),
         }
     }
 
@@ -107,6 +148,11 @@ impl InputMode {
             Self::PdfBase64 => "/pdf/deidentify",
             Self::DicomBase64 => "/dicom/deidentify",
             Self::MediaMetadataJson => "/media/conservative/deidentify",
+            Self::VaultAuditEvents => "/vault/audit/events",
+            Self::VaultDecode => "/vault/decode",
+            Self::VaultExport => "/vault/export",
+            Self::PortableArtifactInspect => "/portable-artifacts/inspect",
+            Self::PortableArtifactImport => "/portable-artifacts/import",
         }
     }
 
@@ -129,7 +175,13 @@ impl InputMode {
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     fn browser_file_read_mode(self) -> BrowserFileReadMode {
         match self {
-            Self::CsvText | Self::MediaMetadataJson => BrowserFileReadMode::Text,
+            Self::CsvText
+            | Self::MediaMetadataJson
+            | Self::VaultAuditEvents
+            | Self::VaultDecode
+            | Self::VaultExport
+            | Self::PortableArtifactInspect
+            | Self::PortableArtifactImport => BrowserFileReadMode::Text,
             Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => {
                 BrowserFileReadMode::DataUrlBase64
             }
@@ -155,11 +207,252 @@ fn validate_browser_import_size(file_size_bytes: u64) -> Result<(), String> {
     }
 }
 
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn build_vault_audit_request_payload(
+    vault_path: &str,
+    vault_passphrase: &str,
+    kind: &str,
+    actor: &str,
+    limit: &str,
+) -> Result<serde_json::Value, String> {
+    let vault_path = vault_path.trim();
+    if vault_path.is_empty() {
+        return Err("Vault path is required before submitting.".to_string());
+    }
+
+    let vault_passphrase = vault_passphrase.trim();
+    if vault_passphrase.is_empty() {
+        return Err("Vault passphrase is required before submitting.".to_string());
+    }
+
+    let mut payload = serde_json::json!({
+        "vault_path": vault_path,
+        "vault_passphrase": vault_passphrase,
+    });
+
+    if let Some(object) = payload.as_object_mut() {
+        let kind = kind.trim();
+        if !kind.is_empty() {
+            object.insert("kind".to_string(), serde_json::json!(kind));
+        }
+
+        let actor = actor.trim();
+        if !actor.is_empty() {
+            object.insert("actor".to_string(), serde_json::json!(actor));
+        }
+
+        let limit = limit.trim();
+        if !limit.is_empty() {
+            let parsed_limit = limit
+                .parse::<usize>()
+                .map_err(|_| "Vault audit limit must be a non-negative integer.".to_string())?;
+            object.insert("limit".to_string(), serde_json::json!(parsed_limit));
+        }
+    }
+
+    Ok(payload)
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn build_vault_decode_request_payload(
+    vault_path: &str,
+    vault_passphrase: &str,
+    record_ids_json: &str,
+    output_target: &str,
+    justification: &str,
+) -> Result<serde_json::Value, String> {
+    let vault_path = vault_path.trim();
+    if vault_path.is_empty() {
+        return Err("Vault path is required before submitting.".to_string());
+    }
+
+    let vault_passphrase = vault_passphrase.trim();
+    if vault_passphrase.is_empty() {
+        return Err("Vault passphrase is required before submitting.".to_string());
+    }
+
+    let record_ids_value: serde_json::Value = serde_json::from_str(record_ids_json.trim())
+        .map_err(|error| {
+            format!("Vault decode record ids must be a JSON array of UUID strings: {error}")
+        })?;
+    let record_ids_array = record_ids_value
+        .as_array()
+        .ok_or("Vault decode record ids must be a JSON array of UUID strings.".to_string())?;
+    if record_ids_array.is_empty() {
+        return Err(
+            "Vault decode record ids must include at least one explicit record id.".to_string(),
+        );
+    }
+
+    let mut record_ids = Vec::with_capacity(record_ids_array.len());
+    for record_id in record_ids_array {
+        let record_id = record_id
+            .as_str()
+            .ok_or("Vault decode record ids must be UUID strings.".to_string())?
+            .trim();
+        uuid::Uuid::parse_str(record_id)
+            .map_err(|_| "Vault decode record ids must be valid UUID strings.".to_string())?;
+        record_ids.push(record_id.to_string());
+    }
+
+    let output_target = output_target.trim();
+    if output_target.is_empty() {
+        return Err("Output target is required before submitting.".to_string());
+    }
+
+    let justification = justification.trim();
+    if justification.is_empty() {
+        return Err("Justification is required before submitting.".to_string());
+    }
+
+    Ok(serde_json::json!({
+        "vault_path": vault_path,
+        "vault_passphrase": vault_passphrase,
+        "record_ids": record_ids,
+        "output_target": output_target,
+        "justification": justification,
+        "requested_by": "browser",
+    }))
+}
+
+fn parse_required_uuid_array(
+    record_ids_json: &str,
+    field_name: &str,
+) -> Result<Vec<String>, String> {
+    let record_ids_value: serde_json::Value = serde_json::from_str(record_ids_json.trim())
+        .map_err(|error| format!("{field_name} must be a JSON array of UUID strings: {error}"))?;
+    let record_ids_array = record_ids_value
+        .as_array()
+        .ok_or_else(|| format!("{field_name} must be a JSON array of UUID strings."))?;
+    if record_ids_array.is_empty() {
+        return Err(format!(
+            "{field_name} must include at least one explicit record id."
+        ));
+    }
+
+    record_ids_array
+        .iter()
+        .map(|record_id| {
+            let record_id = record_id
+                .as_str()
+                .ok_or_else(|| format!("{field_name} must be UUID strings."))?
+                .trim();
+            uuid::Uuid::parse_str(record_id)
+                .map_err(|_| format!("{field_name} must be valid UUID strings."))?;
+            Ok(record_id.to_string())
+        })
+        .collect()
+}
+
+fn parse_required_artifact_object(artifact_json: &str) -> Result<serde_json::Value, String> {
+    let artifact: serde_json::Value = serde_json::from_str(artifact_json.trim())
+        .map_err(|error| format!("Portable artifact JSON must be a JSON object: {error}"))?;
+    if !artifact.is_object() {
+        return Err("Portable artifact JSON must be a JSON object.".to_string());
+    }
+    Ok(artifact)
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn build_vault_export_request_payload(
+    vault_path: &str,
+    vault_passphrase: &str,
+    record_ids_json: &str,
+    export_passphrase: &str,
+    context: &str,
+) -> Result<serde_json::Value, String> {
+    let vault_path = vault_path.trim();
+    if vault_path.is_empty() {
+        return Err("Vault path is required before submitting.".to_string());
+    }
+    let vault_passphrase = vault_passphrase.trim();
+    if vault_passphrase.is_empty() {
+        return Err("Vault passphrase is required before submitting.".to_string());
+    }
+    let export_passphrase = export_passphrase.trim();
+    if export_passphrase.is_empty() {
+        return Err("Export passphrase is required before submitting.".to_string());
+    }
+    let context = context.trim();
+    if context.is_empty() {
+        return Err("Context is required before submitting.".to_string());
+    }
+    let record_ids = parse_required_uuid_array(record_ids_json, "Vault export record ids")?;
+    Ok(serde_json::json!({
+        "vault_path": vault_path,
+        "vault_passphrase": vault_passphrase,
+        "record_ids": record_ids,
+        "export_passphrase": export_passphrase,
+        "context": context,
+        "requested_by": "browser",
+    }))
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn build_portable_artifact_inspect_request_payload(
+    artifact_json: &str,
+    portable_passphrase: &str,
+) -> Result<serde_json::Value, String> {
+    let portable_passphrase = portable_passphrase.trim();
+    if portable_passphrase.is_empty() {
+        return Err("Portable artifact passphrase is required before submitting.".to_string());
+    }
+    Ok(serde_json::json!({
+        "artifact": parse_required_artifact_object(artifact_json)?,
+        "portable_passphrase": portable_passphrase,
+    }))
+}
+
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+fn build_portable_artifact_import_request_payload(
+    vault_path: &str,
+    vault_passphrase: &str,
+    artifact_json: &str,
+    portable_passphrase: &str,
+    context: &str,
+) -> Result<serde_json::Value, String> {
+    let vault_path = vault_path.trim();
+    if vault_path.is_empty() {
+        return Err("Vault path is required before submitting.".to_string());
+    }
+    let vault_passphrase = vault_passphrase.trim();
+    if vault_passphrase.is_empty() {
+        return Err("Vault passphrase is required before submitting.".to_string());
+    }
+    let portable_passphrase = portable_passphrase.trim();
+    if portable_passphrase.is_empty() {
+        return Err("Portable artifact passphrase is required before submitting.".to_string());
+    }
+    let context = context.trim();
+    if context.is_empty() {
+        return Err("Context is required before submitting.".to_string());
+    }
+    Ok(serde_json::json!({
+        "vault_path": vault_path,
+        "vault_passphrase": vault_passphrase,
+        "artifact": parse_required_artifact_object(artifact_json)?,
+        "portable_passphrase": portable_passphrase,
+        "context": context,
+        "requested_by": "browser",
+    }))
+}
+
 #[derive(Clone, Eq, PartialEq)]
 struct BrowserFlowState {
     input_mode: InputMode,
     payload: String,
     source_name: String,
+    vault_path: String,
+    vault_passphrase: String,
+    vault_audit_kind: String,
+    vault_audit_actor: String,
+    vault_audit_limit: String,
+    vault_decode_record_ids_json: String,
+    vault_decode_output_target: String,
+    vault_decode_justification: String,
+    portable_record_ids_json: String,
+    portable_passphrase: String,
+    portable_context: String,
     imported_file_name: Option<String>,
     field_policy_json: String,
     result_output: String,
@@ -181,6 +474,17 @@ impl fmt::Debug for BrowserFlowState {
             .field("input_mode", &self.input_mode)
             .field("payload", &"<redacted>")
             .field("source_name", &"<redacted>")
+            .field("vault_path", &"<redacted>")
+            .field("vault_passphrase", &"<redacted>")
+            .field("vault_audit_kind", &"<redacted>")
+            .field("vault_audit_actor", &"<redacted>")
+            .field("vault_audit_limit", &"<redacted>")
+            .field("vault_decode_record_ids_json", &"<redacted>")
+            .field("vault_decode_output_target", &"<redacted>")
+            .field("vault_decode_justification", &"<redacted>")
+            .field("portable_record_ids_json", &"<redacted>")
+            .field("portable_passphrase", &"<redacted>")
+            .field("portable_context", &"<redacted>")
             .field(
                 "imported_file_name",
                 &self.imported_file_name.as_ref().map(|_| "<redacted>"),
@@ -207,6 +511,17 @@ impl Default for BrowserFlowState {
             input_mode: InputMode::CsvText,
             payload: String::new(),
             source_name: "local-review.pdf".to_string(),
+            vault_path: String::new(),
+            vault_passphrase: String::new(),
+            vault_audit_kind: String::new(),
+            vault_audit_actor: String::new(),
+            vault_audit_limit: String::new(),
+            vault_decode_record_ids_json: "[]".to_string(),
+            vault_decode_output_target: String::new(),
+            vault_decode_justification: String::new(),
+            portable_record_ids_json: "[]".to_string(),
+            portable_passphrase: String::new(),
+            portable_context: String::new(),
             imported_file_name: None,
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
@@ -248,6 +563,11 @@ impl BrowserFlowState {
             InputMode::PdfBase64 => "mdid-browser-review-report.txt",
             InputMode::DicomBase64 => "mdid-browser-output.dcm.base64.txt",
             InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
+            InputMode::VaultAuditEvents => "mdid-browser-vault-audit-events.json",
+            InputMode::VaultDecode => "mdid-browser-vault-decode-response.json",
+            InputMode::VaultExport => "mdid-browser-vault-export-notice.txt",
+            InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.txt",
+            InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt",
         }
     }
 
@@ -269,6 +589,86 @@ impl BrowserFlowState {
     }
 
     fn validate_submission(&self) -> Result<RuntimeSubmitRequest, String> {
+        if self.input_mode == InputMode::VaultAuditEvents {
+            let body_json = serde_json::to_string(&build_vault_audit_request_payload(
+                &self.vault_path,
+                &self.vault_passphrase,
+                &self.vault_audit_kind,
+                &self.vault_audit_actor,
+                &self.vault_audit_limit,
+            )?)
+            .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+
+            return Ok(RuntimeSubmitRequest {
+                endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
+                body_json,
+            });
+        }
+
+        if self.input_mode == InputMode::VaultDecode {
+            let body_json = serde_json::to_string(&build_vault_decode_request_payload(
+                &self.vault_path,
+                &self.vault_passphrase,
+                &self.vault_decode_record_ids_json,
+                &self.vault_decode_output_target,
+                &self.vault_decode_justification,
+            )?)
+            .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+
+            return Ok(RuntimeSubmitRequest {
+                endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
+                body_json,
+            });
+        }
+
+        if self.input_mode == InputMode::VaultExport {
+            let body_json = serde_json::to_string(&build_vault_export_request_payload(
+                &self.vault_path,
+                &self.vault_passphrase,
+                &self.portable_record_ids_json,
+                &self.portable_passphrase,
+                &self.portable_context,
+            )?)
+            .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+            return Ok(RuntimeSubmitRequest {
+                endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
+                body_json,
+            });
+        }
+
+        if self.input_mode == InputMode::PortableArtifactInspect {
+            let body_json =
+                serde_json::to_string(&build_portable_artifact_inspect_request_payload(
+                    &self.payload,
+                    &self.portable_passphrase,
+                )?)
+                .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+            return Ok(RuntimeSubmitRequest {
+                endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
+                body_json,
+            });
+        }
+
+        if self.input_mode == InputMode::PortableArtifactImport {
+            let body_json = serde_json::to_string(&build_portable_artifact_import_request_payload(
+                &self.vault_path,
+                &self.vault_passphrase,
+                &self.payload,
+                &self.portable_passphrase,
+                &self.portable_context,
+            )?)
+            .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+            return Ok(RuntimeSubmitRequest {
+                endpoint: self.input_mode.endpoint(),
+                input_mode: self.input_mode,
+                body_json,
+            });
+        }
+
         if self.payload.trim().is_empty() {
             return Err(format!(
                 "{} payload is required before submitting.",
@@ -440,6 +840,7 @@ struct MediaReviewFieldRef {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeSubmitRequest {
     endpoint: &'static str,
+    input_mode: InputMode,
     body_json: String,
 }
 
@@ -556,6 +957,25 @@ struct PdfReviewCandidate {
     decision: String,
 }
 
+#[derive(Deserialize)]
+struct VaultDecodeRuntimeSuccessResponse {
+    values: Vec<VaultDecodeValueResponse>,
+    audit_event: VaultDecodeAuditEventResponse,
+}
+
+#[derive(Deserialize)]
+struct VaultDecodeValueResponse {
+    #[allow(dead_code)]
+    original_value: String,
+    #[allow(dead_code)]
+    token: String,
+}
+
+#[derive(Deserialize)]
+struct VaultDecodeAuditEventResponse {
+    kind: String,
+}
+
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 struct ErrorEnvelope {
@@ -595,6 +1015,7 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
+            input_mode,
             body_json,
         });
     }
@@ -613,6 +1034,7 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
+            input_mode,
             body_json,
         });
     }
@@ -632,6 +1054,7 @@ fn build_submit_request(
 
         return Ok(RuntimeSubmitRequest {
             endpoint: input_mode.endpoint(),
+            input_mode,
             body_json,
         });
     }
@@ -657,11 +1080,27 @@ fn build_submit_request(
         InputMode::MediaMetadataJson => {
             unreachable!("Media metadata JSON requests are handled before policy parsing")
         }
+        InputMode::VaultAuditEvents => {
+            unreachable!("Vault audit events requests are handled before policy parsing")
+        }
+        InputMode::VaultDecode => {
+            unreachable!("Vault decode requests are handled before policy parsing")
+        }
+        InputMode::VaultExport => {
+            unreachable!("Vault export requests are handled before policy parsing")
+        }
+        InputMode::PortableArtifactInspect => {
+            unreachable!("Portable artifact inspect requests are handled before policy parsing")
+        }
+        InputMode::PortableArtifactImport => {
+            unreachable!("Portable artifact import requests are handled before policy parsing")
+        }
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
     Ok(RuntimeSubmitRequest {
         endpoint: input_mode.endpoint(),
+        input_mode,
         body_json,
     })
 }
@@ -718,6 +1157,72 @@ fn parse_runtime_success(
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
         }
+        InputMode::VaultAuditEvents => Ok(RuntimeResponseEnvelope {
+            rewritten_output: response_body.trim().to_string(),
+            summary: "Vault audit events returned by read-only runtime endpoint.".to_string(),
+            review_queue: "No review items returned.".to_string(),
+        }),
+        InputMode::VaultDecode => {
+            let parsed: VaultDecodeRuntimeSuccessResponse = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            let value_count = parsed.values.len();
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: format!(
+                    "Decoded values hidden for PHI safety. {value_count} value(s) decoded by bounded runtime endpoint."
+                ),
+                summary: format!("Vault decode completed for {value_count} value(s)."),
+                review_queue: format!("- {}", parsed.audit_event.kind),
+            })
+        }
+        InputMode::VaultExport => {
+            let parsed: serde_json::Value = serde_json::from_str(response_body)
+                .map_err(|_| "Failed to parse runtime success response.".to_string())?;
+            if !parsed
+                .get("artifact")
+                .is_some_and(serde_json::Value::is_object)
+            {
+                return Err("Vault export response missing artifact object.".to_string());
+            }
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: "Portable artifact created by bounded localhost runtime request. Artifact contents are hidden for PHI safety.".to_string(),
+                summary: "Portable artifact created.".to_string(),
+                review_queue: "No review items returned.".to_string(),
+            })
+        }
+        InputMode::PortableArtifactInspect => {
+            let parsed: serde_json::Value = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            let record_count = parsed
+                .get("record_count")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("Portable artifact inspect response missing record_count.".to_string())?;
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: "Portable artifact inspect completed. Artifact records and values are hidden for PHI safety.".to_string(),
+                summary: format!("{record_count} portable record(s) inspected."),
+                review_queue: "No record details rendered.".to_string(),
+            })
+        }
+        InputMode::PortableArtifactImport => {
+            let parsed: serde_json::Value = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            let imported = parsed
+                .get("imported_record_count")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or(
+                    "Portable artifact import response missing imported_record_count.".to_string(),
+                )?;
+            let duplicates = parsed
+                .get("duplicate_record_count")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or(
+                    "Portable artifact import response missing duplicate_record_count.".to_string(),
+                )?;
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: "Portable artifact import completed. Audit detail and artifact contents are hidden for PHI safety.".to_string(),
+                summary: format!("{imported} imported portable record(s)."),
+                review_queue: format!("{duplicates} duplicate portable record(s). Generic audit notice recorded."),
+            })
+        }
     }
 }
 
@@ -730,8 +1235,14 @@ fn render_runtime_response(
 }
 
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
-fn parse_runtime_error(status: u16, response_body: &str) -> String {
+fn parse_runtime_error(input_mode: InputMode, status: u16, response_body: &str) -> String {
     const MAX_MESSAGE_LEN: usize = 240;
+
+    if input_mode.redacts_runtime_error_details() {
+        return format!(
+            "Runtime request failed. Details hidden for PHI and secret safety. Status: {status}."
+        );
+    }
 
     let message = serde_json::from_str::<ErrorEnvelope>(response_body)
         .map(|envelope| format!("{}: {}", envelope.error.code, envelope.error.message))
@@ -909,7 +1420,7 @@ async fn perform_runtime_request(request: RuntimeSubmitRequest) -> Result<String
         .map_err(|error| format!("Failed to build runtime request: {error}"))?
         .send()
         .await
-        .map_err(|error| parse_runtime_error(0, &error.to_string()))?;
+        .map_err(|error| parse_runtime_error(request.input_mode, 0, &error.to_string()))?;
 
     let status = response.status();
     let body = response
@@ -920,7 +1431,7 @@ async fn perform_runtime_request(request: RuntimeSubmitRequest) -> Result<String
     if (200..300).contains(&status) {
         Ok(body)
     } else {
-        Err(parse_runtime_error(status, &body))
+        Err(parse_runtime_error(request.input_mode, status, &body))
     }
 }
 
@@ -1135,6 +1646,94 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let on_vault_path_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_path = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_passphrase_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_passphrase = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_kind_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_kind = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_actor_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_actor = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_limit_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_limit = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_decode_record_ids_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_decode_record_ids_json = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_decode_output_target_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_decode_output_target = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_vault_decode_justification_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_decode_justification = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_portable_record_ids_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.portable_record_ids_json = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_portable_passphrase_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.portable_passphrase = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
+    let on_portable_context_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.portable_context = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
     let on_file_import_change = move |event| read_browser_import_file(event, state);
 
     let export_file_name = move || state.get().suggested_export_file_name();
@@ -1226,18 +1825,116 @@ pub fn App() -> impl IntoView {
                         <option value="pdf-base64">"PDF base64"</option>
                         <option value="dicom-base64">"DICOM base64"</option>
                         <option value="media-metadata-json">"Media metadata JSON"</option>
+                        <option value="vault-audit-events">"Vault audit events"</option>
+                        <option value="vault-decode">"Vault decode"</option>
+                        <option value="vault-export">"Vault export"</option>
+                        <option value="portable-artifact-inspect">"Portable artifact inspect"</option>
+                        <option value="portable-artifact-import">"Portable artifact import"</option>
                     </select>
                 </label>
 
-                <label>
-                    "Payload"
-                    <textarea
-                        on:input=on_payload_input
-                        prop:value=move || state.get().payload
-                        placeholder=move || state.get().input_mode.payload_hint()
-                        rows="12"
-                    />
-                </label>
+                <Show when=move || !matches!(state.get().input_mode, InputMode::VaultAuditEvents | InputMode::VaultDecode | InputMode::VaultExport | InputMode::PortableArtifactImport)>
+                    <label>
+                        "Payload"
+                        <textarea
+                            on:input=on_payload_input
+                            prop:value=move || state.get().payload
+                            placeholder=move || state.get().input_mode.payload_hint()
+                            rows="12"
+                        />
+                    </label>
+                </Show>
+
+                <Show when=move || state.get().input_mode == InputMode::VaultAuditEvents>
+                    <div class="vault-audit-fields">
+                        <label>
+                            "Vault path"
+                            <input on:input=on_vault_path_input prop:value=move || state.get().vault_path type="text" />
+                        </label>
+                        <label>
+                            "Vault passphrase"
+                            <input on:input=on_vault_passphrase_input prop:value=move || state.get().vault_passphrase type="password" />
+                        </label>
+                        <label>
+                            "Kind filter (optional)"
+                            <input on:input=on_vault_kind_input prop:value=move || state.get().vault_audit_kind type="text" />
+                        </label>
+                        <label>
+                            "Actor filter (optional)"
+                            <input on:input=on_vault_actor_input prop:value=move || state.get().vault_audit_actor type="text" />
+                        </label>
+                        <label>
+                            "Limit (optional)"
+                            <input on:input=on_vault_limit_input prop:value=move || state.get().vault_audit_limit type="text" />
+                        </label>
+                    </div>
+                </Show>
+
+                <Show when=move || state.get().input_mode == InputMode::VaultDecode>
+                    <div class="vault-decode-fields">
+                        <label>
+                            "Vault path"
+                            <input on:input=on_vault_path_input prop:value=move || state.get().vault_path type="text" />
+                        </label>
+                        <label>
+                            "Vault passphrase"
+                            <input on:input=on_vault_passphrase_input prop:value=move || state.get().vault_passphrase type="password" />
+                        </label>
+                        <label>
+                            "Record ids JSON"
+                            <textarea on:input=on_vault_decode_record_ids_input prop:value=move || state.get().vault_decode_record_ids_json rows="6" />
+                        </label>
+                        <label>
+                            "Output target"
+                            <input on:input=on_vault_decode_output_target_input prop:value=move || state.get().vault_decode_output_target type="text" />
+                        </label>
+                        <label>
+                            "Justification"
+                            <textarea on:input=on_vault_decode_justification_input prop:value=move || state.get().vault_decode_justification rows="4" />
+                        </label>
+                    </div>
+                </Show>
+
+                <Show when=move || matches!(state.get().input_mode, InputMode::VaultExport | InputMode::PortableArtifactImport)>
+                    <div class="portable-artifact-fields">
+                        <label>
+                            "Vault path"
+                            <input on:input=on_vault_path_input prop:value=move || state.get().vault_path type="text" />
+                        </label>
+                        <label>
+                            "Vault passphrase"
+                            <input on:input=on_vault_passphrase_input prop:value=move || state.get().vault_passphrase type="password" />
+                        </label>
+                    </div>
+                </Show>
+
+                <Show when=move || state.get().input_mode == InputMode::VaultExport>
+                    <label>
+                        "Record ids JSON"
+                        <textarea on:input=on_portable_record_ids_input prop:value=move || state.get().portable_record_ids_json rows="6" />
+                    </label>
+                </Show>
+
+                <Show when=move || state.get().input_mode == InputMode::PortableArtifactImport>
+                    <label>
+                        "Portable artifact JSON"
+                        <textarea on:input=on_payload_input prop:value=move || state.get().payload rows="8" />
+                    </label>
+                </Show>
+
+                <Show when=move || matches!(state.get().input_mode, InputMode::VaultExport | InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport)>
+                    <label>
+                        "Portable passphrase"
+                        <input on:input=on_portable_passphrase_input prop:value=move || state.get().portable_passphrase type="password" />
+                    </label>
+                </Show>
+
+                <Show when=move || matches!(state.get().input_mode, InputMode::VaultExport | InputMode::PortableArtifactImport)>
+                    <label>
+                        "Context"
+                        <textarea on:input=on_portable_context_input prop:value=move || state.get().portable_context rows="4" />
+                    </label>
+                </Show>
 
                 <Show when=move || state.get().input_mode.disclosure_copy().is_some()>
                     <p class="input-disclosure">
@@ -1307,7 +2004,10 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_submit_request, file_import_payload_from_data_url, format_review_queue,
+        build_portable_artifact_import_request_payload,
+        build_portable_artifact_inspect_request_payload, build_submit_request,
+        build_vault_audit_request_payload, build_vault_decode_request_payload,
+        build_vault_export_request_payload, file_import_payload_from_data_url, format_review_queue,
         format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
         validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
         RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
@@ -1315,6 +2015,418 @@ mod tests {
         MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    fn vault_export_mode_uses_existing_runtime_endpoint() {
+        assert_eq!(
+            InputMode::from_select_value("vault-export"),
+            InputMode::VaultExport
+        );
+        assert_eq!(InputMode::VaultExport.select_value(), "vault-export");
+        assert_eq!(InputMode::VaultExport.endpoint(), "/vault/export");
+        assert!(!InputMode::VaultExport.requires_field_policy());
+        assert!(!InputMode::VaultExport.requires_source_name());
+    }
+
+    #[test]
+    fn vault_export_payload_maps_form_to_runtime_contract() {
+        let payload = build_vault_export_request_payload(
+            " /tmp/vault.json ",
+            " passphrase ",
+            r#"["11111111-1111-1111-1111-111111111111"]"#,
+            " portable secret ",
+            " export for local review ",
+        )
+        .expect("payload");
+
+        assert_eq!(payload["vault_path"], "/tmp/vault.json");
+        assert_eq!(payload["vault_passphrase"], "passphrase");
+        assert_eq!(
+            payload["record_ids"][0],
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(payload["export_passphrase"], "portable secret");
+        assert_eq!(payload["context"], "export for local review");
+        assert_eq!(payload["requested_by"], "browser");
+    }
+
+    #[test]
+    fn portable_artifact_modes_use_existing_runtime_endpoints() {
+        assert_eq!(
+            InputMode::from_select_value("portable-artifact-inspect"),
+            InputMode::PortableArtifactInspect
+        );
+        assert_eq!(
+            InputMode::PortableArtifactInspect.select_value(),
+            "portable-artifact-inspect"
+        );
+        assert_eq!(
+            InputMode::PortableArtifactInspect.endpoint(),
+            "/portable-artifacts/inspect"
+        );
+        assert!(!InputMode::PortableArtifactInspect.requires_field_policy());
+        assert!(!InputMode::PortableArtifactInspect.requires_source_name());
+
+        assert_eq!(
+            InputMode::from_select_value("portable-artifact-import"),
+            InputMode::PortableArtifactImport
+        );
+        assert_eq!(
+            InputMode::PortableArtifactImport.select_value(),
+            "portable-artifact-import"
+        );
+        assert_eq!(
+            InputMode::PortableArtifactImport.endpoint(),
+            "/portable-artifacts/import"
+        );
+        assert!(!InputMode::PortableArtifactImport.requires_field_policy());
+        assert!(!InputMode::PortableArtifactImport.requires_source_name());
+    }
+
+    #[test]
+    fn portable_artifact_payloads_map_form_to_runtime_contract() {
+        let artifact_json = r#"{"version":1,"records":[]}"#;
+        let inspect =
+            build_portable_artifact_inspect_request_payload(artifact_json, " portable secret ")
+                .expect("inspect payload");
+        assert_eq!(inspect["artifact"]["version"], 1);
+        assert_eq!(inspect["portable_passphrase"], "portable secret");
+
+        let import = build_portable_artifact_import_request_payload(
+            " /tmp/vault.json ",
+            " vault secret ",
+            artifact_json,
+            " portable secret ",
+            " import for local review ",
+        )
+        .expect("import payload");
+        assert_eq!(import["vault_path"], "/tmp/vault.json");
+        assert_eq!(import["vault_passphrase"], "vault secret");
+        assert_eq!(import["artifact"]["version"], 1);
+        assert_eq!(import["portable_passphrase"], "portable secret");
+        assert_eq!(import["context"], "import for local review");
+        assert_eq!(import["requested_by"], "browser");
+    }
+
+    #[test]
+    fn portable_artifact_payloads_reject_blank_required_fields_and_bad_uuid() {
+        assert!(build_vault_export_request_payload("", "pw", "[]", "portable", "context").is_err());
+        assert!(
+            build_vault_export_request_payload("vault", "pw", "[]", "portable", "context").is_err()
+        );
+        assert!(build_vault_export_request_payload(
+            "vault",
+            "pw",
+            r#"["not-a-uuid"]"#,
+            "portable",
+            "context"
+        )
+        .is_err());
+        assert!(build_portable_artifact_inspect_request_payload("{}", "").is_err());
+        assert!(build_portable_artifact_inspect_request_payload("[]", "portable").is_err());
+        assert!(build_portable_artifact_inspect_request_payload("{", "portable").is_err());
+        assert!(build_portable_artifact_import_request_payload(
+            "vault", "pw", "{}", "portable", ""
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn portable_artifact_runtime_success_hides_artifact_values_and_raw_audit_detail() {
+        let export = json!({
+            "artifact": {"version": 1, "ciphertext": "patient Jane token", "salt": "secret salt", "nonce": "secret nonce"}
+        });
+        let rendered_export = parse_runtime_success(InputMode::VaultExport, &export.to_string())
+            .expect("export render");
+        assert!(rendered_export
+            .rewritten_output
+            .contains("Portable artifact created"));
+        assert!(!rendered_export.rewritten_output.contains("patient Jane"));
+        assert!(!rendered_export.rewritten_output.contains("ciphertext"));
+
+        let inspect = json!({
+            "record_count": 1,
+            "records": [{"original_value": "Jane Patient", "token": "TOKEN-1"}]
+        });
+        let rendered_inspect =
+            parse_runtime_success(InputMode::PortableArtifactInspect, &inspect.to_string())
+                .expect("inspect render");
+        assert!(rendered_inspect.summary.contains("1 portable record"));
+        assert!(!rendered_inspect.rewritten_output.contains("Jane Patient"));
+        assert!(!rendered_inspect.rewritten_output.contains("TOKEN-1"));
+
+        let import = json!({
+            "imported_record_count": 1,
+            "duplicate_record_count": 2,
+            "audit_event": {"kind": "import", "detail": "imported MRN 123", "actor": "browser"}
+        });
+        let rendered_import =
+            parse_runtime_success(InputMode::PortableArtifactImport, &import.to_string())
+                .expect("import render");
+        assert!(rendered_import.summary.contains("1 imported"));
+        assert!(rendered_import.review_queue.contains("2 duplicate"));
+        assert!(!rendered_import.rewritten_output.contains("MRN 123"));
+    }
+
+    #[test]
+    fn vault_export_runtime_success_rejects_malformed_contract() {
+        let malformed = json!({
+            "message": "exported record 11111111-1111-1111-1111-111111111111 for Jane Patient",
+            "artifact": "not an artifact object"
+        });
+
+        let error = parse_runtime_success(InputMode::VaultExport, &malformed.to_string())
+            .expect_err("malformed vault export success should fail closed");
+
+        assert!(error.contains("Vault export response missing artifact object"));
+        assert!(!error.contains("Jane Patient"));
+        assert!(!error.contains("11111111-1111-1111-1111-111111111111"));
+    }
+
+    #[test]
+    fn vault_decode_mode_uses_existing_runtime_endpoint() {
+        let mode = InputMode::from_select_value("vault-decode");
+
+        assert_eq!(mode, InputMode::VaultDecode);
+        assert_eq!(mode.select_value(), "vault-decode");
+        assert_eq!(mode.label(), "Vault decode");
+        assert_eq!(mode.endpoint(), "/vault/decode");
+        assert!(!mode.requires_field_policy());
+        assert!(!mode.requires_source_name());
+        assert_eq!(mode.browser_file_read_mode(), BrowserFileReadMode::Text);
+        let disclosure = mode
+            .disclosure_copy()
+            .expect("vault decode mode has bounded disclosure");
+        assert!(disclosure.contains("explicit record ids"));
+        assert!(disclosure.contains("does not browse vault contents"));
+        assert!(disclosure.contains("does not export"));
+        assert!(disclosure.contains("does not add auth/session"));
+        assert!(disclosure.contains("broader workflow behavior"));
+    }
+
+    #[test]
+    fn vault_decode_payload_maps_form_to_runtime_contract() {
+        let payload = build_vault_decode_request_payload(
+            " /tmp/local-vault ",
+            " passphrase kept local ",
+            r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440001"]"#,
+            " local-output.json ",
+            " bounded local decode for named records ",
+        )
+        .expect("valid bounded decode payload");
+
+        assert_eq!(payload["vault_path"], "/tmp/local-vault");
+        assert_eq!(payload["vault_passphrase"], "passphrase kept local");
+        assert_eq!(
+            payload["record_ids"],
+            json!([
+                "550e8400-e29b-41d4-a716-446655440000",
+                "550e8400-e29b-41d4-a716-446655440001"
+            ])
+        );
+        assert_eq!(payload["output_target"], "local-output.json");
+        assert_eq!(
+            payload["justification"],
+            "bounded local decode for named records"
+        );
+        assert_eq!(payload["requested_by"], "browser");
+
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            vault_path: " /tmp/local-vault ".to_string(),
+            vault_passphrase: " passphrase kept local ".to_string(),
+            vault_decode_record_ids_json: r#"["550e8400-e29b-41d4-a716-446655440000"]"#.to_string(),
+            vault_decode_output_target: " local-output.json ".to_string(),
+            vault_decode_justification: " bounded local decode ".to_string(),
+            field_policy_json: String::new(),
+            source_name: String::new(),
+            payload: String::new(),
+            ..BrowserFlowState::default()
+        };
+
+        let request = state.validate_submission().expect("valid decode request");
+        assert_eq!(request.endpoint, "/vault/decode");
+        let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
+        assert_eq!(
+            body["record_ids"],
+            json!(["550e8400-e29b-41d4-a716-446655440000"])
+        );
+        assert!(body.get("policies").is_none());
+        assert!(body.get("field_policies").is_none());
+        assert!(body.get("source_name").is_none());
+    }
+
+    #[test]
+    fn parse_vault_decode_runtime_success_hides_decoded_values_and_audit_detail() {
+        let decode_token = concat!("MDID", "-", "123");
+        let response = parse_runtime_success(
+            InputMode::VaultDecode,
+            &json!({
+                "values": [
+                    {
+                        "record_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "phi_type": "patient_name",
+                        "original_value": "Jane Patient",
+                        "token": decode_token
+                    }
+                ],
+                "audit_event": {
+                    "kind": "vault_decode",
+                    "detail": "decoded Jane Patient for oncology board"
+                },
+                "output_target": "local-output.json",
+                "justification": "oncology board"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(response.summary, "Vault decode completed for 1 value(s).");
+        assert_eq!(response.review_queue, "- vault_decode");
+        assert!(response.rewritten_output.contains("Decoded values hidden"));
+
+        let rendered = format!(
+            "{}\n{}\n{}",
+            response.summary, response.review_queue, response.rewritten_output
+        );
+        assert!(!rendered.contains("Jane Patient"));
+        assert!(!rendered.contains("MDID-123"));
+        assert!(!rendered.contains("oncology"));
+    }
+
+    #[test]
+    fn vault_decode_payload_rejects_missing_scope_and_blank_fields() {
+        for (
+            vault_path,
+            vault_passphrase,
+            record_ids_json,
+            output_target,
+            justification,
+            expected,
+        ) in [
+            (
+                "",
+                "passphrase",
+                r#"["550e8400-e29b-41d4-a716-446655440000"]"#,
+                "target",
+                "why",
+                "Vault path",
+            ),
+            (
+                "vault",
+                "",
+                r#"["550e8400-e29b-41d4-a716-446655440000"]"#,
+                "target",
+                "why",
+                "Vault passphrase",
+            ),
+            ("vault", "passphrase", "[]", "target", "why", "record ids"),
+            (
+                "vault",
+                "passphrase",
+                r#"["not-a-uuid"]"#,
+                "target",
+                "why",
+                "UUID",
+            ),
+            (
+                "vault",
+                "passphrase",
+                r#"["550e8400-e29b-41d4-a716-446655440000"]"#,
+                "",
+                "why",
+                "Output target",
+            ),
+            (
+                "vault",
+                "passphrase",
+                r#"["550e8400-e29b-41d4-a716-446655440000"]"#,
+                "target",
+                "",
+                "Justification",
+            ),
+        ] {
+            let error = build_vault_decode_request_payload(
+                vault_path,
+                vault_passphrase,
+                record_ids_json,
+                output_target,
+                justification,
+            )
+            .expect_err("invalid decode payload must be rejected before localhost submission");
+
+            assert!(
+                error.contains(expected),
+                "expected error {error:?} to mention {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vault_audit_events_mode_uses_existing_read_only_runtime_endpoint() {
+        let mode = InputMode::from_select_value("vault-audit-events");
+
+        assert_eq!(mode, InputMode::VaultAuditEvents);
+        assert_eq!(mode.select_value(), "vault-audit-events");
+        assert_eq!(mode.endpoint(), "/vault/audit/events");
+        assert!(!mode.requires_field_policy());
+        assert!(!mode.requires_source_name());
+        assert_eq!(mode.browser_file_read_mode(), BrowserFileReadMode::Text);
+        assert!(mode
+            .disclosure_copy()
+            .expect("vault audit mode has bounded disclosure")
+            .contains("read-only"));
+    }
+
+    #[test]
+    fn vault_audit_payload_maps_text_form_to_bounded_runtime_contract() {
+        let payload = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "25",
+        )
+        .expect("valid bounded audit payload");
+
+        assert_eq!(payload["vault_path"], "/tmp/local-vault");
+        assert_eq!(payload["vault_passphrase"], "passphrase kept local");
+        assert_eq!(payload["kind"], "decode");
+        assert_eq!(payload["actor"], "browser");
+        assert_eq!(payload["limit"], 25);
+    }
+
+    #[test]
+    fn vault_audit_payload_omits_blank_optional_filters() {
+        let payload = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            " ",
+            "",
+            "",
+        )
+        .expect("blank optional filters are valid");
+
+        assert_eq!(payload["vault_path"], "/tmp/local-vault");
+        assert_eq!(payload["vault_passphrase"], "passphrase kept local");
+        assert!(payload.get("kind").is_none());
+        assert!(payload.get("actor").is_none());
+        assert!(payload.get("limit").is_none());
+    }
+
+    #[test]
+    fn vault_audit_payload_rejects_invalid_limit() {
+        let error = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "not-a-number",
+        )
+        .expect_err("invalid limit must be rejected before localhost submission");
+
+        assert!(error.contains("limit"));
+    }
 
     #[test]
     fn browser_flow_state_defaults_to_csv_shell() {
@@ -1999,6 +3111,7 @@ mod tests {
     #[test]
     fn parse_runtime_error_prefers_error_envelope_and_truncates() {
         let error = parse_runtime_error(
+            InputMode::CsvText,
             422,
             &json!({
                 "error": {
@@ -2012,6 +3125,51 @@ mod tests {
         assert!(error.starts_with("invalid_tabular_request: x"));
         assert!(error.ends_with('…'));
         assert!(error.chars().count() <= 240);
+    }
+
+    #[test]
+    fn parse_runtime_error_redacts_sensitive_portable_and_vault_modes() {
+        let body = json!({
+            "error": {
+                "code": "portable_artifact_failure",
+                "message": "failed passphrase portable secret for MRN 123 Jane Patient token TOKEN-1 at /tmp/vault.json record 11111111-1111-1111-1111-111111111111"
+            },
+            "artifact": {"ciphertext": "artifact JSON secret"},
+            "audit_event": {"detail": "audit detail with vault path"}
+        })
+        .to_string();
+
+        for mode in [
+            InputMode::VaultAuditEvents,
+            InputMode::VaultDecode,
+            InputMode::VaultExport,
+            InputMode::PortableArtifactInspect,
+            InputMode::PortableArtifactImport,
+        ] {
+            let error = parse_runtime_error(mode, 422, &body);
+
+            assert_eq!(
+                error,
+                "Runtime request failed. Details hidden for PHI and secret safety. Status: 422."
+            );
+            for forbidden in [
+                "portable_artifact_failure",
+                "passphrase",
+                "portable secret",
+                "MRN 123",
+                "Jane Patient",
+                "TOKEN-1",
+                "/tmp/vault.json",
+                "11111111-1111-1111-1111-111111111111",
+                "artifact JSON secret",
+                "audit detail",
+            ] {
+                assert!(
+                    !error.contains(forbidden),
+                    "leaked {forbidden} for {mode:?}"
+                );
+            }
+        }
     }
 
     #[test]
