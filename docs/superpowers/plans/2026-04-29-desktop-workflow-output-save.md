@@ -146,7 +146,7 @@ Expected: PASS.
 
 Quality-fix evidence (2026-04-29): added a regression case for non-canonical padded DICOM base64 `/x==`, verified RED against the permissive local decoder, then switched download decoding to `base64::engine::general_purpose::STANDARD.decode(...)` via the workspace `base64` crate. GREEN: `cargo test -p mdid-desktop workflow_output_download_fails_closed_for_pdf_errors_malformed_and_mode_mismatch`, `cargo test -p mdid-desktop workflow_output_download`, and `cargo test -p mdid-desktop` all passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/lib.rs docs/superpowers/plans/2026-04-29-desktop-workflow-output-save.md
@@ -159,7 +159,7 @@ git commit -m "feat(desktop): extract rewritten workflow outputs for save"
 - Modify: `crates/mdid-desktop/src/lib.rs`
 - Modify: `crates/mdid-desktop/src/main.rs`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add tests equivalent to:
 
@@ -214,13 +214,13 @@ fn app_save_workflow_output_writes_latest_csv_output() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop workflow_output_file -- --nocapture`
 
 Expected: FAIL because `write_workflow_output_file` and/or app save helper does not exist.
 
-- [ ] **Step 3: Implement minimal file-writing helper**
+- [x] **Step 3: Implement minimal file-writing helper**
 
 Implement `pub fn write_workflow_output_file(path: impl AsRef<std::path::Path>, download: &DesktopWorkflowOutputDownload) -> Result<(), String>` with `std::fs::write(path, &download.bytes)` and map any error to exactly `workflow output save failed: unable to write output file`.
 
@@ -238,7 +238,7 @@ fn save_workflow_output(&self, path: impl AsRef<std::path::Path>) -> Result<(), 
 
 Do not add raw path display or broad file-picker workflow claims.
 
-- [ ] **Step 4: Verify GREEN and broader desktop tests**
+- [x] **Step 4: Verify GREEN and broader desktop tests**
 
 Run:
 
@@ -252,7 +252,7 @@ git diff --check
 
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/lib.rs crates/mdid-desktop/src/main.rs docs/superpowers/plans/2026-04-29-desktop-workflow-output-save.md
@@ -265,7 +265,7 @@ git commit -m "feat(desktop): save rewritten workflow outputs safely"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-29-desktop-workflow-output-save.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Update the completion snapshot to credit only landed helper-layer desktop output save support. Suggested truthful numbers after successful verification:
 
@@ -276,11 +276,11 @@ Update the completion snapshot to credit only landed helper-layer desktop output
 
 Keep missing items explicit: full desktop file picker/save UI depth, richer browser/desktop workflows, OCR/visual redaction, deeper vault UX, and full portable transfer workflow UX still block >=95%.
 
-- [ ] **Step 2: Mark this plan complete**
+- [x] **Step 2: Mark this plan complete**
 
 Mark completed checkboxes or add a completion evidence section with the actual commits and commands run.
 
-- [ ] **Step 3: Verify docs and full affected surface**
+- [x] **Step 3: Verify docs and full affected surface**
 
 Run:
 
@@ -294,7 +294,9 @@ grep -n "Completion snapshot\|CLI | 95%\|Browser/web | 63%\|Desktop app | 62%\|O
 
 Expected: all PASS and grep shows the updated snapshot.
 
-- [ ] **Step 4: Commit**
+Completion evidence (2026-04-29): README completion snapshot truth-synced to credit the landed bounded desktop helper-layer save action for already-received rewritten CSV/XLSX/DICOM runtime outputs only. Verification passed with `cargo test -p mdid-desktop`, `cargo clippy -p mdid-desktop --all-targets -- -D warnings`, `git diff --check`, and README snapshot grep; clippy is passing after the landed desktop fix.
+
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-29-desktop-workflow-output-save.md
