@@ -1,10 +1,10 @@
 use mdid_desktop::{
-    write_portable_artifact_json, DesktopFileImportPayload, DesktopFileImportTarget,
-    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
-    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
-    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseMode,
-    DesktopVaultResponseState, DesktopWorkflowMode, DesktopWorkflowRequestState,
-    DesktopWorkflowResponseState,
+    write_portable_artifact_json, write_safe_vault_response_json, DesktopFileImportPayload,
+    DesktopFileImportTarget, DesktopPortableArtifactSaveError, DesktopPortableMode,
+    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
+    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
+    DesktopVaultRequestState, DesktopVaultResponseMode, DesktopVaultResponseState,
+    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -13,6 +13,36 @@ use std::time::Duration;
 type RuntimeSubmissionResult = Result<serde_json::Value, DesktopRuntimeSubmitError>;
 
 const DROPPED_FILE_READ_ERROR: &str = "file import failed: unable to read dropped file";
+const DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH: &str = "desktop-vault-response-report.json";
+
+fn is_replaceable_vault_response_report_save_path(
+    path: &str,
+    generated_path: Option<&str>,
+) -> bool {
+    let path = path.trim();
+    path.is_empty()
+        || path == DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH
+        || generated_path.is_some_and(|generated| path == generated.trim())
+}
+
+fn next_vault_response_report_save_path(
+    current_path: &str,
+    generated_path: Option<&str>,
+    portable_source_name: Option<&str>,
+    state: &DesktopVaultResponseState,
+) -> (String, Option<String>) {
+    if !is_replaceable_vault_response_report_save_path(current_path, generated_path) {
+        return (current_path.to_string(), None);
+    }
+
+    let next_path = state
+        .safe_response_report_download_for_source(portable_source_name)
+        .map(|download| download.file_name)
+        .unwrap_or_else(|_| DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string());
+    let next_generated_path =
+        (next_path != DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH).then(|| next_path.clone());
+    (next_path, next_generated_path)
+}
 
 fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> {
     let metadata = std::fs::metadata(path).map_err(|_| DROPPED_FILE_READ_ERROR)?;
@@ -21,6 +51,22 @@ fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> 
     }
 
     std::fs::read(path).map_err(|_| DROPPED_FILE_READ_ERROR)
+}
+
+fn vault_response_report_save_error_status(error: DesktopPortableArtifactSaveError) -> String {
+    match error {
+        DesktopPortableArtifactSaveError::MissingArtifact => {
+            "vault response report save failed: no safe response summary is available"
+        }
+        DesktopPortableArtifactSaveError::Io(_) => {
+            "vault response report save failed: report JSON could not be written"
+        }
+        DesktopPortableArtifactSaveError::InvalidJson(_)
+        | DesktopPortableArtifactSaveError::NotVaultExport => {
+            "vault response report save failed: report JSON could not be prepared"
+        }
+    }
+    .to_string()
 }
 
 fn main() -> eframe::Result<()> {
@@ -41,8 +87,14 @@ struct DesktopApp {
     vault_response_state: DesktopVaultResponseState,
     runtime_submission_receiver: Option<Receiver<RuntimeSubmissionResult>>,
     runtime_submission_mode: Option<DesktopRuntimeSubmissionMode>,
+    workflow_output_save_path: String,
+    workflow_output_save_status: String,
     portable_artifact_save_path: String,
     portable_artifact_save_status: String,
+    vault_response_report_save_path: String,
+    generated_vault_response_report_save_path: Option<String>,
+    vault_response_report_save_status: String,
+    portable_response_report_source_name: Option<String>,
 }
 
 impl Default for DesktopApp {
@@ -56,8 +108,14 @@ impl Default for DesktopApp {
             vault_response_state: DesktopVaultResponseState::default(),
             runtime_submission_receiver: None,
             runtime_submission_mode: None,
+            workflow_output_save_path: "desktop-deidentified-output.bin".to_string(),
+            workflow_output_save_status: String::new(),
             portable_artifact_save_path: "desktop-portable-artifact.mdid-portable.json".to_string(),
             portable_artifact_save_status: String::new(),
+            vault_response_report_save_path: DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(),
+            generated_vault_response_report_save_path: None,
+            vault_response_report_save_status: String::new(),
+            portable_response_report_source_name: None,
         }
     }
 }
@@ -85,6 +143,14 @@ impl DesktopApp {
                 if let Some(vault_mode) = mode.vault_response_mode() {
                     self.vault_response_state
                         .apply_success(vault_mode, &envelope);
+                    let (next_path, generated_path) = next_vault_response_report_save_path(
+                        &self.vault_response_report_save_path,
+                        self.generated_vault_response_report_save_path.as_deref(),
+                        self.portable_response_report_source_name.as_deref(),
+                        &self.vault_response_state,
+                    );
+                    self.vault_response_report_save_path = next_path;
+                    self.generated_vault_response_report_save_path = generated_path;
                 } else if let DesktopRuntimeSubmissionMode::Workflow(workflow_mode) = mode {
                     self.response_state
                         .apply_success_json(workflow_mode, envelope);
@@ -121,9 +187,11 @@ impl DesktopApp {
     fn apply_file_import_target(&mut self, imported: DesktopFileImportTarget) {
         match imported {
             DesktopFileImportTarget::Workflow(payload) => {
+                self.portable_response_report_source_name = None;
                 self.request_state.apply_imported_file(payload);
             }
             DesktopFileImportTarget::PortableArtifactInspect(payload) => {
+                self.portable_response_report_source_name = Some(payload.source_name.clone());
                 self.portable_request_state.mode = payload.mode;
                 self.portable_request_state.artifact_json = payload.artifact_json;
             }
@@ -141,6 +209,52 @@ impl DesktopApp {
             }
             Err(error) => {
                 self.portable_artifact_save_status = error.to_string();
+            }
+        }
+    }
+
+    fn save_vault_response_report(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        if !self.vault_response_state.has_safe_response_report() {
+            return Err(
+                "vault response report save failed: no safe response summary is available"
+                    .to_string(),
+            );
+        }
+
+        write_safe_vault_response_json(&self.vault_response_state, path)
+            .map(|_| ())
+            .map_err(vault_response_report_save_error_status)
+    }
+
+    fn save_vault_response_report_response(&mut self) {
+        match self.save_vault_response_report(self.vault_response_report_save_path.trim()) {
+            Ok(()) => {
+                self.vault_response_report_save_status =
+                    "Safe vault/portable response report saved.".to_string();
+            }
+            Err(error) => {
+                self.vault_response_report_save_status = error;
+            }
+        }
+    }
+
+    fn save_workflow_output(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let download = self
+            .response_state
+            .workflow_output_download(self.request_state.mode)
+            .ok_or_else(|| {
+                "workflow output save failed: no rewritten output is available".to_string()
+            })?;
+        mdid_desktop::write_workflow_output_file(path, &download)
+    }
+
+    fn save_workflow_output_response(&mut self) {
+        match self.save_workflow_output(self.workflow_output_save_path.trim()) {
+            Ok(()) => {
+                self.workflow_output_save_status = "Rewritten workflow output saved.".to_string();
+            }
+            Err(error) => {
+                self.workflow_output_save_status = error;
             }
         }
     }
@@ -454,6 +568,19 @@ impl eframe::App for DesktopApp {
                     ui.label(&self.portable_artifact_save_status);
                 }
             }
+            if self.vault_response_state.has_safe_response_report() {
+                ui.label("Save safe vault/portable response report JSON");
+                ui.text_edit_singleline(&mut self.vault_response_report_save_path);
+                if ui
+                    .button("Save safe vault/portable response report JSON")
+                    .clicked()
+                {
+                    self.save_vault_response_report_response();
+                }
+                if !self.vault_response_report_save_status.is_empty() {
+                    ui.label(&self.vault_response_report_save_status);
+                }
+            }
             ui.separator();
             ui.heading("Runtime-shaped response workbench");
             ui.label(&self.response_state.banner);
@@ -486,6 +613,21 @@ impl eframe::App for DesktopApp {
                     .interactive(false),
             );
 
+            if self
+                .response_state
+                .workflow_output_download(self.request_state.mode)
+                .is_some()
+            {
+                ui.label("Save rewritten workflow output");
+                ui.text_edit_singleline(&mut self.workflow_output_save_path);
+                if ui.button("Save rewritten workflow output").clicked() {
+                    self.save_workflow_output_response();
+                }
+                if !self.workflow_output_save_status.is_empty() {
+                    ui.label(&self.workflow_output_save_status);
+                }
+            }
+
             ui.label(
                 "Not implemented in this desktop slice: file picker upload/download UX beyond bounded helper import/export, vault browsing, full decode workflow execution UX, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
             );
@@ -509,6 +651,229 @@ mod tests {
             runtime_submission_mode: Some(mode),
             ..DesktopApp::default()
         }
+    }
+
+    fn portable_inspect_report_state() -> DesktopVaultResponseState {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({
+                "record_count": 2,
+                "preview": [
+                    {"record_id": "record-1"},
+                    {"record_id": "record-2"}
+                ],
+                "artifact_path": "C:\\vaults\\Clinic Batch.mdid-portable.json"
+            }),
+        );
+        state
+    }
+
+    #[test]
+    fn portable_response_report_path_uses_sanitized_imported_source_when_default() {
+        assert_eq!(
+            next_vault_response_report_save_path(
+                DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH,
+                None,
+                Some("C:\\vaults\\Clinic Batch.mdid-portable.json"),
+                &portable_inspect_report_state(),
+            ),
+            (
+                "Clinic-Batch.mdid-portable-portable-response-report.json".to_string(),
+                Some("Clinic-Batch.mdid-portable-portable-response-report.json".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn portable_response_report_path_refreshes_previous_generated_portable_path() {
+        assert_eq!(
+            next_vault_response_report_save_path(
+                "Clinic-Batch.mdid-portable-portable-response-report.json",
+                Some("Clinic-Batch.mdid-portable-portable-response-report.json"),
+                Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
+                &portable_inspect_report_state(),
+            ),
+            (
+                "Partner-Export.mdid-portable-portable-response-report.json".to_string(),
+                Some("Partner-Export.mdid-portable-portable-response-report.json".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn portable_response_report_path_preserves_generated_shaped_path_without_marker() {
+        assert_eq!(
+            next_vault_response_report_save_path(
+                "Clinic-Batch.mdid-portable-portable-response-report.json",
+                None,
+                Some("C:\\\\vaults\\\\Partner Export.mdid-portable.json"),
+                &portable_inspect_report_state(),
+            ),
+            (
+                "Clinic-Batch.mdid-portable-portable-response-report.json".to_string(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn portable_response_report_path_resets_previous_generated_portable_path_for_non_portable_report_modes(
+    ) {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultDecode,
+            &serde_json::json!({
+                "decoded_count": 1,
+                "audit_event": {"event_id": "evt-1"},
+                "decoded_values": {"record-1": {"name": "Jane Doe"}}
+            }),
+        );
+
+        assert_eq!(
+            next_vault_response_report_save_path(
+                "Clinic-Batch.mdid-portable-portable-response-report.json",
+                Some("Clinic-Batch.mdid-portable-portable-response-report.json"),
+                Some("C:\\\\vaults\\\\Clinic Batch.mdid-portable.json"),
+                &state,
+            ),
+            (DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(), None)
+        );
+    }
+
+    #[test]
+    fn portable_response_report_path_preserves_user_overridden_path() {
+        assert_eq!(
+            next_vault_response_report_save_path(
+                "C:\\\\exports\\\\custom-report.json",
+                None,
+                Some("C:\\\\vaults\\\\Clinic Batch.mdid-portable.json"),
+                &portable_inspect_report_state(),
+            ),
+            ("C:\\\\exports\\\\custom-report.json".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn portable_response_report_path_preserves_explicit_relative_user_override() {
+        assert_eq!(
+            next_vault_response_report_save_path(
+                "custom-portable-response-report.json",
+                None,
+                Some("C:\\\\vaults\\\\Clinic Batch.mdid-portable.json"),
+                &portable_inspect_report_state(),
+            ),
+            ("custom-portable-response-report.json".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn portable_response_report_path_keeps_generic_path_for_non_portable_report_modes() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultDecode,
+            &serde_json::json!({
+                "decoded_count": 1,
+                "audit_event": {"event_id": "evt-1"},
+                "decoded_values": {"record-1": {"name": "Jane Doe"}}
+            }),
+        );
+
+        assert_eq!(
+            next_vault_response_report_save_path(
+                DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH,
+                None,
+                Some("C:\\vaults\\Clinic Batch.mdid-portable.json"),
+                &state,
+            ),
+            (DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(), None)
+        );
+    }
+
+    #[test]
+    fn app_save_workflow_output_writes_latest_csv_output() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-workflow-output-save-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("patient-jane-doe-mrn-12345-deidentified.csv");
+        let mut app = DesktopApp::default();
+        app.request_state.mode = DesktopWorkflowMode::CsvText;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            serde_json::json!({
+                "csv": "patient_name\n<NAME-1>\n",
+                "summary": {"encoded_fields": 1},
+                "review_queue": []
+            }),
+        );
+
+        app.save_workflow_output(&path)
+            .expect("workflow output saved");
+
+        assert_eq!(
+            std::fs::read(&path).expect("saved output readable"),
+            b"patient_name\n<NAME-1>\n"
+        );
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_workflow_output_action_sets_phi_safe_success_status() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-workflow-output-status-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("patient-jane-doe-mrn-12345-deidentified.csv");
+        let mut app = DesktopApp::default();
+        app.request_state.mode = DesktopWorkflowMode::CsvText;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            serde_json::json!({
+                "csv": "patient_name\n<NAME-1>\n",
+                "summary": {"encoded_fields": 1},
+                "review_queue": []
+            }),
+        );
+        app.workflow_output_save_path = path.to_string_lossy().to_string();
+
+        app.save_workflow_output_response();
+
+        assert_eq!(
+            app.workflow_output_save_status,
+            "Rewritten workflow output saved."
+        );
+        assert!(!app
+            .workflow_output_save_status
+            .contains(path.to_string_lossy().as_ref()));
+        assert!(!app.workflow_output_save_status.contains("jane-doe"));
+        assert!(!app.workflow_output_save_status.contains("12345"));
+        assert_eq!(
+            std::fs::read(&path).expect("saved output readable"),
+            b"patient_name\n<NAME-1>\n"
+        );
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_workflow_output_action_sets_phi_safe_no_output_status() {
+        let path = "/tmp/patient-jane-doe-mrn-12345-deidentified.csv";
+        let mut app = DesktopApp {
+            workflow_output_save_path: path.to_string(),
+            ..DesktopApp::default()
+        };
+
+        app.save_workflow_output_response();
+
+        assert_eq!(
+            app.workflow_output_save_status,
+            "workflow output save failed: no rewritten output is available"
+        );
+        assert!(!app.workflow_output_save_status.contains(path));
+        assert!(!app.workflow_output_save_status.contains("jane-doe"));
+        assert!(!app.workflow_output_save_status.contains("12345"));
     }
 
     #[test]
@@ -540,6 +905,149 @@ mod tests {
             app.portable_artifact_save_status,
             "Portable artifact JSON saved; encrypted contents only."
         );
+    }
+
+    #[test]
+    fn app_save_vault_response_report_writes_safe_audit_summary_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-vault-response-report-ui-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("patient-jane-doe-mrn-12345-vault-report.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            mdid_desktop::DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 1,
+                "returned_event_count": 1,
+                "events": [
+                    {
+                        "event_id": "evt-1",
+                        "kind": "decode",
+                        "actor": "clinician-a",
+                        "record_id": "record-7",
+                        "scope": ["patient_name"],
+                        "occurred_at": "2026-04-30T01:00:00Z",
+                        "detail": "decoded Alice Example with token <NAME-1>"
+                    }
+                ],
+                "vault_path": "/secret/Alice.vault",
+                "passphrase": "do-not-save"
+            }),
+        );
+        app.vault_response_report_save_path = path.to_string_lossy().to_string();
+
+        app.save_vault_response_report_response();
+
+        let saved = std::fs::read_to_string(&path).expect("safe vault report saved");
+        assert!(saved.contains("\"mode\": \"vault_audit\""));
+        assert!(saved.contains("events returned: 1 / 1"));
+        assert!(!saved.contains("\"events\""));
+        assert!(!saved.contains("\"kind\""));
+        assert!(!saved.contains("Alice Example"));
+        assert!(!saved.contains("<NAME-1>"));
+        assert!(!saved.contains("/secret"));
+        assert!(!saved.contains("do-not-save"));
+        assert_eq!(
+            app.vault_response_report_save_status,
+            "Safe vault/portable response report saved."
+        );
+        assert!(!app
+            .vault_response_report_save_status
+            .contains(path.to_string_lossy().as_ref()));
+        assert!(!app.vault_response_report_save_status.contains("jane-doe"));
+        assert!(!app.vault_response_report_save_status.contains("12345"));
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_vault_response_report_keeps_rendered_mode_when_request_controls_change() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-vault-response-rendered-mode-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("vault-response-report.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({
+                "record_count": 2,
+                "preview": [
+                    {"record_id": "record-1"},
+                    {"record_id": "record-2"}
+                ]
+            }),
+        );
+        app.portable_request_state.mode = DesktopPortableMode::ImportArtifact;
+        app.vault_response_report_save_path = path.to_string_lossy().to_string();
+
+        app.save_vault_response_report_response();
+
+        let saved = std::fs::read_to_string(&path).expect("safe vault report saved");
+        assert!(saved.contains("\"mode\": \"portable_artifact_inspect\""));
+        assert!(!saved.contains("portable_artifact_import"));
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_vault_response_report_action_sets_phi_safe_no_response_status() {
+        let path = "/tmp/patient-jane-doe-mrn-12345-vault-report.json";
+        let mut app = DesktopApp {
+            vault_response_report_save_path: path.to_string(),
+            ..DesktopApp::default()
+        };
+
+        app.save_vault_response_report_response();
+
+        assert_eq!(
+            app.vault_response_report_save_status,
+            "vault response report save failed: no safe response summary is available"
+        );
+        assert!(!app.vault_response_report_save_status.contains(path));
+        assert!(!app.vault_response_report_save_status.contains("jane-doe"));
+        assert!(!app.vault_response_report_save_status.contains("12345"));
+    }
+
+    #[test]
+    fn app_save_vault_response_report_action_sets_report_specific_phi_safe_write_error_status() {
+        let path = std::env::temp_dir()
+            .join(format!("mdid-missing-jane-doe-{}", uuid::Uuid::new_v4()))
+            .join("patient-mrn-12345")
+            .join("report.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            mdid_desktop::DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 1,
+                "returned_event_count": 1,
+                "events": [
+                    {
+                        "event_id": "evt-1",
+                        "kind": "decode",
+                        "actor": "clinician-a",
+                        "record_id": "record-7",
+                        "scope": ["patient_name"],
+                        "occurred_at": "2026-04-30T01:00:00Z",
+                        "detail": "decoded Jane Doe with MRN 12345"
+                    }
+                ]
+            }),
+        );
+        app.vault_response_report_save_path = path.to_string_lossy().to_string();
+
+        app.save_vault_response_report_response();
+
+        assert_eq!(
+            app.vault_response_report_save_status,
+            "vault response report save failed: report JSON could not be written"
+        );
+        assert!(!app
+            .vault_response_report_save_status
+            .contains(path.to_string_lossy().as_ref()));
+        assert!(!app.vault_response_report_save_status.contains("jane-doe"));
+        assert!(!app.vault_response_report_save_status.contains("12345"));
     }
 
     #[test]

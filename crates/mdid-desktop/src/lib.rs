@@ -1,3 +1,5 @@
+use base64::Engine as _;
+
 pub const DESKTOP_FILE_IMPORT_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -49,6 +51,37 @@ impl std::fmt::Debug for DesktopPortableFileImportPayload {
             .field("artifact_json", &"<redacted>")
             .field("source_name", &"<redacted>")
             .finish()
+    }
+}
+
+impl DesktopPortableFileImportPayload {
+    pub fn from_bytes_for_mode(
+        mode: DesktopPortableMode,
+        source_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<Self, DesktopFileImportError> {
+        let source_name = source_name.into();
+        if !matches!(
+            mode,
+            DesktopPortableMode::InspectArtifact | DesktopPortableMode::ImportArtifact
+        ) {
+            return Err(DesktopFileImportError::UnsupportedFileType);
+        }
+        if !is_portable_artifact_json_filename(&source_name) {
+            return Err(DesktopFileImportError::UnsupportedFileType);
+        }
+        if bytes.len() > DESKTOP_FILE_IMPORT_MAX_BYTES {
+            return Err(DesktopFileImportError::FileTooLarge);
+        }
+        let artifact_json = std::str::from_utf8(bytes)
+            .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
+            .to_string();
+
+        Ok(Self {
+            mode,
+            artifact_json,
+            source_name,
+        })
     }
 }
 
@@ -172,6 +205,12 @@ fn encode_base64(bytes: &[u8]) -> String {
     }
 
     encoded
+}
+
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value.trim())
+        .ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -685,6 +724,7 @@ pub struct DesktopVaultResponseState {
     pub error: Option<String>,
     pub summary: String,
     pub artifact_notice: String,
+    rendered_mode: Option<DesktopVaultResponseMode>,
     last_success_mode: Option<DesktopVaultResponseMode>,
     last_success_response: Option<serde_json::Value>,
 }
@@ -696,6 +736,7 @@ impl Default for DesktopVaultResponseState {
             error: None,
             summary: String::new(),
             artifact_notice: String::new(),
+            rendered_mode: None,
             last_success_mode: None,
             last_success_response: None,
         }
@@ -729,12 +770,28 @@ impl std::fmt::Display for DesktopPortableArtifactSaveError {
 
 impl std::error::Error for DesktopPortableArtifactSaveError {}
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopVaultResponseReportDownload {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for DesktopVaultResponseReportDownload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopVaultResponseReportDownload")
+            .field("file_name", &self.file_name)
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
+}
+
 impl DesktopVaultResponseState {
     pub fn apply_success(&mut self, mode: DesktopVaultResponseMode, response: &serde_json::Value) {
         self.banner = vault_response_banner(mode).to_string();
         self.summary = vault_response_summary(mode, response);
         self.artifact_notice = vault_response_artifact_notice(response);
         self.error = None;
+        self.rendered_mode = Some(mode);
         self.last_success_mode = Some(mode);
         self.last_success_response = Some(response.clone());
     }
@@ -744,8 +801,54 @@ impl DesktopVaultResponseState {
         self.error = Some(redact_desktop_vault_error(message.as_ref()));
         self.summary.clear();
         self.artifact_notice.clear();
+        self.rendered_mode = Some(mode);
         self.last_success_mode = None;
         self.last_success_response = None;
+    }
+
+    pub fn has_safe_response_report(&self) -> bool {
+        self.rendered_mode.is_some()
+            && (!self.summary.is_empty()
+                || !self.artifact_notice.is_empty()
+                || self.error.is_some())
+    }
+
+    pub fn safe_response_report_json(
+        &self,
+    ) -> Result<serde_json::Value, DesktopPortableArtifactSaveError> {
+        if !self.has_safe_response_report() {
+            return Err(DesktopPortableArtifactSaveError::MissingArtifact);
+        }
+        let mode = self
+            .rendered_mode
+            .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
+        Ok(self.safe_export_json(mode))
+    }
+
+    pub fn safe_response_report_download_for_source(
+        &self,
+        source_name: Option<&str>,
+    ) -> Result<DesktopVaultResponseReportDownload, DesktopPortableArtifactSaveError> {
+        if !matches!(
+            self.rendered_mode,
+            Some(
+                DesktopVaultResponseMode::InspectArtifact
+                    | DesktopVaultResponseMode::ImportArtifact
+            )
+        ) {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
+        let json = serde_json::to_string_pretty(&self.safe_response_report_json()?)
+            .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
+        let stem = source_name
+            .and_then(safe_source_file_stem)
+            .unwrap_or_else(|| "desktop".to_string());
+
+        Ok(DesktopVaultResponseReportDownload {
+            file_name: format!("{stem}-portable-response-report.json"),
+            bytes: json.into_bytes(),
+        })
     }
 
     pub fn portable_artifact_download_json(
@@ -790,6 +893,18 @@ pub fn write_portable_artifact_json(
         state.portable_artifact_download_json(DesktopVaultResponseMode::VaultExport)?;
     let path = path.as_ref();
     std::fs::write(path, artifact_json)
+        .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
+pub fn write_safe_vault_response_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
+    let report_json = serde_json::to_string_pretty(&state.safe_response_report_json()?)
+        .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
+    let path = path.as_ref();
+    std::fs::write(path, report_json)
         .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
     Ok(path.to_path_buf())
 }
@@ -1312,6 +1427,244 @@ impl DesktopRuntimeClient {
     }
 }
 
+fn sanitize_review_report_queue(value: Option<&serde_json::Value>) -> serde_json::Value {
+    match value {
+        Some(serde_json::Value::Array(items)) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(sanitize_review_report_queue_item)
+                .collect::<Vec<_>>(),
+        ),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn sanitize_review_report_summary(value: Option<&serde_json::Value>) -> serde_json::Value {
+    value.map_or(
+        serde_json::Value::Null,
+        sanitize_review_report_summary_value,
+    )
+}
+
+fn sanitize_review_report_summary_value(value: &serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(object) = value else {
+        return serde_json::Value::Null;
+    };
+
+    let mut sanitized = serde_json::Map::new();
+    for (key, value) in object {
+        if !is_allowed_review_report_summary_key(key) {
+            continue;
+        }
+        if let Some(value) = sanitize_review_report_summary_field(value) {
+            sanitized.insert(key.clone(), value);
+        }
+    }
+    serde_json::Value::Object(sanitized)
+}
+
+fn sanitize_review_report_summary_field(value: &serde_json::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            Some(value.clone())
+        }
+        serde_json::Value::Array(_)
+        | serde_json::Value::Object(_)
+        | serde_json::Value::String(_) => None,
+    }
+}
+
+fn is_allowed_review_report_summary_key(key: &str) -> bool {
+    matches!(
+        key,
+        "pages"
+            | "page_count"
+            | "row_count"
+            | "metadata_fields"
+            | "metadata_field_count"
+            | "metadata_entry_count"
+            | "artifact_count"
+            | "ocr_required"
+            | "ocr_or_visual_review_required"
+            | "review_required"
+            | "review_required_count"
+            | "reviewed_field_count"
+            | "candidate_count"
+            | "finding_count"
+            | "unsupported_count"
+            | "unsupported_payload_count"
+            | "text_layer_page_count"
+            | "total_items"
+            | "metadata_only_items"
+            | "visual_review_required_items"
+            | "unsupported_items"
+            | "review_required_candidates"
+    )
+}
+
+fn sanitize_review_report_queue_item(value: &serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(object) = value else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+
+    let mut sanitized = serde_json::Map::new();
+    for (key, value) in object {
+        match key.as_str() {
+            "page" if value.as_u64().is_some() => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "confidence" if value.is_number() => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "requires_review" if value.is_boolean() => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "status" if value.as_str().is_some_and(is_allowed_review_report_status) => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "kind" if value.as_str().is_some_and(is_allowed_review_report_kind) => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "format" if value.as_str().is_some_and(is_allowed_review_report_format) => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "phi_type"
+                if value
+                    .as_str()
+                    .is_some_and(is_allowed_review_report_phi_type) =>
+            {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "action" if value.as_str().is_some_and(is_allowed_review_report_action) => {
+                sanitized.insert(key.clone(), value.clone());
+            }
+            "field" => {
+                sanitized.insert(
+                    key.clone(),
+                    serde_json::Value::String("redacted-field".into()),
+                );
+            }
+            "field_ref"
+                if value.as_object().is_some_and(|field_ref| {
+                    field_ref.contains_key("artifact_label")
+                        && field_ref.contains_key("metadata_key")
+                }) =>
+            {
+                sanitized.insert(
+                    key.clone(),
+                    serde_json::json!({
+                        "artifact_label": "redacted-artifact",
+                        "metadata_key": "redacted-field"
+                    }),
+                );
+            }
+            "reason" | "message" => {
+                sanitized.insert(
+                    key.clone(),
+                    serde_json::Value::String("redacted-review-note".into()),
+                );
+            }
+            _ => {}
+        }
+    }
+    serde_json::Value::Object(sanitized)
+}
+
+fn is_allowed_review_report_status(text: &str) -> bool {
+    matches!(
+        text,
+        "review_required"
+            | "reviewed"
+            | "unsupported"
+            | "ok"
+            | "blocked"
+            | "warning"
+            | "ocr_or_visual_review_required"
+    )
+}
+
+fn is_allowed_review_report_kind(text: &str) -> bool {
+    matches!(
+        text,
+        "pdf_review" | "text_layer" | "metadata" | "conservative_media" | "dicom" | "tabular"
+    )
+}
+
+fn is_allowed_review_report_phi_type(text: &str) -> bool {
+    matches!(
+        text,
+        "Name"
+            | "RecordId"
+            | "Date"
+            | "Location"
+            | "Contact"
+            | "FreeText"
+            | "name"
+            | "metadata_identifier"
+    )
+}
+
+fn is_allowed_review_report_format(text: &str) -> bool {
+    matches!(
+        text,
+        "image"
+            | "video"
+            | "audio"
+            | "fcs"
+            | "unknown"
+            | "image/jpeg"
+            | "image/png"
+            | "image/gif"
+            | "image/tiff"
+            | "application/dicom"
+            | "video/mp4"
+            | "audio/mpeg"
+            | "metadata/json"
+    )
+}
+
+fn is_allowed_review_report_action(text: &str) -> bool {
+    matches!(text, "encode" | "review" | "ignore" | "redact" | "remove")
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopWorkflowOutputDownload {
+    pub file_name: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopWorkflowReviewReportDownload {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for DesktopWorkflowReviewReportDownload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopWorkflowReviewReportDownload")
+            .field("file_name", &self.file_name)
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for DesktopWorkflowOutputDownload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopWorkflowOutputDownload")
+            .field("file_name", &self.file_name)
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
+}
+
+pub fn write_workflow_output_file(
+    path: impl AsRef<std::path::Path>,
+    download: &DesktopWorkflowOutputDownload,
+) -> Result<(), String> {
+    std::fs::write(path, &download.bytes)
+        .map_err(|_| "workflow output save failed: unable to write output file".to_string())
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowResponseState {
     pub banner: String,
@@ -1319,6 +1672,8 @@ pub struct DesktopWorkflowResponseState {
     pub summary: String,
     pub review_queue: String,
     pub error: Option<String>,
+    last_success_mode: Option<DesktopWorkflowMode>,
+    last_success_response: Option<serde_json::Value>,
 }
 
 impl Default for DesktopWorkflowResponseState {
@@ -1329,11 +1684,110 @@ impl Default for DesktopWorkflowResponseState {
             summary: "No successful runtime summary rendered yet.".to_string(),
             review_queue: "No review queue rendered yet.".to_string(),
             error: None,
+            last_success_mode: None,
+            last_success_response: None,
         }
     }
 }
 
 impl DesktopWorkflowResponseState {
+    pub fn workflow_output_download(
+        &self,
+        mode: DesktopWorkflowMode,
+    ) -> Option<DesktopWorkflowOutputDownload> {
+        if self.error.is_some() || self.last_success_mode != Some(mode) {
+            return None;
+        }
+
+        let response = self.last_success_response.as_ref()?;
+        match mode {
+            DesktopWorkflowMode::CsvText => {
+                let csv = response.get("csv")?.as_str()?;
+                Some(DesktopWorkflowOutputDownload {
+                    file_name: "desktop-deidentified.csv",
+                    bytes: csv.as_bytes().to_vec(),
+                })
+            }
+            DesktopWorkflowMode::XlsxBase64 => {
+                let encoded = response.get("rewritten_workbook_base64")?.as_str()?;
+                Some(DesktopWorkflowOutputDownload {
+                    file_name: "desktop-deidentified.xlsx",
+                    bytes: decode_base64(encoded)?,
+                })
+            }
+            DesktopWorkflowMode::DicomBase64 => {
+                let encoded = response.get("rewritten_dicom_bytes_base64")?.as_str()?;
+                Some(DesktopWorkflowOutputDownload {
+                    file_name: "desktop-deidentified.dcm",
+                    bytes: decode_base64(encoded)?,
+                })
+            }
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => None,
+        }
+    }
+
+    pub fn review_report_download(
+        &self,
+        mode: DesktopWorkflowMode,
+    ) -> Option<DesktopWorkflowReviewReportDownload> {
+        if !matches!(
+            mode,
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson
+        ) || self.error.is_some()
+            || self.last_success_mode != Some(mode)
+        {
+            return None;
+        }
+
+        let response = self.last_success_response.as_ref()?;
+        let report = serde_json::json!({
+            "mode": match mode {
+                DesktopWorkflowMode::PdfBase64Review => "pdf_review",
+                DesktopWorkflowMode::MediaMetadataJson => "media_metadata_json",
+                DesktopWorkflowMode::CsvText
+                | DesktopWorkflowMode::XlsxBase64
+                | DesktopWorkflowMode::DicomBase64 => return None,
+            },
+            "summary": sanitize_review_report_summary(response.get("summary")),
+            "review_queue": sanitize_review_report_queue(response.get("review_queue")),
+        });
+        let json = serde_json::to_string_pretty(&report).ok()?;
+
+        Some(DesktopWorkflowReviewReportDownload {
+            file_name: match mode {
+                DesktopWorkflowMode::PdfBase64Review => {
+                    "desktop-pdf-review-report.json".to_string()
+                }
+                DesktopWorkflowMode::MediaMetadataJson => {
+                    "desktop-media-review-report.json".to_string()
+                }
+                DesktopWorkflowMode::CsvText
+                | DesktopWorkflowMode::XlsxBase64
+                | DesktopWorkflowMode::DicomBase64 => return None,
+            },
+            bytes: json.into_bytes(),
+        })
+    }
+
+    pub fn review_report_download_for_source(
+        &self,
+        mode: DesktopWorkflowMode,
+        source_name: Option<&str>,
+    ) -> Option<DesktopWorkflowReviewReportDownload> {
+        let mut download = self.review_report_download(mode)?;
+        let stem = source_name
+            .and_then(safe_source_file_stem)
+            .unwrap_or_else(|| "desktop".to_string());
+        download.file_name = match mode {
+            DesktopWorkflowMode::PdfBase64Review => format!("{stem}-pdf-review-report.json"),
+            DesktopWorkflowMode::MediaMetadataJson => format!("{stem}-media-review-report.json"),
+            DesktopWorkflowMode::CsvText
+            | DesktopWorkflowMode::XlsxBase64
+            | DesktopWorkflowMode::DicomBase64 => return None,
+        };
+        Some(download)
+    }
+
     pub fn exportable_output(&self) -> Option<&str> {
         let output = self.output.trim();
         if output.is_empty()
@@ -1352,6 +1806,24 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::XlsxBase64 => Some("desktop-deidentified.xlsx.base64.txt"),
             DesktopWorkflowMode::PdfBase64Review => None,
             DesktopWorkflowMode::DicomBase64 => Some("desktop-deidentified.dcm.base64.txt"),
+            DesktopWorkflowMode::MediaMetadataJson => None,
+        }
+    }
+
+    pub fn suggested_export_file_name_for_source(
+        &self,
+        mode: DesktopWorkflowMode,
+        source_name: Option<&str>,
+    ) -> Option<String> {
+        self.exportable_output()?;
+        let stem = source_name.and_then(safe_source_file_stem);
+        let stem = stem.as_deref().unwrap_or("desktop");
+
+        match mode {
+            DesktopWorkflowMode::CsvText => Some(format!("{stem}-deidentified.csv")),
+            DesktopWorkflowMode::XlsxBase64 => Some(format!("{stem}-deidentified.xlsx.base64.txt")),
+            DesktopWorkflowMode::PdfBase64Review => None,
+            DesktopWorkflowMode::DicomBase64 => Some(format!("{stem}-deidentified.dcm.base64.txt")),
             DesktopWorkflowMode::MediaMetadataJson => None,
         }
     }
@@ -1403,6 +1875,8 @@ impl DesktopWorkflowResponseState {
         self.summary = pretty_json_field(&envelope, "summary");
         self.review_queue = pretty_json_field(&envelope, "review_queue");
         self.error = None;
+        self.last_success_mode = Some(mode);
+        self.last_success_response = Some(envelope);
     }
 
     pub fn apply_error(&mut self, message: impl Into<String>) {
@@ -1411,6 +1885,47 @@ impl DesktopWorkflowResponseState {
         self.summary = "No successful runtime summary rendered yet.".to_string();
         self.review_queue = "No review queue rendered yet.".to_string();
         self.error = Some(message.into());
+        self.last_success_mode = None;
+        self.last_success_response = None;
+    }
+}
+
+fn safe_source_file_stem(source_name: &str) -> Option<String> {
+    let filename = source_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(source_name);
+    let stem = filename
+        .rsplit_once('.')
+        .map_or(filename, |(stem, _)| stem)
+        .trim();
+
+    let mut safe = String::new();
+    let mut last_was_dash = false;
+    for ch in stem.chars() {
+        if safe.len() >= 64 {
+            break;
+        }
+
+        if ch.is_ascii_alphanumeric()
+            || (ch == '.' && !safe.is_empty() && !safe.ends_with('.') && !last_was_dash)
+        {
+            safe.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !safe.is_empty() {
+            safe.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    while safe.ends_with(['-', '.']) {
+        safe.pop();
+    }
+
+    if safe.is_empty() {
+        None
+    } else {
+        Some(safe)
     }
 }
 
@@ -1550,6 +2065,108 @@ mod tests {
     }
 
     #[test]
+    fn desktop_portable_response_report_for_source_uses_safe_imported_artifact_filename() {
+        let inspect_response = serde_json::json!({
+            "record_count": 2,
+            "records": [{
+                "record_id": "inspect-raw-patient-123",
+                "token": "inspect-raw-token-secret",
+                "payload": "inspect-raw-phi-payload"
+            }],
+            "artifact_path": "C:\\vaults\\sensitive\\Inspect Raw Clinic Batch.mdid-portable.json"
+        });
+        let inspect_input_text =
+            serde_json::to_string(&inspect_response).expect("fixture serializes");
+        assert!(inspect_input_text.contains("Inspect Raw Clinic Batch"));
+        assert!(inspect_input_text.contains("inspect-raw-patient-123"));
+        assert!(inspect_input_text.contains("inspect-raw-token-secret"));
+        assert!(inspect_input_text.contains("inspect-raw-phi-payload"));
+
+        let mut inspect_state = DesktopVaultResponseState::default();
+        inspect_state.apply_success(DesktopVaultResponseMode::InspectArtifact, &inspect_response);
+
+        let inspect_report = inspect_state
+            .safe_response_report_download_for_source(Some(
+                "C:\\vaults\\sensitive\\Clinic Batch.mdid-portable.json",
+            ))
+            .expect("portable inspect response should create a safe report download");
+        assert_eq!(
+            inspect_report.file_name,
+            "Clinic-Batch.mdid-portable-portable-response-report.json"
+        );
+        let inspect_text = std::str::from_utf8(&inspect_report.bytes).expect("report is utf8 json");
+        assert!(inspect_text.contains("bounded portable artifact response rendered locally"));
+        assert!(inspect_text.contains("artifact path returned; full path hidden"));
+        assert!(!inspect_text.contains("Inspect Raw Clinic Batch"));
+        assert!(!inspect_text.contains("inspect-raw-patient-123"));
+        assert!(!inspect_text.contains("inspect-raw-token-secret"));
+        assert!(!inspect_text.contains("inspect-raw-phi-payload"));
+
+        let import_response = serde_json::json!({
+            "imported_record_count": 1,
+            "duplicate_record_count": 1,
+            "imported_records": [{
+                "record_id": "import-raw-patient-456",
+                "token": "import-raw-token-secret",
+                "payload": "import-raw-phi-payload"
+            }],
+            "artifact_path": "/tmp/Import Raw Partner Export.mdid-portable.json"
+        });
+        let import_input_text =
+            serde_json::to_string(&import_response).expect("fixture serializes");
+        assert!(import_input_text.contains("Import Raw Partner Export"));
+        assert!(import_input_text.contains("import-raw-patient-456"));
+        assert!(import_input_text.contains("import-raw-token-secret"));
+        assert!(import_input_text.contains("import-raw-phi-payload"));
+
+        let mut import_state = DesktopVaultResponseState::default();
+        import_state.apply_success(DesktopVaultResponseMode::ImportArtifact, &import_response);
+
+        let import_report = import_state
+            .safe_response_report_download_for_source(Some(
+                "/tmp/Partner Export.mdid-portable.json",
+            ))
+            .expect("portable import response should create a safe report download");
+        assert_eq!(
+            import_report.file_name,
+            "Partner-Export.mdid-portable-portable-response-report.json"
+        );
+        let import_text = std::str::from_utf8(&import_report.bytes).expect("report is utf8 json");
+        assert!(import_text.contains("bounded portable artifact response rendered locally"));
+        assert!(import_text.contains("artifact path returned; full path hidden"));
+        assert!(!import_text.contains("Import Raw Partner Export"));
+        assert!(!import_text.contains("import-raw-patient-456"));
+        assert!(!import_text.contains("import-raw-token-secret"));
+        assert!(!import_text.contains("import-raw-phi-payload"));
+    }
+
+    #[test]
+    fn desktop_portable_response_report_for_source_rejects_non_portable_modes() {
+        for mode in [
+            DesktopVaultResponseMode::VaultDecode,
+            DesktopVaultResponseMode::VaultAudit,
+            DesktopVaultResponseMode::VaultExport,
+        ] {
+            let mut state = DesktopVaultResponseState::default();
+            state.apply_success(
+                mode,
+                &serde_json::json!({
+                    "decoded_value_count": 1,
+                    "returned_event_count": 1,
+                    "event_count": 1,
+                    "record_count": 1,
+                    "artifact_path": "/tmp/non-portable-source.json"
+                }),
+            );
+
+            assert_eq!(
+                state.safe_response_report_download_for_source(Some("source.mdid-portable.json")),
+                Err(DesktopPortableArtifactSaveError::NotVaultExport)
+            );
+        }
+    }
+
+    #[test]
     fn vault_response_safe_export_omits_decoded_values_paths_and_raw_audit_detail() {
         let response = serde_json::json!({
             "decoded_value_count": 2,
@@ -1604,6 +2221,36 @@ mod tests {
         assert_eq!(exported["error"], "runtime failed; details redacted");
         assert!(!exported_text.contains("/secret/artifact.json"));
         assert!(!exported_text.contains("hunter2"));
+    }
+
+    #[test]
+    fn safe_vault_response_json_writer_persists_allowlisted_audit_summary_only() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let target = temp_dir.path().join("vault-audit-report.json");
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "event_count": 4,
+            "returned_event_count": 2,
+            "events": [
+                {"kind": "decode", "detail": "patient Alice decoded for oncology"},
+                {"kind": "export", "detail": "exported C:/vaults/alice.mdid"}
+            ],
+            "vault_path": "C:/vaults/alice.mdid",
+            "vault_passphrase": "correct horse battery staple"
+        });
+        state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
+
+        let written_path = write_safe_vault_response_json(&state, &target)
+            .expect("safe vault response report should be written");
+
+        assert_eq!(written_path, target);
+        let persisted = std::fs::read_to_string(&written_path).expect("read report");
+        assert!(persisted.contains("\"mode\": \"vault_audit\""));
+        assert!(persisted.contains("events returned: 2 / 4"));
+        assert!(!persisted.contains("patient Alice"));
+        assert!(!persisted.contains("C:/vaults/alice.mdid"));
+        assert!(!persisted.contains("correct horse battery staple"));
+        assert!(!persisted.contains("\"events\""));
     }
 
     #[test]
@@ -2465,6 +3112,32 @@ mod tests {
     }
 
     #[test]
+    fn desktop_portable_file_import_payload_supports_import_mode() {
+        let payload = DesktopPortableFileImportPayload::from_bytes_for_mode(
+            DesktopPortableMode::ImportArtifact,
+            "handoff.mdid-portable.json",
+            br#"{\"version\":1,\"records\":[]}"#,
+        )
+        .expect("portable import handoff should accept artifact json");
+
+        assert_eq!(payload.mode, DesktopPortableMode::ImportArtifact);
+        assert_eq!(payload.artifact_json, r#"{\"version\":1,\"records\":[]}"#);
+        assert_eq!(payload.source_name, "handoff.mdid-portable.json");
+    }
+
+    #[test]
+    fn desktop_portable_file_import_payload_rejects_export_mode() {
+        let error = DesktopPortableFileImportPayload::from_bytes_for_mode(
+            DesktopPortableMode::VaultExport,
+            "handoff.mdid-portable.json",
+            br#"{\"version\":1}"#,
+        )
+        .expect_err("vault export is not an artifact-consuming mode");
+
+        assert_eq!(error, DesktopFileImportError::UnsupportedFileType);
+    }
+
+    #[test]
     fn exact_browser_portable_artifact_filename_targets_inspect_mode() {
         let imported = DesktopFileImportPayload::from_bytes_target(
             "mdid-browser-portable-artifact.json",
@@ -3016,6 +3689,519 @@ mod tests {
     }
 
     #[test]
+    fn pdf_review_report_download_exports_structured_json_without_pdf_bytes() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {"pages": 1, "ocr_required": false},
+                "review_queue": [{"page": 1, "reason": "text-layer review"}],
+                "rewritten_pdf_bytes_base64": null,
+                "debug_raw_text": "Alice Patient"
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review success should create a structured review report download");
+
+        assert_eq!(download.file_name, "desktop-pdf-review-report.json");
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(report["mode"], "pdf_review");
+        assert_eq!(
+            report["summary"],
+            json!({"pages": 1, "ocr_required": false})
+        );
+        assert_eq!(
+            report["review_queue"],
+            json!([{"page": 1, "reason": "redacted-review-note"}])
+        );
+        assert!(report.get("rewritten_pdf_bytes_base64").is_none());
+        assert!(report.get("debug_raw_text").is_none());
+        assert!(!text.contains("Alice Patient"));
+    }
+
+    #[test]
+    fn desktop_review_report_download_for_source_uses_safe_pdf_and_media_filenames() {
+        let mut pdf_state = DesktopWorkflowResponseState::default();
+        pdf_state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            serde_json::json!({
+                "summary": { "total_pages": 1, "pages_requiring_review": 1 },
+                "review_queue": [{ "page_index": 0, "reason": "ocr_required" }],
+                "rewritten_pdf_bytes_base64": null,
+            }),
+        );
+
+        let pdf_report = pdf_state
+            .review_report_download_for_source(
+                DesktopWorkflowMode::PdfBase64Review,
+                Some("C:\\clinic\\March intake.pdf"),
+            )
+            .expect("pdf review report should be exportable");
+        assert_eq!(pdf_report.file_name, "March-intake-pdf-review-report.json");
+
+        let mut media_state = DesktopWorkflowResponseState::default();
+        media_state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            serde_json::json!({
+                "summary": { "metadata_fields_reviewed": 2, "metadata_fields_requiring_review": 1 },
+                "review_queue": [{ "field_index": 0, "reason": "metadata_identifier" }],
+                "rewritten_media_bytes_base64": null,
+            }),
+        );
+
+        let media_report = media_state
+            .review_report_download_for_source(
+                DesktopWorkflowMode::MediaMetadataJson,
+                Some("/uploads/Camera Roll.metadata.json"),
+            )
+            .expect("media review report should be exportable");
+        assert_eq!(
+            media_report.file_name,
+            "Camera-Roll.metadata-media-review-report.json"
+        );
+    }
+
+    #[test]
+    fn media_review_report_download_exports_structured_json_without_metadata_phi() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            serde_json::json!({
+                "summary": {
+                    "total_items": 1,
+                    "metadata_only_items": 1,
+                    "visual_review_required_items": 1,
+                    "unsupported_items": 0,
+                    "review_required_candidates": 1,
+                    "artifact_count": 1,
+                    "metadata_entry_count": 2,
+                    "candidate_count": 1,
+                    "review_required_count": 1,
+                    "unsupported_payload_count": 0,
+                    "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                    "free_text_note": "MRN-12345"
+                },
+                "review_queue": [{
+                    "kind": "conservative_media",
+                    "format": "image",
+                    "status": "ocr_or_visual_review_required",
+                    "action": "review",
+                    "phi_type": "metadata_identifier",
+                    "metadata_key": "PatientName",
+                    "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                    "field_ref": {
+                        "artifact_label": "Patient-Jane-Doe-face-photo.jpg",
+                        "metadata_key": "PatientName"
+                    },
+                    "source_value": "Jane Doe MRN-12345"
+                }],
+                "raw_body": {"patient": "Jane Doe"},
+                "rewritten_media_bytes_base64": "SlBFRyBCWVRFUw=="
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::MediaMetadataJson)
+            .expect("media metadata review response should produce structured report");
+
+        assert_eq!(download.file_name, "desktop-media-review-report.json");
+        let rendered = std::str::from_utf8(&download.bytes).unwrap();
+        let report: serde_json::Value = serde_json::from_str(rendered).unwrap();
+        assert_eq!(report["mode"], "media_metadata_json");
+        assert_eq!(report["summary"]["total_items"], 1);
+        assert_eq!(report["summary"]["metadata_only_items"], 1);
+        assert_eq!(report["summary"]["visual_review_required_items"], 1);
+        assert_eq!(report["summary"]["unsupported_items"], 0);
+        assert_eq!(report["summary"]["review_required_candidates"], 1);
+        assert_eq!(report["summary"]["artifact_count"], 1);
+        assert_eq!(report["summary"]["candidate_count"], 1);
+        assert_eq!(report["review_queue"][0]["kind"], "conservative_media");
+        assert_eq!(report["review_queue"][0]["format"], "image");
+        assert_eq!(
+            report["review_queue"][0]["status"],
+            "ocr_or_visual_review_required"
+        );
+        assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
+        assert_eq!(
+            report["review_queue"][0]["field_ref"]["artifact_label"],
+            "redacted-artifact"
+        );
+        assert_eq!(
+            report["review_queue"][0]["field_ref"]["metadata_key"],
+            "redacted-field"
+        );
+
+        assert!(!rendered.contains("Jane Doe"));
+        assert!(!rendered.contains("MRN-12345"));
+        assert!(!rendered.contains("PatientName"));
+        assert!(!rendered.contains("Patient-Jane-Doe"));
+        assert!(rendered.contains("field_ref"));
+        assert!(!rendered.contains("dicom.PatientName"));
+        assert!(!rendered.contains("raw_body"));
+        assert!(!rendered.contains("rewritten_media_bytes"));
+    }
+
+    #[test]
+    fn pdf_review_report_download_sanitizes_review_queue_phi_fields() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {"pages": 1, "ocr_required": true},
+                "review_queue": [{
+                    "page": 1,
+                    "field": "Alice Patient name field",
+                    "reason": "possible Alice Patient DOB 1/2/1934",
+                    "message": "call Alice Patient at 555-1212",
+                    "status": "review_required",
+                    "source_text": "Alice Patient",
+                    "raw_text": "Alice Patient DOB 1/2/1934",
+                    "value": "Alice Patient",
+                    "metadata": {"capture_path": "/tmp/Alice Patient.pdf"},
+                    "debug": {"text": "Alice Patient"},
+                    "nested": {"message": "safe nested message", "source_text": "Alice Patient"}
+                }],
+                "rewritten_pdf_bytes_base64": null
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        assert!(!text.contains("Alice Patient"));
+        assert!(!text.contains("555-1212"));
+        assert!(!text.contains("source_text"));
+        assert!(!text.contains("raw_text"));
+        assert!(!text.contains("value"));
+        assert!(!text.contains("metadata"));
+        assert!(!text.contains("debug"));
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(
+            report["review_queue"],
+            json!([{
+                "field": "redacted-field",
+                "message": "redacted-review-note",
+                "page": 1,
+                "reason": "redacted-review-note",
+                "status": "review_required"
+            }])
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_download_redacts_summary_free_text() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {
+                    "source_text": 1,
+                    "metadata": {"pages": 1},
+                    "status": "Alice-Patient",
+                    "pages": 1,
+                    "ocr_required": false,
+                    "note": "Alice Patient reviewed on 1/2/1934",
+                    "source": "Alice Patient intake.pdf",
+                    "path": "/tmp/Alice Patient intake.pdf",
+                    "nested": {"count": 1, "note": "Alice Patient nested note"}
+                },
+                "review_queue": [],
+                "rewritten_pdf_bytes_base64": null
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        assert!(!text.contains("Alice"));
+        assert!(!text.contains("source_text"));
+        assert!(!text.contains("metadata"));
+        assert!(!text.contains("status"));
+        assert!(!text.contains("intake.pdf"));
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(
+            report["summary"],
+            json!({
+                "ocr_required": false,
+                "pages": 1
+            })
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_download_drops_arbitrary_numeric_summary_phi_keys() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {
+                    "pages": 2,
+                    "page_count": 2,
+                    "AlicePatient": 1,
+                    "MRN12345": 12345,
+                    "nested": {"AlicePatient": 1, "pages": 2}
+                },
+                "review_queue": [],
+                "rewritten_pdf_bytes_base64": null
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        assert!(!text.contains("AlicePatient"));
+        assert!(!text.contains("MRN12345"));
+        assert!(!text.contains("nested"));
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(report["summary"], json!({"page_count": 2, "pages": 2}));
+    }
+
+    #[test]
+    fn pdf_review_report_download_drops_enum_like_phi_review_queue_values() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {"pages": 1},
+                "review_queue": [{
+                    "page": 1,
+                    "status": "AlicePatient",
+                    "kind": "MRN12345",
+                    "action": "PatientDOB1934",
+                    "phi_type": "Phone5551212",
+                    "field": "Alice Patient",
+                    "reason": "Alice Patient"
+                }],
+                "rewritten_pdf_bytes_base64": null
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        assert!(!text.contains("AlicePatient"));
+        assert!(!text.contains("MRN12345"));
+        assert!(!text.contains("PatientDOB1934"));
+        assert!(!text.contains("Phone5551212"));
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+        assert_eq!(
+            report["review_queue"],
+            json!([{"field": "redacted-field", "page": 1, "reason": "redacted-review-note"}])
+        );
+    }
+
+    #[test]
+    fn review_report_download_fails_closed_for_stale_error_and_non_review_modes() {
+        let mut state = DesktopWorkflowResponseState::default();
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"csv":"ok","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::CsvText),
+            None
+        );
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({"summary":{},"review_queue":[]}),
+        );
+        state.apply_error("runtime failed");
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        state.apply_success_json(
+            DesktopWorkflowMode::MediaMetadataJson,
+            json!({"summary":{"total_items":1},"review_queue":[]}),
+        );
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+        state.apply_error("media runtime failed");
+        assert_eq!(
+            state.review_report_download(DesktopWorkflowMode::MediaMetadataJson),
+            None
+        );
+    }
+
+    #[test]
+    fn workflow_output_download_extracts_csv_bytes_without_raw_envelope() {
+        let mut response = DesktopWorkflowResponseState::default();
+        response.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({
+                "csv": "patient_name\n<NAME-1>",
+                "summary": {"encoded_fields": 1},
+                "review_queue": []
+            }),
+        );
+
+        let download = response
+            .workflow_output_download(DesktopWorkflowMode::CsvText)
+            .expect("csv output download");
+
+        assert_eq!(download.file_name, "desktop-deidentified.csv");
+        assert_eq!(download.bytes, b"patient_name\n<NAME-1>");
+        assert!(!download.bytes.starts_with(b"{"));
+        let debug = format!("{download:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("patient_name"));
+        assert!(!debug.contains("NAME-1"));
+    }
+
+    #[test]
+    fn write_workflow_output_file_writes_bytes_without_exposing_phi_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir
+            .path()
+            .join("patient-jane-doe-mrn-12345-deidentified.csv");
+        let download = DesktopWorkflowOutputDownload {
+            file_name: "desktop-deidentified.csv",
+            bytes: b"patient_name\n<NAME-1>\n".to_vec(),
+        };
+
+        write_workflow_output_file(&path, &download).expect("workflow output saved");
+
+        assert_eq!(
+            std::fs::read(&path).expect("saved bytes readable"),
+            b"patient_name\n<NAME-1>\n"
+        );
+    }
+
+    #[test]
+    fn write_workflow_output_file_error_is_phi_safe() {
+        let path = std::env::temp_dir()
+            .join("missing-parent-jane-doe-mrn-12345")
+            .join("output.csv");
+        let download = DesktopWorkflowOutputDownload {
+            file_name: "desktop-deidentified.csv",
+            bytes: b"patient_name\n<NAME-1>\n".to_vec(),
+        };
+
+        let error = write_workflow_output_file(&path, &download).expect_err("write fails");
+
+        assert_eq!(
+            error,
+            "workflow output save failed: unable to write output file"
+        );
+        assert!(!error.contains("jane-doe"));
+        assert!(!error.contains("12345"));
+        assert!(!error.contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn workflow_output_download_extracts_xlsx_and_dicom_base64_bytes() {
+        let mut xlsx = DesktopWorkflowResponseState::default();
+        xlsx.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({"rewritten_workbook_base64":"UEsDBAo=","summary":{},"review_queue":[]}),
+        );
+        let xlsx_download = xlsx
+            .workflow_output_download(DesktopWorkflowMode::XlsxBase64)
+            .expect("xlsx output download");
+        assert_eq!(xlsx_download.file_name, "desktop-deidentified.xlsx");
+        assert_eq!(xlsx_download.bytes, b"PK\x03\x04\n");
+
+        let mut dicom = DesktopWorkflowResponseState::default();
+        dicom.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            json!({"rewritten_dicom_bytes_base64":"RElDTQAB","summary":{},"review_queue":[]}),
+        );
+        let dicom_download = dicom
+            .workflow_output_download(DesktopWorkflowMode::DicomBase64)
+            .expect("dicom output download");
+        assert_eq!(dicom_download.file_name, "desktop-deidentified.dcm");
+        assert_eq!(dicom_download.bytes, b"DICM\x00\x01");
+    }
+
+    #[test]
+    fn workflow_output_download_fails_closed_for_pdf_errors_malformed_and_mode_mismatch() {
+        let mut pdf = DesktopWorkflowResponseState::default();
+        pdf.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({"rewritten_pdf_bytes_base64":"JVBERi0x","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            pdf.workflow_output_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        let mut errored = DesktopWorkflowResponseState::default();
+        errored.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"csv":"ok","summary":{},"review_queue":[]}),
+        );
+        errored.apply_error("runtime failed");
+        assert_eq!(
+            errored.workflow_output_download(DesktopWorkflowMode::CsvText),
+            None
+        );
+
+        let mut malformed = DesktopWorkflowResponseState::default();
+        malformed.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({"rewritten_workbook_base64":"not valid base64!","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            malformed.workflow_output_download(DesktopWorkflowMode::XlsxBase64),
+            None
+        );
+
+        let mut non_canonical_padded = DesktopWorkflowResponseState::default();
+        non_canonical_padded.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            json!({"rewritten_dicom_bytes_base64":"/x==","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            non_canonical_padded.workflow_output_download(DesktopWorkflowMode::DicomBase64),
+            None
+        );
+
+        let mut missing = DesktopWorkflowResponseState::default();
+        missing.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            missing.workflow_output_download(DesktopWorkflowMode::CsvText),
+            None
+        );
+
+        let mut csv = DesktopWorkflowResponseState::default();
+        csv.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"csv":"ok","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            csv.workflow_output_download(DesktopWorkflowMode::XlsxBase64),
+            None
+        );
+    }
+
+    #[test]
     fn response_state_renders_csv_runtime_success_envelope() {
         let mut response = DesktopWorkflowResponseState::default();
 
@@ -3123,6 +4309,81 @@ mod tests {
         assert!(response.summary.contains("ocr_required_pages"));
         assert!(response.review_queue.contains("ocr_required"));
         assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn desktop_export_filename_uses_import_source_stem_for_csv_xlsx_and_dicom() {
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::CsvText,
+                Some("/clinic/intake/patient list.csv")
+            ),
+            Some("patient-list-deidentified.csv".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::XlsxBase64,
+                Some("C:\\clinic\\April Census.xlsx")
+            ),
+            Some("April-Census-deidentified.xlsx.base64.txt".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::DicomBase64,
+                Some("brain scan.dcm")
+            ),
+            Some("brain-scan-deidentified.dcm.base64.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn desktop_export_filename_caps_source_stem_at_64_sanitized_chars() {
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
+        let source_name = format!("{}.csv", "a".repeat(80));
+        let expected = format!("{}-deidentified.csv", "a".repeat(64));
+
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::CsvText,
+                Some(&source_name)
+            ),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn desktop_export_filename_falls_back_when_source_is_empty_or_unsafe() {
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name_for_source(DesktopWorkflowMode::CsvText, None),
+            Some("desktop-deidentified.csv".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::CsvText,
+                Some("///.csv")
+            ),
+            Some("desktop-deidentified.csv".to_string())
+        );
+        assert_eq!(
+            state.suggested_export_file_name_for_source(
+                DesktopWorkflowMode::PdfBase64Review,
+                Some("report.pdf")
+            ),
+            None
+        );
     }
 
     #[test]

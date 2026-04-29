@@ -1,3 +1,4 @@
+use base64::Engine;
 use leptos::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -8,6 +9,10 @@ const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
 const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; media metadata JSON files also load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. Media metadata JSON sends metadata only, not media bytes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+const MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS: usize = 64;
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+const EXPORT_FILENAME_WARNING_COPY: &str = "Browser suggested download filenames for imported files are derived from imported filenames for local UX only. If an original filename contains PHI, rename the downloaded file locally before sharing or storing it.";
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FETCH_UNAVAILABLE_MESSAGE: &str =
     "Runtime submission is only available from a wasm32 browser build.";
@@ -31,6 +36,14 @@ enum InputMode {
 enum BrowserFileReadMode {
     Text,
     DataUrlBase64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserDownloadPayload {
+    file_name: String,
+    mime_type: &'static str,
+    bytes: Vec<u8>,
+    is_text: bool,
 }
 
 impl InputMode {
@@ -111,6 +124,16 @@ impl InputMode {
             Self::VaultExport => "Vault export",
             Self::PortableArtifactInspect => "Portable artifact inspect",
             Self::PortableArtifactImport => "Portable artifact import",
+        }
+    }
+
+    fn safe_vault_report_mode_label(self) -> &'static str {
+        match self {
+            Self::VaultAuditEvents => "vault_audit_events",
+            Self::VaultDecode => "vault_decode",
+            Self::PortableArtifactInspect => "portable_artifact_inspect",
+            Self::PortableArtifactImport => "portable_artifact_import",
+            _ => self.label(),
         }
     }
 
@@ -250,7 +273,10 @@ fn build_vault_audit_request_payload(
         if !limit.is_empty() {
             let parsed_limit = limit
                 .parse::<usize>()
-                .map_err(|_| "Vault audit limit must be a non-negative integer.".to_string())?;
+                .map_err(|_| "Vault audit limit must be a positive integer.".to_string())?;
+            if parsed_limit == 0 {
+                return Err("Vault audit limit must be a positive integer.".to_string());
+            }
             object.insert("limit".to_string(), serde_json::json!(parsed_limit));
         }
     }
@@ -510,6 +536,93 @@ impl fmt::Debug for BrowserFlowState {
     }
 }
 
+fn parse_media_summary_report(summary: &str) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    for line in summary.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if !matches!(
+            key,
+            "total_items"
+                | "metadata_only_items"
+                | "visual_review_required_items"
+                | "unsupported_items"
+                | "review_required_candidates"
+                | "rewritten_media_bytes_base64"
+        ) {
+            continue;
+        }
+        if key == "rewritten_media_bytes_base64" {
+            object.insert(key.to_string(), serde_json::Value::Null);
+            continue;
+        }
+
+        let value = value.trim();
+        let parsed_value = value
+            .parse::<u64>()
+            .map_or(serde_json::Value::Null, serde_json::Value::from);
+        object.insert(key.to_string(), parsed_value);
+    }
+    serde_json::Value::Object(object)
+}
+
+fn parse_media_review_queue_report(review_queue: &str) -> serde_json::Value {
+    serde_json::Value::Array(
+        review_queue
+            .lines()
+            .filter_map(parse_media_review_queue_line)
+            .collect(),
+    )
+}
+
+fn parse_media_review_queue_line(line: &str) -> Option<serde_json::Value> {
+    let line = line.trim().strip_prefix("- ").unwrap_or(line.trim());
+    let parts: Vec<&str> = line.split(" / ").map(str::trim).collect();
+    if parts.len() < 5 {
+        return None;
+    }
+
+    let format = allowlisted_media_format(parts.get(1).copied().unwrap_or_default());
+    let phi_type = allowlisted_media_phi_type(parts.get(2).copied().unwrap_or_default());
+    let confidence = parts
+        .iter()
+        .find_map(|part| part.strip_prefix("confidence "))
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    Some(serde_json::json!({
+        "metadata_key": "redacted-field",
+        "format": format,
+        "phi_type": phi_type,
+        "confidence": confidence,
+        "value": "redacted",
+    }))
+}
+
+fn allowlisted_media_format(format: &str) -> &'static str {
+    match format {
+        "image" => "image",
+        "video" => "video",
+        "fcs" => "fcs",
+        _ => "unknown",
+    }
+}
+
+fn allowlisted_media_phi_type(phi_type: &str) -> &'static str {
+    match phi_type {
+        "Name" => "Name",
+        "Date" => "Date",
+        "Location" => "Location",
+        "Identifier" => "Identifier",
+        "Contact" => "Contact",
+        "Age" => "Age",
+        "metadata_identifier" => "metadata_identifier",
+        _ => "Other",
+    }
+}
+
 impl Default for BrowserFlowState {
     fn default() -> Self {
         Self {
@@ -541,6 +654,40 @@ impl Default for BrowserFlowState {
     }
 }
 
+fn sanitized_import_stem(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('-');
+            }
+            sanitized.push(ch.to_ascii_lowercase());
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('-') {
+            sanitized.pop();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-output".to_string()
+    } else {
+        sanitized
+    }
+}
+
 impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
@@ -561,24 +708,138 @@ impl BrowserFlowState {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    fn suggested_export_file_name(&self) -> &'static str {
+    fn suggested_export_file_name(&self) -> String {
+        if let Some(imported_file_name) = &self.imported_file_name {
+            let stem = sanitized_import_stem(imported_file_name);
+            match self.input_mode {
+                InputMode::CsvText => return format!("{stem}-deidentified.csv"),
+                InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx"),
+                InputMode::PdfBase64 => return format!("{stem}-review-report.json"),
+                InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm"),
+                InputMode::MediaMetadataJson => {
+                    return format!("{stem}-media-review-report.json");
+                }
+                InputMode::PortableArtifactInspect => {
+                    return format!("{stem}-portable-artifact-inspect.json");
+                }
+                InputMode::PortableArtifactImport => {
+                    return format!("{stem}-portable-artifact-import.json");
+                }
+                InputMode::VaultAuditEvents | InputMode::VaultDecode | InputMode::VaultExport => {}
+            }
+        }
+
         match self.input_mode {
             InputMode::CsvText => "mdid-browser-output.csv",
-            InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
-            InputMode::PdfBase64 => "mdid-browser-review-report.txt",
-            InputMode::DicomBase64 => "mdid-browser-output.dcm.base64.txt",
-            InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
+            InputMode::XlsxBase64 => "mdid-browser-output.xlsx",
+            InputMode::PdfBase64 => "mdid-browser-review-report.json",
+            InputMode::DicomBase64 => "mdid-browser-output.dcm",
+            InputMode::MediaMetadataJson => "mdid-browser-media-review-report.json",
             InputMode::VaultAuditEvents => "mdid-browser-vault-audit-events.json",
             InputMode::VaultDecode => "mdid-browser-vault-decode-response.json",
             InputMode::VaultExport => "mdid-browser-portable-artifact.json",
-            InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.txt",
-            InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt",
+            InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.json",
+            InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.json",
         }
+        .to_string()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
+    }
+
+    fn review_report_download_json(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mode": self.input_mode.label(),
+            "summary": self.summary,
+            "review_queue": self.review_queue,
+            "output": self.result_output,
+        }))
+        .map_err(|_| "Browser output download could not encode review report JSON.".to_string())
+    }
+
+    fn safe_vault_response_download_json(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mode": self.input_mode.safe_vault_report_mode_label(),
+            "summary": self.summary,
+            "review_queue": self.review_queue,
+        }))
+        .map_err(|_| {
+            "Browser output download could not encode safe vault response JSON.".to_string()
+        })
+    }
+
+    fn media_review_report_download_json(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mode": "media_metadata_review",
+            "summary": parse_media_summary_report(&self.summary),
+            "review_queue": parse_media_review_queue_report(&self.review_queue),
+        }))
+        .map_err(|_| {
+            "Browser output download could not encode media review report JSON.".to_string()
+        })
+    }
+
+    fn prepared_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
+        let file_name = self.suggested_export_file_name();
+        match self.input_mode {
+            InputMode::XlsxBase64 => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(self.result_output.trim())
+                    .map_err(|_| {
+                        "Browser output download could not decode rewritten XLSX base64 bytes."
+                            .to_string()
+                    })?;
+                Ok(BrowserDownloadPayload {
+                    file_name,
+                    mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    bytes,
+                    is_text: false,
+                })
+            }
+            InputMode::DicomBase64 => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(self.result_output.trim())
+                    .map_err(|_| {
+                        "Browser output download could not decode rewritten DICOM base64 bytes."
+                            .to_string()
+                    })?;
+                Ok(BrowserDownloadPayload {
+                    file_name,
+                    mime_type: "application/dicom",
+                    bytes,
+                    is_text: false,
+                })
+            }
+            InputMode::MediaMetadataJson => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "application/json;charset=utf-8",
+                bytes: self.media_review_report_download_json()?,
+                is_text: true,
+            }),
+            InputMode::PdfBase64 => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "application/json;charset=utf-8",
+                bytes: self.review_report_download_json()?,
+                is_text: true,
+            }),
+            InputMode::VaultAuditEvents
+            | InputMode::VaultDecode
+            | InputMode::PortableArtifactInspect
+            | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "application/json;charset=utf-8",
+                bytes: self.safe_vault_response_download_json()?,
+                is_text: true,
+            }),
+            _ => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "text/plain;charset=utf-8",
+                bytes: self.result_output.as_bytes().to_vec(),
+                is_text: true,
+            }),
+        }
     }
 
     fn clear_generated_state(&mut self) {
@@ -1495,8 +1756,62 @@ fn trigger_browser_text_download(file_name: &str, text: &str) -> Result<(), Stri
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn trigger_browser_text_download(_file_name: &str, _text: &str) -> Result<(), String> {
     Err("Browser export is only available from a wasm32 browser build.".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn trigger_browser_binary_download(
+    file_name: &str,
+    bytes: &[u8],
+    mime_type: &'static str,
+) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+
+    let parts = js_sys::Array::new();
+    parts.push(&js_sys::Uint8Array::from(bytes));
+
+    let options = BlobPropertyBag::new();
+    options.set_type(mime_type);
+
+    let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+        .map_err(|_| "Failed to create browser export blob.".to_string())?;
+    let url = Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "Failed to create browser export URL.".to_string())?;
+
+    let window =
+        web_sys::window().ok_or("Browser window is unavailable for export.".to_string())?;
+    let document = window
+        .document()
+        .ok_or("Browser document is unavailable for export.".to_string())?;
+    let anchor = document
+        .create_element("a")
+        .map_err(|_| "Failed to create browser export anchor.".to_string())?
+        .dyn_into::<HtmlAnchorElement>()
+        .map_err(|_| "Failed to prepare browser export anchor.".to_string())?;
+
+    anchor.set_href(&url);
+    anchor.set_download(file_name);
+    anchor.click();
+    Url::revoke_object_url(&url).ok();
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn trigger_browser_download(payload: &BrowserDownloadPayload) -> Result<(), String> {
+    if payload.is_text {
+        let text = std::str::from_utf8(&payload.bytes)
+            .map_err(|_| "Browser text export payload was not valid UTF-8.".to_string())?;
+        return trigger_browser_text_download(&payload.file_name, text);
+    }
+    trigger_browser_binary_download(&payload.file_name, &payload.bytes, payload.mime_type)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn trigger_browser_download(_payload: &BrowserDownloadPayload) -> Result<(), String> {
+    Err(FETCH_UNAVAILABLE_MESSAGE.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1762,18 +2077,16 @@ pub fn App() -> impl IntoView {
     let on_export = move |_| {
         let export = state.with_untracked(|state| {
             if state.can_export_output() {
-                Some((
-                    state.suggested_export_file_name().to_string(),
-                    state.result_output.clone(),
-                ))
+                Some(state.prepared_download_payload())
             } else {
                 None
             }
         });
 
-        if let Some((file_name, text)) = export {
-            if let Err(message) = trigger_browser_text_download(&file_name, &text) {
-                state.update(|state| state.error_banner = Some(message));
+        if let Some(export) = export {
+            match export.and_then(|payload| trigger_browser_download(&payload)) {
+                Ok(()) => {}
+                Err(message) => state.update(|state| state.error_banner = Some(message)),
             }
         }
     };
@@ -2002,6 +2315,9 @@ pub fn App() -> impl IntoView {
                     "Suggested export file: "
                     <code>{export_file_name}</code>
                 </p>
+                <p class="export-filename-warning">
+                    {EXPORT_FILENAME_WARNING_COPY}
+                </p>
                 <button disabled=move || !can_export_output() on:click=on_export type="button">
                     "Export current result output text"
                 </button>
@@ -2023,6 +2339,8 @@ pub fn App() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+
     use super::{
         build_portable_artifact_import_request_payload,
         build_portable_artifact_inspect_request_payload, build_submit_request,
@@ -2031,10 +2349,365 @@ mod tests {
         format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
         validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
         RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
-        DEFAULT_FIELD_POLICY_JSON, FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY,
-        MAX_BROWSER_IMPORT_BYTES,
+        DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY, FETCH_UNAVAILABLE_MESSAGE,
+        IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn xlsx_output_download_decodes_base64_to_binary_payload() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::XlsxBase64;
+        state.result_output = base64::engine::general_purpose::STANDARD.encode(b"workbook-bytes");
+
+        let payload = state.prepared_download_payload().expect("xlsx payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-output.xlsx");
+        assert_eq!(
+            payload.mime_type,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        assert_eq!(payload.bytes, b"workbook-bytes");
+        assert!(!payload.is_text);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn dicom_output_download_decodes_base64_to_binary_payload() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::DicomBase64;
+        state.imported_file_name = Some("CT Head.dcm".to_string());
+        state.result_output = base64::engine::general_purpose::STANDARD.encode(b"dicom-bytes");
+
+        let payload = state.prepared_download_payload().expect("dicom payload");
+
+        assert_eq!(payload.file_name, "ct-head-deidentified.dcm");
+        assert_eq!(payload.mime_type, "application/dicom");
+        assert_eq!(payload.bytes, b"dicom-bytes");
+        assert!(!payload.is_text);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn csv_output_download_keeps_text_payload() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::CsvText;
+        state.result_output = "patient_id\nMDID-1\n".to_string();
+
+        let payload = state.prepared_download_payload().expect("csv payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-output.csv");
+        assert_eq!(payload.mime_type, "text/plain;charset=utf-8");
+        assert_eq!(payload.bytes, b"patient_id\nMDID-1\n");
+        assert!(payload.is_text);
+    }
+
+    #[test]
+    fn pdf_review_download_exports_structured_json_report() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            result_output:
+                "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
+                    .to_string(),
+            summary: "total_pages: 1\nocr_required_pages: 0".to_string(),
+            review_queue: "- page 1 / patient_name / confidence 20 / review: <redacted>"
+                .to_string(),
+            ..BrowserFlowState::default()
+        };
+        state.imported_file_name = Some("Patient Doe.pdf".to_string());
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let json: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json report");
+
+        assert_eq!(payload.file_name, "patient-doe-review-report.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(json["mode"], "PDF base64");
+        assert_eq!(json["summary"], "total_pages: 1\nocr_required_pages: 0");
+        assert!(json["output"]
+            .as_str()
+            .unwrap()
+            .contains("review-only PDF analysis"));
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn media_review_download_is_structured_and_phi_safe() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::MediaMetadataJson;
+        state.result_output =
+            "Media rewrite/export unavailable: runtime returned metadata-only conservative review."
+                .to_string();
+        state.summary = "total_items: 1\nmetadata_only_items: 1\nvisual_review_required_items: 1\nunsupported_items: 0\nreview_required_candidates: 1\nrewritten_media_bytes_base64: null\noperator_notes: Jane Patient\ntotal_items_label: one\nmetadata_only_items: not-a-number".to_string();
+        state.review_queue = "- PatientName / image / metadata_identifier / confidence 0.97 / value: <redacted>\n- FlowCytometryId / fcs / metadata_identifier / confidence 0.91 / value: <redacted>\n- VoiceNote / audio / metadata_identifier / confidence 0.88 / value: <redacted>".to_string();
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let report: serde_json::Value =
+            serde_json::from_slice(&payload.bytes).expect("report json");
+        let report_text = String::from_utf8(payload.bytes).expect("report utf8");
+
+        assert_eq!(payload.file_name, "mdid-browser-media-review-report.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(report["mode"], "media_metadata_review");
+        assert_eq!(report["summary"]["total_items"], 1);
+        assert_eq!(
+            report["summary"]["metadata_only_items"],
+            serde_json::Value::Null
+        );
+        assert_eq!(report["summary"]["visual_review_required_items"], 1);
+        assert_eq!(report["summary"]["unsupported_items"], 0);
+        assert_eq!(report["summary"]["review_required_candidates"], 1);
+        assert_eq!(
+            report["summary"]["rewritten_media_bytes_base64"],
+            serde_json::Value::Null
+        );
+        assert_eq!(report["review_queue"][0]["metadata_key"], "redacted-field");
+        assert_eq!(report["review_queue"][0]["format"], "image");
+        assert_eq!(report["review_queue"][1]["format"], "fcs");
+        assert_eq!(report["review_queue"][2]["format"], "unknown");
+        assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
+        assert!(report["summary"].get("operator_notes").is_none());
+        assert!(report["summary"].get("total_items_label").is_none());
+        assert_eq!(report["review_queue"][0]["confidence"], 0.97);
+        assert_eq!(report["review_queue"][0]["value"], "redacted");
+        assert!(!report_text.contains("Jane Patient"));
+        assert!(!report_text.contains("PatientName"));
+        assert!(!report_text.contains("source_value"));
+    }
+
+    #[test]
+    fn browser_vault_response_download_is_structured_and_phi_safe() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            summary: "Decoded 2 requested records; values hidden in browser response.".to_string(),
+            review_queue: "Review queue: no browser-visible decoded values.".to_string(),
+            result_output: serde_json::json!({
+                "decoded_values": {"patient-1": {"name": "Alice Example"}},
+                "vault_path": "/phi/vault",
+                "passphrase": "secret",
+                "token": "MDID-123",
+                "audit_event": {"kind": "decode", "record_ids": ["patient-1"]}
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let report: serde_json::Value =
+            serde_json::from_slice(&payload.bytes).expect("json report");
+
+        assert_eq!(payload.file_name, "mdid-browser-vault-decode-response.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["summary"], state.summary);
+        assert_eq!(report["review_queue"], state.review_queue);
+        assert!(report.get("output").is_none());
+        let serialized = serde_json::to_string(&report).expect("serialized report");
+        assert!(!serialized.contains("Alice Example"));
+        assert!(!serialized.contains("/phi/vault"));
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("MDID-123"));
+        assert!(!serialized.contains("\"token\""));
+        assert!(!serialized.contains("decoded_values"));
+        assert!(!serialized.contains("audit_event"));
+    }
+
+    #[test]
+    fn portable_review_download_exports_json_without_raw_runtime_body() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactInspect,
+            result_output:
+                "Portable artifact contains 2 record(s). Artifact contents are hidden.".to_string(),
+            summary: "2 portable record(s) available for import.".to_string(),
+            review_queue:
+                "Portable artifact inspection completed without rendering original values or tokens."
+                    .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let text = std::str::from_utf8(&payload.bytes).expect("utf8 json");
+        let json: serde_json::Value = serde_json::from_str(text).expect("json report");
+
+        assert_eq!(
+            payload.file_name,
+            "mdid-browser-portable-artifact-inspect.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(json["mode"], "portable_artifact_inspect");
+        assert_eq!(
+            json["review_queue"],
+            "Portable artifact inspection completed without rendering original values or tokens."
+        );
+        assert!(!text.contains("artifact_json"));
+        assert!(!text.contains("original_value"));
+    }
+
+    #[test]
+    fn browser_portable_response_downloads_use_safe_source_filenames() {
+        let mut inspect_state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactInspect,
+            summary: "2 portable record(s) available for import.".to_string(),
+            review_queue: "Portable artifact preview: values hidden in browser report.".to_string(),
+            result_output: "Portable artifact contains 2 record(s). Artifact contents are hidden."
+                .to_string(),
+            ..BrowserFlowState::default()
+        };
+        inspect_state.imported_file_name = Some("../Clinic Export 2026.JSON".to_string());
+
+        let inspect_payload = inspect_state
+            .prepared_download_payload()
+            .expect("inspect payload");
+
+        assert_eq!(
+            inspect_payload.file_name,
+            "clinic-export-2026-portable-artifact-inspect.json"
+        );
+        assert_eq!(inspect_payload.mime_type, "application/json;charset=utf-8");
+        assert!(inspect_payload.is_text);
+
+        let mut import_state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactImport,
+            summary: "Imported 2 portable record(s); skipped 0 duplicate(s).".to_string(),
+            review_queue: "Portable import response: artifact contents hidden.".to_string(),
+            result_output: "Portable import completed; raw artifact payload hidden.".to_string(),
+            ..BrowserFlowState::default()
+        };
+        import_state.imported_file_name = Some("Patient Bundle!!.json".to_string());
+
+        let import_payload = import_state
+            .prepared_download_payload()
+            .expect("import payload");
+
+        assert_eq!(
+            import_payload.file_name,
+            "patient-bundle-portable-artifact-import.json"
+        );
+        assert_eq!(import_payload.mime_type, "application/json;charset=utf-8");
+        assert!(import_payload.is_text);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn binary_output_download_rejects_invalid_base64() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::XlsxBase64;
+        state.result_output = "not valid base64".to_string();
+
+        let error = state
+            .prepared_download_payload()
+            .expect_err("invalid base64 should fail");
+
+        assert_eq!(
+            error,
+            "Browser output download could not decode rewritten XLSX base64 bytes."
+        );
+    }
+
+    #[test]
+    fn imported_csv_suggests_sanitized_deidentified_export_name() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file("Clinic Patient List.csv", "name\nAda", InputMode::CsvText);
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "clinic-patient-list-deidentified.csv"
+        );
+    }
+
+    #[test]
+    fn imported_pdf_suggests_sanitized_review_report_name_without_phi() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file(
+            "../Patient #42 Intake.PDF",
+            "JVBERi0=",
+            InputMode::PdfBase64,
+        );
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "patient-42-intake-review-report.json"
+        );
+    }
+
+    #[test]
+    fn manual_default_csv_keeps_static_browser_output_name() {
+        let state = BrowserFlowState::default();
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-output.csv"
+        );
+    }
+
+    #[test]
+    fn imported_vault_export_keeps_static_portable_artifact_name() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file(
+            "Patient Portable Artifact.json",
+            r#"{"record_count":1}"#,
+            InputMode::VaultExport,
+        );
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    fn imported_dicom_and_media_metadata_suggest_mode_specific_export_names() {
+        let mut dicom_state = BrowserFlowState::default();
+        dicom_state.apply_imported_file(
+            "C:\\scans\\Patient MRI 2026.dicom",
+            "ZGljb20=",
+            InputMode::DicomBase64,
+        );
+
+        assert_eq!(
+            dicom_state.suggested_export_file_name(),
+            "patient-mri-2026-deidentified.dcm"
+        );
+
+        let mut media_state = BrowserFlowState::default();
+        media_state.apply_imported_file(
+            "../Clinic Video Metadata.JSON",
+            r#"{"objects":[]}"#,
+            InputMode::MediaMetadataJson,
+        );
+
+        assert_eq!(
+            media_state.suggested_export_file_name(),
+            "clinic-video-metadata-media-review-report.json"
+        );
+    }
+
+    #[test]
+    fn imported_filename_stem_is_bounded_without_trailing_hyphen() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-Patient Name.csv",
+            "name\nAda",
+            InputMode::CsvText,
+        );
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-deidentified.csv"
+        );
+    }
+
+    #[test]
+    fn export_filename_phi_warning_copy_is_static_and_bounded() {
+        assert!(EXPORT_FILENAME_WARNING_COPY.contains("suggested download filenames"));
+        assert!(EXPORT_FILENAME_WARNING_COPY.contains("imported filenames"));
+        assert!(EXPORT_FILENAME_WARNING_COPY.contains("rename"));
+        assert!(!EXPORT_FILENAME_WARNING_COPY.contains("vault passphrase"));
+        assert!(!EXPORT_FILENAME_WARNING_COPY.contains("decoded"));
+    }
 
     #[test]
     fn vault_export_mode_uses_existing_runtime_endpoint() {
@@ -2515,6 +3188,20 @@ mod tests {
     }
 
     #[test]
+    fn vault_audit_payload_rejects_zero_limit() {
+        let error = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "0",
+        )
+        .expect_err("zero limit must be rejected before localhost submission");
+
+        assert!(error.contains("positive"));
+    }
+
+    #[test]
     fn browser_flow_state_defaults_to_csv_shell() {
         let state = BrowserFlowState::default();
 
@@ -2734,7 +3421,7 @@ mod tests {
                 ..BrowserFlowState::default()
             }
             .suggested_export_file_name(),
-            "mdid-browser-output.dcm.base64.txt"
+            "mdid-browser-output.dcm"
         );
     }
 
@@ -2850,7 +3537,7 @@ mod tests {
                 ..BrowserFlowState::default()
             }
             .suggested_export_file_name(),
-            "mdid-browser-media-review-report.txt"
+            "mdid-browser-media-review-report.json"
         );
     }
 
@@ -2945,21 +3632,21 @@ mod tests {
         };
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-output.csv"
+            "jane-patient-deidentified.csv"
         );
 
         state.input_mode = InputMode::XlsxBase64;
         state.imported_file_name = Some("clinic workbook.xlsx".to_string());
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-output.xlsx.base64.txt"
+            "clinic-workbook-deidentified.xlsx"
         );
 
         state.input_mode = InputMode::PdfBase64;
         state.imported_file_name = Some("scan.pdf".to_string());
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-review-report.txt"
+            "scan-review-report.json"
         );
 
         state.input_mode = InputMode::VaultExport;
