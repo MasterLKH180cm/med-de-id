@@ -652,6 +652,7 @@ pub struct DesktopVaultResponseState {
     pub error: Option<String>,
     pub summary: String,
     pub artifact_notice: String,
+    last_success_mode: Option<DesktopVaultResponseMode>,
     last_success_response: Option<serde_json::Value>,
 }
 
@@ -662,6 +663,7 @@ impl Default for DesktopVaultResponseState {
             error: None,
             summary: String::new(),
             artifact_notice: String::new(),
+            last_success_mode: None,
             last_success_response: None,
         }
     }
@@ -681,6 +683,7 @@ impl DesktopVaultResponseState {
         self.summary = vault_response_summary(mode, response);
         self.artifact_notice = vault_response_artifact_notice(response);
         self.error = None;
+        self.last_success_mode = Some(mode);
         self.last_success_response = Some(response.clone());
     }
 
@@ -689,6 +692,7 @@ impl DesktopVaultResponseState {
         self.error = Some(redact_desktop_vault_error(message.as_ref()));
         self.summary.clear();
         self.artifact_notice.clear();
+        self.last_success_mode = None;
         self.last_success_response = None;
     }
 
@@ -697,6 +701,10 @@ impl DesktopVaultResponseState {
         mode: DesktopVaultResponseMode,
     ) -> Result<String, DesktopPortableArtifactSaveError> {
         if mode != DesktopVaultResponseMode::VaultExport {
+            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
+        }
+
+        if self.last_success_mode != Some(DesktopVaultResponseMode::VaultExport) {
             return Err(DesktopPortableArtifactSaveError::NotVaultExport);
         }
 
@@ -1887,6 +1895,17 @@ mod tests {
         );
         assert_eq!(
             state.portable_artifact_download_json(DesktopVaultResponseMode::InspectArtifact),
+            Err(DesktopPortableArtifactSaveError::NotVaultExport)
+        );
+
+        let mut inspect_state_with_artifact = DesktopVaultResponseState::default();
+        inspect_state_with_artifact.apply_success(
+            DesktopVaultResponseMode::InspectArtifact,
+            &serde_json::json!({"artifact": {"version": 1, "ciphertext": "inspect-payload"}}),
+        );
+        assert_eq!(
+            inspect_state_with_artifact
+                .portable_artifact_download_json(DesktopVaultResponseMode::VaultExport),
             Err(DesktopPortableArtifactSaveError::NotVaultExport)
         );
 
