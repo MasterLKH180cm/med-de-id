@@ -57,7 +57,7 @@ impl InputMode {
             Some(Self::PdfBase64)
         } else if file_name.ends_with(".dcm") || file_name.ends_with(".dicom") {
             Some(Self::DicomBase64)
-        } else if file_name.ends_with("mdid-browser-portable-artifact.json")
+        } else if file_name == "mdid-browser-portable-artifact.json"
             || file_name.ends_with(".mdid-portable.json")
             || file_name.ends_with("-mdid-portable.json")
         {
@@ -2628,6 +2628,10 @@ mod tests {
             InputMode::from_file_name("clinic-export.MDID-PORTABLE.JSON"),
             Some(InputMode::PortableArtifactInspect)
         );
+        assert_eq!(
+            InputMode::from_file_name("clinic.export.mdid-portable.json"),
+            Some(InputMode::PortableArtifactInspect)
+        );
     }
 
     #[test]
@@ -2638,6 +2642,10 @@ mod tests {
         );
         assert_eq!(
             InputMode::from_file_name("portable-not-artifact.json"),
+            Some(InputMode::MediaMetadataJson)
+        );
+        assert_eq!(
+            InputMode::from_file_name("not-mdid-browser-portable-artifact.json"),
             Some(InputMode::MediaMetadataJson)
         );
     }
