@@ -218,10 +218,10 @@ impl DesktopWorkflowMode {
 
     pub fn disclosure(self) -> &'static str {
         match self {
-            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; no generalized workflow orchestrator is included.",
-            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; no generalized workflow orchestrator is included.",
-            Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; no generalized workflow orchestrator and no OCR/PDF rewrite are included.",
-            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; no generalized workflow orchestrator is included.",
+            Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; it stays limited to this local de-identification request surface.",
+            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it stays limited to this local de-identification request surface.",
+            Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
+            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; it stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
         }
     }
@@ -249,7 +249,7 @@ pub struct DesktopWorkflowRequestState {
     pub source_name: String,
 }
 
-pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, and does not add controller, agent, or orchestration behavior.";
+pub const DESKTOP_VAULT_WORKBENCH_COPY: &str = "Bounded desktop vault workbench: prepares request envelopes for existing localhost runtime vault routes, including explicit decode and read-only audit browsing. It does not persist passphrases, browse vault contents directly, transfer portable artifacts, or add unrelated background workflow behavior.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopPortableMode {
@@ -275,9 +275,9 @@ impl DesktopPortableMode {
 
     pub fn disclosure(self) -> &'static str {
         match self {
-            Self::VaultExport => "bounded desktop portable export request preparation for the existing local /vault/export runtime route; no generalized workflow orchestration behavior is included.",
-            Self::InspectArtifact => "bounded desktop portable artifact inspection request preparation for the existing local /portable-artifacts/inspect runtime route; no generalized workflow orchestration behavior is included.",
-            Self::ImportArtifact => "bounded desktop portable artifact import request preparation for the existing local /portable-artifacts/import runtime route; no generalized workflow orchestration behavior is included.",
+            Self::VaultExport => "bounded desktop portable export request preparation for the existing local /vault/export runtime route; no unrelated background workflow behavior is included.",
+            Self::InspectArtifact => "bounded desktop portable artifact inspection request preparation for the existing local /portable-artifacts/inspect runtime route; no unrelated background workflow behavior is included.",
+            Self::ImportArtifact => "bounded desktop portable artifact import request preparation for the existing local /portable-artifacts/import runtime route; no unrelated background workflow behavior is included.",
         }
     }
 }
@@ -1432,6 +1432,38 @@ mod tests {
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
 
     #[test]
+    fn desktop_product_copy_avoids_scope_drift_terms() {
+        const FORBIDDEN_TERMS: [&str; 4] = ["controller", "agent", "orchestrator", "orchestration"];
+
+        let mut copy = vec![DESKTOP_VAULT_WORKBENCH_COPY];
+        copy.extend(
+            DesktopWorkflowMode::ALL
+                .iter()
+                .map(|mode| mode.disclosure()),
+        );
+        copy.extend(
+            DesktopWorkflowMode::ALL
+                .iter()
+                .map(|mode| mode.payload_hint()),
+        );
+        copy.extend(
+            DesktopPortableMode::ALL
+                .iter()
+                .map(|mode| mode.disclosure()),
+        );
+
+        for text in copy {
+            let normalized = text.to_ascii_lowercase();
+            for forbidden in FORBIDDEN_TERMS {
+                assert!(
+                    !normalized.contains(forbidden),
+                    "desktop product copy contains forbidden scope drift term {forbidden:?}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn vault_and_portable_submission_modes_map_to_phi_safe_response_modes() {
         assert_eq!(
             DesktopRuntimeSubmissionMode::Vault(DesktopVaultMode::Decode).vault_response_mode(),
@@ -1661,9 +1693,9 @@ mod tests {
         assert!(DesktopPortableMode::VaultExport
             .disclosure()
             .contains("bounded"));
-        assert!(!DesktopPortableMode::VaultExport
+        assert!(DesktopPortableMode::VaultExport
             .disclosure()
-            .contains("controller"));
+            .contains("existing local /vault/export runtime route"));
     }
 
     #[test]
@@ -2243,8 +2275,7 @@ mod tests {
     fn desktop_vault_workbench_copy_is_bounded_and_non_orchestrating() {
         assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("existing localhost runtime vault routes"));
         assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("does not persist passphrases"));
-        assert!(DESKTOP_VAULT_WORKBENCH_COPY
-            .contains("does not add controller, agent, or orchestration behavior"));
+        assert!(DESKTOP_VAULT_WORKBENCH_COPY.contains("unrelated background workflow behavior"));
     }
 
     #[test]
@@ -2489,7 +2520,7 @@ mod tests {
 
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
     }
 
     #[test]
@@ -2549,7 +2580,7 @@ mod tests {
 
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
         assert!(disclosure.contains("no OCR/PDF rewrite"));
     }
 
@@ -2578,7 +2609,7 @@ mod tests {
         let disclosure = state.mode.disclosure();
         assert!(disclosure.contains("bounded local runtime"));
         assert!(disclosure.contains("tag-level DICOM de-identification"));
-        assert!(disclosure.contains("no generalized workflow orchestrator"));
+        assert!(disclosure.contains("stays limited to this local"));
     }
 
     #[test]
