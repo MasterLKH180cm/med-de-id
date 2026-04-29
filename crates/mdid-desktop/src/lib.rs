@@ -62,6 +62,13 @@ impl DesktopFileImportPayload {
                 payload: encode_base64(bytes),
                 source_name: Some(source_name),
             }),
+            "json" => Ok(Self {
+                mode: DesktopWorkflowMode::MediaMetadataJson,
+                payload: std::str::from_utf8(bytes)
+                    .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
+                    .to_string(),
+                source_name: Some(source_name),
+            }),
             _ => Err(DesktopFileImportError::UnsupportedFileType),
         }
     }
@@ -99,14 +106,16 @@ pub enum DesktopWorkflowMode {
     XlsxBase64,
     PdfBase64Review,
     DicomBase64,
+    MediaMetadataJson,
 }
 
 impl DesktopWorkflowMode {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::CsvText,
         Self::XlsxBase64,
         Self::PdfBase64Review,
         Self::DicomBase64,
+        Self::MediaMetadataJson,
     ];
 
     pub fn label(self) -> &'static str {
@@ -115,6 +124,7 @@ impl DesktopWorkflowMode {
             Self::XlsxBase64 => "XLSX base64",
             Self::PdfBase64Review => "PDF base64 review",
             Self::DicomBase64 => "DICOM base64",
+            Self::MediaMetadataJson => "Media metadata JSON",
         }
     }
 
@@ -126,6 +136,9 @@ impl DesktopWorkflowMode {
                 "Paste PDF bytes encoded as base64 for review request preparation"
             }
             Self::DicomBase64 => "Paste DICOM bytes encoded as base64",
+            Self::MediaMetadataJson => {
+                "Paste media metadata JSON for local media review request preparation"
+            }
         }
     }
 
@@ -135,6 +148,7 @@ impl DesktopWorkflowMode {
             Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; no generalized workflow orchestrator is included.",
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; no generalized workflow orchestrator and no OCR/PDF rewrite are included.",
             Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; no generalized workflow orchestrator is included.",
+            Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
         }
     }
 
@@ -144,6 +158,7 @@ impl DesktopWorkflowMode {
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64Review => "/pdf/deidentify",
             Self::DicomBase64 => "/dicom/deidentify",
+            Self::MediaMetadataJson => "/media/conservative/deidentify",
         }
     }
 
@@ -694,9 +709,9 @@ impl DesktopWorkflowRequestState {
                         "workbook_base64": payload,
                         "field_policies": field_policies,
                     }),
-                    DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::DicomBase64 => {
-                        unreachable!()
-                    }
+                    DesktopWorkflowMode::PdfBase64Review
+                    | DesktopWorkflowMode::DicomBase64
+                    | DesktopWorkflowMode::MediaMetadataJson => unreachable!(),
                 };
 
                 Ok(DesktopWorkflowRequest {
@@ -719,10 +734,22 @@ impl DesktopWorkflowRequestState {
                         "source_name": self.source_name.trim(),
                         "private_tag_policy": "review_required",
                     }),
-                    DesktopWorkflowMode::CsvText | DesktopWorkflowMode::XlsxBase64 => {
-                        unreachable!()
-                    }
+                    DesktopWorkflowMode::CsvText
+                    | DesktopWorkflowMode::XlsxBase64
+                    | DesktopWorkflowMode::MediaMetadataJson => unreachable!(),
                 };
+
+                Ok(DesktopWorkflowRequest {
+                    route: self.mode.route(),
+                    body,
+                })
+            }
+            DesktopWorkflowMode::MediaMetadataJson => {
+                let body: serde_json::Value = serde_json::from_str(self.payload.trim())
+                    .map_err(|_| DesktopWorkflowValidationError::InvalidMediaMetadataJson)?;
+                if !body.is_object() {
+                    return Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson);
+                }
 
                 Ok(DesktopWorkflowRequest {
                     route: self.mode.route(),
@@ -817,6 +844,7 @@ pub enum DesktopWorkflowValidationError {
     BlankFieldPolicyJson,
     InvalidFieldPolicyJson(String),
     BlankSourceName,
+    InvalidMediaMetadataJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1070,6 +1098,7 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::XlsxBase64 => Some("desktop-deidentified.xlsx.base64.txt"),
             DesktopWorkflowMode::PdfBase64Review => None,
             DesktopWorkflowMode::DicomBase64 => Some("desktop-deidentified.dcm.base64.txt"),
+            DesktopWorkflowMode::MediaMetadataJson => None,
         }
     }
 
@@ -1082,6 +1111,10 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::PdfBase64Review => "PDF base64 review runtime response rendered locally; no PDF rewrite/export is available.".to_string(),
             DesktopWorkflowMode::DicomBase64 => {
                 "DICOM base64 runtime response rendered locally.".to_string()
+            }
+            DesktopWorkflowMode::MediaMetadataJson => {
+                "Media metadata JSON runtime response rendered locally; no media bytes were uploaded."
+                    .to_string()
             }
         };
 
@@ -1108,6 +1141,9 @@ impl DesktopWorkflowResponseState {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("")
                 .to_string(),
+            DesktopWorkflowMode::MediaMetadataJson => {
+                "No media rewrite/export is available for metadata-only review.".to_string()
+            }
         };
 
         self.summary = pretty_json_field(&envelope, "summary");
@@ -1137,6 +1173,77 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn media_metadata_mode_uses_bounded_runtime_route_and_copy() {
+        assert!(DesktopWorkflowMode::ALL.contains(&DesktopWorkflowMode::MediaMetadataJson));
+        assert_eq!(
+            DesktopWorkflowMode::MediaMetadataJson.label(),
+            "Media metadata JSON"
+        );
+        assert_eq!(
+            DesktopWorkflowMode::MediaMetadataJson.route(),
+            "/media/conservative/deidentify"
+        );
+        assert!(DesktopWorkflowMode::MediaMetadataJson
+            .payload_hint()
+            .contains("media metadata JSON"));
+        assert!(DesktopWorkflowMode::MediaMetadataJson
+            .disclosure()
+            .contains("metadata-only"));
+        assert!(DesktopWorkflowMode::MediaMetadataJson
+            .disclosure()
+            .contains("does not upload media bytes"));
+        assert!(DesktopWorkflowMode::MediaMetadataJson
+            .disclosure()
+            .contains("no OCR"));
+    }
+
+    #[test]
+    fn json_file_import_uses_media_metadata_mode_without_media_bytes() {
+        let imported = DesktopFileImportPayload::from_bytes(
+            "local-media-metadata.json",
+            b"{\"artifact_label\":\"scan.png\",\"format\":\"image\",\"metadata\":[{\"key\":\"PatientName\",\"value\":\"Jane Patient\"}],\"ocr_or_visual_review_required\":true}",
+        )
+        .expect("json metadata imports should be accepted");
+
+        assert_eq!(imported.mode, DesktopWorkflowMode::MediaMetadataJson);
+        assert_eq!(
+            imported.source_name.as_deref(),
+            Some("local-media-metadata.json")
+        );
+        assert!(imported.payload.contains("PatientName"));
+    }
+
+    #[test]
+    fn media_metadata_request_uses_raw_json_body_and_rejects_non_objects() {
+        let valid = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::MediaMetadataJson,
+            payload: "{\"artifact_label\":\"scan.png\",\"format\":\"image\",\"metadata\":[],\"ocr_or_visual_review_required\":false}".to_string(),
+            field_policy_json: "{\"PatientName\":\"redact\"}".to_string(),
+            source_name: "local-media-metadata.json".to_string(),
+        };
+
+        let request = valid
+            .try_build_request()
+            .expect("valid metadata object should build");
+        assert_eq!(request.route, "/media/conservative/deidentify");
+        let body = serde_json::to_string(&request.body).expect("request body serializes");
+        assert!(body.contains(r#""artifact_label":"scan.png""#));
+        assert!(!body.contains("field_policies"));
+
+        let invalid = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::MediaMetadataJson,
+            payload: "[]".to_string(),
+            field_policy_json: "{}".to_string(),
+            source_name: "local-media-metadata.json".to_string(),
+        };
+
+        assert_eq!(
+            invalid.try_build_request(),
+            Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson)
+        );
+    }
 
     #[test]
     fn portable_mode_routes_match_existing_runtime_routes() {

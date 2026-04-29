@@ -7,7 +7,7 @@ const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
-const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. This does not add OCR, visual redaction, vault browsing, or auth/session.";
+const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; media metadata JSON files also load as text; XLSX and PDF files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. Media metadata JSON sends metadata only, not media bytes. This does not add OCR, visual redaction, vault browsing, or auth/session.";
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const FETCH_UNAVAILABLE_MESSAGE: &str =
     "Runtime submission is only available from a wasm32 browser build.";
@@ -18,6 +18,7 @@ enum InputMode {
     XlsxBase64,
     PdfBase64,
     DicomBase64,
+    MediaMetadataJson,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +41,8 @@ impl InputMode {
             Some(Self::PdfBase64)
         } else if file_name.ends_with(".dcm") || file_name.ends_with(".dicom") {
             Some(Self::DicomBase64)
+        } else if file_name.ends_with(".json") {
+            Some(Self::MediaMetadataJson)
         } else {
             None
         }
@@ -50,6 +53,7 @@ impl InputMode {
             "xlsx-base64" => Self::XlsxBase64,
             "pdf-base64" => Self::PdfBase64,
             "dicom-base64" => Self::DicomBase64,
+            "media-metadata-json" => Self::MediaMetadataJson,
             _ => Self::CsvText,
         }
     }
@@ -60,6 +64,7 @@ impl InputMode {
             Self::XlsxBase64 => "xlsx-base64",
             Self::PdfBase64 => "pdf-base64",
             Self::DicomBase64 => "dicom-base64",
+            Self::MediaMetadataJson => "media-metadata-json",
         }
     }
 
@@ -69,6 +74,7 @@ impl InputMode {
             Self::XlsxBase64 => "XLSX base64",
             Self::PdfBase64 => "PDF base64",
             Self::DicomBase64 => "DICOM base64",
+            Self::MediaMetadataJson => "Media metadata JSON",
         }
     }
 
@@ -78,6 +84,7 @@ impl InputMode {
             Self::XlsxBase64 => "Paste base64-encoded XLSX content here",
             Self::PdfBase64 => "Paste base64-encoded PDF content here",
             Self::DicomBase64 => "Paste base64-encoded DICOM content here",
+            Self::MediaMetadataJson => "Paste media metadata JSON here",
         }
     }
 
@@ -89,6 +96,7 @@ impl InputMode {
             ),
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
             Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or workflow/controller semantics."),
+            Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
         }
     }
 
@@ -98,6 +106,7 @@ impl InputMode {
             Self::XlsxBase64 => "/tabular/deidentify/xlsx",
             Self::PdfBase64 => "/pdf/deidentify",
             Self::DicomBase64 => "/dicom/deidentify",
+            Self::MediaMetadataJson => "/media/conservative/deidentify",
         }
     }
 
@@ -120,7 +129,7 @@ impl InputMode {
     #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     fn browser_file_read_mode(self) -> BrowserFileReadMode {
         match self {
-            Self::CsvText => BrowserFileReadMode::Text,
+            Self::CsvText | Self::MediaMetadataJson => BrowserFileReadMode::Text,
             Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => {
                 BrowserFileReadMode::DataUrlBase64
             }
@@ -226,7 +235,7 @@ impl BrowserFlowState {
         self.imported_file_name = Some(file_name.to_string());
         self.invalidate_generated_state();
         self.error_banner = Some(
-            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom."
+            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, or .json."
                 .to_string(),
         );
     }
@@ -238,6 +247,7 @@ impl BrowserFlowState {
             InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
             InputMode::PdfBase64 => "mdid-browser-review-report.txt",
             InputMode::DicomBase64 => "mdid-browser-output.dcm.base64.txt",
+            InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
         }
     }
 
@@ -391,6 +401,40 @@ struct DicomSubmitRequest {
     dicom_bytes_base64: String,
     source_name: String,
     private_tag_policy: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct MediaRuntimeSuccessResponse {
+    summary: MediaRuntimeSummary,
+    review_queue: Vec<MediaReviewCandidate>,
+    #[allow(dead_code)]
+    rewritten_media_bytes_base64: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct MediaRuntimeSummary {
+    total_items: usize,
+    metadata_only_items: usize,
+    visual_review_required_items: usize,
+    unsupported_items: usize,
+    review_required_candidates: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct MediaReviewCandidate {
+    field_ref: MediaReviewFieldRef,
+    format: String,
+    phi_type: String,
+    #[allow(dead_code)]
+    source_value: String,
+    confidence: f32,
+    status: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct MediaReviewFieldRef {
+    artifact_label: String,
+    metadata_key: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -573,6 +617,25 @@ fn build_submit_request(
         });
     }
 
+    if input_mode == InputMode::MediaMetadataJson {
+        let value: serde_json::Value = serde_json::from_str(payload.trim()).map_err(|_| {
+            "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
+                .to_string()
+        })?;
+
+        if !value.is_object() {
+            return Err("Media metadata JSON must be a JSON object accepted by the local media review runtime route.".to_string());
+        }
+
+        let body_json = serde_json::to_string(&value)
+            .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
+
+        return Ok(RuntimeSubmitRequest {
+            endpoint: input_mode.endpoint(),
+            body_json,
+        });
+    }
+
     let policies: Vec<FieldPolicyRequest> = serde_json::from_str(field_policy_json)
         .map_err(|error| format!("Field policy JSON must be a JSON array of policies: {error}"))?;
 
@@ -591,6 +654,9 @@ fn build_submit_request(
         }),
         InputMode::PdfBase64 => unreachable!("PDF requests are handled before policy parsing"),
         InputMode::DicomBase64 => unreachable!("DICOM requests are handled before policy parsing"),
+        InputMode::MediaMetadataJson => {
+            unreachable!("Media metadata JSON requests are handled before policy parsing")
+        }
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -641,6 +707,15 @@ fn parse_runtime_success(
                 rewritten_output: parsed.rewritten_dicom_bytes_base64,
                 summary: format_dicom_summary(&parsed.summary),
                 review_queue: format_dicom_review_queue(&parsed.review_queue),
+            })
+        }
+        InputMode::MediaMetadataJson => {
+            let parsed: MediaRuntimeSuccessResponse = serde_json::from_str(response_body)
+                .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string(),
+                summary: format_media_summary(&parsed.summary),
+                review_queue: format_media_review_queue(&parsed.review_queue),
             })
         }
     }
@@ -740,6 +815,37 @@ fn format_dicom_review_queue(review_queue: &[DicomReviewCandidate]) -> String {
                 candidate.tag.keyword,
                 candidate.phi_type,
                 candidate.decision
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_media_summary(summary: &MediaRuntimeSummary) -> String {
+    format!(
+        "total_items: {}\nmetadata_only_items: {}\nvisual_review_required_items: {}\nunsupported_items: {}\nreview_required_candidates: {}\nrewritten_media_bytes_base64: null",
+        summary.total_items,
+        summary.metadata_only_items,
+        summary.visual_review_required_items,
+        summary.unsupported_items,
+        summary.review_required_candidates
+    )
+}
+
+fn format_media_review_queue(review_queue: &[MediaReviewCandidate]) -> String {
+    if review_queue.is_empty() {
+        return "No review items returned.".to_string();
+    }
+
+    review_queue
+        .iter()
+        .map(|candidate| {
+            format!(
+                "- {} / {} / {} / confidence {} / value: <redacted>",
+                candidate.field_ref.metadata_key,
+                candidate.format,
+                candidate.phi_type,
+                candidate.confidence
             )
         })
         .collect::<Vec<_>>()
@@ -1102,15 +1208,15 @@ pub fn App() -> impl IntoView {
                 <h2>"Input"</h2>
                 <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
                 <label>
-                    "Import local CSV/XLSX/PDF/DICOM payload"
+                    "Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"
                     <input
-                        accept=".csv,.xlsx,.pdf,.dcm,.dicom"
+                        accept=".csv,.xlsx,.pdf,.dcm,.dicom,.json"
                         on:change=on_file_import_change
                         type="file"
                     />
                 </label>
                 <p class="input-disclosure">
-                    "This bounded control validates CSV/XLSX/PDF/DICOM selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes."
+                    "This bounded control validates CSV/XLSX/PDF/DICOM/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. JSON payloads remain metadata-only and do not include media bytes."
                 </p>
                 <label>
                     "Input mode"
@@ -1119,6 +1225,7 @@ pub fn App() -> impl IntoView {
                         <option value="xlsx-base64">"XLSX base64"</option>
                         <option value="pdf-base64">"PDF base64"</option>
                         <option value="dicom-base64">"DICOM base64"</option>
+                        <option value="media-metadata-json">"Media metadata JSON"</option>
                     </select>
                 </label>
 
@@ -1402,6 +1509,122 @@ mod tests {
     }
 
     #[test]
+    fn media_metadata_mode_uses_json_text_and_bounded_runtime_route() {
+        assert_eq!(
+            InputMode::from_select_value("media-metadata-json"),
+            InputMode::MediaMetadataJson
+        );
+        assert_eq!(
+            InputMode::MediaMetadataJson.select_value(),
+            "media-metadata-json"
+        );
+        assert_eq!(
+            InputMode::MediaMetadataJson.endpoint(),
+            "/media/conservative/deidentify"
+        );
+        assert_eq!(
+            InputMode::MediaMetadataJson.browser_file_read_mode(),
+            BrowserFileReadMode::Text
+        );
+        assert_eq!(
+            InputMode::from_file_name("metadata.JSON"),
+            Some(InputMode::MediaMetadataJson)
+        );
+    }
+
+    #[test]
+    fn media_metadata_mode_builds_runtime_request_without_field_policies() {
+        let request = build_submit_request(
+            InputMode::MediaMetadataJson,
+            r#"{"artifact_label":"local-media-metadata.json","format":"image","metadata":[{"key":"PatientName","value":"Jane Patient"}],"ocr_or_visual_review_required":true}"#,
+            "local-media-metadata.json",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(request.endpoint, "/media/conservative/deidentify");
+        let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
+        assert_eq!(body["artifact_label"], "local-media-metadata.json");
+        assert_eq!(body["format"], "image");
+        assert_eq!(body["metadata"][0]["key"], "PatientName");
+        assert_eq!(body["metadata"][0]["value"], "Jane Patient");
+        assert_eq!(body["ocr_or_visual_review_required"], true);
+        assert!(body.get("policies").is_none());
+        assert!(body.get("field_policies").is_none());
+    }
+
+    #[test]
+    fn media_metadata_mode_rejects_non_object_payload() {
+        let error = build_submit_request(InputMode::MediaMetadataJson, "[]", "metadata.json", "")
+            .unwrap_err();
+
+        assert_eq!(error, "Media metadata JSON must be a JSON object accepted by the local media review runtime route.");
+    }
+
+    #[test]
+    fn parse_media_review_success_renders_phi_safe_summary_and_redacted_queue() {
+        let response = parse_runtime_success(
+            InputMode::MediaMetadataJson,
+            &json!({
+                "summary": {
+                    "total_items": 1,
+                    "metadata_only_items": 0,
+                    "visual_review_required_items": 1,
+                    "unsupported_items": 0,
+                    "review_required_candidates": 1
+                },
+                "review_queue": [
+                    {
+                        "field_ref": {"artifact_label": "patient-jane-face.jpg", "metadata_key": "PatientName"},
+                        "format": "image",
+                        "phi_type": "metadata_identifier",
+                        "source_value": "Jane Patient",
+                        "confidence": 0.92,
+                        "status": "ocr_or_visual_review_required"
+                    }
+                ],
+                "rewritten_media_bytes_base64": "PHI_MEDIA_BYTES"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.rewritten_output,
+            "Media rewrite/export unavailable: runtime returned metadata-only conservative review."
+        );
+        assert!(response.summary.contains("total_items: 1"));
+        assert!(response.summary.contains("visual_review_required_items: 1"));
+        assert!(response.summary.contains("review_required_candidates: 1"));
+        assert!(response
+            .summary
+            .contains("rewritten_media_bytes_base64: null"));
+        assert!(!response.summary.contains("PHI_MEDIA_BYTES"));
+        assert_eq!(
+            response.review_queue,
+            "- PatientName / image / metadata_identifier / confidence 0.92 / value: <redacted>"
+        );
+        assert!(!response.review_queue.contains("Jane Patient"));
+    }
+
+    #[test]
+    fn media_metadata_mode_discloses_no_ocr_or_rewrite_claims() {
+        let copy = InputMode::MediaMetadataJson.disclosure_copy().unwrap();
+
+        assert!(copy.contains("metadata-only"));
+        assert!(copy.contains("does not perform OCR"));
+        assert!(copy.contains("visual redaction"));
+        assert_eq!(
+            BrowserFlowState {
+                input_mode: InputMode::MediaMetadataJson,
+                ..BrowserFlowState::default()
+            }
+            .suggested_export_file_name(),
+            "mdid-browser-media-review-report.txt"
+        );
+    }
+
+    #[test]
     fn file_import_read_mode_matches_input_mode() {
         assert_eq!(
             InputMode::CsvText.browser_file_read_mode(),
@@ -1449,9 +1672,26 @@ mod tests {
     #[test]
     fn import_export_copy_discloses_bounded_browser_file_limits() {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("CSV files load as text"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("media metadata JSON files also load as text"));
+        assert!(BROWSER_FILE_IMPORT_COPY
+            .contains("Media metadata JSON sends metadata only, not media bytes"));
         assert!(BROWSER_FILE_IMPORT_COPY.contains("XLSX and PDF files load as base64 payloads"));
         assert!(BROWSER_FILE_IMPORT_COPY
             .contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
+    }
+
+    #[test]
+    fn browser_file_import_controls_expose_media_metadata_json() {
+        let source = include_str!("app.rs");
+
+        assert!(source
+            .contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
+        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.json\""));
+        assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"));
+        assert!(source.contains("validates CSV/XLSX/PDF/DICOM/media metadata JSON selection"));
+        assert!(
+            source.contains("JSON payloads remain metadata-only and do not include media bytes")
+        );
     }
 
     #[test]
@@ -1461,7 +1701,7 @@ mod tests {
 
         assert_eq!(
             state.error_banner.as_deref(),
-            Some("Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, or .dicom.")
+            Some("Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, or .json.")
         );
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
