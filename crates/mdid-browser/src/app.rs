@@ -1,3 +1,4 @@
+use base64::Engine;
 use leptos::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -35,6 +36,14 @@ enum InputMode {
 enum BrowserFileReadMode {
     Text,
     DataUrlBase64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserDownloadPayload {
+    file_name: String,
+    mime_type: &'static str,
+    bytes: Vec<u8>,
+    is_text: bool,
 }
 
 impl InputMode {
@@ -607,9 +616,9 @@ impl BrowserFlowState {
             let stem = sanitized_import_stem(imported_file_name);
             match self.input_mode {
                 InputMode::CsvText => return format!("{stem}-deidentified.csv"),
-                InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx.base64.txt"),
+                InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx"),
                 InputMode::PdfBase64 => return format!("{stem}-review-report.txt"),
-                InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm.base64.txt"),
+                InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm"),
                 InputMode::MediaMetadataJson => return format!("{stem}-media-review-report.txt"),
                 InputMode::VaultAuditEvents
                 | InputMode::VaultDecode
@@ -621,9 +630,9 @@ impl BrowserFlowState {
 
         match self.input_mode {
             InputMode::CsvText => "mdid-browser-output.csv",
-            InputMode::XlsxBase64 => "mdid-browser-output.xlsx.base64.txt",
+            InputMode::XlsxBase64 => "mdid-browser-output.xlsx",
             InputMode::PdfBase64 => "mdid-browser-review-report.txt",
-            InputMode::DicomBase64 => "mdid-browser-output.dcm.base64.txt",
+            InputMode::DicomBase64 => "mdid-browser-output.dcm",
             InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
             InputMode::VaultAuditEvents => "mdid-browser-vault-audit-events.json",
             InputMode::VaultDecode => "mdid-browser-vault-decode-response.json",
@@ -637,6 +646,46 @@ impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
+    }
+
+    fn prepared_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
+        let file_name = self.suggested_export_file_name();
+        match self.input_mode {
+            InputMode::XlsxBase64 => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(self.result_output.trim())
+                    .map_err(|_| {
+                        "Browser output download could not decode rewritten XLSX base64 bytes."
+                            .to_string()
+                    })?;
+                Ok(BrowserDownloadPayload {
+                    file_name,
+                    mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    bytes,
+                    is_text: false,
+                })
+            }
+            InputMode::DicomBase64 => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(self.result_output.trim())
+                    .map_err(|_| {
+                        "Browser output download could not decode rewritten DICOM base64 bytes."
+                            .to_string()
+                    })?;
+                Ok(BrowserDownloadPayload {
+                    file_name,
+                    mime_type: "application/dicom",
+                    bytes,
+                    is_text: false,
+                })
+            }
+            _ => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "text/plain;charset=utf-8",
+                bytes: self.result_output.as_bytes().to_vec(),
+                is_text: true,
+            }),
+        }
     }
 
     fn clear_generated_state(&mut self) {
@@ -1553,8 +1602,62 @@ fn trigger_browser_text_download(file_name: &str, text: &str) -> Result<(), Stri
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn trigger_browser_text_download(_file_name: &str, _text: &str) -> Result<(), String> {
     Err("Browser export is only available from a wasm32 browser build.".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn trigger_browser_binary_download(
+    file_name: &str,
+    bytes: &[u8],
+    mime_type: &'static str,
+) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+
+    let parts = js_sys::Array::new();
+    parts.push(&js_sys::Uint8Array::from(bytes));
+
+    let options = BlobPropertyBag::new();
+    options.set_type(mime_type);
+
+    let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+        .map_err(|_| "Failed to create browser export blob.".to_string())?;
+    let url = Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "Failed to create browser export URL.".to_string())?;
+
+    let window =
+        web_sys::window().ok_or("Browser window is unavailable for export.".to_string())?;
+    let document = window
+        .document()
+        .ok_or("Browser document is unavailable for export.".to_string())?;
+    let anchor = document
+        .create_element("a")
+        .map_err(|_| "Failed to create browser export anchor.".to_string())?
+        .dyn_into::<HtmlAnchorElement>()
+        .map_err(|_| "Failed to prepare browser export anchor.".to_string())?;
+
+    anchor.set_href(&url);
+    anchor.set_download(file_name);
+    anchor.click();
+    Url::revoke_object_url(&url).ok();
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn trigger_browser_download(payload: &BrowserDownloadPayload) -> Result<(), String> {
+    if payload.is_text {
+        let text = std::str::from_utf8(&payload.bytes)
+            .map_err(|_| "Browser text export payload was not valid UTF-8.".to_string())?;
+        return trigger_browser_text_download(&payload.file_name, text);
+    }
+    trigger_browser_binary_download(&payload.file_name, &payload.bytes, payload.mime_type)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn trigger_browser_download(_payload: &BrowserDownloadPayload) -> Result<(), String> {
+    Err(FETCH_UNAVAILABLE_MESSAGE.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1820,18 +1923,16 @@ pub fn App() -> impl IntoView {
     let on_export = move |_| {
         let export = state.with_untracked(|state| {
             if state.can_export_output() {
-                Some((
-                    state.suggested_export_file_name().to_string(),
-                    state.result_output.clone(),
-                ))
+                Some(state.prepared_download_payload())
             } else {
                 None
             }
         });
 
-        if let Some((file_name, text)) = export {
-            if let Err(message) = trigger_browser_text_download(&file_name, &text) {
-                state.update(|state| state.error_banner = Some(message));
+        if let Some(export) = export {
+            match export.and_then(|payload| trigger_browser_download(&payload)) {
+                Ok(()) => {}
+                Err(message) => state.update(|state| state.error_banner = Some(message)),
             }
         }
     };
@@ -2084,6 +2185,8 @@ pub fn App() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+
     use super::{
         build_portable_artifact_import_request_payload,
         build_portable_artifact_inspect_request_payload, build_submit_request,
@@ -2096,6 +2199,72 @@ mod tests {
         IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn xlsx_output_download_decodes_base64_to_binary_payload() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::XlsxBase64;
+        state.result_output = base64::engine::general_purpose::STANDARD.encode(b"workbook-bytes");
+
+        let payload = state.prepared_download_payload().expect("xlsx payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-output.xlsx");
+        assert_eq!(
+            payload.mime_type,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        assert_eq!(payload.bytes, b"workbook-bytes");
+        assert!(!payload.is_text);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn dicom_output_download_decodes_base64_to_binary_payload() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::DicomBase64;
+        state.imported_file_name = Some("CT Head.dcm".to_string());
+        state.result_output = base64::engine::general_purpose::STANDARD.encode(b"dicom-bytes");
+
+        let payload = state.prepared_download_payload().expect("dicom payload");
+
+        assert_eq!(payload.file_name, "ct-head-deidentified.dcm");
+        assert_eq!(payload.mime_type, "application/dicom");
+        assert_eq!(payload.bytes, b"dicom-bytes");
+        assert!(!payload.is_text);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn csv_output_download_keeps_text_payload() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::CsvText;
+        state.result_output = "patient_id\nMDID-1\n".to_string();
+
+        let payload = state.prepared_download_payload().expect("csv payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-output.csv");
+        assert_eq!(payload.mime_type, "text/plain;charset=utf-8");
+        assert_eq!(payload.bytes, b"patient_id\nMDID-1\n");
+        assert!(payload.is_text);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn binary_output_download_rejects_invalid_base64() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::XlsxBase64;
+        state.result_output = "not valid base64".to_string();
+
+        let error = state
+            .prepared_download_payload()
+            .expect_err("invalid base64 should fail");
+
+        assert_eq!(
+            error,
+            "Browser output download could not decode rewritten XLSX base64 bytes."
+        );
+    }
 
     #[test]
     fn imported_csv_suggests_sanitized_deidentified_export_name() {
@@ -2159,7 +2328,7 @@ mod tests {
 
         assert_eq!(
             dicom_state.suggested_export_file_name(),
-            "patient-mri-2026-deidentified.dcm.base64.txt"
+            "patient-mri-2026-deidentified.dcm"
         );
 
         let mut media_state = BrowserFlowState::default();
@@ -2911,7 +3080,7 @@ mod tests {
                 ..BrowserFlowState::default()
             }
             .suggested_export_file_name(),
-            "mdid-browser-output.dcm.base64.txt"
+            "mdid-browser-output.dcm"
         );
     }
 
@@ -3129,7 +3298,7 @@ mod tests {
         state.imported_file_name = Some("clinic workbook.xlsx".to_string());
         assert_eq!(
             state.suggested_export_file_name(),
-            "clinic-workbook-deidentified.xlsx.base64.txt"
+            "clinic-workbook-deidentified.xlsx"
         );
 
         state.input_mode = InputMode::PdfBase64;

@@ -3108,6 +3108,7 @@ dependencies = [
 name = "mdid-browser"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "gloo-net",
  "js-sys",
  "leptos",
