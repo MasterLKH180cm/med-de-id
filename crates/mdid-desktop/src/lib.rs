@@ -17,6 +17,41 @@ impl std::fmt::Debug for DesktopFileImportPayload {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub enum DesktopFileImportTarget {
+    Workflow(DesktopFileImportPayload),
+    PortableArtifactInspect(DesktopPortableFileImportPayload),
+}
+
+impl std::fmt::Debug for DesktopFileImportTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Workflow(payload) => f.debug_tuple("Workflow").field(payload).finish(),
+            Self::PortableArtifactInspect(payload) => f
+                .debug_tuple("PortableArtifactInspect")
+                .field(payload)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopPortableFileImportPayload {
+    pub mode: DesktopPortableMode,
+    pub artifact_json: String,
+    pub source_name: String,
+}
+
+impl std::fmt::Debug for DesktopPortableFileImportPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopPortableFileImportPayload")
+            .field("mode", &self.mode)
+            .field("artifact_json", &"<redacted>")
+            .field("source_name", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopFileImportError {
     UnsupportedFileType,
@@ -25,6 +60,30 @@ pub enum DesktopFileImportError {
 }
 
 impl DesktopFileImportPayload {
+    pub fn from_bytes_target(
+        source_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<DesktopFileImportTarget, DesktopFileImportError> {
+        let source_name = source_name.into();
+        if is_portable_artifact_json_filename(&source_name) {
+            if bytes.len() > DESKTOP_FILE_IMPORT_MAX_BYTES {
+                return Err(DesktopFileImportError::FileTooLarge);
+            }
+            let artifact_json = std::str::from_utf8(bytes)
+                .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
+                .to_string();
+            return Ok(DesktopFileImportTarget::PortableArtifactInspect(
+                DesktopPortableFileImportPayload {
+                    mode: DesktopPortableMode::InspectArtifact,
+                    artifact_json,
+                    source_name,
+                },
+            ));
+        }
+
+        Self::from_bytes(source_name, bytes).map(DesktopFileImportTarget::Workflow)
+    }
+
     pub fn from_bytes(
         source_name: impl Into<String>,
         bytes: &[u8],
@@ -34,6 +93,9 @@ impl DesktopFileImportPayload {
         }
 
         let source_name = source_name.into();
+        if is_portable_artifact_json_filename(&source_name) {
+            return Err(DesktopFileImportError::UnsupportedFileType);
+        }
         let extension = source_name
             .rsplit_once('.')
             .map(|(_, extension)| extension.to_ascii_lowercase())
@@ -72,6 +134,18 @@ impl DesktopFileImportPayload {
             _ => Err(DesktopFileImportError::UnsupportedFileType),
         }
     }
+}
+
+fn is_portable_artifact_json_filename(source_name: &str) -> bool {
+    let filename = source_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(source_name)
+        .to_ascii_lowercase();
+
+    filename == "mdid-browser-portable-artifact.json"
+        || filename.ends_with(".mdid-portable.json")
+        || filename.ends_with("-mdid-portable.json")
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
@@ -2044,8 +2118,90 @@ mod tests {
     }
 
     #[test]
+    fn portable_artifact_json_file_import_targets_inspect_mode() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "patient-123.mdid-portable.json",
+            br#"{"version":1,"artifact":{"ciphertext":"secret-patient-ciphertext"}}"#,
+        )
+        .expect("portable artifact json imports should be accepted");
+
+        match imported {
+            DesktopFileImportTarget::PortableArtifactInspect(payload) => {
+                assert_eq!(payload.mode, DesktopPortableMode::InspectArtifact);
+                assert_eq!(
+                    payload.artifact_json,
+                    r#"{"version":1,"artifact":{"ciphertext":"secret-patient-ciphertext"}}"#
+                );
+                assert_eq!(payload.source_name, "patient-123.mdid-portable.json");
+            }
+            other => panic!("expected portable inspect import target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exact_browser_portable_artifact_filename_targets_inspect_mode() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "mdid-browser-portable-artifact.json",
+            br#"{"artifact":{"ciphertext":"secret"}}"#,
+        )
+        .expect("browser portable artifact export names should be accepted");
+
+        assert!(matches!(
+            imported,
+            DesktopFileImportTarget::PortableArtifactInspect(_)
+        ));
+    }
+
+    #[test]
+    fn generic_json_file_import_still_uses_media_metadata_mode() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "local-media-metadata.json",
+            b"{\"artifact_label\":\"scan.png\",\"format\":\"image\",\"metadata\":[]}",
+        )
+        .expect("generic json metadata imports should still be accepted");
+
+        match imported {
+            DesktopFileImportTarget::Workflow(payload) => {
+                assert_eq!(payload.mode, DesktopWorkflowMode::MediaMetadataJson);
+                assert_eq!(
+                    payload.source_name.as_deref(),
+                    Some("local-media-metadata.json")
+                );
+            }
+            other => panic!("expected workflow import target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn portable_artifact_file_import_debug_redacts_artifact_contents() {
+        let imported = DesktopFileImportPayload::from_bytes_target(
+            "patient-123-mrn-456-m did-portable.json".replace(" ", ""),
+            br#"{"artifact":{"ciphertext":"secret-patient-ciphertext"}}"#,
+        )
+        .expect("portable artifact json imports should be accepted");
+
+        let debug = format!("{imported:?}");
+
+        assert!(debug.contains("PortableArtifactInspect"));
+        assert!(!debug.contains("secret-patient-ciphertext"));
+        assert!(!debug.contains("patient-123"));
+        assert!(!debug.contains("mrn-456"));
+    }
+
+    #[test]
     fn desktop_file_import_rejects_unsupported_file_type() {
         let error = DesktopFileImportPayload::from_bytes("notes.txt", b"name\nAlice").unwrap_err();
+
+        assert_eq!(error, DesktopFileImportError::UnsupportedFileType);
+    }
+
+    #[test]
+    fn workflow_only_file_import_rejects_portable_artifact_json_names() {
+        let error = DesktopFileImportPayload::from_bytes(
+            "patient-123.mdid-portable.json",
+            br#"{"artifact":{"ciphertext":"secret"}}"#,
+        )
+        .unwrap_err();
 
         assert_eq!(error, DesktopFileImportError::UnsupportedFileType);
     }

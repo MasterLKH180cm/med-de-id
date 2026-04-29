@@ -1,13 +1,26 @@
 use mdid_desktop::{
-    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
-    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
-    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseState, DesktopWorkflowMode,
+    DesktopFileImportPayload, DesktopFileImportTarget, DesktopPortableMode,
+    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
+    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
+    DesktopVaultRequestState, DesktopVaultResponseState, DesktopWorkflowMode,
     DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
+use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 type RuntimeSubmissionResult = Result<serde_json::Value, DesktopRuntimeSubmitError>;
+
+const DROPPED_FILE_READ_ERROR: &str = "file import failed: unable to read dropped file";
+
+fn read_dropped_file_path_bounded(path: &Path) -> Result<Vec<u8>, &'static str> {
+    let metadata = std::fs::metadata(path).map_err(|_| DROPPED_FILE_READ_ERROR)?;
+    if metadata.len() > mdid_desktop::DESKTOP_FILE_IMPORT_MAX_BYTES as u64 {
+        return Err("file import failed: FileTooLarge");
+    }
+
+    std::fs::read(path).map_err(|_| DROPPED_FILE_READ_ERROR)
+}
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -86,6 +99,52 @@ impl DesktopApp {
             }
         }
     }
+    fn apply_file_import_target(&mut self, imported: DesktopFileImportTarget) {
+        match imported {
+            DesktopFileImportTarget::Workflow(payload) => {
+                self.request_state.apply_imported_file(payload);
+            }
+            DesktopFileImportTarget::PortableArtifactInspect(payload) => {
+                self.portable_request_state.mode = payload.mode;
+                self.portable_request_state.artifact_json = payload.artifact_json;
+            }
+        }
+    }
+
+    fn import_dropped_files(&mut self, ctx: &egui::Context) {
+        let files = ctx.input(|input| input.raw.dropped_files.clone());
+        for file in files {
+            let source_name = file
+                .path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+                .unwrap_or(file.name);
+            let bytes = if let Some(bytes) = file.bytes {
+                bytes.to_vec()
+            } else if let Some(path) = file.path {
+                match read_dropped_file_path_bounded(&path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.response_state.apply_error(error.to_string());
+                        continue;
+                    }
+                }
+            } else {
+                self.response_state
+                    .apply_error("file import failed: no file bytes available".to_string());
+                continue;
+            };
+
+            match DesktopFileImportPayload::from_bytes_target(source_name, &bytes) {
+                Ok(imported) => self.apply_file_import_target(imported),
+                Err(error) => self
+                    .response_state
+                    .apply_error(format!("file import failed: {error:?}")),
+            }
+        }
+    }
     fn start_runtime_submission(
         &mut self,
         mode: DesktopRuntimeSubmissionMode,
@@ -124,6 +183,7 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_runtime_submission();
+        self.import_dropped_files(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("med-de-id desktop workstation");
             ui.label("Bounded sensitive-workstation request preparation for local runtime routes.");
@@ -398,6 +458,55 @@ mod tests {
             runtime_submission_mode: Some(mode),
             ..DesktopApp::default()
         }
+    }
+
+    #[test]
+    fn path_backed_file_import_rejects_large_file_before_read() {
+        let path = std::env::temp_dir().join(format!(
+            "mdid-large-dropped-file-{}.csv",
+            uuid::Uuid::new_v4()
+        ));
+        let file = std::fs::File::create(&path).expect("create temp dropped file");
+        file.set_len((mdid_desktop::DESKTOP_FILE_IMPORT_MAX_BYTES + 1) as u64)
+            .expect("size temp dropped file");
+
+        let error = read_dropped_file_path_bounded(&path).expect_err("large file rejected");
+
+        assert_eq!(error, "file import failed: FileTooLarge");
+        std::fs::remove_file(path).expect("remove temp dropped file");
+    }
+
+    #[test]
+    fn path_backed_file_import_read_error_is_phi_safe() {
+        let path = std::env::temp_dir().join("patient-jane-doe-mrn-12345-missing-dropped-file.csv");
+
+        let error = read_dropped_file_path_bounded(&path).expect_err("missing file rejected");
+
+        assert_eq!(error, "file import failed: unable to read dropped file");
+        assert!(!error.contains(path.to_string_lossy().as_ref()));
+        assert!(!error.contains("jane-doe"));
+        assert!(!error.contains("12345"));
+    }
+
+    #[test]
+    fn app_file_import_target_populates_portable_artifact_inspect_state() {
+        let artifact_json = r#"{"artifact":{"ciphertext":"secret"}}"#;
+        let imported = mdid_desktop::DesktopFileImportPayload::from_bytes_target(
+            "mdid-browser-portable-artifact.json",
+            artifact_json.as_bytes(),
+        )
+        .expect("portable artifact import target");
+        let mut app = DesktopApp::default();
+
+        app.apply_file_import_target(imported);
+
+        assert_eq!(
+            app.portable_request_state.mode,
+            DesktopPortableMode::InspectArtifact
+        );
+        assert_eq!(app.portable_request_state.artifact_json, artifact_json);
+        assert_eq!(app.request_state.mode, DesktopWorkflowMode::CsvText);
+        assert!(app.request_state.payload.is_empty());
     }
 
     #[test]
