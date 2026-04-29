@@ -242,11 +242,11 @@ git commit -m "feat(desktop): render bounded vault responses"
 - Modify: `README.md`
 - Test: `crates/mdid-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write/update docs and copy tests if needed**
+- [x] **Step 1: Write/update docs and copy tests if needed**
 
 No new production behavior is required beyond honest copy. If adding tests, assert that desktop copy no longer says all decode/audit response rendering is missing while still saying deeper vault browsing/decode workflow execution/audit investigation are missing.
 
-- [ ] **Step 2: Update UI limitation copy**
+- [x] **Step 2: Update UI limitation copy**
 
 Change the footer copy in `crates/mdid-desktop/src/main.rs` to:
 
@@ -256,7 +256,7 @@ ui.label(
 );
 ```
 
-- [ ] **Step 3: Update README completion snapshot**
+- [x] **Step 3: Update README completion snapshot**
 
 Update `README.md` completion table based on landed tests:
 
@@ -267,7 +267,7 @@ Update `README.md` completion table based on landed tests:
 
 Keep CLI at 84% and Browser/web at 38% unless landed code changed those surfaces.
 
-- [ ] **Step 4: Verify README and scope-drift wording**
+- [x] **Step 4: Verify README and scope-drift wording**
 
 Run:
 
@@ -279,13 +279,13 @@ git diff --check
 
 Expected: completion rows show CLI 84%, Browser/web 38%, Desktop app 38%, Overall 69%; any scope-drift terms appear only as explicit negative limitations, not as roadmap/product claims.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop && git diff --check`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/main.rs README.md docs/superpowers/plans/2026-04-29-desktop-vault-response-workbench.md

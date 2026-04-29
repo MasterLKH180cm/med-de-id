@@ -180,7 +180,7 @@ impl eframe::App for DesktopApp {
             );
 
             ui.label(
-                "Not implemented in this desktop slice: file picker upload/download UX, vault browsing, decode, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
+                "Not implemented in this desktop slice: file picker upload/download UX beyond bounded helper import/export, vault browsing, full decode workflow execution UX, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
             );
         });
         self.poll_runtime_submission();
