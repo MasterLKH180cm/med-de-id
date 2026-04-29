@@ -164,7 +164,7 @@ impl DesktopApp {
                 } else if let DesktopRuntimeSubmissionMode::Workflow(workflow_mode) = mode {
                     self.response_state
                         .apply_success_json(workflow_mode, envelope);
-                    self.refresh_workflow_output_save_path();
+                    self.refresh_workflow_output_save_path(workflow_mode);
                 }
             }
             Ok(Err(error)) => {
@@ -224,7 +224,7 @@ impl DesktopApp {
         }
     }
 
-    fn refresh_workflow_output_save_path(&mut self) {
+    fn refresh_workflow_output_save_path(&mut self, mode: DesktopWorkflowMode) {
         if !is_replaceable_workflow_output_save_path(
             &self.workflow_output_save_path,
             self.generated_workflow_output_save_path.as_deref(),
@@ -235,7 +235,7 @@ impl DesktopApp {
 
         let next_path = self
             .response_state
-            .workflow_output_download(self.request_state.mode)
+            .workflow_output_download(mode)
             .map(|download| download.file_name.to_string())
             .unwrap_or_else(|| DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH.to_string());
         let next_generated_path =
@@ -710,7 +710,25 @@ mod tests {
             serde_json::json!({"csv": "name\nTOKEN-1\n", "summary": {}}),
         );
 
-        app.refresh_workflow_output_save_path();
+        app.refresh_workflow_output_save_path(DesktopWorkflowMode::CsvText);
+
+        assert_eq!(app.workflow_output_save_path, "desktop-deidentified.csv");
+        assert_eq!(
+            app.generated_workflow_output_save_path.as_deref(),
+            Some("desktop-deidentified.csv")
+        );
+    }
+
+    #[test]
+    fn workflow_output_save_path_refreshes_with_received_mode_not_current_ui_mode() {
+        let mut app = DesktopApp::default();
+        app.request_state.mode = DesktopWorkflowMode::PdfBase64Review;
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            serde_json::json!({"csv": "name\nTOKEN-1\n", "summary": {}}),
+        );
+
+        app.refresh_workflow_output_save_path(DesktopWorkflowMode::CsvText);
 
         assert_eq!(app.workflow_output_save_path, "desktop-deidentified.csv");
         assert_eq!(
@@ -734,7 +752,7 @@ mod tests {
             }),
         );
 
-        app.refresh_workflow_output_save_path();
+        app.refresh_workflow_output_save_path(DesktopWorkflowMode::DicomBase64);
 
         assert_eq!(
             app.workflow_output_save_path,
@@ -756,7 +774,7 @@ mod tests {
             serde_json::json!({"summary": {}, "page_statuses": [], "review_queue": []}),
         );
 
-        app.refresh_workflow_output_save_path();
+        app.refresh_workflow_output_save_path(DesktopWorkflowMode::PdfBase64Review);
 
         assert_eq!(
             app.workflow_output_save_path,
