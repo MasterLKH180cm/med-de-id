@@ -250,7 +250,10 @@ fn build_vault_audit_request_payload(
         if !limit.is_empty() {
             let parsed_limit = limit
                 .parse::<usize>()
-                .map_err(|_| "Vault audit limit must be a non-negative integer.".to_string())?;
+                .map_err(|_| "Vault audit limit must be a positive integer.".to_string())?;
+            if parsed_limit == 0 {
+                return Err("Vault audit limit must be a positive integer.".to_string());
+            }
             object.insert("limit".to_string(), serde_json::json!(parsed_limit));
         }
     }
@@ -2512,6 +2515,20 @@ mod tests {
         .expect_err("invalid limit must be rejected before localhost submission");
 
         assert!(error.contains("limit"));
+    }
+
+    #[test]
+    fn vault_audit_payload_rejects_zero_limit() {
+        let error = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "0",
+        )
+        .expect_err("zero limit must be rejected before localhost submission");
+
+        assert!(error.contains("positive"));
     }
 
     #[test]
