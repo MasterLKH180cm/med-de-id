@@ -1,3 +1,5 @@
+use base64::Engine as _;
+
 pub const DESKTOP_FILE_IMPORT_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -172,6 +174,12 @@ fn encode_base64(bytes: &[u8]) -> String {
     }
 
     encoded
+}
+
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value.trim())
+        .ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1313,12 +1321,37 @@ impl DesktopRuntimeClient {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub struct DesktopWorkflowOutputDownload {
+    pub file_name: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for DesktopWorkflowOutputDownload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopWorkflowOutputDownload")
+            .field("file_name", &self.file_name)
+            .field("bytes", &"<redacted>")
+            .finish()
+    }
+}
+
+pub fn write_workflow_output_file(
+    path: impl AsRef<std::path::Path>,
+    download: &DesktopWorkflowOutputDownload,
+) -> Result<(), String> {
+    std::fs::write(path, &download.bytes)
+        .map_err(|_| "workflow output save failed: unable to write output file".to_string())
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowResponseState {
     pub banner: String,
     pub output: String,
     pub summary: String,
     pub review_queue: String,
     pub error: Option<String>,
+    last_success_mode: Option<DesktopWorkflowMode>,
+    last_success_response: Option<serde_json::Value>,
 }
 
 impl Default for DesktopWorkflowResponseState {
@@ -1329,11 +1362,48 @@ impl Default for DesktopWorkflowResponseState {
             summary: "No successful runtime summary rendered yet.".to_string(),
             review_queue: "No review queue rendered yet.".to_string(),
             error: None,
+            last_success_mode: None,
+            last_success_response: None,
         }
     }
 }
 
 impl DesktopWorkflowResponseState {
+    pub fn workflow_output_download(
+        &self,
+        mode: DesktopWorkflowMode,
+    ) -> Option<DesktopWorkflowOutputDownload> {
+        if self.error.is_some() || self.last_success_mode != Some(mode) {
+            return None;
+        }
+
+        let response = self.last_success_response.as_ref()?;
+        match mode {
+            DesktopWorkflowMode::CsvText => {
+                let csv = response.get("csv")?.as_str()?;
+                Some(DesktopWorkflowOutputDownload {
+                    file_name: "desktop-deidentified.csv",
+                    bytes: csv.as_bytes().to_vec(),
+                })
+            }
+            DesktopWorkflowMode::XlsxBase64 => {
+                let encoded = response.get("rewritten_workbook_base64")?.as_str()?;
+                Some(DesktopWorkflowOutputDownload {
+                    file_name: "desktop-deidentified.xlsx",
+                    bytes: decode_base64(encoded)?,
+                })
+            }
+            DesktopWorkflowMode::DicomBase64 => {
+                let encoded = response.get("rewritten_dicom_bytes_base64")?.as_str()?;
+                Some(DesktopWorkflowOutputDownload {
+                    file_name: "desktop-deidentified.dcm",
+                    bytes: decode_base64(encoded)?,
+                })
+            }
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => None,
+        }
+    }
+
     pub fn exportable_output(&self) -> Option<&str> {
         let output = self.output.trim();
         if output.is_empty()
@@ -1421,6 +1491,8 @@ impl DesktopWorkflowResponseState {
         self.summary = pretty_json_field(&envelope, "summary");
         self.review_queue = pretty_json_field(&envelope, "review_queue");
         self.error = None;
+        self.last_success_mode = Some(mode);
+        self.last_success_response = Some(envelope);
     }
 
     pub fn apply_error(&mut self, message: impl Into<String>) {
@@ -1429,6 +1501,8 @@ impl DesktopWorkflowResponseState {
         self.summary = "No successful runtime summary rendered yet.".to_string();
         self.review_queue = "No review queue rendered yet.".to_string();
         self.error = Some(message.into());
+        self.last_success_mode = None;
+        self.last_success_response = None;
     }
 }
 
@@ -3071,6 +3145,160 @@ mod tests {
     }
 
     #[test]
+    fn workflow_output_download_extracts_csv_bytes_without_raw_envelope() {
+        let mut response = DesktopWorkflowResponseState::default();
+        response.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({
+                "csv": "patient_name\n<NAME-1>",
+                "summary": {"encoded_fields": 1},
+                "review_queue": []
+            }),
+        );
+
+        let download = response
+            .workflow_output_download(DesktopWorkflowMode::CsvText)
+            .expect("csv output download");
+
+        assert_eq!(download.file_name, "desktop-deidentified.csv");
+        assert_eq!(download.bytes, b"patient_name\n<NAME-1>");
+        assert!(!download.bytes.starts_with(b"{"));
+        let debug = format!("{download:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("patient_name"));
+        assert!(!debug.contains("NAME-1"));
+    }
+
+    #[test]
+    fn write_workflow_output_file_writes_bytes_without_exposing_phi_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir
+            .path()
+            .join("patient-jane-doe-mrn-12345-deidentified.csv");
+        let download = DesktopWorkflowOutputDownload {
+            file_name: "desktop-deidentified.csv",
+            bytes: b"patient_name\n<NAME-1>\n".to_vec(),
+        };
+
+        write_workflow_output_file(&path, &download).expect("workflow output saved");
+
+        assert_eq!(
+            std::fs::read(&path).expect("saved bytes readable"),
+            b"patient_name\n<NAME-1>\n"
+        );
+    }
+
+    #[test]
+    fn write_workflow_output_file_error_is_phi_safe() {
+        let path = std::env::temp_dir()
+            .join("missing-parent-jane-doe-mrn-12345")
+            .join("output.csv");
+        let download = DesktopWorkflowOutputDownload {
+            file_name: "desktop-deidentified.csv",
+            bytes: b"patient_name\n<NAME-1>\n".to_vec(),
+        };
+
+        let error = write_workflow_output_file(&path, &download).expect_err("write fails");
+
+        assert_eq!(
+            error,
+            "workflow output save failed: unable to write output file"
+        );
+        assert!(!error.contains("jane-doe"));
+        assert!(!error.contains("12345"));
+        assert!(!error.contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn workflow_output_download_extracts_xlsx_and_dicom_base64_bytes() {
+        let mut xlsx = DesktopWorkflowResponseState::default();
+        xlsx.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({"rewritten_workbook_base64":"UEsDBAo=","summary":{},"review_queue":[]}),
+        );
+        let xlsx_download = xlsx
+            .workflow_output_download(DesktopWorkflowMode::XlsxBase64)
+            .expect("xlsx output download");
+        assert_eq!(xlsx_download.file_name, "desktop-deidentified.xlsx");
+        assert_eq!(xlsx_download.bytes, b"PK\x03\x04\n");
+
+        let mut dicom = DesktopWorkflowResponseState::default();
+        dicom.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            json!({"rewritten_dicom_bytes_base64":"RElDTQAB","summary":{},"review_queue":[]}),
+        );
+        let dicom_download = dicom
+            .workflow_output_download(DesktopWorkflowMode::DicomBase64)
+            .expect("dicom output download");
+        assert_eq!(dicom_download.file_name, "desktop-deidentified.dcm");
+        assert_eq!(dicom_download.bytes, b"DICM\x00\x01");
+    }
+
+    #[test]
+    fn workflow_output_download_fails_closed_for_pdf_errors_malformed_and_mode_mismatch() {
+        let mut pdf = DesktopWorkflowResponseState::default();
+        pdf.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({"rewritten_pdf_bytes_base64":"JVBERi0x","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            pdf.workflow_output_download(DesktopWorkflowMode::PdfBase64Review),
+            None
+        );
+
+        let mut errored = DesktopWorkflowResponseState::default();
+        errored.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"csv":"ok","summary":{},"review_queue":[]}),
+        );
+        errored.apply_error("runtime failed");
+        assert_eq!(
+            errored.workflow_output_download(DesktopWorkflowMode::CsvText),
+            None
+        );
+
+        let mut malformed = DesktopWorkflowResponseState::default();
+        malformed.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({"rewritten_workbook_base64":"not valid base64!","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            malformed.workflow_output_download(DesktopWorkflowMode::XlsxBase64),
+            None
+        );
+
+        let mut non_canonical_padded = DesktopWorkflowResponseState::default();
+        non_canonical_padded.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            json!({"rewritten_dicom_bytes_base64":"/x==","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            non_canonical_padded.workflow_output_download(DesktopWorkflowMode::DicomBase64),
+            None
+        );
+
+        let mut missing = DesktopWorkflowResponseState::default();
+        missing.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            missing.workflow_output_download(DesktopWorkflowMode::CsvText),
+            None
+        );
+
+        let mut csv = DesktopWorkflowResponseState::default();
+        csv.apply_success_json(
+            DesktopWorkflowMode::CsvText,
+            json!({"csv":"ok","summary":{},"review_queue":[]}),
+        );
+        assert_eq!(
+            csv.workflow_output_download(DesktopWorkflowMode::XlsxBase64),
+            None
+        );
+    }
+
+    #[test]
     fn response_state_renders_csv_runtime_success_envelope() {
         let mut response = DesktopWorkflowResponseState::default();
 
@@ -3182,8 +3410,10 @@ mod tests {
 
     #[test]
     fn desktop_export_filename_uses_import_source_stem_for_csv_xlsx_and_dicom() {
-        let mut state = DesktopWorkflowResponseState::default();
-        state.output = "rewritten payload".to_string();
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
 
         assert_eq!(
             state.suggested_export_file_name_for_source(
@@ -3210,8 +3440,10 @@ mod tests {
 
     #[test]
     fn desktop_export_filename_caps_source_stem_at_64_sanitized_chars() {
-        let mut state = DesktopWorkflowResponseState::default();
-        state.output = "rewritten payload".to_string();
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
         let source_name = format!("{}.csv", "a".repeat(80));
         let expected = format!("{}-deidentified.csv", "a".repeat(64));
 
@@ -3226,8 +3458,10 @@ mod tests {
 
     #[test]
     fn desktop_export_filename_falls_back_when_source_is_empty_or_unsafe() {
-        let mut state = DesktopWorkflowResponseState::default();
-        state.output = "rewritten payload".to_string();
+        let state = DesktopWorkflowResponseState {
+            output: "rewritten payload".to_string(),
+            ..DesktopWorkflowResponseState::default()
+        };
 
         assert_eq!(
             state.suggested_export_file_name_for_source(DesktopWorkflowMode::CsvText, None),
