@@ -1,6 +1,8 @@
 use mdid_desktop::{
-    DesktopRuntimeSettings, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
-    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
+    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
+    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseState, DesktopWorkflowMode,
+    DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
@@ -19,10 +21,13 @@ fn main() -> eframe::Result<()> {
 #[derive(Default)]
 struct DesktopApp {
     request_state: DesktopWorkflowRequestState,
+    vault_request_state: DesktopVaultRequestState,
+    portable_request_state: DesktopPortableRequestState,
     runtime_settings: DesktopRuntimeSettings,
     response_state: DesktopWorkflowResponseState,
+    vault_response_state: DesktopVaultResponseState,
     runtime_submission_receiver: Option<Receiver<RuntimeSubmissionResult>>,
-    runtime_submission_mode: Option<DesktopWorkflowMode>,
+    runtime_submission_mode: Option<DesktopRuntimeSubmissionMode>,
 }
 
 impl DesktopApp {
@@ -42,15 +47,27 @@ impl DesktopApp {
 
         match receiver.try_recv() {
             Ok(Ok(envelope)) => {
-                let mode = self
-                    .runtime_submission_mode
-                    .take()
-                    .unwrap_or(self.request_state.mode);
-                self.response_state.apply_success_json(mode, envelope);
+                let mode = self.runtime_submission_mode.take().unwrap_or(
+                    DesktopRuntimeSubmissionMode::Workflow(self.request_state.mode),
+                );
+                if let Some(vault_mode) = mode.vault_response_mode() {
+                    self.vault_response_state
+                        .apply_success(vault_mode, &envelope);
+                } else if let DesktopRuntimeSubmissionMode::Workflow(workflow_mode) = mode {
+                    self.response_state
+                        .apply_success_json(workflow_mode, envelope);
+                }
             }
             Ok(Err(error)) => {
-                self.runtime_submission_mode = None;
-                self.response_state.apply_error(format!("{error:?}"));
+                let mode = self.runtime_submission_mode.take();
+                if let Some(vault_mode) =
+                    mode.and_then(DesktopRuntimeSubmissionMode::vault_response_mode)
+                {
+                    self.vault_response_state
+                        .apply_error(vault_mode, format!("{error:?}"));
+                } else {
+                    self.response_state.apply_error(format!("{error:?}"));
+                }
             }
             Err(TryRecvError::Empty) => {
                 self.runtime_submission_receiver = Some(receiver);
@@ -59,6 +76,39 @@ impl DesktopApp {
                 self.runtime_submission_mode = None;
                 self.response_state
                     .apply_error("runtime submission worker disconnected".to_string());
+            }
+        }
+    }
+    fn start_runtime_submission(
+        &mut self,
+        mode: DesktopRuntimeSubmissionMode,
+        request: mdid_desktop::DesktopWorkflowRequest,
+    ) {
+        match self.runtime_settings.client() {
+            Ok(client) => {
+                let route = request.route;
+                let (sender, receiver) = std::sync::mpsc::channel();
+                self.runtime_submission_receiver = Some(receiver);
+                self.runtime_submission_mode = Some(mode);
+                if mode.vault_response_mode().is_some() {
+                    self.vault_response_state.banner =
+                        format!("Submitting {route} to local runtime...");
+                    self.vault_response_state.error = None;
+                } else {
+                    self.response_state.banner = format!("Submitting {route} to local runtime...");
+                    self.response_state.error = None;
+                }
+                std::thread::spawn(move || {
+                    let _ = sender.send(client.submit(&request));
+                });
+            }
+            Err(error) => {
+                if let Some(vault_mode) = mode.vault_response_mode() {
+                    self.vault_response_state
+                        .apply_error(vault_mode, format!("{error:?}"));
+                } else {
+                    self.response_state.apply_error(format!("{error:?}"));
+                }
             }
         }
     }
@@ -130,24 +180,161 @@ impl eframe::App for DesktopApp {
                 .clicked();
             if submit_clicked {
                 match self.request_state.try_build_request() {
-                    Ok(request) => match self.runtime_settings.client() {
-                        Ok(client) => {
-                            let mode = self.request_state.mode;
-                            let route = request.route;
-                            let (sender, receiver) = std::sync::mpsc::channel();
-                            self.runtime_submission_receiver = Some(receiver);
-                            self.runtime_submission_mode = Some(mode);
-                            self.response_state.banner =
-                                format!("Submitting {route} to local runtime...");
-                            self.response_state.error = None;
-                            std::thread::spawn(move || {
-                                let _ = sender.send(client.submit(&request));
-                            });
-                        }
-                        Err(error) => self.response_state.apply_error(format!("{error:?}")),
-                    },
+                    Ok(request) => self.start_runtime_submission(
+                        DesktopRuntimeSubmissionMode::Workflow(self.request_state.mode),
+                        request,
+                    ),
                     Err(error) => self.response_state.apply_error(format!("{error}")),
                 }
+            }
+
+            ui.separator();
+            ui.heading("Vault decode/audit workbench");
+            ui.label(mdid_desktop::DESKTOP_VAULT_WORKBENCH_COPY);
+            egui::ComboBox::from_label("vault mode")
+                .selected_text(match self.vault_request_state.mode {
+                    DesktopVaultMode::Decode => "Vault decode",
+                    DesktopVaultMode::AuditEvents => "Vault audit events",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.vault_request_state.mode,
+                        DesktopVaultMode::Decode,
+                        "Vault decode",
+                    );
+                    ui.selectable_value(
+                        &mut self.vault_request_state.mode,
+                        DesktopVaultMode::AuditEvents,
+                        "Vault audit events",
+                    );
+                });
+            ui.label(format!("Route preview: {}", self.vault_request_state.mode.route()));
+            ui.label("Vault path");
+            ui.text_edit_singleline(&mut self.vault_request_state.vault_path);
+            ui.label("Vault passphrase");
+            ui.add(egui::TextEdit::singleline(&mut self.vault_request_state.vault_passphrase).password(true));
+            match self.vault_request_state.mode {
+                DesktopVaultMode::Decode => {
+                    ui.label("Record IDs JSON");
+                    ui.add(egui::TextEdit::multiline(&mut self.vault_request_state.record_ids_json).desired_rows(3));
+                    ui.label("Output target");
+                    ui.text_edit_singleline(&mut self.vault_request_state.output_target);
+                    ui.label("Justification");
+                    ui.text_edit_singleline(&mut self.vault_request_state.justification);
+                    ui.label("Requested by");
+                    ui.text_edit_singleline(&mut self.vault_request_state.requested_by);
+                }
+                DesktopVaultMode::AuditEvents => {
+                    let kind = self.vault_request_state.audit_kind.get_or_insert_with(String::new);
+                    ui.label("Audit kind filter");
+                    ui.text_edit_singleline(kind);
+                    let actor = self.vault_request_state.audit_actor.get_or_insert_with(String::new);
+                    ui.label("Audit actor filter");
+                    ui.text_edit_singleline(actor);
+                }
+            }
+            if ui
+                .add_enabled(
+                    !submission.submit_button_disabled(),
+                    egui::Button::new("Submit vault request to local runtime"),
+                )
+                .clicked()
+            {
+                match self.vault_request_state.try_build_request() {
+                    Ok(request) => self.start_runtime_submission(
+                        DesktopRuntimeSubmissionMode::Vault(self.vault_request_state.mode),
+                        request,
+                    ),
+                    Err(error) => self.vault_response_state.apply_error(
+                        match self.vault_request_state.mode {
+                            DesktopVaultMode::Decode => mdid_desktop::DesktopVaultResponseMode::VaultDecode,
+                            DesktopVaultMode::AuditEvents => mdid_desktop::DesktopVaultResponseMode::VaultAudit,
+                        },
+                        format!("{error:?}"),
+                    ),
+                }
+            }
+
+            ui.separator();
+            ui.heading("Portable artifact workbench");
+            egui::ComboBox::from_label("portable mode")
+                .selected_text(match self.portable_request_state.mode {
+                    DesktopPortableMode::VaultExport => "Vault export",
+                    DesktopPortableMode::InspectArtifact => "Inspect artifact",
+                    DesktopPortableMode::ImportArtifact => "Import artifact",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.portable_request_state.mode, DesktopPortableMode::VaultExport, "Vault export");
+                    ui.selectable_value(&mut self.portable_request_state.mode, DesktopPortableMode::InspectArtifact, "Inspect artifact");
+                    ui.selectable_value(&mut self.portable_request_state.mode, DesktopPortableMode::ImportArtifact, "Import artifact");
+                });
+            ui.label(format!("Route preview: {}", self.portable_request_state.mode.route()));
+            match self.portable_request_state.mode {
+                DesktopPortableMode::VaultExport => {
+                    ui.label("Vault path");
+                    ui.text_edit_singleline(&mut self.portable_request_state.vault_path);
+                    ui.label("Vault passphrase");
+                    ui.add(egui::TextEdit::singleline(&mut self.portable_request_state.vault_passphrase).password(true));
+                    ui.label("Record IDs JSON");
+                    ui.add(egui::TextEdit::multiline(&mut self.portable_request_state.record_ids_json).desired_rows(3));
+                    ui.label("Export passphrase");
+                    ui.add(egui::TextEdit::singleline(&mut self.portable_request_state.export_passphrase).password(true));
+                    ui.label("Export context");
+                    ui.text_edit_singleline(&mut self.portable_request_state.export_context);
+                }
+                DesktopPortableMode::InspectArtifact => {
+                    ui.label("Artifact JSON (not rendered after submission)");
+                    ui.add(egui::TextEdit::multiline(&mut self.portable_request_state.artifact_json).desired_rows(5));
+                    ui.label("Portable passphrase");
+                    ui.add(egui::TextEdit::singleline(&mut self.portable_request_state.portable_passphrase).password(true));
+                }
+                DesktopPortableMode::ImportArtifact => {
+                    ui.label("Destination vault path");
+                    ui.text_edit_singleline(&mut self.portable_request_state.destination_vault_path);
+                    ui.label("Destination vault passphrase");
+                    ui.add(egui::TextEdit::singleline(&mut self.portable_request_state.destination_vault_passphrase).password(true));
+                    ui.label("Artifact JSON (not rendered after submission)");
+                    ui.add(egui::TextEdit::multiline(&mut self.portable_request_state.artifact_json).desired_rows(5));
+                    ui.label("Portable passphrase");
+                    ui.add(egui::TextEdit::singleline(&mut self.portable_request_state.portable_passphrase).password(true));
+                    ui.label("Import context");
+                    ui.text_edit_singleline(&mut self.portable_request_state.import_context);
+                }
+            }
+            ui.label("Requested by");
+            ui.text_edit_singleline(&mut self.portable_request_state.requested_by);
+            if ui
+                .add_enabled(
+                    !submission.submit_button_disabled(),
+                    egui::Button::new("Submit portable request to local runtime"),
+                )
+                .clicked()
+            {
+                match self.portable_request_state.try_build_request() {
+                    Ok(request) => self.start_runtime_submission(
+                        DesktopRuntimeSubmissionMode::Portable(self.portable_request_state.mode),
+                        request,
+                    ),
+                    Err(error) => {
+                        let mode = DesktopRuntimeSubmissionMode::Portable(self.portable_request_state.mode)
+                            .vault_response_mode()
+                            .expect("portable response mode");
+                        self.vault_response_state.apply_error(mode, format!("{error:?}"));
+                    }
+                }
+            }
+
+            ui.separator();
+            ui.heading("Vault/portable response workbench");
+            ui.label(&self.vault_response_state.banner);
+            if let Some(error) = &self.vault_response_state.error {
+                ui.colored_label(egui::Color32::RED, error);
+            }
+            ui.label("Safe summary");
+            let mut vault_summary = self.vault_response_state.summary.clone();
+            ui.add(egui::TextEdit::multiline(&mut vault_summary).desired_rows(3).interactive(false));
+            if !self.vault_response_state.artifact_notice.is_empty() {
+                ui.label(&self.vault_response_state.artifact_notice);
             }
             ui.separator();
             ui.heading("Runtime-shaped response workbench");
