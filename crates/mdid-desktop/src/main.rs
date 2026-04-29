@@ -102,7 +102,9 @@ impl eframe::App for DesktopApp {
                             .desired_rows(6),
                     );
                 }
-                DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::DicomBase64 => {
+                DesktopWorkflowMode::PdfBase64Review
+                | DesktopWorkflowMode::DicomBase64
+                | DesktopWorkflowMode::MediaMetadataJson => {
                     ui.label("Source name");
                     ui.text_edit_singleline(&mut self.request_state.source_name);
                 }
