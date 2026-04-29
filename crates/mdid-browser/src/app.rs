@@ -617,9 +617,11 @@ impl BrowserFlowState {
             match self.input_mode {
                 InputMode::CsvText => return format!("{stem}-deidentified.csv"),
                 InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx"),
-                InputMode::PdfBase64 => return format!("{stem}-review-report.txt"),
+                InputMode::PdfBase64 => return format!("{stem}-review-report.json"),
                 InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm"),
-                InputMode::MediaMetadataJson => return format!("{stem}-media-review-report.txt"),
+                InputMode::MediaMetadataJson => {
+                    return format!("{stem}-media-review-report.json");
+                }
                 InputMode::VaultAuditEvents
                 | InputMode::VaultDecode
                 | InputMode::VaultExport
@@ -631,14 +633,14 @@ impl BrowserFlowState {
         match self.input_mode {
             InputMode::CsvText => "mdid-browser-output.csv",
             InputMode::XlsxBase64 => "mdid-browser-output.xlsx",
-            InputMode::PdfBase64 => "mdid-browser-review-report.txt",
+            InputMode::PdfBase64 => "mdid-browser-review-report.json",
             InputMode::DicomBase64 => "mdid-browser-output.dcm",
-            InputMode::MediaMetadataJson => "mdid-browser-media-review-report.txt",
+            InputMode::MediaMetadataJson => "mdid-browser-media-review-report.json",
             InputMode::VaultAuditEvents => "mdid-browser-vault-audit-events.json",
             InputMode::VaultDecode => "mdid-browser-vault-decode-response.json",
             InputMode::VaultExport => "mdid-browser-portable-artifact.json",
-            InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.txt",
-            InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.txt",
+            InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.json",
+            InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.json",
         }
         .to_string()
     }
@@ -646,6 +648,23 @@ impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
+    }
+
+    fn review_report_download_json(&self) -> Result<Vec<u8>, String> {
+        let scrub_review_text = |value: &str| {
+            value
+                .replace("artifact_json", "[redacted]")
+                .replace("original_value", "[redacted]")
+                .replace("token", "[redacted]")
+        };
+
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mode": self.input_mode.label(),
+            "summary": scrub_review_text(&self.summary),
+            "review_queue": scrub_review_text(&self.review_queue),
+            "output": scrub_review_text(&self.result_output),
+        }))
+        .map_err(|_| "Browser output download could not encode review report JSON.".to_string())
     }
 
     fn prepared_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
@@ -679,6 +698,17 @@ impl BrowserFlowState {
                     is_text: false,
                 })
             }
+            InputMode::PdfBase64
+            | InputMode::MediaMetadataJson
+            | InputMode::VaultAuditEvents
+            | InputMode::VaultDecode
+            | InputMode::PortableArtifactInspect
+            | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "application/json;charset=utf-8",
+                bytes: self.review_report_download_json()?,
+                is_text: true,
+            }),
             _ => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "text/plain;charset=utf-8",
@@ -2250,6 +2280,63 @@ mod tests {
     }
 
     #[test]
+    fn pdf_review_download_exports_structured_json_report() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            result_output:
+                "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
+                    .to_string(),
+            summary: "total_pages: 1\nocr_required_pages: 0".to_string(),
+            review_queue: "- page 1 / patient_name / confidence 20 / review: <redacted>"
+                .to_string(),
+            ..BrowserFlowState::default()
+        };
+        state.imported_file_name = Some("Patient Doe.pdf".to_string());
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let json: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json report");
+
+        assert_eq!(payload.file_name, "patient-doe-review-report.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(json["mode"], "PDF base64");
+        assert_eq!(json["summary"], "total_pages: 1\nocr_required_pages: 0");
+        assert!(json["output"]
+            .as_str()
+            .unwrap()
+            .contains("review-only PDF analysis"));
+    }
+
+    #[test]
+    fn portable_review_download_exports_json_without_raw_runtime_body() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactInspect,
+            result_output:
+                "Portable artifact contains 2 record(s). Artifact contents are hidden.".to_string(),
+            summary: "2 portable record(s) available for import.".to_string(),
+            review_queue:
+                "Portable artifact inspection completed without rendering original values or tokens."
+                    .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_download_payload().expect("download payload");
+        let text = std::str::from_utf8(&payload.bytes).expect("utf8 json");
+        let json: serde_json::Value = serde_json::from_str(text).expect("json report");
+
+        assert_eq!(
+            payload.file_name,
+            "mdid-browser-portable-artifact-inspect.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(json["mode"], "Portable artifact inspect");
+        assert!(!text.contains("artifact_json"));
+        assert!(!text.contains("original_value"));
+        assert!(!text.contains("token"));
+    }
+
+    #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn binary_output_download_rejects_invalid_base64() {
         let mut state = BrowserFlowState::default();
@@ -2288,7 +2375,7 @@ mod tests {
 
         assert_eq!(
             state.suggested_export_file_name(),
-            "patient-42-intake-review-report.txt"
+            "patient-42-intake-review-report.json"
         );
     }
 
@@ -2340,7 +2427,7 @@ mod tests {
 
         assert_eq!(
             media_state.suggested_export_file_name(),
-            "clinic-video-metadata-media-review-report.txt"
+            "clinic-video-metadata-media-review-report.json"
         );
     }
 
@@ -3196,7 +3283,7 @@ mod tests {
                 ..BrowserFlowState::default()
             }
             .suggested_export_file_name(),
-            "mdid-browser-media-review-report.txt"
+            "mdid-browser-media-review-report.json"
         );
     }
 
@@ -3303,7 +3390,10 @@ mod tests {
 
         state.input_mode = InputMode::PdfBase64;
         state.imported_file_name = Some("scan.pdf".to_string());
-        assert_eq!(state.suggested_export_file_name(), "scan-review-report.txt");
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "scan-review-report.json"
+        );
 
         state.input_mode = InputMode::VaultExport;
         assert_eq!(
