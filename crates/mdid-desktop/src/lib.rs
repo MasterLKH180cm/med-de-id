@@ -54,6 +54,37 @@ impl std::fmt::Debug for DesktopPortableFileImportPayload {
     }
 }
 
+impl DesktopPortableFileImportPayload {
+    pub fn from_bytes_for_mode(
+        mode: DesktopPortableMode,
+        source_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<Self, DesktopFileImportError> {
+        let source_name = source_name.into();
+        if !matches!(
+            mode,
+            DesktopPortableMode::InspectArtifact | DesktopPortableMode::ImportArtifact
+        ) {
+            return Err(DesktopFileImportError::UnsupportedFileType);
+        }
+        if !is_portable_artifact_json_filename(&source_name) {
+            return Err(DesktopFileImportError::UnsupportedFileType);
+        }
+        if bytes.len() > DESKTOP_FILE_IMPORT_MAX_BYTES {
+            return Err(DesktopFileImportError::FileTooLarge);
+        }
+        let artifact_json = std::str::from_utf8(bytes)
+            .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
+            .to_string();
+
+        Ok(Self {
+            mode,
+            artifact_json,
+            source_name,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopFileImportError {
     UnsupportedFileType,
@@ -2910,6 +2941,32 @@ mod tests {
             }
             other => panic!("expected portable inspect import target, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn desktop_portable_file_import_payload_supports_import_mode() {
+        let payload = DesktopPortableFileImportPayload::from_bytes_for_mode(
+            DesktopPortableMode::ImportArtifact,
+            "handoff.mdid-portable.json",
+            br#"{\"version\":1,\"records\":[]}"#,
+        )
+        .expect("portable import handoff should accept artifact json");
+
+        assert_eq!(payload.mode, DesktopPortableMode::ImportArtifact);
+        assert_eq!(payload.artifact_json, r#"{\"version\":1,\"records\":[]}"#);
+        assert_eq!(payload.source_name, "handoff.mdid-portable.json");
+    }
+
+    #[test]
+    fn desktop_portable_file_import_payload_rejects_export_mode() {
+        let error = DesktopPortableFileImportPayload::from_bytes_for_mode(
+            DesktopPortableMode::VaultExport,
+            "handoff.mdid-portable.json",
+            br#"{\"version\":1}"#,
+        )
+        .expect_err("vault export is not an artifact-consuming mode");
+
+        assert_eq!(error, DesktopFileImportError::UnsupportedFileType);
     }
 
     #[test]
