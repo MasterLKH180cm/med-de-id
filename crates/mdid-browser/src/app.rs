@@ -533,19 +533,27 @@ fn parse_media_summary_report(summary: &str) -> serde_json::Value {
             continue;
         };
         let key = key.trim();
-        if key.is_empty() || key == "rewritten_media_bytes_base64" {
+        if !matches!(
+            key,
+            "total_items"
+                | "metadata_only_items"
+                | "visual_review_required_items"
+                | "unsupported_items"
+                | "review_required_candidates"
+                | "rewritten_media_bytes_base64"
+        ) {
+            continue;
+        }
+        if key == "rewritten_media_bytes_base64" {
             object.insert(key.to_string(), serde_json::Value::Null);
             continue;
         }
 
         let value = value.trim();
-        if value.eq_ignore_ascii_case("null") {
-            object.insert(key.to_string(), serde_json::Value::Null);
-        } else if let Ok(number) = value.parse::<u64>() {
-            object.insert(key.to_string(), serde_json::json!(number));
-        } else {
-            object.insert(key.to_string(), serde_json::json!(value));
-        }
+        let parsed_value = value
+            .parse::<u64>()
+            .map_or(serde_json::Value::Null, serde_json::Value::from);
+        object.insert(key.to_string(), parsed_value);
     }
     serde_json::Value::Object(object)
 }
@@ -600,6 +608,7 @@ fn allowlisted_media_phi_type(phi_type: &str) -> &'static str {
         "Identifier" => "Identifier",
         "Contact" => "Contact",
         "Age" => "Age",
+        "metadata_identifier" => "metadata_identifier",
         _ => "Other",
     }
 }
@@ -2398,8 +2407,8 @@ mod tests {
         let mut state = BrowserFlowState::default();
         state.input_mode = InputMode::MediaMetadataJson;
         state.result_output = "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string();
-        state.summary = "total_items: 1\nmetadata_only_items: 1\nvisual_review_required_items: 1\nunsupported_items: 0\nreview_required_candidates: 1\nrewritten_media_bytes_base64: null".to_string();
-        state.review_queue = "- PatientName / image / Name / confidence 0.97 / value: <redacted>".to_string();
+        state.summary = "total_items: 1\nmetadata_only_items: 1\nvisual_review_required_items: 1\nunsupported_items: 0\nreview_required_candidates: 1\nrewritten_media_bytes_base64: null\noperator_notes: Jane Patient\ntotal_items_label: one\nmetadata_only_items: not-a-number".to_string();
+        state.review_queue = "- PatientName / image / metadata_identifier / confidence 0.97 / value: <redacted>".to_string();
 
         let payload = state.prepared_download_payload().expect("download payload");
         let report: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("report json");
@@ -2410,14 +2419,16 @@ mod tests {
         assert!(payload.is_text);
         assert_eq!(report["mode"], "media_metadata_review");
         assert_eq!(report["summary"]["total_items"], 1);
-        assert_eq!(report["summary"]["metadata_only_items"], 1);
+        assert_eq!(report["summary"]["metadata_only_items"], serde_json::Value::Null);
         assert_eq!(report["summary"]["visual_review_required_items"], 1);
         assert_eq!(report["summary"]["unsupported_items"], 0);
         assert_eq!(report["summary"]["review_required_candidates"], 1);
         assert_eq!(report["summary"]["rewritten_media_bytes_base64"], serde_json::Value::Null);
         assert_eq!(report["review_queue"][0]["metadata_key"], "redacted-field");
         assert_eq!(report["review_queue"][0]["format"], "image");
-        assert_eq!(report["review_queue"][0]["phi_type"], "Name");
+        assert_eq!(report["review_queue"][0]["phi_type"], "metadata_identifier");
+        assert!(report["summary"].get("operator_notes").is_none());
+        assert!(report["summary"].get("total_items_label").is_none());
         assert_eq!(report["review_queue"][0]["confidence"], 0.97);
         assert_eq!(report["review_queue"][0]["value"], "redacted");
         assert!(!report_text.contains("Jane Patient"));
