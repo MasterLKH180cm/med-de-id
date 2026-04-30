@@ -16,6 +16,12 @@
 - bounded README with exact commands
 
 ## Verification run
+### Strict TDD RED evidence
+```bash
+python -m pytest tests/test_ocr_handoff_contract.py -q
+```
+Result before implementation: FAIL with `KeyError: 'candidate'`, proving the existing OCR handoff did not identify the PP-OCRv5 mobile candidate/engine/fallback metadata required for downstream text PII handoff.
+
 ### Mock extraction verification
 ```bash
 python scripts/ocr_eval/run_small_ocr.py --mock scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png > /tmp/small-ocr-output.txt
@@ -28,7 +34,14 @@ Result: PASS
 python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --input /tmp/small-ocr-output.txt --output /tmp/ocr-handoff.json
 python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
 ```
-Result: PASS
+Result: PASS. The JSON handoff now includes `candidate: PP-OCRv5_mobile_rec`, `engine: PP-OCRv5-mobile-bounded-spike`, `engine_status: deterministic_synthetic_fixture_fallback`, `scope: printed_text_line_extraction_only`, `privacy_filter_contract: text_only_normalized_input`, and explicit non-goals for visual redaction, final PDF rewrite/export, handwriting recognition, page detection/segmentation, and a complete OCR pipeline.
+
+### Downstream text-only Privacy Filter handoff check
+```bash
+python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/small-ocr-output.txt > /tmp/privacy-filter-output.json
+python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
+```
+Result: PASS. This only verifies that normalized OCR text can be handed into the existing text-only privacy-filter contract; it does not make Privacy Filter an OCR engine.
 
 ## Current limitation
 The real PaddleOCR stack is not installed locally in this environment, so the real OCR path currently exits with a truthful error instructing the operator to install the OCR stack or use `--mock` for plumbing-only validation.
@@ -38,6 +51,8 @@ The real PaddleOCR stack is not installed locally in this environment, so the re
 - The first honest OCR spike stays recognizer-first on a pre-cropped line image
 - OCR output can now be normalized and handed to a downstream text-PII stage shape
 - The handoff contract is explicitly validated rather than only written
+- The handoff metadata truthfully names PP-OCRv5 mobile as the bounded candidate while recording the current deterministic synthetic fallback status when PP-OCRv5 is not installed/wired
+- The downstream Privacy Filter check remains text-only and consumes normalized extracted text, not pixels/images
 
 ## What this does NOT prove
 - real OCR quality on this machine

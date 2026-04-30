@@ -31,4 +31,15 @@ python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/
 python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
 ```
 
-Use of `--mock` proves only extraction/handoff plumbing, not real model quality.
+Use of `--mock` proves only extraction/handoff plumbing, not real model quality. The handoff artifact truthfully identifies the candidate as `PP-OCRv5_mobile_rec`, the bounded spike engine as `PP-OCRv5-mobile-bounded-spike`, and the current fallback status as `deterministic_synthetic_fixture_fallback` when real PP-OCRv5 local inference is not installed/wired.
+
+### Text-only Privacy Filter handoff check
+```bash
+python scripts/ocr_eval/run_small_ocr.py --mock scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png > /tmp/small-ocr-output.txt
+python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --input /tmp/small-ocr-output.txt --output /tmp/ocr-handoff.json
+python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
+python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/small-ocr-output.txt > /tmp/privacy-filter-output.json
+python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
+```
+
+The Privacy Filter remains a downstream **text-only** PII detection/masking check. This OCR spike does not perform visual redaction, final PDF rewrite/export, handwriting recognition, page detection/segmentation, or a complete OCR pipeline.
