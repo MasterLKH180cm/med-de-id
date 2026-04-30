@@ -1305,6 +1305,9 @@ struct PdfRuntimeSuccessResponse {
     summary: PdfExtractionSummary,
     page_statuses: Vec<PdfPageStatusResponse>,
     review_queue: Vec<PdfReviewCandidate>,
+    rewrite_status: String,
+    no_rewritten_pdf: bool,
+    review_only: bool,
     // PDF mode is review-only; rewrite/export bytes are intentionally ignored.
     #[allow(dead_code)]
     rewritten_pdf_bytes_base64: Option<String>,
@@ -1317,6 +1320,9 @@ struct PdfExtractionSummary {
     ocr_required_pages: usize,
     extracted_candidates: usize,
     review_required_candidates: usize,
+    rewrite_status: String,
+    no_rewritten_pdf: bool,
+    review_only: bool,
 }
 
 #[derive(Clone, Eq, PartialEq, Deserialize)]
@@ -1532,7 +1538,13 @@ fn parse_runtime_success(
                 rewritten_output:
                     "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
                         .to_string(),
-                summary: format_pdf_summary(&parsed.summary, &parsed.page_statuses),
+                summary: format_pdf_summary(
+                    &parsed.summary,
+                    &parsed.page_statuses,
+                    &parsed.rewrite_status,
+                    parsed.no_rewritten_pdf,
+                    parsed.review_only,
+                ),
                 review_queue: format_pdf_review_queue(&parsed.review_queue),
             })
         }
@@ -1799,6 +1811,9 @@ fn format_media_review_queue(review_queue: &[MediaReviewCandidate]) -> String {
 fn format_pdf_summary(
     summary: &PdfExtractionSummary,
     page_statuses: &[PdfPageStatusResponse],
+    rewrite_status: &str,
+    no_rewritten_pdf: bool,
+    review_only: bool,
 ) -> String {
     let mut lines = vec![
         format!("total_pages: {}", summary.total_pages),
@@ -1809,6 +1824,9 @@ fn format_pdf_summary(
             "review_required_candidates: {}",
             summary.review_required_candidates
         ),
+        format!("rewrite_status: {rewrite_status}"),
+        format!("no_rewritten_pdf: {no_rewritten_pdf}"),
+        format!("review_only: {review_only}"),
         "page_statuses:".to_string(),
     ];
 
@@ -4286,7 +4304,10 @@ mod tests {
                     "text_layer_pages": 1,
                     "ocr_required_pages": 1,
                     "extracted_candidates": 1,
-                    "review_required_candidates": 1
+                    "review_required_candidates": 1,
+                    "rewrite_status": "review_only_no_rewritten_pdf",
+                    "no_rewritten_pdf": true,
+                    "review_only": true
                 },
                 "page_statuses": [
                     {"page": {"label": "radiology/report.pdf", "page_number": 1}, "status": "text_layer_present"},
@@ -4301,6 +4322,9 @@ mod tests {
                         "decision": "needs_review"
                     }
                 ],
+                "rewrite_status": "review_only_no_rewritten_pdf",
+                "no_rewritten_pdf": true,
+                "review_only": true,
                 "rewritten_pdf_bytes_base64": null
             })
             .to_string(),
@@ -4313,6 +4337,11 @@ mod tests {
         );
         assert!(response.summary.contains("total_pages: 2"));
         assert!(response.summary.contains("ocr_required_pages: 1"));
+        assert!(response
+            .summary
+            .contains("rewrite_status: review_only_no_rewritten_pdf"));
+        assert!(response.summary.contains("no_rewritten_pdf: true"));
+        assert!(response.summary.contains("review_only: true"));
         assert!(response.summary.contains("page_statuses:"));
         assert!(response
             .summary

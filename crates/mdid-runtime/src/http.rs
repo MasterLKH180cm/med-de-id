@@ -21,7 +21,7 @@ use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
     ConservativeMediaSummary, DecodeRequest, DecodeRequestError, DicomDeidentificationSummary,
     DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary,
-    PdfPageRef, PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
+    PdfPageRef, PdfPhiCandidate, PdfRewriteStatus, PdfScanStatus, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
@@ -205,6 +205,9 @@ struct PdfDeidentifyResponse {
     summary: PdfExtractionSummary,
     page_statuses: Vec<PdfPageStatusResponse>,
     review_queue: Vec<PdfPhiCandidate>,
+    rewrite_status: PdfRewriteStatus,
+    no_rewritten_pdf: bool,
+    review_only: bool,
     rewritten_pdf_bytes_base64: Option<String>,
 }
 
@@ -941,6 +944,9 @@ fn pdf_success_response(
                 })
                 .collect(),
             review_queue: output.review_queue,
+            rewrite_status: output.rewrite_status,
+            no_rewritten_pdf: output.no_rewritten_pdf,
+            review_only: output.review_only,
             rewritten_pdf_bytes_base64: output
                 .rewritten_pdf_bytes
                 .map(|bytes| STANDARD.encode(bytes)),

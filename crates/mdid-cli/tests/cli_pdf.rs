@@ -33,10 +33,14 @@ fn cli_deidentify_pdf_writes_phi_safe_review_report() {
     assert!(!stdout.contains("Jane Patient"));
     assert!(!stdout.contains("MRN123"));
     assert!(stdout.contains("review_queue_len"));
+    assert!(stdout.contains("review_only_no_rewritten_pdf"));
 
     let report = fs::read_to_string(&report_path).unwrap();
     let json: serde_json::Value = serde_json::from_str(&report).unwrap();
     assert_eq!(json["rewrite_available"], false);
+    assert_eq!(json["rewrite_status"], "review_only_no_rewritten_pdf");
+    assert_eq!(json["no_rewritten_pdf"], true);
+    assert_eq!(json["review_only"], true);
     assert_eq!(json["rewritten_pdf_bytes"], serde_json::Value::Null);
     assert!(json["summary"].is_object());
     assert!(json["page_statuses"].is_array());

@@ -653,6 +653,15 @@ async fn pdf_deidentify_endpoint_routes_text_layer_candidates_to_review_without_
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 1);
     assert_eq!(json["review_queue"][0]["phi_type"], "extracted_text");
     assert_eq!(json["review_queue"][0]["decision"], "needs_review");
+    assert_eq!(json["rewrite_status"], "review_only_no_rewritten_pdf");
+    assert_eq!(json["no_rewritten_pdf"], true);
+    assert_eq!(json["review_only"], true);
+    assert_eq!(
+        json["summary"]["rewrite_status"],
+        "review_only_no_rewritten_pdf"
+    );
+    assert_eq!(json["summary"]["no_rewritten_pdf"], true);
+    assert_eq!(json["summary"]["review_only"], true);
     assert_eq!(json["rewritten_pdf_bytes_base64"], Value::Null);
 }
 

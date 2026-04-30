@@ -845,6 +845,9 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "page_statuses": page_statuses,
         "review_queue_len": review_queue_len,
         "rewrite_available": false,
+        "rewrite_status": output.rewrite_status,
+        "no_rewritten_pdf": output.no_rewritten_pdf,
+        "review_only": output.review_only,
         "rewritten_pdf_bytes": serde_json::Value::Null,
     });
     fs::write(
@@ -859,6 +862,9 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "summary": report["summary"].clone(),
         "review_queue_len": report["review_queue_len"].clone(),
         "rewrite_available": false,
+        "rewrite_status": report["rewrite_status"].clone(),
+        "no_rewritten_pdf": report["no_rewritten_pdf"].clone(),
+        "review_only": report["review_only"].clone(),
     });
     println!(
         "{}",

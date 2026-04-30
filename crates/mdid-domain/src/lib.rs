@@ -350,6 +350,18 @@ pub enum PdfScanStatus {
     OcrRequired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PdfRewriteStatus {
+    ReviewOnlyNoRewrittenPdf,
+}
+
+impl Default for PdfRewriteStatus {
+    fn default() -> Self {
+        Self::ReviewOnlyNoRewrittenPdf
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PdfPageRef {
     pub page_number: usize,
@@ -391,13 +403,38 @@ impl std::fmt::Debug for PdfPhiCandidate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PdfExtractionSummary {
     pub total_pages: usize,
     pub text_layer_pages: usize,
     pub ocr_required_pages: usize,
     pub extracted_candidates: usize,
     pub review_required_candidates: usize,
+    #[serde(default)]
+    pub rewrite_status: PdfRewriteStatus,
+    #[serde(default = "default_true")]
+    pub no_rewritten_pdf: bool,
+    #[serde(default = "default_true")]
+    pub review_only: bool,
+}
+
+impl Default for PdfExtractionSummary {
+    fn default() -> Self {
+        Self {
+            total_pages: 0,
+            text_layer_pages: 0,
+            ocr_required_pages: 0,
+            extracted_candidates: 0,
+            review_required_candidates: 0,
+            rewrite_status: PdfRewriteStatus::ReviewOnlyNoRewrittenPdf,
+            no_rewritten_pdf: true,
+            review_only: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl PdfExtractionSummary {

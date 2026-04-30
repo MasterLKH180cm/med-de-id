@@ -8,8 +8,9 @@ use mdid_adapters::{
 use mdid_domain::{
     BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
     DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, MappingScope,
-    PdfExtractionSummary, PdfPhiCandidate, PhiCandidate, PipelineDefinition, PipelineRun,
-    PipelineRunState, SurfaceKind, TabularColumn, DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
+    PdfExtractionSummary, PdfPhiCandidate, PdfRewriteStatus, PhiCandidate, PipelineDefinition,
+    PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -126,6 +127,9 @@ pub struct PdfDeidentificationOutput {
     pub summary: PdfExtractionSummary,
     pub page_statuses: Vec<PdfPageExtraction>,
     pub review_queue: Vec<PdfPhiCandidate>,
+    pub rewrite_status: PdfRewriteStatus,
+    pub no_rewritten_pdf: bool,
+    pub review_only: bool,
     pub rewritten_pdf_bytes: Option<Vec<u8>>,
 }
 
@@ -136,6 +140,9 @@ impl fmt::Debug for PdfDeidentificationOutput {
             .field("page_statuses", &self.page_statuses)
             .field("review_queue", &"[REDACTED]")
             .field("review_queue_len", &self.review_queue.len())
+            .field("rewrite_status", &self.rewrite_status)
+            .field("no_rewritten_pdf", &self.no_rewritten_pdf)
+            .field("review_only", &self.review_only)
             .field(
                 "rewritten_pdf_bytes",
                 &self.rewritten_pdf_bytes.as_ref().map(|_| "[REDACTED]"),
@@ -206,6 +213,9 @@ impl PdfDeidentificationService {
             summary: extracted.summary,
             page_statuses: extracted.pages,
             review_queue: extracted.candidates,
+            rewrite_status: PdfRewriteStatus::ReviewOnlyNoRewrittenPdf,
+            no_rewritten_pdf: true,
+            review_only: true,
             rewritten_pdf_bytes: None,
         })
     }
