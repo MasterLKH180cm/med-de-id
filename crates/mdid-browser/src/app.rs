@@ -728,6 +728,17 @@ fn sanitized_vault_export_stem(file_name: &str) -> String {
 
 impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
+    fn mode_for_imported_file(&self, detected_mode: InputMode) -> InputMode {
+        if self.input_mode == InputMode::PortableArtifactImport
+            && detected_mode == InputMode::PortableArtifactInspect
+        {
+            InputMode::PortableArtifactImport
+        } else {
+            detected_mode
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
         self.input_mode = mode;
         self.source_name = file_name.to_string();
@@ -1946,7 +1957,8 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
 
         match payload {
             Some(payload) => load_state.update(|state| {
-                state.apply_imported_file(&load_file_name, &payload, input_mode);
+                let effective_mode = state.mode_for_imported_file(input_mode);
+                state.apply_imported_file(&load_file_name, &payload, effective_mode);
             }),
             None => load_state.update(|state| {
                 state.error_banner = Some("Failed to read browser import payload.".to_string());
@@ -3041,6 +3053,54 @@ mod tests {
         );
         assert!(!InputMode::PortableArtifactImport.requires_field_policy());
         assert!(!InputMode::PortableArtifactImport.requires_source_name());
+    }
+
+    #[test]
+    fn imported_portable_artifact_preserves_selected_import_mode() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactImport,
+            ..BrowserFlowState::default()
+        };
+
+        let detected_mode = InputMode::from_file_name("clinic-mapping.mdid-portable.json")
+            .expect("portable artifact filename should be recognized");
+        let resolved_mode = state.mode_for_imported_file(detected_mode);
+        state.apply_imported_file(
+            "clinic-mapping.mdid-portable.json",
+            r#"{\"version\":1}"#,
+            resolved_mode,
+        );
+
+        assert_eq!(state.input_mode, InputMode::PortableArtifactImport);
+        assert_eq!(state.payload, r#"{\"version\":1}"#);
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "clinic-mapping-mdid-portable-portable-artifact-import.json"
+        );
+    }
+
+    #[test]
+    fn imported_portable_artifact_defaults_to_inspect_outside_import_mode() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::CsvText,
+            ..BrowserFlowState::default()
+        };
+
+        let detected_mode = InputMode::from_file_name("clinic-mapping.mdid-portable.json")
+            .expect("portable artifact filename should be recognized");
+        let resolved_mode = state.mode_for_imported_file(detected_mode);
+        state.apply_imported_file(
+            "clinic-mapping.mdid-portable.json",
+            r#"{\"version\":1}"#,
+            resolved_mode,
+        );
+
+        assert_eq!(state.input_mode, InputMode::PortableArtifactInspect);
+        assert_eq!(state.payload, r#"{\"version\":1}"#);
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "clinic-mapping-mdid-portable-portable-artifact-inspect.json"
+        );
     }
 
     #[test]
