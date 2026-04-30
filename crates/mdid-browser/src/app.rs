@@ -129,8 +129,9 @@ impl InputMode {
 
     fn safe_vault_report_mode_label(self) -> &'static str {
         match self {
-            Self::VaultAuditEvents => "vault_audit",
-            Self::VaultDecode => "vault_decode",
+            Self::VaultAuditEvents => "vault_audit_events_safe_response",
+            Self::VaultDecode => "vault_decode_safe_response",
+            Self::VaultExport => "vault_export_safe_response",
             Self::PortableArtifactInspect => "portable_artifact_inspect",
             Self::PortableArtifactImport => "portable_artifact_import",
             _ => self.label(),
@@ -485,6 +486,7 @@ struct BrowserFlowState {
     field_policy_json: String,
     result_output: String,
     decoded_values_output: Option<String>,
+    safe_response_metadata: serde_json::Value,
     summary: String,
     review_queue: String,
     error_banner: Option<String>,
@@ -525,6 +527,7 @@ impl fmt::Debug for BrowserFlowState {
                 "decoded_values_output",
                 &self.decoded_values_output.as_ref().map(|_| "<redacted>"),
             )
+            .field("safe_response_metadata", &"<redacted>")
             .field("summary", &"<redacted>")
             .field("review_queue", &"<redacted>")
             .field(
@@ -648,6 +651,7 @@ impl Default for BrowserFlowState {
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
             decoded_values_output: None,
+            safe_response_metadata: serde_json::json!({}),
             summary: IDLE_SUMMARY.to_string(),
             review_queue: IDLE_REVIEW_QUEUE.to_string(),
             error_banner: None,
@@ -1246,10 +1250,31 @@ impl BrowserFlowState {
             "mode": self.input_mode.safe_vault_report_mode_label(),
             "summary": self.summary,
             "review_queue": self.review_queue,
+            "metadata": self.safe_vault_response_metadata(),
         }))
         .map_err(|_| {
             "Browser output download could not encode safe vault response JSON.".to_string()
         })
+    }
+
+    fn safe_vault_response_metadata(&self) -> serde_json::Value {
+        if self
+            .safe_response_metadata
+            .as_object()
+            .is_some_and(|object| !object.is_empty())
+        {
+            return self.safe_response_metadata.clone();
+        }
+
+        let response_text = match self.input_mode {
+            InputMode::VaultDecode => self.decoded_values_output.as_deref(),
+            InputMode::VaultAuditEvents => Some(self.result_output.as_str()),
+            InputMode::VaultExport
+            | InputMode::PortableArtifactInspect
+            | InputMode::PortableArtifactImport => Some(self.result_output.as_str()),
+            _ => None,
+        };
+        response_text.map_or_else(|| serde_json::json!({}), safe_runtime_response_metadata)
     }
 
     fn media_review_report_download_json(&self) -> Result<Vec<u8>, String> {
@@ -1306,31 +1331,16 @@ impl BrowserFlowState {
                 bytes: self.review_report_download_json()?,
                 is_text: true,
             }),
-            InputMode::VaultAuditEvents | InputMode::VaultDecode => Ok(BrowserDownloadPayload {
+            InputMode::VaultAuditEvents
+            | InputMode::VaultDecode
+            | InputMode::VaultExport
+            | InputMode::PortableArtifactInspect
+            | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "application/json;charset=utf-8",
                 bytes: self.safe_vault_response_download_json()?,
                 is_text: true,
             }),
-            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport
-                if self.result_output.trim_start().starts_with('{') =>
-            {
-                let mut payload = build_portable_response_report_download(
-                    self.input_mode,
-                    self.imported_file_name.as_deref(),
-                    &self.result_output,
-                )?;
-                payload.mime_type = "application/json;charset=utf-8";
-                Ok(payload)
-            }
-            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport => {
-                Ok(BrowserDownloadPayload {
-                    file_name,
-                    mime_type: "application/json;charset=utf-8",
-                    bytes: self.safe_vault_response_download_json()?,
-                    is_text: true,
-                })
-            }
             _ => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "text/plain;charset=utf-8",
@@ -1343,6 +1353,7 @@ impl BrowserFlowState {
     fn clear_generated_state(&mut self) {
         self.result_output.clear();
         self.decoded_values_output = None;
+        self.safe_response_metadata = serde_json::json!({});
         self.summary = IDLE_SUMMARY.to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = None;
@@ -1468,6 +1479,7 @@ impl BrowserFlowState {
 
         self.result_output.clear();
         self.decoded_values_output = None;
+        self.safe_response_metadata = serde_json::json!({});
         self.summary = "Submitting to runtime...".to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = None;
@@ -1515,6 +1527,7 @@ impl BrowserFlowState {
 
         self.result_output = response.rewritten_output;
         self.decoded_values_output = response.decoded_values_output;
+        self.safe_response_metadata = response.safe_response_metadata;
         self.summary = response.summary;
         self.review_queue = response.review_queue;
         self.error_banner = None;
@@ -1534,6 +1547,7 @@ impl BrowserFlowState {
 
         self.result_output.clear();
         self.decoded_values_output = None;
+        self.safe_response_metadata = serde_json::json!({});
         self.summary = IDLE_SUMMARY.to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = Some(message);
@@ -1790,6 +1804,7 @@ struct ErrorBody {
 struct RuntimeResponseEnvelope {
     rewritten_output: String,
     decoded_values_output: Option<String>,
+    safe_response_metadata: serde_json::Value,
     summary: String,
     review_queue: String,
 }
@@ -1928,6 +1943,7 @@ fn parse_runtime_success(
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.csv,
                 decoded_values_output: None,
+                safe_response_metadata: serde_json::json!({}),
                 summary: format_summary(&parsed.summary),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
@@ -1938,6 +1954,7 @@ fn parse_runtime_success(
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.rewritten_workbook_base64,
                 decoded_values_output: None,
+                safe_response_metadata: serde_json::json!({}),
                 summary: format_xlsx_summary(&parsed.summary, parsed.worksheet_disclosure.as_ref()),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
@@ -1950,6 +1967,7 @@ fn parse_runtime_success(
                     "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
                         .to_string(),
                 decoded_values_output: None,
+                safe_response_metadata: serde_json::json!({}),
                 summary: format_pdf_summary(
                     &parsed.summary,
                     &parsed.page_statuses,
@@ -1966,6 +1984,7 @@ fn parse_runtime_success(
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.rewritten_dicom_bytes_base64,
                 decoded_values_output: None,
+                safe_response_metadata: serde_json::json!({}),
                 summary: format_dicom_summary(&parsed.summary),
                 review_queue: format_dicom_review_queue(&parsed.review_queue),
             })
@@ -1976,6 +1995,7 @@ fn parse_runtime_success(
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string(),
                 decoded_values_output: None,
+                safe_response_metadata: serde_json::json!({}),
                 summary: format_media_summary(&parsed.summary),
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
@@ -1983,6 +2003,7 @@ fn parse_runtime_success(
         InputMode::VaultAuditEvents => Ok(RuntimeResponseEnvelope {
             rewritten_output: response_body.trim().to_string(),
             decoded_values_output: None,
+            safe_response_metadata: safe_runtime_response_metadata(response_body),
             summary: "Vault audit events returned by read-only runtime endpoint.".to_string(),
             review_queue: "No review items returned.".to_string(),
         }),
@@ -1999,6 +2020,7 @@ fn parse_runtime_success(
                     "Decoded values hidden for PHI safety. {value_count} value(s) decoded by bounded runtime endpoint."
                 ),
                 decoded_values_output: Some(decoded_values_output),
+                safe_response_metadata: safe_runtime_response_metadata(response_body),
                 summary: format!("Vault decode completed for {value_count} value(s)."),
                 review_queue: format!("- {}", parsed.audit_event.kind),
             })
@@ -2029,6 +2051,7 @@ fn parse_runtime_success(
             Ok(RuntimeResponseEnvelope {
                 rewritten_output,
                 decoded_values_output: None,
+                safe_response_metadata: safe_runtime_response_metadata(response_body),
                 summary: "Portable artifact created and available for local download.".to_string(),
                 review_queue: "encrypted portable artifact available. Decoded PHI is not rendered."
                     .to_string(),
@@ -2044,6 +2067,7 @@ fn parse_runtime_success(
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Portable artifact inspect completed. Artifact records and values are hidden for PHI safety.".to_string(),
                 decoded_values_output: None,
+                safe_response_metadata: safe_runtime_response_metadata(response_body),
                 summary: format!("{record_count} portable record(s) inspected."),
                 review_queue: "No record details rendered.".to_string(),
             })
@@ -2066,11 +2090,46 @@ fn parse_runtime_success(
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Portable artifact import completed. Audit detail and artifact contents are hidden for PHI safety.".to_string(),
                 decoded_values_output: None,
+                safe_response_metadata: safe_runtime_response_metadata(response_body),
                 summary: format!("{imported} imported portable record(s)."),
                 review_queue: format!("{duplicates} duplicate portable record(s). Generic audit notice recorded."),
             })
         }
     }
+}
+
+fn safe_runtime_response_metadata(response_body: &str) -> serde_json::Value {
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(response_body) else {
+        return serde_json::json!({});
+    };
+    let keys = [
+        "artifact_record_count",
+        "decoded_count",
+        "decoded_value_count",
+        "audit_event_id",
+        "returned_event_count",
+        "total_event_count",
+        "offset",
+        "limit",
+        "imported_record_count",
+        "skipped_record_count",
+    ];
+    let mut metadata = serde_json::Map::new();
+    for key in keys {
+        if let Some(value) = response.get(key) {
+            if value.is_number() || value.is_string() || value.is_boolean() || value.is_null() {
+                metadata.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    if !metadata.contains_key("total_event_count") {
+        if let Some(value) = response.get("event_count") {
+            if value.is_number() || value.is_null() {
+                metadata.insert("total_event_count".to_string(), value.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(metadata)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -3068,11 +3127,18 @@ mod tests {
     }
 
     #[test]
-    fn portable_import_prepared_download_uses_portable_report_payload() {
+    fn portable_import_prepared_download_uses_safe_metadata_report_payload() {
         let state = BrowserFlowState {
             input_mode: InputMode::PortableArtifactImport,
             imported_file_name: Some("Patient Alice bundle.mdid-portable.json".to_string()),
-            result_output: r#"{"artifact":{"records":[{"id":"phi-1"}]},"imported_record_count":1,"audit_event_count":2}"#.to_string(),
+            result_output: serde_json::json!({
+                "artifact": {"records":[{"id":"phi-1", "original_value":"Alice"}]},
+                "imported_record_count": 1,
+                "skipped_record_count": 0,
+                "audit_event_count": 2,
+                "request": {"vault_path":"/phi/vault", "passphrase":"secret"}
+            })
+            .to_string(),
             ..BrowserFlowState::default()
         };
 
@@ -3084,12 +3150,124 @@ mod tests {
 
         assert_eq!(
             payload.file_name,
-            "Patient_Alice_bundle-portable-artifact-import-report.json"
+            "patient-alice-bundle-mdid-portable-portable-artifact-import.json"
         );
         assert_eq!(payload.mime_type, "application/json;charset=utf-8");
         assert_eq!(report["mode"], "portable_artifact_import");
-        assert_eq!(report["artifact"], "redacted");
+        assert_eq!(report["metadata"]["imported_record_count"], 1);
+        assert_eq!(report["metadata"]["skipped_record_count"], 0);
+        assert_eq!(report["metadata"].as_object().unwrap().len(), 2);
+        assert!(report.get("artifact").is_none());
+        assert!(report["metadata"].get("artifact").is_none());
+        assert!(report.get("request").is_none());
         assert!(!text.contains("phi-1"));
+        assert!(!text.contains("Alice"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn portable_inspect_prepared_download_uses_safe_metadata_report_for_json_response() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactInspect,
+            result_output: serde_json::json!({
+                "artifact": {"records":[{"record_id":"patient-1", "token":"portable-token"}]},
+                "artifact_record_count": 3,
+                "body": {"raw":"request body"},
+                "events": [{"path":"/phi/vault"}],
+                "vault_path": "/phi/vault",
+                "passphrase": "secret"
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("portable inspect safe report");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let text = String::from_utf8(payload.bytes).unwrap();
+
+        assert_eq!(
+            payload.file_name,
+            "mdid-browser-portable-artifact-inspect.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "portable_artifact_inspect");
+        assert_eq!(report["metadata"]["artifact_record_count"], 3);
+        assert_eq!(report["metadata"].as_object().unwrap().len(), 1);
+        for forbidden in ["artifact", "body", "events", "vault_path", "passphrase"] {
+            assert!(
+                report.get(forbidden).is_none(),
+                "top-level {forbidden} leaked"
+            );
+            assert!(
+                report["metadata"].get(forbidden).is_none(),
+                "metadata {forbidden} leaked"
+            );
+        }
+        assert!(!text.contains("patient-1"));
+        assert!(!text.contains("portable-token"));
+        assert!(!text.contains("request body"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn vault_export_prepared_download_uses_safe_metadata_report() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            summary: "Exported portable artifact; contents hidden.".to_string(),
+            review_queue: "Vault export response does not include artifact contents.".to_string(),
+            result_output: serde_json::json!({
+                "artifact": {"records":[{"record_id":"patient-1", "original_value":"Alice"}]},
+                "artifact_record_count": 7,
+                "audit_event_id": "audit-789",
+                "vault_path": "/phi/vault",
+                "passphrase": "secret",
+                "request": {"vault_passphrase":"secret"}
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("vault export safe report");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let text = String::from_utf8(payload.bytes).unwrap();
+
+        assert_eq!(
+            payload.file_name,
+            "Clinic_Vault_Backup_2026-portable-artifact.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "vault_export_safe_response");
+        assert_eq!(report["metadata"]["artifact_record_count"], 7);
+        assert_eq!(report["metadata"]["audit_event_id"], "audit-789");
+        assert_eq!(report["metadata"].as_object().unwrap().len(), 2);
+        for forbidden in [
+            "artifact",
+            "body",
+            "events",
+            "vault_path",
+            "passphrase",
+            "request",
+        ] {
+            assert!(
+                report.get(forbidden).is_none(),
+                "top-level {forbidden} leaked"
+            );
+            assert!(
+                report["metadata"].get(forbidden).is_none(),
+                "metadata {forbidden} leaked"
+            );
+        }
+        assert!(!text.contains("patient-1"));
+        assert!(!text.contains("Alice"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
     }
 
     #[test]
@@ -3143,6 +3321,82 @@ mod tests {
         state.input_mode = InputMode::CsvText;
         state.result_output.clear();
         assert!(!state.can_export_tabular_report());
+    }
+
+    #[test]
+    fn browser_safe_vault_response_report_includes_allowlisted_decode_metadata() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            summary: "Decoded 2 values.".to_string(),
+            review_queue: "Decoded values hidden from safe report.".to_string(),
+            decoded_values_output: Some(
+                serde_json::json!({
+                    "decoded_count": 2,
+                    "decoded_value_count": 2,
+                    "audit_event_id": "audit-123",
+                    "decoded_values": {"record-1": {"name": "Jane Doe"}},
+                    "vault_path": "/phi/vault",
+                    "passphrase": "secret"
+                })
+                .to_string(),
+            ),
+            ..BrowserFlowState::default()
+        };
+
+        let report: serde_json::Value = serde_json::from_slice(
+            &state
+                .safe_vault_response_download_json()
+                .expect("report json"),
+        )
+        .expect("parse safe report");
+        let text = serde_json::to_string(&report).expect("report text");
+
+        assert_eq!(report["mode"], "vault_decode_safe_response");
+        assert_eq!(report["metadata"]["decoded_count"], 2);
+        assert_eq!(report["metadata"]["decoded_value_count"], 2);
+        assert_eq!(report["metadata"]["audit_event_id"], "audit-123");
+        assert!(report.get("decoded_values").is_none());
+        assert!(report["metadata"].get("decoded_values").is_none());
+        assert!(!text.contains("Jane Doe"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn browser_safe_vault_response_report_includes_allowlisted_audit_metadata() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultAuditEvents,
+            summary: "Returned 2 audit events.".to_string(),
+            review_queue: "Audit event details are exported separately.".to_string(),
+            result_output: serde_json::json!({
+                "returned_event_count": 2,
+                "total_event_count": 5,
+                "offset": 1,
+                "limit": 2,
+                "events": [{"event_id": "event-1", "path": "/phi/vault"}],
+                "vault_path": "/phi/vault",
+                "passphrase": "secret"
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let report: serde_json::Value = serde_json::from_slice(
+            &state
+                .safe_vault_response_download_json()
+                .expect("report json"),
+        )
+        .expect("parse safe report");
+        let text = serde_json::to_string(&report).expect("report text");
+
+        assert_eq!(report["mode"], "vault_audit_events_safe_response");
+        assert_eq!(report["metadata"]["returned_event_count"], 2);
+        assert_eq!(report["metadata"]["total_event_count"], 5);
+        assert_eq!(report["metadata"]["offset"], 1);
+        assert_eq!(report["metadata"]["limit"], 2);
+        assert!(report["metadata"].get("events").is_none());
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
     }
 
     #[test]
@@ -3761,7 +4015,7 @@ mod tests {
 
         assert_eq!(payload.file_name, "mdid-browser-vault-decode-response.json");
         assert_eq!(payload.mime_type, "application/json;charset=utf-8");
-        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["mode"], "vault_decode_safe_response");
         assert_eq!(report["summary"], state.summary);
         assert_eq!(report["review_queue"], state.review_queue);
         assert!(report.get("output").is_none());
@@ -3913,7 +4167,7 @@ mod tests {
         );
         assert_eq!(audit_payload.mime_type, "application/json;charset=utf-8");
         let audit_json = String::from_utf8(audit_payload.bytes).expect("audit json utf8");
-        assert!(audit_json.contains("\"mode\": \"vault_audit\""));
+        assert!(audit_json.contains("\"mode\": \"vault_audit_events_safe_response\""));
         assert!(audit_json.contains("events returned: 2 / 2"));
         assert!(!audit_json.contains("safe summary"));
 
@@ -3935,7 +4189,7 @@ mod tests {
         );
         assert_eq!(decode_payload.mime_type, "application/json;charset=utf-8");
         let decode_json = String::from_utf8(decode_payload.bytes).expect("decode json utf8");
-        assert!(decode_json.contains("\"mode\": \"vault_decode\""));
+        assert!(decode_json.contains("\"mode\": \"vault_decode_safe_response\""));
         assert!(decode_json.contains("decoded count: 1"));
         assert!(!decode_json.contains("Jane Doe"));
     }
@@ -5210,6 +5464,32 @@ mod tests {
     }
 
     #[test]
+    fn begin_submit_clears_previous_safe_response_metadata() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            vault_path: "vault.json".to_string(),
+            vault_passphrase: "secret".to_string(),
+            portable_record_ids_json: "[\"11111111-1111-1111-1111-111111111111\"]".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            portable_context: "care".to_string(),
+            result_output: "{\"artifact\":{}}".to_string(),
+            safe_response_metadata: json!({
+                "artifact_record_count": 7,
+                "stale_marker": "previous response"
+            }),
+            ..BrowserFlowState::default()
+        };
+        assert!(state.safe_vault_response_metadata()["stale_marker"].is_string());
+
+        let submission = state.begin_submit().unwrap();
+
+        assert_eq!(submission.request.endpoint, "/vault/export");
+        assert!(!state.can_export_output());
+        assert_eq!(state.safe_vault_response_metadata(), json!({}));
+        assert!(state.safe_response_metadata.as_object().unwrap().is_empty());
+    }
+
+    #[test]
     fn submit_requires_payload_before_runtime_request() {
         let mut state = BrowserFlowState::default();
         let result = state.begin_submit();
@@ -5585,6 +5865,173 @@ mod tests {
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
         assert!(!state.is_submitting);
+    }
+
+    #[test]
+    fn vault_decode_runtime_success_report_preserves_safe_metadata_only() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            vault_path: "vault.json".to_string(),
+            vault_passphrase: "secret".to_string(),
+            vault_decode_record_ids_json: "[\"11111111-1111-1111-1111-111111111111\"]".to_string(),
+            vault_decode_output_target: "browser".to_string(),
+            vault_decode_justification: "care".to_string(),
+            ..BrowserFlowState::default()
+        };
+        let submission = state.begin_submit().unwrap();
+        let response_body = json!({
+            "decoded_count": 1,
+            "decoded_value_count": 1,
+            "audit_event_id": "audit-1",
+            "vault_passphrase": "secret",
+            "records": [{"id": "rec-1", "value": "Jane Patient"}],
+            "values": [{"record_id": "rec-1", "original_value": "Jane Patient", "token": "tok-1"}],
+            "audit_event": {"kind": "decode", "actor": "clinician"}
+        });
+        let response =
+            parse_runtime_success(InputMode::VaultDecode, &response_body.to_string()).unwrap();
+
+        state.apply_runtime_success(
+            submission.submission_token,
+            submission.state_revision,
+            response,
+        );
+
+        assert!(state.can_export_decoded_values());
+        let report = serde_json::from_slice::<serde_json::Value>(
+            &state.prepared_download_payload().unwrap().bytes,
+        )
+        .unwrap();
+        assert_eq!(report["metadata"]["decoded_count"], 1);
+        assert_eq!(report["metadata"]["decoded_value_count"], 1);
+        assert_eq!(report["metadata"]["audit_event_id"], "audit-1");
+        let report_text = report.to_string();
+        assert!(!report_text.contains("Jane Patient"));
+        assert!(!report_text.contains("tok-1"));
+        assert!(!report_text.contains("secret"));
+    }
+
+    #[test]
+    fn portable_runtime_success_reports_preserve_safe_metadata_without_contaminating_artifact() {
+        for (mode, body) in [
+            (
+                InputMode::VaultExport,
+                json!({
+                    "artifact_record_count": 2,
+                    "artifact": {"salt_b64": "salt", "nonce_b64": "nonce", "ciphertext_b64": "cipher"},
+                    "records": [{"patient": "Jane Patient"}],
+                    "vault_passphrase": "secret"
+                }),
+            ),
+            (
+                InputMode::PortableArtifactInspect,
+                json!({
+                    "record_count": 3,
+                    "artifact_record_count": 3,
+                    "decoded_values": [{"patient": "Jane Patient"}],
+                    "vault_passphrase": "secret"
+                }),
+            ),
+            (
+                InputMode::PortableArtifactImport,
+                json!({
+                    "imported_record_count": 4,
+                    "duplicate_record_count": 1,
+                    "skipped_record_count": 1,
+                    "decoded_values": [{"patient": "Jane Patient"}],
+                    "vault_passphrase": "secret"
+                }),
+            ),
+        ] {
+            let mut state = BrowserFlowState {
+                input_mode: mode,
+                payload: "{\"artifact\":\"secret\"}".to_string(),
+                vault_path: "vault.json".to_string(),
+                vault_passphrase: "secret".to_string(),
+                portable_record_ids_json: "[\"11111111-1111-1111-1111-111111111111\"]".to_string(),
+                portable_passphrase: "portable-secret".to_string(),
+                portable_context: "care".to_string(),
+                ..BrowserFlowState::default()
+            };
+            let submission = state.begin_submit().unwrap();
+            let response = parse_runtime_success(mode, &body.to_string()).unwrap();
+
+            state.apply_runtime_success(
+                submission.submission_token,
+                submission.state_revision,
+                response,
+            );
+
+            let report = serde_json::from_slice::<serde_json::Value>(
+                &state.prepared_download_payload().unwrap().bytes,
+            )
+            .unwrap();
+            let text = report.to_string();
+            assert!(
+                !text.contains("Jane Patient"),
+                "leaked patient for {mode:?}: {text}"
+            );
+            assert!(
+                !text.contains("secret"),
+                "leaked secret for {mode:?}: {text}"
+            );
+            match mode {
+                InputMode::VaultExport => {
+                    assert_eq!(report["metadata"]["artifact_record_count"], 2);
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(&state.result_output).unwrap()
+                            ["ciphertext_b64"],
+                        "cipher"
+                    );
+                }
+                InputMode::PortableArtifactInspect => {
+                    assert_eq!(report["metadata"]["artifact_record_count"], 3)
+                }
+                InputMode::PortableArtifactImport => {
+                    assert_eq!(report["metadata"]["imported_record_count"], 4);
+                    assert_eq!(report["metadata"]["skipped_record_count"], 1);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn vault_audit_runtime_success_maps_event_count_to_safe_total_event_count() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultAuditEvents,
+            vault_path: "vault.json".to_string(),
+            vault_passphrase: "secret".to_string(),
+            vault_audit_limit: "10".to_string(),
+            vault_audit_offset: "0".to_string(),
+            ..BrowserFlowState::default()
+        };
+        let submission = state.begin_submit().unwrap();
+        let response_body = json!({
+            "event_count": 2,
+            "returned_event_count": 2,
+            "offset": 0,
+            "events": [{"detail": "Jane Patient"}],
+            "vault_passphrase": "secret"
+        });
+        let response =
+            parse_runtime_success(InputMode::VaultAuditEvents, &response_body.to_string()).unwrap();
+
+        state.apply_runtime_success(
+            submission.submission_token,
+            submission.state_revision,
+            response,
+        );
+
+        let report = serde_json::from_slice::<serde_json::Value>(
+            &state.prepared_download_payload().unwrap().bytes,
+        )
+        .unwrap();
+        assert_eq!(report["metadata"]["returned_event_count"], 2);
+        assert_eq!(report["metadata"]["total_event_count"], 2);
+        let text = report.to_string();
+        assert!(!text.contains("Jane Patient"));
+        assert!(!text.contains("secret"));
     }
 
     #[test]

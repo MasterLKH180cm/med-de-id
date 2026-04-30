@@ -1173,6 +1173,57 @@ impl DesktopVaultResponseState {
         Ok(export)
     }
 
+    fn safe_metadata(&self) -> serde_json::Value {
+        const ALLOWLISTED_KEYS: &[&str] = &[
+            "artifact_record_count",
+            "decoded_count",
+            "decoded_value_count",
+            "audit_event_id",
+            "returned_event_count",
+            "total_event_count",
+            "offset",
+            "limit",
+            "imported_record_count",
+            "skipped_record_count",
+        ];
+
+        let mut metadata = serde_json::Map::new();
+        let Some(response) = self
+            .last_success_response
+            .as_ref()
+            .and_then(|value| value.as_object())
+        else {
+            return serde_json::Value::Object(metadata);
+        };
+
+        for key in ALLOWLISTED_KEYS {
+            if let Some(value) = response.get(*key).filter(|value| {
+                matches!(
+                    value,
+                    serde_json::Value::Null
+                        | serde_json::Value::Bool(_)
+                        | serde_json::Value::Number(_)
+                        | serde_json::Value::String(_)
+                )
+            }) {
+                metadata.insert((*key).to_string(), value.clone());
+            }
+        }
+
+        if !metadata.contains_key("total_event_count") {
+            if let Some(value) = response.get("event_count").filter(|value| {
+                matches!(
+                    value,
+                    serde_json::Value::Null | serde_json::Value::Number(_)
+                )
+            }) {
+                metadata.insert("total_event_count".to_string(), value.clone());
+            }
+        }
+
+        serde_json::Value::Object(metadata)
+    }
+
     pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
         serde_json::json!({
             "mode": mode.safe_export_label(),
@@ -1180,6 +1231,7 @@ impl DesktopVaultResponseState {
             "summary": self.summary,
             "artifact_notice": self.artifact_notice,
             "error": self.error,
+            "metadata": self.safe_metadata(),
         })
     }
 }
@@ -3369,6 +3421,80 @@ mod tests {
         assert!(!rendered.contains("/tmp/Alice-Smith-decode-report.json"));
         assert!(!rendered.contains("patient Alice"));
         assert!(!rendered.contains("PHI-TOKEN-1"));
+    }
+
+    #[test]
+    fn safe_response_report_includes_allowlisted_decode_metadata_without_sensitive_values() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "artifact_record_count": 9,
+            "decoded_count": 4,
+            "decoded_value_count": 2,
+            "audit_event_id": "audit-123",
+            "decoded_values": {"record-1": {"name": "Jane Doe"}},
+            "events": [{"event_id": "evt-sensitive"}],
+            "vault_path": "/secret/Jane.vault",
+            "passphrase": "do-not-save",
+            "nested": {"decoded_values": "Jane Doe"}
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let report = state
+            .safe_response_report_json()
+            .expect("safe decode response report");
+        let serialized = serde_json::to_string(&report).expect("serialize report");
+
+        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["metadata"]["artifact_record_count"], 9);
+        assert_eq!(report["metadata"]["decoded_count"], 4);
+        assert_eq!(report["metadata"]["decoded_value_count"], 2);
+        assert_eq!(report["metadata"]["audit_event_id"], "audit-123");
+        assert!(!serialized.contains("decoded_values"));
+        assert!(!serialized.contains("\"events\""));
+        assert!(!serialized.contains("vault_path"));
+        assert!(!serialized.contains("passphrase"));
+        assert!(!serialized.contains("Jane Doe"));
+        assert!(!serialized.contains("/secret"));
+        assert!(!serialized.contains("do-not-save"));
+    }
+
+    #[test]
+    fn safe_response_report_includes_allowlisted_audit_metadata_without_sensitive_events() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "event_count": 200,
+            "returned_event_count": 2,
+            "offset": 10,
+            "limit": null,
+            "events": [
+                {"event_id": "evt-1", "kind": "decode", "record_id": "record-1"},
+                {"event_id": "evt-2", "kind": "encode", "record_id": "record-2"}
+            ],
+            "vault_path": "/secret/Alice.vault",
+            "passphrase": "do-not-save"
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
+
+        let report = state
+            .safe_response_report_json()
+            .expect("safe audit response report");
+        let serialized = serde_json::to_string(&report).expect("serialize report");
+
+        assert_eq!(report["mode"], "vault_audit");
+        assert_eq!(report["metadata"]["total_event_count"], 200);
+        assert_eq!(report["metadata"]["returned_event_count"], 2);
+        assert_eq!(report["metadata"]["offset"], 10);
+        assert!(report["metadata"].get("limit").is_some());
+        assert!(report["metadata"]["limit"].is_null());
+        assert!(report["metadata"].get("event_count").is_none());
+        assert!(!serialized.contains("\"events\""));
+        assert!(!serialized.contains("vault_path"));
+        assert!(!serialized.contains("passphrase"));
+        assert!(!serialized.contains("evt-1"));
+        assert!(!serialized.contains("/secret"));
+        assert!(!serialized.contains("do-not-save"));
     }
 
     #[test]
