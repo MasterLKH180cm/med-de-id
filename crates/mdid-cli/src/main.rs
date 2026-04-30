@@ -865,7 +865,12 @@ fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
         let _ = fs::remove_file(&args.report_path);
         return Err(error);
     }
-    let summary = json!({"command":"ocr-handoff","report_path":args.report_path});
+    let summary = json!({
+        "command": "ocr-handoff",
+        "report_path": args.report_path,
+        "ready_for_text_pii_eval": value["ready_for_text_pii_eval"],
+        "privacy_filter_contract": value["privacy_filter_contract"],
+    });
     println!(
         "{}",
         serde_json::to_string(&summary)
@@ -982,6 +987,9 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
     let summary = json!({
         "command": "privacy-filter-text",
         "report_path": args.report_path,
+        "engine": value["metadata"]["engine"],
+        "network_api_called": value["metadata"]["network_api_called"],
+        "detected_span_count": value["summary"]["detected_span_count"],
     });
     println!(
         "{}",

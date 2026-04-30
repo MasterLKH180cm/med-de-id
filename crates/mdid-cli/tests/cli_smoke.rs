@@ -978,8 +978,87 @@ fn ocr_handoff_success_with_synthetic_fixture() {
     assert!(report["normalized_text"]
         .as_str()
         .unwrap()
-        .contains("Jane Doe"));
+        .contains("Jane Example"));
     assert!(!report_path.with_extension("json.ocr-text.tmp").exists());
+}
+
+#[test]
+fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let handoff_report = dir.path().join("ocr-handoff.json");
+    let normalized_text = dir.path().join("ocr-normalized.txt");
+    let privacy_report = dir.path().join("privacy-filter.json");
+
+    let ocr_output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("ocr-handoff")
+        .arg("--image-path")
+        .arg(repo_path(
+            "scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png",
+        ))
+        .arg("--ocr-runner-path")
+        .arg(repo_path("scripts/ocr_eval/run_small_ocr.py"))
+        .arg("--handoff-builder-path")
+        .arg(repo_path("scripts/ocr_eval/build_ocr_handoff.py"))
+        .arg("--report-path")
+        .arg(&handoff_report)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("MRN-12345").not())
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    let ocr_summary: Value = serde_json::from_slice(&ocr_output).unwrap();
+    assert_eq!(ocr_summary["ready_for_text_pii_eval"], true);
+    assert_eq!(
+        ocr_summary["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+
+    let handoff: Value =
+        serde_json::from_str(&fs::read_to_string(&handoff_report).unwrap()).unwrap();
+    let text = handoff["normalized_text"].as_str().unwrap();
+    assert!(text.contains("Jane Example"));
+    assert!(text.contains("MRN-12345"));
+    fs::write(&normalized_text, text).unwrap();
+
+    let privacy_output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&normalized_text)
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&privacy_report)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("MRN-12345").not())
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    let privacy_summary: Value = serde_json::from_slice(&privacy_output).unwrap();
+    assert_eq!(privacy_summary["engine"], "fallback_synthetic_patterns");
+    assert_eq!(privacy_summary["network_api_called"], false);
+    assert!(privacy_summary["detected_span_count"].as_u64().unwrap() >= 2);
+
+    let privacy_json = fs::read_to_string(&privacy_report).unwrap();
+    assert!(!privacy_json.contains("Jane Example"));
+    assert!(!privacy_json.contains("MRN-12345"));
+    assert!(privacy_json.contains("[NAME]"));
+    assert!(privacy_json.contains("[MRN]"));
 }
 
 #[test]

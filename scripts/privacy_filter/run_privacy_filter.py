@@ -4,7 +4,8 @@ from pathlib import Path
 
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
-ID_RE = re.compile(r'\b(?:MRN[- ]?\d+|ID[- ]?\d+)\b', re.I)
+MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
+ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 
 
@@ -15,11 +16,13 @@ def add_span(spans, label, start, end):
 def heuristic_detect(text: str):
     spans = []
     for m in PERSON_RE.finditer(text):
-        add_span(spans, 'PERSON', m.start(1), m.end(1))
+        add_span(spans, 'NAME', m.start(1), m.end(1))
     for m in EMAIL_RE.finditer(text):
         add_span(spans, 'EMAIL', m.start(), m.end())
     for m in PHONE_RE.finditer(text):
         add_span(spans, 'PHONE', m.start(), m.end())
+    for m in MRN_RE.finditer(text):
+        add_span(spans, 'MRN', m.start(), m.end())
     for m in ID_RE.finditer(text):
         add_span(spans, 'ID', m.start(), m.end())
     spans.sort(key=lambda s: (s['start'], s['end']))
@@ -31,7 +34,7 @@ def heuristic_detect(text: str):
         if s['start'] < pos:
             continue
         masked_parts.append(text[pos:s['start']])
-        masked_parts.append(f'<{s["label"]}>')
+        masked_parts.append(f'[{s["label"]}]')
         pos = s['end']
     masked_parts.append(text[pos:])
     return {
