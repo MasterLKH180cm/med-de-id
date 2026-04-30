@@ -916,6 +916,89 @@ pub fn build_desktop_ocr_handoff_summary_save(
     })
 }
 
+pub fn build_desktop_privacy_filter_summary_save(
+    response_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "Privacy Filter summary requires a JSON object report".to_string())?;
+    if !response.is_object() {
+        return Err("Privacy Filter summary requires a JSON object report".to_string());
+    }
+    let contents = serde_json::to_string_pretty(&desktop_privacy_filter_summary(&response))
+        .map_err(|_| "Privacy Filter summary could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-privacy-filter".to_string());
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-privacy-filter-summary.json"),
+        contents,
+        status: "Privacy Filter summary ready to save; masked text, spans, previews, and raw input text are redacted from this report.".to_string(),
+    })
+}
+
+fn desktop_privacy_filter_summary(response: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "mode".to_string(),
+        serde_json::json!("privacy_filter_summary"),
+    );
+    for key in ["engine", "preview_policy"] {
+        if let Some(value) = response
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| is_safe_privacy_filter_metadata_string(value))
+        {
+            report.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    if let Some(value) = response
+        .get("network_api_called")
+        .and_then(serde_json::Value::as_bool)
+    {
+        report.insert("network_api_called".to_string(), serde_json::json!(value));
+    }
+    for key in ["input_char_count", "detected_span_count"] {
+        if let Some(value) = response.get(key).and_then(serde_json::Value::as_u64) {
+            report.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    report.insert(
+        "category_counts".to_string(),
+        desktop_privacy_filter_category_counts(response.get("category_counts")),
+    );
+    serde_json::Value::Object(report)
+}
+
+fn desktop_privacy_filter_category_counts(value: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut counts = serde_json::Map::new();
+    if let Some(object) = value.and_then(serde_json::Value::as_object) {
+        for (label, count) in object {
+            if matches!(label.as_str(), "NAME" | "MRN" | "EMAIL" | "PHONE")
+                && count.as_u64().is_some()
+            {
+                counts.insert(label.to_string(), count.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(counts)
+}
+
+fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
+    ![
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ]
+    .iter()
+    .any(|sentinel| value.contains(sentinel))
+        && !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
 fn desktop_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value {
     let mut report = serde_json::Map::new();
     report.insert("mode".to_string(), serde_json::json!("ocr_handoff_summary"));
@@ -2839,6 +2922,107 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn privacy_filter_summary_save_preserves_only_safe_aggregates_and_source_stem() {
+        let response = json!({
+            "engine": "deterministic_filter_v1",
+            "network_api_called": false,
+            "preview_policy": "masked_only",
+            "input_char_count": 123,
+            "detected_span_count": 4,
+            "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 1, "PHONE": 1},
+            "masked_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
+            "preview": "Patient Jane Example",
+            "spans": [{"text": "MRN-12345"}],
+            "input_text": "jane@example.com"
+        });
+
+        let payload = build_desktop_privacy_filter_summary_save(
+            &response.to_string(),
+            Some("privacy-output.json"),
+        )
+        .expect("privacy filter summary save");
+
+        assert_eq!(
+            payload.file_name,
+            "privacy-output-privacy-filter-summary.json"
+        );
+        assert_eq!(payload.status, "Privacy Filter summary ready to save; masked text, spans, previews, and raw input text are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert_eq!(report["engine"], "deterministic_filter_v1");
+        assert_eq!(report["network_api_called"], false);
+        assert_eq!(report["preview_policy"], "masked_only");
+        assert_eq!(report["input_char_count"], 123);
+        assert_eq!(report["detected_span_count"], 4);
+        assert_eq!(
+            report["category_counts"],
+            json!({"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1})
+        );
+        for forbidden in [
+            "\"masked_text\"",
+            "\"spans\"",
+            "\"preview\"",
+            "\"input_text\"",
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "forbidden value leaked: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_save_omits_unsafe_shapes_and_string_counts() {
+        let response = json!({
+            "engine": {"name": "Patient Jane Example"},
+            "network_api_called": "false",
+            "preview_policy": ["masked_only"],
+            "input_char_count": "123",
+            "detected_span_count": -1,
+            "category_counts": {"NAME": "1", "MRN": -1, "EMAIL": 2.5, "PHONE": 0}
+        });
+
+        let payload =
+            build_desktop_privacy_filter_summary_save(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert!(report.get("engine").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("preview_policy").is_none());
+        assert!(report.get("input_char_count").is_none());
+        assert!(report.get("detected_span_count").is_none());
+        assert_eq!(report["category_counts"], json!({"PHONE": 0}));
+    }
+
+    #[test]
+    fn privacy_filter_summary_save_rejects_sentinel_metadata_and_unallowlisted_categories() {
+        let response = json!({
+            "engine": "Patient Jane Example",
+            "preview_policy": "MRN-12345",
+            "category_counts": {"NAME": 1, "SSN": 9, "ADDRESS": 3, "EMAIL": 2}
+        });
+
+        let payload =
+            build_desktop_privacy_filter_summary_save(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert!(report.get("engine").is_none());
+        assert!(report.get("preview_policy").is_none());
+        assert_eq!(report["category_counts"], json!({"EMAIL": 2, "NAME": 1}));
+        assert!(!payload.contents.contains("Patient Jane Example"));
+        assert!(!payload.contents.contains("MRN-12345"));
+        assert!(!payload.contents.contains("SSN"));
+        assert!(!payload.contents.contains("ADDRESS"));
+    }
 
     #[test]
     fn ocr_handoff_summary_save_matches_existing_fixture_contract() {
