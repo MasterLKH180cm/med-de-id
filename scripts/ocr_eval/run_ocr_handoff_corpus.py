@@ -11,6 +11,8 @@ from pathlib import Path
 ENGINE = "PP-OCRv5-mobile-bounded-spike"
 SCOPE = "printed_text_line_extraction_only"
 PRIVACY_FILTER_CONTRACT = "text_only_normalized_input"
+MAX_FIXTURE_COUNT = 100
+MAX_FIXTURE_BYTES = 1024 * 1024
 NON_GOALS = sorted(
     {
         "visual_redaction",
@@ -27,8 +29,11 @@ def normalize_whitespace(text: str) -> str:
 
 
 def remove_stale_output(output: Path) -> None:
-    if output.exists():
-        output.unlink()
+    try:
+        if output.exists():
+            output.unlink()
+    except OSError:
+        pass
 
 
 def fail(output: Path, message: str) -> int:
@@ -37,27 +42,63 @@ def fail(output: Path, message: str) -> int:
     return 1
 
 
+def fixture_id(index: int) -> str:
+    return f"fixture_{index:03d}"
+
+
+def read_fixture_text(fixture_path: Path, index: int, output: Path) -> tuple[str | None, int | None]:
+    try:
+        with fixture_path.open("rb") as handle:
+            data = handle.read(MAX_FIXTURE_BYTES + 1)
+    except OSError:
+        fail(output, f"{fixture_id(index)} could not be read")
+        return None, 1
+
+    if len(data) > MAX_FIXTURE_BYTES:
+        fail(output, f"{fixture_id(index)} exceeds maximum fixture size")
+        return None, 1
+
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError:
+        fail(output, f"{fixture_id(index)} is not valid UTF-8")
+        return None, 1
+
+
 def build_report(fixture_dir: Path, output: Path) -> int:
     remove_stale_output(output)
 
-    if not fixture_dir.is_dir():
-        return fail(output, f"fixture dir does not exist or is not a directory: {fixture_dir}")
+    try:
+        fixture_dir_exists = fixture_dir.is_dir()
+    except OSError:
+        fixture_dir_exists = False
+    if not fixture_dir_exists:
+        return fail(output, "fixture dir does not exist or is not a directory")
 
-    fixture_paths = sorted(fixture_dir.glob("*.txt"))
+    try:
+        fixture_paths = sorted(fixture_dir.glob("*.txt"))
+    except OSError:
+        return fail(output, "fixture dir could not be read")
     if not fixture_paths:
-        return fail(output, f"fixture dir contains no .txt fixtures: {fixture_dir}")
+        return fail(output, "fixture dir contains no .txt fixtures")
+    if len(fixture_paths) > MAX_FIXTURE_COUNT:
+        return fail(output, "fixture corpus exceeds maximum fixture count")
 
     fixtures = []
     total_char_count = 0
     for index, fixture_path in enumerate(fixture_paths, start=1):
-        normalized = normalize_whitespace(fixture_path.read_text(encoding="utf-8"))
+        text, error_code = read_fixture_text(fixture_path, index, output)
+        if error_code is not None:
+            return error_code
+        assert text is not None
+        normalized = normalize_whitespace(text)
         if not normalized:
-            return fail(output, f"fixture is empty after whitespace normalization: {fixture_path}")
+            return fail(output, f"{fixture_id(index)} is empty after whitespace normalization")
         char_count = len(normalized)
         total_char_count += char_count
         fixtures.append(
             {
-                "id": f"fixture_{index:03d}",
+                "id": fixture_id(index),
                 "char_count": char_count,
                 "ready_for_text_pii_eval": True,
             }
@@ -74,8 +115,11 @@ def build_report(fixture_dir: Path, output: Path) -> int:
         "privacy_filter_contract": PRIVACY_FILTER_CONTRACT,
     }
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        return fail(output, "report output could not be written")
     return 0
 
 
