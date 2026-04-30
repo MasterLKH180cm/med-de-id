@@ -767,6 +767,129 @@ fn portable_report_source_stem(file_name: &str) -> String {
     sanitized
 }
 
+fn pdf_review_report_source_stem(file_name: Option<&str>) -> String {
+    let Some(file_name) = file_name else {
+        return "mdid-browser-pdf".to_string();
+    };
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem)
+        .trim_matches(|ch| matches!(ch, '.' | ' ' | '_'));
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('_');
+            }
+            sanitized.push(ch);
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    while sanitized.ends_with('_') {
+        sanitized.pop();
+    }
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('_') {
+            sanitized.pop();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-pdf".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn pdf_review_report_primitive(value: &serde_json::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => Some(value.clone()),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => None,
+    }
+}
+
+fn sanitized_pdf_review_summary(response: &serde_json::Value) -> serde_json::Value {
+    let mut summary = serde_json::Map::new();
+    if let Some(source) = response.get("summary").and_then(serde_json::Value::as_object) {
+        for key in [
+            "total_pages",
+            "pages_with_text",
+            "ocr_required_pages",
+            "candidate_count",
+            "requires_ocr",
+            "status",
+        ] {
+            if let Some(value) = source.get(key).and_then(pdf_review_report_primitive) {
+                summary.insert(key.to_string(), value);
+            }
+        }
+    }
+    serde_json::Value::Object(summary)
+}
+
+fn sanitized_pdf_review_queue(response: &serde_json::Value) -> serde_json::Value {
+    let queue = response
+        .get("review_queue")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let object = item.as_object()?;
+                    let mut sanitized = serde_json::Map::new();
+                    for key in ["page", "kind", "status"] {
+                        if let Some(value) = object.get(key).and_then(pdf_review_report_primitive) {
+                            sanitized.insert(key.to_string(), value);
+                        }
+                    }
+                    Some(serde_json::Value::Object(sanitized))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::Value::Array(queue)
+}
+
+fn build_pdf_review_report_download(
+    response_json: &str,
+    imported_file_name: Option<&str>,
+) -> Result<BrowserDownloadPayload, String> {
+    const INVALID_RESPONSE: &str = "PDF review report requires a JSON object response.";
+
+    let response = serde_json::from_str::<serde_json::Value>(response_json)
+        .map_err(|_| INVALID_RESPONSE.to_string())?;
+    if !response.is_object() {
+        return Err(INVALID_RESPONSE.to_string());
+    }
+
+    let report = serde_json::json!({
+        "mode": "pdf_review_report",
+        "summary": sanitized_pdf_review_summary(&response),
+        "review_queue": sanitized_pdf_review_queue(&response),
+    });
+
+    Ok(BrowserDownloadPayload {
+        file_name: format!(
+            "{}-pdf-review-report.json",
+            pdf_review_report_source_stem(imported_file_name)
+        ),
+        mime_type: "application/json",
+        bytes: serde_json::to_vec_pretty(&report)
+            .map_err(|_| "PDF review report could not encode JSON.".to_string())?,
+        is_text: true,
+    })
+}
+
 fn redact_portable_report_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
@@ -1235,16 +1358,6 @@ impl BrowserFlowState {
         })
     }
 
-    fn review_report_download_json(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "mode": self.input_mode.label(),
-            "summary": self.summary,
-            "review_queue": self.review_queue,
-            "output": self.result_output,
-        }))
-        .map_err(|_| "Browser output download could not encode review report JSON.".to_string())
-    }
-
     fn safe_vault_response_download_json(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec_pretty(&serde_json::json!({
             "mode": self.input_mode.safe_vault_report_mode_label(),
@@ -1325,12 +1438,12 @@ impl BrowserFlowState {
                 bytes: self.media_review_report_download_json()?,
                 is_text: true,
             }),
-            InputMode::PdfBase64 => Ok(BrowserDownloadPayload {
-                file_name,
-                mime_type: "application/json;charset=utf-8",
-                bytes: self.review_report_download_json()?,
-                is_text: true,
-            }),
+            InputMode::PdfBase64 => build_pdf_review_report_download(
+                &self.result_output,
+                self.imported_file_name
+                    .as_deref()
+                    .or_else(|| (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())),
+            ),
             InputMode::VaultAuditEvents
             | InputMode::VaultDecode
             | InputMode::VaultExport
@@ -3070,7 +3183,7 @@ mod tests {
     use base64::Engine;
 
     use super::{
-        build_portable_artifact_import_request_payload,
+        build_pdf_review_report_download, build_portable_artifact_import_request_payload,
         build_portable_artifact_inspect_request_payload, build_portable_response_report_download,
         build_submit_request, build_vault_audit_request_payload,
         build_vault_decode_request_payload, build_vault_export_request_payload,
@@ -3084,6 +3197,59 @@ mod tests {
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn pdf_review_report_download_redacts_text_and_uses_source_stem() {
+        let response = serde_json::json!({
+            "summary": {
+                "total_pages": 2,
+                "pages_with_text": 1,
+                "ocr_required_pages": 1,
+                "sensitive_text": "Alice Smith MRN 123"
+            },
+            "review_queue": [
+                {
+                    "page": 1,
+                    "kind": "text_layer_candidate",
+                    "status": "needs_review",
+                    "text": "Alice Smith MRN 123",
+                    "bbox": [1, 2, 3, 4]
+                }
+            ],
+            "pdf_bytes_base64": "SHOULD_NOT_LEAK"
+        });
+
+        let payload = build_pdf_review_report_download(
+            &response.to_string(),
+            Some("Clinic Intake Form.pdf"),
+        )
+        .expect("pdf report download");
+
+        assert_eq!(payload.file_name, "Clinic_Intake_Form-pdf-review-report.json");
+        assert_eq!(payload.mime_type, "application/json");
+        assert!(payload.is_text);
+
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(report["mode"], "pdf_review_report");
+        assert_eq!(report["summary"]["total_pages"], 2);
+        assert_eq!(report["summary"]["pages_with_text"], 1);
+        assert_eq!(report["summary"]["ocr_required_pages"], 1);
+        assert_eq!(report["review_queue"][0]["page"], 1);
+        assert_eq!(report["review_queue"][0]["kind"], "text_layer_candidate");
+        assert_eq!(report["review_queue"][0]["status"], "needs_review");
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("Alice"));
+        assert!(!serialized.contains("MRN"));
+        assert!(!serialized.contains("SHOULD_NOT_LEAK"));
+        assert!(!serialized.contains("pdf_bytes_base64"));
+        assert!(!serialized.contains("\"text\""));
+    }
+
+    #[test]
+    fn pdf_review_report_download_rejects_non_object_runtime_response() {
+        let error = build_pdf_review_report_download("[]", Some("scan.pdf")).unwrap_err();
+        assert!(error.contains("PDF review report requires a JSON object response"));
+    }
 
     #[test]
     fn portable_response_report_download_uses_safe_source_name_and_redacts_artifact() {
