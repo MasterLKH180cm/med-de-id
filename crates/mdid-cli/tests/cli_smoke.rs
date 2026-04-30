@@ -500,6 +500,8 @@ fn cli_privacy_filter_corpus_writes_phi_safe_aggregate_summary() {
         .stdout(predicate::str::contains("555-111-2222").not())
         .stderr(predicate::str::contains("Jane Example").not())
         .stderr(predicate::str::contains("MRN-12345").not())
+        .stderr(predicate::str::contains("jane@example.test").not())
+        .stderr(predicate::str::contains("555-111-2222").not())
         .get_output()
         .stdout
         .clone();
@@ -529,6 +531,60 @@ fn cli_privacy_filter_corpus_writes_phi_safe_aggregate_summary() {
         .as_array()
         .unwrap()
         .contains(&Value::String("visual_redaction".to_string())));
+}
+
+#[test]
+fn cli_privacy_filter_corpus_sanitizes_phi_bearing_fixture_names() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(
+        fixture_dir.join("Alice-MRN-99999.txt"),
+        "Patient Alice Example MRN-99999 phone 555-999-0000",
+    )
+    .unwrap();
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success();
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let report = fs::read_to_string(&report_path).unwrap();
+    for raw_phi in [
+        "Alice-MRN-99999",
+        "Alice Example",
+        "MRN-99999",
+        "555-999-0000",
+    ] {
+        assert!(
+            !stdout.contains(raw_phi),
+            "stdout leaked raw PHI: {raw_phi}"
+        );
+        assert!(
+            !stderr.contains(raw_phi),
+            "stderr leaked raw PHI: {raw_phi}"
+        );
+        assert!(
+            !report.contains(raw_phi),
+            "report leaked raw PHI: {raw_phi}"
+        );
+    }
+
+    let report_json: Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report_json["fixtures"][0]["fixture"], "fixture_001");
 }
 
 #[test]
