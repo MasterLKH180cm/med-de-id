@@ -522,6 +522,12 @@ impl eframe::App for DesktopApp {
                     let limit = self.vault_request_state.audit_limit.get_or_insert_with(String::new);
                     ui.label("Audit limit (optional)");
                     ui.text_edit_singleline(limit);
+                    let offset = self
+                        .vault_request_state
+                        .audit_offset
+                        .get_or_insert_with(String::new);
+                    ui.label("Audit offset (optional)");
+                    ui.text_edit_singleline(offset);
                 }
             }
             if ui

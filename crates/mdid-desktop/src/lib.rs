@@ -971,11 +971,7 @@ fn vault_response_summary(mode: DesktopVaultResponseMode, response: &serde_json:
             "decoded values: {}",
             response_u64(response, "decoded_value_count")
         ),
-        DesktopVaultResponseMode::VaultAudit => format!(
-            "events returned: {} / {}",
-            response_u64(response, "returned_event_count"),
-            response_u64(response, "event_count")
-        ),
+        DesktopVaultResponseMode::VaultAudit => vault_audit_response_summary(response),
         DesktopVaultResponseMode::VaultExport | DesktopVaultResponseMode::InspectArtifact => {
             format!("records: {}", response_u64(response, "record_count"))
         }
@@ -984,6 +980,34 @@ fn vault_response_summary(mode: DesktopVaultResponseMode, response: &serde_json:
             response_u64(response, "imported_record_count")
         ),
     }
+}
+
+fn vault_audit_response_summary(response: &serde_json::Value) -> String {
+    let total = response_u64(response, "event_count");
+    let returned = response
+        .get("returned_event_count")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            response
+                .get("events")
+                .and_then(serde_json::Value::as_array)
+                .map(|events| events.len() as u64)
+        })
+        .unwrap_or_default();
+    let offset = response_u64(response, "offset");
+    let limit = response.get("limit").and_then(serde_json::Value::as_u64);
+    let page_status = if returned == 0 || total == 0 || offset >= total {
+        format!("Audit events page: showing 0 of {total} from offset {offset}")
+    } else {
+        let first = offset.saturating_add(1);
+        let last = offset.saturating_add(returned).min(total);
+        format!("Audit events page: showing {first}-{last} of {total}")
+    };
+    let limit_status = limit
+        .map(|limit| format!("; limit {limit}"))
+        .unwrap_or_default();
+
+    format!("events returned: {returned} / {total}; {page_status}{limit_status}")
 }
 
 fn vault_response_artifact_notice(response: &serde_json::Value) -> String {
@@ -2309,7 +2333,35 @@ mod tests {
         assert_eq!(download.file_name, "audit-export-response-report.json");
         let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
         assert_eq!(report["mode"], "vault_audit");
-        assert_eq!(report["summary"], "events returned: 3 / 8");
+        assert!(report["summary"]
+            .as_str()
+            .unwrap()
+            .contains("events returned: 3 / 8"));
+    }
+
+    #[test]
+    fn vault_audit_response_summary_includes_pagination_status() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "events": [
+                    {"id": "evt-1", "kind": "decode", "actor": "clinician-1"},
+                    {"id": "evt-2", "kind": "decode", "actor": "clinician-2"}
+                ],
+                "event_count": 7,
+                "returned_event_count": 2,
+                "offset": 5,
+                "limit": 2
+            }),
+        );
+
+        assert!(state
+            .summary
+            .contains("Audit events page: showing 6-7 of 7"));
+        assert!(state.summary.contains("limit 2"));
+        assert!(!state.summary.contains("evt-1"));
+        assert!(!state.summary.contains("decode"));
     }
 
     #[test]
