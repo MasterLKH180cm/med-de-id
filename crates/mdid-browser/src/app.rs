@@ -734,7 +734,9 @@ fn portable_report_source_stem(file_name: &str) -> String {
     } else if let Some(stem) = file_name.strip_suffix("-mdid-portable.json") {
         stem
     } else {
-        file_name.rsplit_once('.').map_or(file_name, |(stem, _)| stem)
+        file_name
+            .rsplit_once('.')
+            .map_or(file_name, |(stem, _)| stem)
     };
 
     let mut sanitized = String::new();
@@ -766,7 +768,10 @@ fn redact_portable_report_value(value: &mut serde_json::Value) {
         serde_json::Value::Object(object) => {
             for field in ["artifact", "decoded_values", "records", "vault_passphrase"] {
                 if object.contains_key(field) {
-                    object.insert(field.to_string(), serde_json::Value::String("redacted".to_string()));
+                    object.insert(
+                        field.to_string(),
+                        serde_json::Value::String("redacted".to_string()),
+                    );
                 }
             }
             for value in object.values_mut() {
@@ -1255,12 +1260,14 @@ impl BrowserFlowState {
                 payload.mime_type = "application/json;charset=utf-8";
                 Ok(payload)
             }
-            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
-                file_name,
-                mime_type: "application/json;charset=utf-8",
-                bytes: self.safe_vault_response_download_json()?,
-                is_text: true,
-            }),
+            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport => {
+                Ok(BrowserDownloadPayload {
+                    file_name,
+                    mime_type: "application/json;charset=utf-8",
+                    bytes: self.safe_vault_response_download_json()?,
+                    is_text: true,
+                })
+            }
             _ => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "text/plain;charset=utf-8",
@@ -2941,11 +2948,12 @@ mod tests {
     use base64::Engine;
 
     use super::{
-        build_portable_artifact_import_request_payload, build_portable_response_report_download,
-        build_portable_artifact_inspect_request_payload, build_submit_request,
-        build_vault_audit_request_payload, build_vault_decode_request_payload,
-        build_vault_export_request_payload, file_import_payload_from_data_url, format_review_queue,
-        format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
+        build_portable_artifact_import_request_payload,
+        build_portable_artifact_inspect_request_payload, build_portable_response_report_download,
+        build_submit_request, build_vault_audit_request_payload,
+        build_vault_decode_request_payload, build_vault_export_request_payload,
+        file_import_payload_from_data_url, format_review_queue, format_summary,
+        parse_runtime_error, parse_runtime_success, render_runtime_response,
         validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
         RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY, FETCH_UNAVAILABLE_MESSAGE,
@@ -2990,7 +2998,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error, "Portable response report download is only available for portable artifact modes.");
+        assert_eq!(
+            error,
+            "Portable response report download is only available for portable artifact modes."
+        );
     }
 
     #[test]
@@ -3002,7 +3013,9 @@ mod tests {
             ..BrowserFlowState::default()
         };
 
-        let payload = state.prepared_download_payload().expect("portable response report");
+        let payload = state
+            .prepared_download_payload()
+            .expect("portable response report");
         let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
         let text = String::from_utf8(payload.bytes).unwrap();
 
