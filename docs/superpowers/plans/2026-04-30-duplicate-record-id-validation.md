@@ -1,10 +1,10 @@
 # Duplicate Record ID Validation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Implementation workflow:** Execute this plan task-by-task with strict TDD, independent review after each task, and checkbox (`- [ ]`) tracking.
 
 **Goal:** Reject duplicate vault/portable record IDs consistently before decode/export/import requests reach sensitive runtime paths.
 
-**Architecture:** Add fail-closed duplicate ID validation at each user-facing request builder and runtime/domain boundary that accepts a record ID list. Keep error text PHI-safe by reporting duplicate presence/count only, never echoing caller-provided paths, payloads, or record IDs. This is a core de-identification safety hardening slice, not an agent/controller feature.
+**Architecture:** Add fail-closed duplicate ID validation at each user-facing request builder and runtime/domain boundary that accepts a record ID list. Keep error text PHI-safe by reporting duplicate presence/count only, never echoing caller-provided paths, payloads, or record IDs. This is a core de-identification safety hardening slice, not a workflow coordination feature.
 
 **Tech Stack:** Rust workspace, cargo tests, serde_json, existing mdid CLI/browser/desktop/runtime/vault crates.
 
