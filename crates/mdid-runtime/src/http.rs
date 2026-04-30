@@ -25,6 +25,7 @@ use mdid_domain::{
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::{
     io::{Cursor, Read, Write},
     path::PathBuf,
@@ -158,6 +159,11 @@ impl ConservativeMediaDeidentifyRequest {
             || self.file_bytes_present
             || self.base64_present
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct PrivacyFilterSummaryRequest {
+    report: Value,
 }
 
 fn deserialize_field_presence<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -294,6 +300,19 @@ struct ConservativeMediaDeidentifyResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PrivacyFilterSummaryResponse {
+    artifact: &'static str,
+    mode: String,
+    engine: String,
+    network_api_called: bool,
+    preview_policy: String,
+    input_char_count: u64,
+    detected_span_count: u64,
+    category_counts: Map<String, Value>,
+    non_goals: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorEnvelope {
     error: ErrorBody,
 }
@@ -308,6 +327,7 @@ pub fn build_router(state: RuntimeState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
+        .route("/privacy-filter/summary", post(privacy_filter_summary))
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/tabular/deidentify/xlsx", post(tabular_xlsx_deidentify))
         .route(
@@ -341,6 +361,54 @@ async fn create_pipeline(
 ) -> impl IntoResponse {
     let pipeline = state.application.register_pipeline(payload.name);
     (StatusCode::CREATED, Json(pipeline))
+}
+
+async fn privacy_filter_summary(
+    payload: Result<Json<PrivacyFilterSummaryRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_privacy_filter_summary_request_response().into_response(),
+    };
+
+    match build_privacy_filter_summary(&payload.report) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => invalid_privacy_filter_summary_request_response().into_response(),
+    }
+}
+
+fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryResponse> {
+    let report = report.as_object()?;
+    let input_char_count = required_u64(report, "input_char_count")?;
+    let detected_span_count = required_u64(report, "detected_span_count")?;
+    let category_counts = report
+        .get("category_counts")?
+        .as_object()?
+        .iter()
+        .map(|(category, count)| Some((category.clone(), Value::from(count.as_u64()?))))
+        .collect::<Option<Map<String, Value>>>()?;
+    let non_goals = report
+        .get("non_goals")?
+        .as_array()?
+        .iter()
+        .map(|non_goal| non_goal.as_str().map(ToOwned::to_owned))
+        .collect::<Option<Vec<_>>>()?;
+
+    Some(PrivacyFilterSummaryResponse {
+        artifact: "privacy_filter_summary",
+        mode: report.get("mode")?.as_str()?.to_owned(),
+        engine: report.get("engine")?.as_str()?.to_owned(),
+        network_api_called: report.get("network_api_called")?.as_bool()?,
+        preview_policy: report.get("preview_policy")?.as_str()?.to_owned(),
+        input_char_count,
+        detected_span_count,
+        category_counts,
+        non_goals,
+    })
+}
+
+fn required_u64(report: &Map<String, Value>, field: &str) -> Option<u64> {
+    report.get(field)?.as_u64()
 }
 
 async fn tabular_deidentify(
@@ -1003,6 +1071,18 @@ fn invalid_pdf_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_pdf",
                 message: "request body did not contain a valid PDF payload",
+            },
+        }),
+    )
+}
+
+fn invalid_privacy_filter_summary_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_privacy_filter_summary_request",
+                message: "request body did not contain a valid privacy filter report object",
             },
         }),
     )

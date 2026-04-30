@@ -69,6 +69,93 @@ async fn pipelines_endpoint_registers_pipeline() {
 }
 
 #[tokio::test]
+async fn privacy_filter_summary_endpoint_returns_phi_safe_summary() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "safe-rule-engine",
+            "input_text": "Alice Smith has MRN-001 and needs follow-up.",
+            "normalized_text": "Alice Smith has MRN-001 and needs follow-up.",
+            "detected_spans": [
+                {"category": "NAME", "text": "Alice Smith", "start": 0, "end": 11},
+                {"category": "MRN", "value": "MRN-001", "start": 16, "end": 23}
+            ],
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "preview": "[NAME] has [MRN] and needs follow-up.",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN": 1},
+            "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("Alice Smith"), "{body_text}");
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    assert!(!body_text.contains("input_text"), "{body_text}");
+
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["artifact"], "privacy_filter_summary");
+    assert_eq!(json["mode"], "summary_only");
+    assert_eq!(json["engine"], "safe-rule-engine");
+    assert_eq!(json["network_api_called"], false);
+    assert_eq!(json["preview_policy"], "masked-only");
+    assert_eq!(json["input_char_count"], 45);
+    assert_eq!(json["detected_span_count"], 2);
+    assert_eq!(json["category_counts"]["NAME"], 1);
+    assert_eq!(json["category_counts"]["MRN"], 1);
+    assert_eq!(json["non_goals"].as_array().unwrap().len(), 3);
+    assert!(json.get("input_text").is_none());
+    assert!(json.get("normalized_text").is_none());
+    assert!(json.get("detected_spans").is_none());
+    assert!(json.get("preview").is_none());
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_non_object_report() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({"report": "not an object"});
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
 async fn tabular_deidentify_endpoint_returns_rewritten_csv_and_summary() {
     let app = build_router(RuntimeState::default());
     let request = json!({
