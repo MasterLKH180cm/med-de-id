@@ -1136,8 +1136,11 @@ fn sanitized_privacy_filter_summary(response: &serde_json::Value) -> serde_json:
         serde_json::json!("privacy_filter_summary"),
     );
 
+    let metadata = response.get("metadata").unwrap_or(response);
+    let summary = response.get("summary").unwrap_or(response);
+
     for key in ["engine", "preview_policy"] {
-        if let Some(value) = response
+        if let Some(value) = metadata
             .get(key)
             .and_then(serde_json::Value::as_str)
             .filter(|value| is_safe_privacy_filter_metadata_string(value))
@@ -1145,21 +1148,21 @@ fn sanitized_privacy_filter_summary(response: &serde_json::Value) -> serde_json:
             report.insert(key.to_string(), serde_json::json!(value));
         }
     }
-    if let Some(value) = response
+    if let Some(value) = metadata
         .get("network_api_called")
         .and_then(serde_json::Value::as_bool)
     {
         report.insert("network_api_called".to_string(), serde_json::json!(value));
     }
     for key in ["input_char_count", "detected_span_count"] {
-        if let Some(value) = response.get(key).and_then(serde_json::Value::as_u64) {
+        if let Some(value) = summary.get(key).and_then(serde_json::Value::as_u64) {
             report.insert(key.to_string(), serde_json::json!(value));
         }
     }
 
     report.insert(
         "category_counts".to_string(),
-        sanitized_privacy_filter_category_counts(response.get("category_counts")),
+        sanitized_privacy_filter_category_counts(summary.get("category_counts")),
     );
     serde_json::Value::Object(report)
 }
@@ -3750,22 +3753,25 @@ mod tests {
     #[test]
     fn privacy_filter_summary_download_preserves_only_safe_aggregates_and_source_stem() {
         let response = json!({
-            "engine": "privacy-filter-v1",
-            "network_api_called": false,
-            "preview_policy": "masked_preview_only",
-            "input_char_count": 1432,
-            "detected_span_count": 4,
-            "category_counts": {
-                "NAME": 1,
-                "MRN": 1,
-                "EMAIL": 1,
-                "PHONE": 1,
-                "Patient Jane Example": 99,
-                "SSN": "MRN-12345",
-                "bad label": 2,
-                "ADDRESS": {"count": 1}
+            "summary": {
+                "input_char_count": 86,
+                "detected_span_count": 4,
+                "category_counts": {
+                    "NAME": 1,
+                    "MRN": 1,
+                    "EMAIL": 1,
+                    "PHONE": 1,
+                    "Patient Jane Example": 99,
+                    "SSN": "MRN-12345",
+                    "bad label": 2,
+                    "ADDRESS": {"count": 1}
+                }
             },
-            "metadata": {"engine": "object must not leak"},
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_bracket_labels_only"
+            },
             "masked_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
             "spans": [{"text": "Patient Jane Example", "label": "NAME"}],
             "preview": "Patient Jane Example",
@@ -3787,10 +3793,10 @@ mod tests {
 
         let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
         assert_eq!(report["mode"], "privacy_filter_summary");
-        assert_eq!(report["engine"], "privacy-filter-v1");
+        assert_eq!(report["engine"], "fallback_synthetic_patterns");
         assert_eq!(report["network_api_called"], false);
-        assert_eq!(report["preview_policy"], "masked_preview_only");
-        assert_eq!(report["input_char_count"], 1432);
+        assert_eq!(report["preview_policy"], "redacted_bracket_labels_only");
+        assert_eq!(report["input_char_count"], 86);
         assert_eq!(report["detected_span_count"], 4);
         assert_eq!(report["category_counts"]["NAME"], 1);
         assert_eq!(report["category_counts"]["MRN"], 1);
@@ -3824,14 +3830,18 @@ mod tests {
     #[test]
     fn privacy_filter_summary_download_omits_object_metadata_and_string_counts() {
         let response = json!({
-            "engine": {"name": "privacy-filter-v1"},
-            "network_api_called": {"value": false},
-            "preview_policy": {"policy": "masked_preview_only"},
-            "input_char_count": "Patient Jane Example",
-            "detected_span_count": "MRN-12345",
-            "category_counts": {
-                "NAME": "Patient Jane Example",
-                "MRN": 2
+            "metadata": {
+                "engine": {"name": "privacy-filter-v1"},
+                "network_api_called": {"value": false},
+                "preview_policy": {"policy": "masked_preview_only"}
+            },
+            "summary": {
+                "input_char_count": "Patient Jane Example",
+                "detected_span_count": "MRN-12345",
+                "category_counts": {
+                    "NAME": "Patient Jane Example",
+                    "MRN": 2
+                }
             }
         });
 
@@ -3856,14 +3866,18 @@ mod tests {
     #[test]
     fn privacy_filter_summary_download_rejects_phi_sentinels_in_allowed_metadata_fields() {
         let response = json!({
-            "engine": "Patient Jane Example",
-            "preview_policy": "MRN-12345 jane@example.com 555-123-4567",
-            "network_api_called": "jane@example.com",
-            "input_char_count": 100,
-            "detected_span_count": 1,
-            "category_counts": {
-                "SAFE_LABEL": 1,
-                "PHONE": "555-123-4567"
+            "metadata": {
+                "engine": "Patient Jane Example",
+                "preview_policy": "MRN-12345 jane@example.com 555-123-4567",
+                "network_api_called": "jane@example.com"
+            },
+            "summary": {
+                "input_char_count": 100,
+                "detected_span_count": 1,
+                "category_counts": {
+                    "SAFE_LABEL": 1,
+                    "PHONE": "555-123-4567"
+                }
             }
         });
 
@@ -3894,10 +3908,12 @@ mod tests {
     #[test]
     fn privacy_filter_summary_download_enforces_metadata_field_types() {
         let response = json!({
-            "engine": true,
-            "network_api_called": "false",
-            "preview_policy": 7,
-            "category_counts": {}
+            "metadata": {
+                "engine": true,
+                "network_api_called": "false",
+                "preview_policy": 7
+            },
+            "summary": {"category_counts": {}}
         });
 
         let payload =
@@ -3913,7 +3929,7 @@ mod tests {
     #[test]
     fn privacy_filter_summary_download_accepts_only_allowlisted_category_counts() {
         let response = json!({
-            "category_counts": {
+            "summary": {"category_counts": {
                 "NAME": 3,
                 "MRN": 4,
                 "EMAIL": 0,
@@ -3931,7 +3947,7 @@ mod tests {
                 "FRACTIONAL": 1.5,
                 "TOO_BIG": 18446744073709551616.0,
                 "STRING_COUNT": "1"
-            }
+            }}
         });
 
         let payload =
@@ -3968,11 +3984,15 @@ mod tests {
         let mut state = BrowserFlowState {
             input_mode: InputMode::PrivacyFilterSummary,
             result_output: json!({
-                "engine": "privacy-filter-v1",
-                "network_api_called": false,
-                "input_char_count": 25,
-                "detected_span_count": 2,
-                "category_counts": {"NAME": 1, "MRN": 1, "DATE": 1},
+                "metadata": {
+                    "engine": "privacy-filter-v1",
+                    "network_api_called": false
+                },
+                "summary": {
+                    "input_char_count": 25,
+                    "detected_span_count": 2,
+                    "category_counts": {"NAME": 1, "MRN": 1, "DATE": 1}
+                },
                 "masked_text": "Patient Jane Example MRN-12345"
             })
             .to_string(),
@@ -4000,7 +4020,7 @@ mod tests {
     #[test]
     fn privacy_filter_summary_download_omits_non_allowlisted_category_labels() {
         let response = json!({
-            "category_counts": {
+            "summary": {"category_counts": {
                 "NAME": 1,
                 "MRN": 2,
                 "EMAIL": 3,
@@ -4009,7 +4029,7 @@ mod tests {
                 "MRN_12345": 6,
                 "PATIENT_JANE_EXAMPLE": 7,
                 "DATE": 8
-            }
+            }}
         });
 
         let payload =
@@ -4028,7 +4048,7 @@ mod tests {
     }
 
     #[test]
-    fn privacy_filter_summary_download_omits_negative_and_fractional_top_level_counts() {
+    fn privacy_filter_summary_download_omits_negative_and_fractional_summary_counts() {
         for (field, value) in [
             ("input_char_count", json!(-1)),
             ("input_char_count", json!(1.5)),
@@ -4036,8 +4056,10 @@ mod tests {
             ("detected_span_count", json!(1.5)),
         ] {
             let response = json!({
-                field: value,
-                "category_counts": {"NAME": 1}
+                "summary": {
+                    field: value,
+                    "category_counts": {"NAME": 1}
+                }
             });
             let payload =
                 build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))

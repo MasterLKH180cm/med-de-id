@@ -943,8 +943,10 @@ fn desktop_privacy_filter_summary(response: &serde_json::Value) -> serde_json::V
         "mode".to_string(),
         serde_json::json!("privacy_filter_summary"),
     );
+    let metadata = response.get("metadata").unwrap_or(response);
+    let summary = response.get("summary").unwrap_or(response);
     for key in ["engine", "preview_policy"] {
-        if let Some(value) = response
+        if let Some(value) = metadata
             .get(key)
             .and_then(serde_json::Value::as_str)
             .filter(|value| is_safe_privacy_filter_metadata_string(value))
@@ -952,20 +954,20 @@ fn desktop_privacy_filter_summary(response: &serde_json::Value) -> serde_json::V
             report.insert(key.to_string(), serde_json::json!(value));
         }
     }
-    if let Some(value) = response
+    if let Some(value) = metadata
         .get("network_api_called")
         .and_then(serde_json::Value::as_bool)
     {
         report.insert("network_api_called".to_string(), serde_json::json!(value));
     }
     for key in ["input_char_count", "detected_span_count"] {
-        if let Some(value) = response.get(key).and_then(serde_json::Value::as_u64) {
+        if let Some(value) = summary.get(key).and_then(serde_json::Value::as_u64) {
             report.insert(key.to_string(), serde_json::json!(value));
         }
     }
     report.insert(
         "category_counts".to_string(),
-        desktop_privacy_filter_category_counts(response.get("category_counts")),
+        desktop_privacy_filter_category_counts(summary.get("category_counts")),
     );
     serde_json::Value::Object(report)
 }
@@ -2926,12 +2928,16 @@ mod tests {
     #[test]
     fn privacy_filter_summary_save_preserves_only_safe_aggregates_and_source_stem() {
         let response = json!({
-            "engine": "deterministic_filter_v1",
-            "network_api_called": false,
-            "preview_policy": "masked_only",
-            "input_char_count": 123,
-            "detected_span_count": 4,
-            "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 1, "PHONE": 1},
+            "summary": {
+                "input_char_count": 86,
+                "detected_span_count": 4,
+                "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 1, "PHONE": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_bracket_labels_only"
+            },
             "masked_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
             "preview": "Patient Jane Example",
             "spans": [{"text": "MRN-12345"}],
@@ -2951,10 +2957,10 @@ mod tests {
         assert_eq!(payload.status, "Privacy Filter summary ready to save; masked text, spans, previews, and raw input text are redacted from this report.");
         let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
         assert_eq!(report["mode"], "privacy_filter_summary");
-        assert_eq!(report["engine"], "deterministic_filter_v1");
+        assert_eq!(report["engine"], "fallback_synthetic_patterns");
         assert_eq!(report["network_api_called"], false);
-        assert_eq!(report["preview_policy"], "masked_only");
-        assert_eq!(report["input_char_count"], 123);
+        assert_eq!(report["preview_policy"], "redacted_bracket_labels_only");
+        assert_eq!(report["input_char_count"], 86);
         assert_eq!(report["detected_span_count"], 4);
         assert_eq!(
             report["category_counts"],
@@ -2980,12 +2986,16 @@ mod tests {
     #[test]
     fn privacy_filter_summary_save_omits_unsafe_shapes_and_string_counts() {
         let response = json!({
-            "engine": {"name": "Patient Jane Example"},
-            "network_api_called": "false",
-            "preview_policy": ["masked_only"],
-            "input_char_count": "123",
-            "detected_span_count": -1,
-            "category_counts": {"NAME": "1", "MRN": -1, "EMAIL": 2.5, "PHONE": 0}
+            "metadata": {
+                "engine": {"name": "Patient Jane Example"},
+                "network_api_called": "false",
+                "preview_policy": ["masked_only"]
+            },
+            "summary": {
+                "input_char_count": "123",
+                "detected_span_count": -1,
+                "category_counts": {"NAME": "1", "MRN": -1, "EMAIL": 2.5, "PHONE": 0}
+            }
         });
 
         let payload =
@@ -3005,9 +3015,13 @@ mod tests {
     #[test]
     fn privacy_filter_summary_save_rejects_sentinel_metadata_and_unallowlisted_categories() {
         let response = json!({
-            "engine": "Patient Jane Example",
-            "preview_policy": "MRN-12345",
-            "category_counts": {"NAME": 1, "SSN": 9, "ADDRESS": 3, "EMAIL": 2}
+            "metadata": {
+                "engine": "Patient Jane Example",
+                "preview_policy": "MRN-12345"
+            },
+            "summary": {
+                "category_counts": {"NAME": 1, "SSN": 9, "ADDRESS": 3, "EMAIL": 2}
+            }
         });
 
         let payload =
