@@ -294,6 +294,69 @@ fn ocr_to_privacy_filter_corpus_runs_repo_fixture_chain_without_phi_leaks() {
 }
 
 #[test]
+fn ocr_to_privacy_filter_corpus_writes_phi_safe_summary_output() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-to-privacy-filter-corpus.json");
+    let summary_path = dir.path().join("ocr-to-privacy-filter-corpus-summary.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-to-privacy-filter-corpus",
+            "--fixture-dir",
+            &repo_path("scripts/ocr_eval/fixtures/corpus"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_handoff_corpus.py"),
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--bridge-runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_to_privacy_filter_corpus.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
+
+    assert_eq!(summary["artifact"], "ocr_to_privacy_filter_corpus_summary");
+    assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
+    assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
+    assert_eq!(
+        summary["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    assert_eq!(summary["network_api_called"], false);
+    assert_eq!(summary["fixture_count"], 2);
+    assert_eq!(summary["ready_fixture_count"], 2);
+    assert!(summary["total_detected_span_count"].as_u64().unwrap() > 0);
+    assert!(summary.get("fixtures").is_none());
+    assert!(summary.get("spans").is_none());
+    assert!(summary.get("masked_text").is_none());
+    assert!(summary.get("normalized_text").is_none());
+
+    for unsafe_text in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "synthetic_patient_label_",
+        "/home/",
+        "/tmp/",
+        "fixtures/",
+    ] {
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn ocr_to_privacy_filter_corpus_missing_bridge_runner_removes_stale_report_generically() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("report.json");
