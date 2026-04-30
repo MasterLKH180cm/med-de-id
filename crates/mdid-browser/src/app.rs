@@ -29,6 +29,7 @@ enum InputMode {
     VaultExport,
     PortableArtifactInspect,
     PortableArtifactImport,
+    PrivacyFilterSummary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +94,7 @@ impl InputMode {
             "vault-export" => Self::VaultExport,
             "portable-artifact-inspect" => Self::PortableArtifactInspect,
             "portable-artifact-import" => Self::PortableArtifactImport,
+            "privacy-filter-summary" => Self::PrivacyFilterSummary,
             _ => Self::CsvText,
         }
     }
@@ -109,6 +111,7 @@ impl InputMode {
             Self::VaultExport => "vault-export",
             Self::PortableArtifactInspect => "portable-artifact-inspect",
             Self::PortableArtifactImport => "portable-artifact-import",
+            Self::PrivacyFilterSummary => "privacy-filter-summary",
         }
     }
 
@@ -124,6 +127,7 @@ impl InputMode {
             Self::VaultExport => "Vault export",
             Self::PortableArtifactInspect => "Portable artifact inspect",
             Self::PortableArtifactImport => "Portable artifact import",
+            Self::PrivacyFilterSummary => "Privacy Filter summary",
         }
     }
 
@@ -152,6 +156,7 @@ impl InputMode {
             Self::PortableArtifactImport => {
                 "Portable artifact import request fields are rendered by the browser form"
             }
+            Self::PrivacyFilterSummary => "Paste/import an existing Privacy Filter JSON report here",
         }
     }
 
@@ -167,6 +172,7 @@ impl InputMode {
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
             Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
             Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, or broader platform workflow functionality."),
+            Self::PrivacyFilterSummary => Some("Privacy Filter summary mode is local-only: paste/import an existing Privacy Filter JSON report to prepare a PHI-safe summary download. It does not submit to a runtime endpoint and does not run Privacy Filter."),
         }
     }
 
@@ -182,6 +188,7 @@ impl InputMode {
             Self::VaultExport => "/vault/export",
             Self::PortableArtifactInspect => "/portable-artifacts/inspect",
             Self::PortableArtifactImport => "/portable-artifacts/import",
+            Self::PrivacyFilterSummary => "",
         }
     }
 
@@ -214,7 +221,8 @@ impl InputMode {
             | Self::VaultDecode
             | Self::VaultExport
             | Self::PortableArtifactInspect
-            | Self::PortableArtifactImport => BrowserFileReadMode::Text,
+            | Self::PortableArtifactImport
+            | Self::PrivacyFilterSummary => BrowserFileReadMode::Text,
             Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => {
                 BrowserFileReadMode::DataUrlBase64
             }
@@ -1144,8 +1152,8 @@ fn sanitized_privacy_filter_summary(response: &serde_json::Value) -> serde_json:
         report.insert("network_api_called".to_string(), serde_json::json!(value));
     }
     for key in ["input_char_count", "detected_span_count"] {
-        if let Some(value) = response.get(key).filter(|value| value.is_number()) {
-            report.insert(key.to_string(), value.clone());
+        if let Some(value) = response.get(key).and_then(serde_json::Value::as_u64) {
+            report.insert(key.to_string(), serde_json::json!(value));
         }
     }
 
@@ -1171,11 +1179,7 @@ fn sanitized_privacy_filter_category_counts(
 }
 
 fn is_safe_privacy_filter_category_label(label: &str) -> bool {
-    !contains_synthetic_phi_sentinel(label)
-        && label.chars().any(|ch| ch.is_ascii_uppercase())
-        && label
-            .chars()
-            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+    matches!(label, "NAME" | "MRN" | "EMAIL" | "PHONE")
 }
 
 fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
@@ -1384,6 +1388,10 @@ impl BrowserFlowState {
             && detected_mode == InputMode::PortableArtifactInspect
         {
             InputMode::PortableArtifactImport
+        } else if self.input_mode == InputMode::PrivacyFilterSummary
+            && detected_mode == InputMode::MediaMetadataJson
+        {
+            InputMode::PrivacyFilterSummary
         } else {
             detected_mode
         }
@@ -1441,6 +1449,9 @@ impl BrowserFlowState {
                 InputMode::PortableArtifactImport => {
                     return format!("{stem}-portable-artifact-import.json");
                 }
+                InputMode::PrivacyFilterSummary => {
+                    return format!("{stem}-privacy-filter-summary.json");
+                }
                 InputMode::VaultAuditEvents => {
                     return format!("{stem}-vault-audit-events.json");
                 }
@@ -1481,6 +1492,7 @@ impl BrowserFlowState {
             InputMode::VaultExport => "mdid-browser-portable-artifact.json",
             InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.json",
             InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.json",
+            InputMode::PrivacyFilterSummary => "mdid-browser-privacy-filter-summary.json",
         }
         .to_string()
     }
@@ -1544,6 +1556,7 @@ impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
+            || (self.input_mode == InputMode::PrivacyFilterSummary && !self.payload.trim().is_empty())
     }
 
     fn is_tabular_mode(&self) -> bool {
@@ -1823,6 +1836,19 @@ impl BrowserFlowState {
                     (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())
                 }),
             ),
+            InputMode::PrivacyFilterSummary => {
+                let response_json = if self.result_output.trim().is_empty() {
+                    self.payload.as_str()
+                } else {
+                    self.result_output.as_str()
+                };
+                build_privacy_filter_summary_download(
+                    response_json,
+                    self.imported_file_name.as_deref().or_else(|| {
+                        (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())
+                    }),
+                )
+            }
             InputMode::VaultAuditEvents
             | InputMode::VaultDecode
             | InputMode::VaultExport
@@ -1857,6 +1883,13 @@ impl BrowserFlowState {
     }
 
     fn validate_submission(&self) -> Result<RuntimeSubmitRequest, String> {
+        if self.input_mode == InputMode::PrivacyFilterSummary {
+            return Err(
+                "Privacy Filter summary mode is local-only; use download to prepare a PHI-safe summary from pasted/imported JSON."
+                    .to_string(),
+            );
+        }
+
         if self.input_mode == InputMode::VaultAuditEvents {
             let body_json = serde_json::to_string(&build_vault_audit_request_payload(
                 &self.vault_path,
@@ -2414,6 +2447,9 @@ fn build_submit_request(
         InputMode::PortableArtifactImport => {
             unreachable!("Portable artifact import requests are handled before policy parsing")
         }
+        InputMode::PrivacyFilterSummary => {
+            unreachable!("Privacy Filter summary mode does not submit runtime requests")
+        }
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -2587,6 +2623,10 @@ fn parse_runtime_success(
                 review_queue: format!("{duplicates} duplicate portable record(s). Generic audit notice recorded."),
             })
         }
+        InputMode::PrivacyFilterSummary => Err(
+            "Privacy Filter summary mode does not parse runtime responses because it is local-only."
+                .to_string(),
+        ),
     }
 }
 
@@ -3353,6 +3393,7 @@ pub fn App() -> impl IntoView {
                         <option value="vault-export">"Vault export"</option>
                         <option value="portable-artifact-inspect">"Portable artifact inspect"</option>
                         <option value="portable-artifact-import">"Portable artifact import"</option>
+                        <option value="privacy-filter-summary">"Privacy Filter summary"</option>
                     </select>
                 </label>
 
@@ -3835,7 +3876,7 @@ mod tests {
         assert!(report.get("engine").is_none());
         assert!(report.get("preview_policy").is_none());
         assert!(report.get("network_api_called").is_none());
-        assert_eq!(report["category_counts"]["SAFE_LABEL"], 1);
+        assert!(report["category_counts"].get("SAFE_LABEL").is_none());
         assert!(report["category_counts"].get("PHONE").is_none());
         for forbidden in [
             "Patient Jane Example",
@@ -3870,9 +3911,13 @@ mod tests {
     }
 
     #[test]
-    fn privacy_filter_summary_download_accepts_general_safe_uppercase_category_counts() {
+    fn privacy_filter_summary_download_accepts_only_allowlisted_category_counts() {
         let response = json!({
             "category_counts": {
+                "NAME": 3,
+                "MRN": 4,
+                "EMAIL": 0,
+                "PHONE": 1,
                 "ADDRESS": 3,
                 "ZIP_CODE_5": 4,
                 "DX2": 0,
@@ -3895,10 +3940,14 @@ mod tests {
         let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
         let counts = report["category_counts"].as_object().unwrap();
 
-        assert_eq!(counts.get("ADDRESS"), Some(&json!(3)));
-        assert_eq!(counts.get("ZIP_CODE_5"), Some(&json!(4)));
-        assert_eq!(counts.get("DX2"), Some(&json!(0)));
+        assert_eq!(counts.get("NAME"), Some(&json!(3)));
+        assert_eq!(counts.get("MRN"), Some(&json!(4)));
+        assert_eq!(counts.get("EMAIL"), Some(&json!(0)));
+        assert_eq!(counts.get("PHONE"), Some(&json!(1)));
         for rejected in [
+            "ADDRESS",
+            "ZIP_CODE_5",
+            "DX2",
             "123",
             "lowercase",
             "BAD LABEL",
@@ -3911,6 +3960,91 @@ mod tests {
             "STRING_COUNT",
         ] {
             assert!(counts.get(rejected).is_none(), "accepted {rejected}");
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_prepared_download_uses_result_output_without_runtime_submission() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PrivacyFilterSummary,
+            result_output: json!({
+                "engine": "privacy-filter-v1",
+                "network_api_called": false,
+                "input_char_count": 25,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1, "DATE": 1},
+                "masked_text": "Patient Jane Example MRN-12345"
+            })
+            .to_string(),
+            imported_file_name: Some("privacy-report.json".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("prepared privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert_eq!(payload.file_name, "privacy-report-privacy-filter-summary.json");
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert_eq!(report["category_counts"]["NAME"], 1);
+        assert_eq!(report["category_counts"]["MRN"], 1);
+        assert!(report["category_counts"].get("DATE").is_none());
+        assert!(report.get("masked_text").is_none());
+
+        state.payload = json!({"category_counts": {"PHONE": 99}}).to_string();
+        let request = state.validate_submission();
+        assert!(request.is_err(), "summary mode must not submit to runtime");
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_omits_non_allowlisted_category_labels() {
+        let response = json!({
+            "category_counts": {
+                "NAME": 1,
+                "MRN": 2,
+                "EMAIL": 3,
+                "PHONE": 4,
+                "JANE_DOE": 5,
+                "MRN_12345": 6,
+                "PATIENT_JANE_EXAMPLE": 7,
+                "DATE": 8
+            }
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let counts = report["category_counts"].as_object().unwrap();
+
+        assert_eq!(counts.get("NAME"), Some(&json!(1)));
+        assert_eq!(counts.get("MRN"), Some(&json!(2)));
+        assert_eq!(counts.get("EMAIL"), Some(&json!(3)));
+        assert_eq!(counts.get("PHONE"), Some(&json!(4)));
+        for rejected in ["JANE_DOE", "MRN_12345", "PATIENT_JANE_EXAMPLE", "DATE"] {
+            assert!(counts.get(rejected).is_none(), "accepted {rejected}");
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_omits_negative_and_fractional_top_level_counts() {
+        for (field, value) in [
+            ("input_char_count", json!(-1)),
+            ("input_char_count", json!(1.5)),
+            ("detected_span_count", json!(-1)),
+            ("detected_span_count", json!(1.5)),
+        ] {
+            let response = json!({
+                field: value,
+                "category_counts": {"NAME": 1}
+            });
+            let payload =
+                build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                    .expect("privacy filter summary download");
+            let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+            assert!(report.get(field).is_none(), "accepted {field}={value}");
         }
     }
 
