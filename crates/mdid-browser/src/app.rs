@@ -129,8 +129,8 @@ impl InputMode {
 
     fn safe_vault_report_mode_label(self) -> &'static str {
         match self {
-            Self::VaultAuditEvents => "vault_audit",
-            Self::VaultDecode => "vault_decode",
+            Self::VaultAuditEvents => "vault_audit_events_safe_response",
+            Self::VaultDecode => "vault_decode_safe_response",
             Self::PortableArtifactInspect => "portable_artifact_inspect",
             Self::PortableArtifactImport => "portable_artifact_import",
             _ => self.label(),
@@ -1246,10 +1246,51 @@ impl BrowserFlowState {
             "mode": self.input_mode.safe_vault_report_mode_label(),
             "summary": self.summary,
             "review_queue": self.review_queue,
+            "metadata": self.safe_vault_response_metadata(),
         }))
         .map_err(|_| {
             "Browser output download could not encode safe vault response JSON.".to_string()
         })
+    }
+
+    fn safe_vault_response_metadata(&self) -> serde_json::Value {
+        let response_text = match self.input_mode {
+            InputMode::VaultDecode => self.decoded_values_output.as_deref(),
+            InputMode::VaultAuditEvents => Some(self.result_output.as_str()),
+            InputMode::VaultExport
+            | InputMode::PortableArtifactInspect
+            | InputMode::PortableArtifactImport => Some(self.result_output.as_str()),
+            _ => None,
+        };
+
+        let Some(response_text) = response_text else {
+            return serde_json::json!({});
+        };
+        let Ok(response) = serde_json::from_str::<serde_json::Value>(response_text) else {
+            return serde_json::json!({});
+        };
+
+        let keys = [
+            "artifact_record_count",
+            "decoded_count",
+            "decoded_value_count",
+            "audit_event_id",
+            "returned_event_count",
+            "total_event_count",
+            "offset",
+            "limit",
+            "imported_record_count",
+            "skipped_record_count",
+        ];
+        let mut metadata = serde_json::Map::new();
+        for key in keys {
+            if let Some(value) = response.get(key) {
+                if value.is_number() || value.is_string() || value.is_boolean() || value.is_null() {
+                    metadata.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+        serde_json::Value::Object(metadata)
     }
 
     fn media_review_report_download_json(&self) -> Result<Vec<u8>, String> {
@@ -3146,6 +3187,82 @@ mod tests {
     }
 
     #[test]
+    fn browser_safe_vault_response_report_includes_allowlisted_decode_metadata() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            summary: "Decoded 2 values.".to_string(),
+            review_queue: "Decoded values hidden from safe report.".to_string(),
+            decoded_values_output: Some(
+                serde_json::json!({
+                    "decoded_count": 2,
+                    "decoded_value_count": 2,
+                    "audit_event_id": "audit-123",
+                    "decoded_values": {"record-1": {"name": "Jane Doe"}},
+                    "vault_path": "/phi/vault",
+                    "passphrase": "secret"
+                })
+                .to_string(),
+            ),
+            ..BrowserFlowState::default()
+        };
+
+        let report: serde_json::Value = serde_json::from_slice(
+            &state
+                .safe_vault_response_download_json()
+                .expect("report json"),
+        )
+        .expect("parse safe report");
+        let text = serde_json::to_string(&report).expect("report text");
+
+        assert_eq!(report["mode"], "vault_decode_safe_response");
+        assert_eq!(report["metadata"]["decoded_count"], 2);
+        assert_eq!(report["metadata"]["decoded_value_count"], 2);
+        assert_eq!(report["metadata"]["audit_event_id"], "audit-123");
+        assert!(report.get("decoded_values").is_none());
+        assert!(report["metadata"].get("decoded_values").is_none());
+        assert!(!text.contains("Jane Doe"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn browser_safe_vault_response_report_includes_allowlisted_audit_metadata() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultAuditEvents,
+            summary: "Returned 2 audit events.".to_string(),
+            review_queue: "Audit event details are exported separately.".to_string(),
+            result_output: serde_json::json!({
+                "returned_event_count": 2,
+                "total_event_count": 5,
+                "offset": 1,
+                "limit": 2,
+                "events": [{"event_id": "event-1", "path": "/phi/vault"}],
+                "vault_path": "/phi/vault",
+                "passphrase": "secret"
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let report: serde_json::Value = serde_json::from_slice(
+            &state
+                .safe_vault_response_download_json()
+                .expect("report json"),
+        )
+        .expect("parse safe report");
+        let text = serde_json::to_string(&report).expect("report text");
+
+        assert_eq!(report["mode"], "vault_audit_events_safe_response");
+        assert_eq!(report["metadata"]["returned_event_count"], 2);
+        assert_eq!(report["metadata"]["total_event_count"], 5);
+        assert_eq!(report["metadata"]["offset"], 1);
+        assert_eq!(report["metadata"]["limit"], 2);
+        assert!(report["metadata"].get("events").is_none());
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
     fn browser_decode_values_download_exports_only_decoded_values() {
         let state = BrowserFlowState {
             input_mode: InputMode::VaultDecode,
@@ -3761,7 +3878,7 @@ mod tests {
 
         assert_eq!(payload.file_name, "mdid-browser-vault-decode-response.json");
         assert_eq!(payload.mime_type, "application/json;charset=utf-8");
-        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["mode"], "vault_decode_safe_response");
         assert_eq!(report["summary"], state.summary);
         assert_eq!(report["review_queue"], state.review_queue);
         assert!(report.get("output").is_none());
@@ -3913,7 +4030,7 @@ mod tests {
         );
         assert_eq!(audit_payload.mime_type, "application/json;charset=utf-8");
         let audit_json = String::from_utf8(audit_payload.bytes).expect("audit json utf8");
-        assert!(audit_json.contains("\"mode\": \"vault_audit\""));
+        assert!(audit_json.contains("\"mode\": \"vault_audit_events_safe_response\""));
         assert!(audit_json.contains("events returned: 2 / 2"));
         assert!(!audit_json.contains("safe summary"));
 
@@ -3935,7 +4052,7 @@ mod tests {
         );
         assert_eq!(decode_payload.mime_type, "application/json;charset=utf-8");
         let decode_json = String::from_utf8(decode_payload.bytes).expect("decode json utf8");
-        assert!(decode_json.contains("\"mode\": \"vault_decode\""));
+        assert!(decode_json.contains("\"mode\": \"vault_decode_safe_response\""));
         assert!(decode_json.contains("decoded count: 1"));
         assert!(!decode_json.contains("Jane Doe"));
     }
