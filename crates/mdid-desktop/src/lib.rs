@@ -1148,21 +1148,22 @@ impl DesktopVaultResponseState {
             .get("events")
             .filter(|events| events.is_array())
             .ok_or(DesktopAuditEventsExportError::MissingAuditEvents)?;
-        let returned_event_count = response
-            .get("returned_event_count")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or_else(|| events.as_array().map_or(0, |events| events.len() as u64));
-        let event_count = response
-            .get("event_count")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(returned_event_count);
-
         let mut export = serde_json::json!({
             "mode": "vault_audit_events",
-            "event_count": event_count,
-            "returned_event_count": returned_event_count,
             "events": events,
         });
+        if let Some(event_count) = response
+            .get("event_count")
+            .and_then(serde_json::Value::as_u64)
+        {
+            export["event_count"] = serde_json::Value::from(event_count);
+        }
+        if let Some(returned_event_count) = response
+            .get("returned_event_count")
+            .and_then(serde_json::Value::as_u64)
+        {
+            export["returned_event_count"] = serde_json::Value::from(returned_event_count);
+        }
         if let Some(next_offset) = response
             .get("next_offset")
             .and_then(serde_json::Value::as_u64)
@@ -3543,6 +3544,31 @@ mod tests {
         assert!(!serialized.contains("request"));
         assert!(!serialized.contains("/secret"));
         assert!(!serialized.contains("do-not-save"));
+    }
+
+    #[test]
+    fn audit_events_export_json_omits_absent_count_and_offset_metadata() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "events": [
+                    {"event_id": "evt-1", "kind": "decode", "record_id": "record-1"},
+                    {"event_id": "evt-2", "kind": "encode", "record_id": "record-2"}
+                ]
+            }),
+        );
+
+        let json = state
+            .audit_events_export_json()
+            .expect("audit events export");
+
+        assert_eq!(json["mode"], "vault_audit_events");
+        assert_eq!(json["events"][0]["event_id"], "evt-1");
+        assert_eq!(json["events"][1]["kind"], "encode");
+        assert!(json.get("event_count").is_none());
+        assert!(json.get("returned_event_count").is_none());
+        assert!(json.get("next_offset").is_none());
     }
 
     #[test]
