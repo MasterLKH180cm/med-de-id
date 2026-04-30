@@ -3,7 +3,7 @@ use mdid_adapters::{
     sanitize_output_name, ConservativeMediaAdapter, ConservativeMediaAdapterError,
     ConservativeMediaInput, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
     DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy, PdfAdapter,
-    PdfAdapterError, PdfPageExtraction, TabularAdapterError,
+    PdfAdapterError, PdfPageExtraction, TabularAdapterError, XlsxSheetDisclosure,
 };
 use mdid_domain::{
     BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
@@ -89,6 +89,7 @@ pub struct TabularDeidentificationOutput {
     pub csv: String,
     pub summary: BatchSummary,
     pub review_queue: Vec<PhiCandidate>,
+    pub xlsx_disclosure: Option<XlsxSheetDisclosure>,
 }
 
 impl fmt::Debug for TabularDeidentificationOutput {
@@ -379,6 +380,7 @@ impl TabularDeidentificationService {
             csv: write_csv(&extracted.columns, &rewritten_rows)?,
             summary,
             review_queue,
+            xlsx_disclosure: extracted.xlsx_disclosure,
         })
     }
 }

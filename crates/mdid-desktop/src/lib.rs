@@ -258,7 +258,7 @@ impl DesktopWorkflowMode {
     pub fn disclosure(self) -> &'static str {
         match self {
             Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; it stays limited to this local de-identification request surface.",
-            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it stays limited to this local de-identification request surface.",
+            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it processes the first non-empty worksheet only. Sheet selection is not supported in this desktop flow; it stays limited to this local de-identification request surface.",
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
             Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; it stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
@@ -3532,6 +3532,9 @@ mod tests {
             request.body,
             json!({"workbook_base64":"UEsDBAo=","field_policies":[{"header":"patient_name","phi_type":"Name","action":"review"}]})
         );
+        let disclosure = state.mode.disclosure();
+        assert!(disclosure.contains("first non-empty worksheet"));
+        assert!(disclosure.contains("Sheet selection is not supported"));
     }
 
     #[test]
