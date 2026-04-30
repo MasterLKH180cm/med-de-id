@@ -206,6 +206,36 @@ fn portable_export_is_scope_limited() {
 }
 
 #[test]
+fn portable_export_rejects_duplicate_record_ids_with_phi_safe_error() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("vault.mdid");
+
+    let mut vault = LocalVaultStore::create(&path, "correct horse battery staple").unwrap();
+    let stored = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.id"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    let err = vault
+        .export_portable(
+            &[stored.id, stored.id],
+            "portable-passphrase",
+            SurfaceKind::Desktop,
+            "partner-site transfer package",
+        )
+        .expect_err("portable export must reject duplicate record ids");
+    let message = err.to_string();
+    assert!(message.contains("duplicate record id"));
+    assert!(!message.contains(&stored.id.to_string()));
+}
+
+#[test]
 fn portable_export_rejects_blank_context() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("vault.mdid");

@@ -687,6 +687,7 @@ fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
         VaultError::UnlockFailed => vault_unlock_failed_response(),
         VaultError::BlankPassphrase
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext => invalid_decode_request_response(),
         VaultError::Io(_)
@@ -712,6 +713,7 @@ fn map_export_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope
     match error {
         VaultError::BlankPassphrase
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext => invalid_export_request_response(),
         VaultError::UnknownRecord(_) => unknown_export_record_response(),
         _ => map_vault_error(error),
@@ -732,6 +734,7 @@ fn map_portable_artifact_inspection_error(error: &VaultError) -> (StatusCode, Js
         | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext
         | VaultError::AlreadyExists(_)
@@ -757,6 +760,7 @@ fn map_portable_artifact_import_vault_error(
         | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::AlreadyExists(_)
         | VaultError::Encrypt => internal_error_response(),
@@ -779,6 +783,7 @@ fn map_portable_artifact_import_unlock_error(
         | VaultError::InvalidArtifact => invalid_vault_target_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext
         | VaultError::AlreadyExists(_)
