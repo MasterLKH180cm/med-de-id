@@ -858,6 +858,62 @@ impl BrowserFlowState {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    fn vault_audit_pagination_status(&self) -> Option<String> {
+        if self.input_mode != InputMode::VaultAuditEvents {
+            return None;
+        }
+
+        let requested_offset = if self.vault_audit_offset.trim().is_empty() {
+            0
+        } else {
+            self.vault_audit_offset.trim().parse::<u64>().ok()?
+        };
+
+        let summary = [&self.summary, &self.result_output]
+            .into_iter()
+            .filter_map(|candidate| serde_json::from_str::<serde_json::Value>(candidate).ok())
+            .find(|candidate| {
+                candidate
+                    .get("event_count")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some()
+            })?;
+        let total_event_count = summary.get("event_count")?.as_u64()?;
+        let returned_event_count = summary
+            .get("returned_event_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(total_event_count);
+
+        let suffix = match summary
+            .get("next_offset")
+            .and_then(serde_json::Value::as_u64)
+        {
+            Some(next_offset) => {
+                format!("More events may be available from offset {next_offset}.")
+            }
+            None => "No next audit page was reported.".to_string(),
+        };
+
+        if returned_event_count == 0 {
+            return Some(format!(
+                "No audit events were returned for this page. {suffix}"
+            ));
+        }
+
+        let start = requested_offset.saturating_add(1);
+        let end = requested_offset.saturating_add(returned_event_count);
+        let total = if summary.get("returned_event_count").is_some() {
+            format!(" of {total_event_count}")
+        } else {
+            String::new()
+        };
+
+        Some(format!(
+            "Showing audit events {start}-{end}{total}. {suffix}"
+        ))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
     }
@@ -2524,6 +2580,11 @@ pub fn App() -> impl IntoView {
 
             <section>
                 <h2>"Summary"</h2>
+                <Show when=move || state.get().vault_audit_pagination_status().is_some()>
+                    <p class="input-disclosure">
+                        {move || state.get().vault_audit_pagination_status().unwrap_or_default()}
+                    </p>
+                </Show>
                 <pre>{move || state.get().summary}</pre>
             </section>
 
@@ -2551,6 +2612,124 @@ mod tests {
         IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn vault_audit_pagination_status_reports_requested_window_and_next_page() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.vault_audit_limit = "25".to_string();
+        state.vault_audit_offset = "50".to_string();
+        state.summary = r#"{"event_count":25,"next_offset":75}"#.to_string();
+
+        assert_eq!(
+            state.vault_audit_pagination_status(),
+            Some(
+                "Showing audit events 51-75. More events may be available from offset 75."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn vault_audit_pagination_status_omits_next_page_when_response_has_no_next_offset() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.vault_audit_limit = "10".to_string();
+        state.vault_audit_offset = String::new();
+        state.summary = r#"{"event_count":3}"#.to_string();
+
+        assert_eq!(
+            state.vault_audit_pagination_status(),
+            Some("Showing audit events 1-3. No next audit page was reported.".to_string())
+        );
+    }
+
+    #[test]
+    fn vault_audit_pagination_status_uses_returned_event_count_for_page_window() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.vault_audit_offset = "100".to_string();
+        state.summary =
+            r#"{"event_count":150,"returned_event_count":50,"next_offset":150}"#.to_string();
+
+        assert_eq!(
+            state.vault_audit_pagination_status(),
+            Some(
+                "Showing audit events 101-150 of 150. More events may be available from offset 150."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn vault_audit_pagination_status_reports_empty_page_without_invalid_range() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.vault_audit_offset = "150".to_string();
+        state.summary = r#"{"event_count":150,"returned_event_count":0}"#.to_string();
+
+        assert_eq!(
+            state.vault_audit_pagination_status(),
+            Some(
+                "No audit events were returned for this page. No next audit page was reported."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn vault_audit_pagination_status_reads_actual_runtime_output_after_success() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.vault_audit_offset = "100".to_string();
+        let response = parse_runtime_success(
+            InputMode::VaultAuditEvents,
+            r#"{"event_count":150,"returned_event_count":50,"next_offset":150,"events":[]}"#,
+        )
+        .unwrap();
+        state.result_output = response.rewritten_output;
+        state.summary = response.summary;
+
+        assert_eq!(
+            state.vault_audit_pagination_status(),
+            Some(
+                "Showing audit events 101-150 of 150. More events may be available from offset 150."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn vault_audit_pagination_status_uses_runtime_output_when_summary_json_lacks_counts() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.vault_audit_offset = "100".to_string();
+        state.summary = r#"{"status":"ok"}"#.to_string();
+        state.result_output =
+            r#"{"event_count":150,"returned_event_count":50,"next_offset":150,"events":[]}"#
+                .to_string();
+
+        assert_eq!(
+            state.vault_audit_pagination_status(),
+            Some(
+                "Showing audit events 101-150 of 150. More events may be available from offset 150."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn vault_audit_pagination_status_is_absent_outside_vault_audit_mode() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::CsvText;
+        state.vault_audit_limit = "25".to_string();
+        state.vault_audit_offset = "50".to_string();
+        state.summary = r#"{\"event_count\":25,\"next_offset\":75}"#.to_string();
+
+        assert_eq!(state.vault_audit_pagination_status(), None);
+    }
 
     #[test]
     fn xlsx_runtime_success_appends_safe_worksheet_disclosure_summary() {
