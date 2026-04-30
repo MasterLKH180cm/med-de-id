@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -82,6 +83,72 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
         self.assertNotIn(phi, argv)
         self.assertEqual(argv, ['/tmp/opf', '--format', 'json'])
         self.assertEqual(popen.call_args.kwargs['stdin'], module.subprocess.PIPE)
+
+    def test_explicit_opf_canonical_json_is_normalized_without_phi_previews(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has MRN-12345\n'
+        raw_opf = json.dumps({
+            'masked_text': 'Patient [NAME] has [MRN]\n',
+            'spans': [
+                {'label': 'MRN', 'start': 25, 'end': 34, 'preview': 'MRN-12345'},
+                {'label': 'NAME', 'start': 8, 'end': 20, 'preview': 'Jane Example'},
+            ],
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text(phi, encoding='utf-8')
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch.object(module.sys, 'argv', ['run_privacy_filter.py', '--use-opf', str(input_path)]), \
+                 mock.patch.object(module.shutil, 'which', return_value='/tmp/opf'), \
+                 mock.patch.object(module, 'run_opf_with_stdin', return_value=raw_opf), \
+                 mock.patch.object(module.sys, 'stdout', stdout), \
+                 mock.patch.object(module.sys, 'stderr', stderr):
+                module.main()
+
+        self.assertEqual(stderr.getvalue(), '')
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload['masked_text'], 'Patient [NAME] has [MRN]\n')
+        self.assertEqual(payload['summary']['category_counts'], {'MRN': 1, 'NAME': 1})
+        self.assertEqual([span['label'] for span in payload['spans']], ['NAME', 'MRN'])
+        normalized = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('Jane Example', normalized)
+        self.assertNotIn('MRN-12345', normalized)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
+    def test_explicit_opf_alternate_entities_shape_is_normalized_without_phi_previews(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example email jane@example.test\n'
+        raw_opf = json.dumps({
+            'text': 'Patient [NAME] email [EMAIL]\n',
+            'entities': [
+                {'type': 'EMAIL', 'begin': '27', 'finish': '44', 'preview': 'jane@example.test'},
+                {'category': 'NAME', 'begin': '8', 'stop': '20', 'preview': 'Jane Example'},
+            ],
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text(phi, encoding='utf-8')
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch.object(module.sys, 'argv', ['run_privacy_filter.py', '--use-opf', str(input_path)]), \
+                 mock.patch.object(module.shutil, 'which', return_value='/tmp/opf'), \
+                 mock.patch.object(module, 'run_opf_with_stdin', return_value=raw_opf), \
+                 mock.patch.object(module.sys, 'stdout', stdout), \
+                 mock.patch.object(module.sys, 'stderr', stderr):
+                module.main()
+
+        self.assertEqual(stderr.getvalue(), '')
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload['masked_text'], 'Patient [NAME] email [EMAIL]\n')
+        self.assertEqual(payload['summary']['category_counts'], {'EMAIL': 1, 'NAME': 1})
+        self.assertEqual([span['label'] for span in payload['spans']], ['NAME', 'EMAIL'])
+        normalized = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('Jane Example', normalized)
+        self.assertNotIn('jane@example.test', normalized)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
 
 
 class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):

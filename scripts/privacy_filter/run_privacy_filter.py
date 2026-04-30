@@ -67,6 +67,73 @@ def real_opf_metadata():
     }
 
 
+def _coerce_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _span_label(span):
+    if not isinstance(span, dict):
+        return 'UNKNOWN'
+    return str(span.get('label') or span.get('type') or span.get('category') or 'UNKNOWN')
+
+
+def _span_start(span):
+    if not isinstance(span, dict):
+        return 0
+    return _coerce_int(span.get('start', span.get('begin', 0)))
+
+
+def _span_end(span):
+    if not isinstance(span, dict):
+        return 0
+    return _coerce_int(span.get('end', span.get('finish', span.get('stop', 0))))
+
+
+def normalize_opf_json(raw: str, input_char_count: int):
+    obj = json.loads(raw)
+    if not isinstance(obj, dict):
+        obj = {}
+    raw_spans = obj.get('spans')
+    if not isinstance(raw_spans, list):
+        raw_spans = obj.get('entities')
+    if not isinstance(raw_spans, list):
+        raw_spans = []
+
+    spans = [
+        {
+            'label': _span_label(span),
+            'start': _span_start(span),
+            'end': _span_end(span),
+            'preview': '<redacted>',
+        }
+        for span in raw_spans
+    ]
+    spans.sort(key=lambda span: (span['start'], span['end'], span['label']))
+
+    counts = {}
+    for span in spans:
+        counts[span['label']] = counts.get(span['label'], 0) + 1
+    category_counts = {key: counts[key] for key in sorted(counts)}
+
+    masked_text = obj.get('masked_text', obj.get('text', '<missing>'))
+    if not isinstance(masked_text, str):
+        masked_text = '<missing>'
+
+    return {
+        'summary': {
+            'input_char_count': input_char_count,
+            'detected_span_count': len(spans),
+            'category_counts': category_counts,
+        },
+        'masked_text': masked_text,
+        'spans': spans,
+        'metadata': real_opf_metadata(),
+    }
+
+
 def run_opf_with_stdin(opf: str, text: str) -> str:
     proc = subprocess.Popen(
         [opf, '--format', 'json'],
@@ -107,31 +174,11 @@ def main():
         return
     raw = run_opf_with_stdin(opf, text)
     try:
-        obj = json.loads(raw)
+        output = normalize_opf_json(raw, len(text))
     except Exception:
         print('opf returned non-JSON output; run with --mock or adapt parser to actual local opf version.', file=sys.stderr)
         raise SystemExit(4)
-    print(json.dumps({
-        'summary': {
-            'input_char_count': len(text),
-            'detected_span_count': len(obj.get('spans', [])) if isinstance(obj, dict) else 0,
-            'category_counts': {
-                str(s.get('label', 'UNKNOWN')): sum(1 for x in obj.get('spans', []) if str(x.get('label', 'UNKNOWN')) == str(s.get('label', 'UNKNOWN')))
-                for s in obj.get('spans', [])
-            } if isinstance(obj, dict) else {},
-        },
-        'masked_text': obj.get('masked_text', '<missing>') if isinstance(obj, dict) else '<missing>',
-        'spans': [
-            {
-                'label': str(s.get('label', 'UNKNOWN')),
-                'start': int(s.get('start', 0)),
-                'end': int(s.get('end', 0)),
-                'preview': '<redacted>'
-            }
-            for s in obj.get('spans', [])
-        ] if isinstance(obj, dict) else [],
-        'metadata': real_opf_metadata(),
-    }, ensure_ascii=False, indent=2))
+    print(json.dumps(output, ensure_ascii=False, indent=2))
 
 if __name__ == '__main__':
     main()
