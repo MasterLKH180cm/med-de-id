@@ -17,12 +17,25 @@
 
 ## Verification run
 ### OCR-to-Privacy-Filter chain evidence
+
+This standalone synthetic chain can be reproduced from a clean checkout without depending on prior `/tmp` files. It creates the OCR text output, builds and validates the OCR handoff JSON, extracts `normalized_text` as the text-only Privacy Filter input, runs the Privacy Filter, and validates both JSON outputs:
+
 ```bash
-cargo test -p mdid-cli cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks
+python scripts/ocr_eval/run_small_ocr.py --mock scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png > /tmp/small-ocr-output.txt
+python scripts/ocr_eval/validate_small_ocr_output.py /tmp/small-ocr-output.txt scripts/ocr_eval/fixtures/synthetic_printed_phi_expected.txt
+python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --input /tmp/small-ocr-output.txt --output /tmp/ocr-handoff.json
 python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
+python - <<'PY'
+import json
+from pathlib import Path
+handoff = json.loads(Path('/tmp/ocr-handoff.json').read_text(encoding='utf-8'))
+Path('/tmp/ocr-normalized-text.txt').write_text(handoff['normalized_text'], encoding='utf-8')
+PY
+python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-text.txt > /tmp/ocr-privacy-filter.json
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/ocr-privacy-filter.json
 python scripts/privacy_filter/validate_privacy_filter_output.py scripts/privacy_filter/fixtures/sample_text_expected_shape.json
 ```
+
 Result: PASS in the bounded synthetic chain validators. This OCR-to-Privacy-Filter chain proves printed-text extraction only from the synthetic pre-cropped line fixture can be normalized and handed into the existing text-only Privacy Filter / text-only PII detection contract without PHI leaks in the wrapper output. It is not visual redaction, not final PDF rewrite/export, not handwriting recognition, not page detection/segmentation, not browser or desktop workflow capability, and not a complete OCR pipeline.
 
 ### CLI wrapper RED/GREEN evidence

@@ -209,6 +209,10 @@ git add README.md docs/research/small-ocr-spike-results.md
 git commit -m "docs: truth-sync OCR privacy filter chain evidence"
 ```
 
+## Task 2 completion note
+
+Completed follow-up docs quality fix: the research evidence section now includes standalone commands that recreate `/tmp/small-ocr-output.txt`, `/tmp/ocr-handoff.json`, extracted normalized text, and `/tmp/ocr-privacy-filter.json`; README wording now says the chain uses/exercises existing Python validators rather than adding new validators.
+
 ## Self-Review
 
 Spec coverage: Task 1 covers the required CLI/runtime chain evidence from PP-OCRv5 mobile synthetic OCR handoff to text-only Privacy Filter detection. Task 2 covers README/research truth-sync and completion honesty. No browser/desktop capability is claimed.
