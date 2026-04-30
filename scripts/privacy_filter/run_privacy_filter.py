@@ -8,6 +8,7 @@ MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
 ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
+OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 
 
 def add_span(spans, label, start, end):
@@ -66,38 +67,45 @@ def real_opf_metadata():
     }
 
 
+def run_opf_with_stdin(opf: str, text: str) -> str:
+    proc = subprocess.Popen(
+        [opf, '--format', 'json'],
+        text=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = proc.communicate(input=text, timeout=OPF_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        print('opf timed out; run with --mock or inspect local opf configuration.', file=sys.stderr)
+        raise SystemExit(3)
+    if len(stdout.encode('utf-8', errors='replace')) > OPF_OUTPUT_MAX_BYTES or len(stderr.encode('utf-8', errors='replace')) > OPF_OUTPUT_MAX_BYTES:
+        print('opf output exceeded limit; run with --mock or inspect local opf configuration.', file=sys.stderr)
+        raise SystemExit(3)
+    if proc.returncode != 0:
+        print('opf failed; run with --mock or inspect local opf configuration.', file=sys.stderr)
+        raise SystemExit(proc.returncode or 3)
+    return stdout
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('input_path')
     ap.add_argument('--mock', action='store_true', help='Use bounded heuristic/mock detection for contract plumbing only')
+    ap.add_argument('--use-opf', action='store_true', help='Explicitly invoke local opf via stdin; ambient opf auto-use is disabled')
     args = ap.parse_args()
     text = Path(args.input_path).read_text(encoding='utf-8')
-    if args.mock:
+    if args.mock or not args.use_opf:
         print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
         return
     opf = shutil.which('opf')
     if opf is None:
         print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
         return
-    try:
-        completed = subprocess.run(
-            [opf, '--format', 'json', text],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=OPF_TIMEOUT_SECONDS,
-            check=False,
-        )
-        if completed.returncode != 0:
-            print('opf failed; run with --mock or inspect local opf configuration.', file=sys.stderr)
-            raise SystemExit(completed.returncode or 3)
-        raw = completed.stdout
-    except subprocess.CalledProcessError as e:
-        print('opf failed; run with --mock or inspect local opf configuration.', file=sys.stderr)
-        raise SystemExit(e.returncode or 3)
-    except subprocess.TimeoutExpired:
-        print('opf timed out; run with --mock or inspect local opf configuration.', file=sys.stderr)
-        raise SystemExit(3)
+    raw = run_opf_with_stdin(opf, text)
     try:
         obj = json.loads(raw)
     except Exception:

@@ -697,6 +697,35 @@ fn privacy_filter_text_rejects_oversized_runner_stdout_without_writing_report() 
     assert!(!report_path.exists());
 }
 
+#[test]
+fn privacy_filter_text_times_out_silent_hanging_runner_and_removes_stale_report() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(&report_path, "stale report must be removed").unwrap();
+    write_privacy_runner(&runner_path, "import time\ntime.sleep(30)\n");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("privacy filter runner timed out"))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("Jane Example").not());
+
+    assert!(!report_path.exists());
+}
+
 fn assert_privacy_filter_rejects(
     input_path: &Path,
     runner_path: &Path,
@@ -837,6 +866,7 @@ fn privacy_filter_text_rejects_missing_files_runner_failure_and_invalid_json_wit
     );
 
     write_privacy_runner(&failing_runner_path, "import sys\nsys.exit(7)\n");
+    fs::write(&report_path, "stale report must be removed").unwrap();
     assert_privacy_filter_rejects(
         &input_path,
         &failing_runner_path,

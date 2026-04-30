@@ -4,6 +4,9 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use mdid_adapters::{
@@ -116,6 +119,7 @@ struct PrivacyFilterTextArgs {
 }
 
 const PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
+const PRIVACY_FILTER_RUNNER_TIMEOUT: Duration = Duration::from_secs(2);
 const OCR_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -953,6 +957,15 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
     require_regular_file(&args.input_path, "missing input file")?;
     require_regular_file(&args.runner_path, "missing runner file")?;
 
+    let _ = fs::remove_file(&args.report_path);
+    let result = run_privacy_filter_text_inner(&args);
+    if result.is_err() {
+        let _ = fs::remove_file(&args.report_path);
+    }
+    result
+}
+
+fn run_privacy_filter_text_inner(args: &PrivacyFilterTextArgs) -> Result<(), String> {
     let mut command = std::process::Command::new(&args.python_command);
     command.arg(&args.runner_path);
     if args.mock {
@@ -965,25 +978,11 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
         .spawn()
         .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
 
-    let mut stdout_bytes = Vec::new();
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to read privacy filter runner output".to_string())?;
-    stdout
-        .take((PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut stdout_bytes)
-        .map_err(|err| format!("failed to read privacy filter runner output: {err}"))?;
-
-    if stdout_bytes.len() > PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("runner output exceeded limit".to_string());
-    }
-
-    let status = child
-        .wait()
-        .map_err(|err| format!("failed to wait for privacy filter runner: {err}"))?;
+    let (status, stdout_bytes) = wait_for_privacy_filter_runner(
+        &mut child,
+        PRIVACY_FILTER_RUNNER_TIMEOUT,
+        PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES,
+    )?;
     if !status.success() {
         return Err("privacy filter runner failed".to_string());
     }
@@ -1009,6 +1008,66 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
             .map_err(|err| format!("failed to render summary: {err}"))?
     );
     Ok(())
+}
+
+fn wait_for_privacy_filter_runner(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    max_stdout_bytes: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to read privacy filter runner output".to_string())?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout_bytes = Vec::new();
+        let result = stdout
+            .take((max_stdout_bytes + 1) as u64)
+            .read_to_end(&mut stdout_bytes)
+            .map(|_| stdout_bytes)
+            .map_err(|err| format!("failed to read privacy filter runner output: {err}"));
+        let _ = tx.send(result);
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut captured_stdout: Option<Vec<u8>> = None;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to wait for privacy filter runner: {err}"))?
+        {
+            break status;
+        }
+        if captured_stdout.is_none() {
+            if let Ok(read_result) = rx.try_recv() {
+                let stdout_bytes = read_result?;
+                if stdout_bytes.len() > max_stdout_bytes {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("runner output exceeded limit".to_string());
+                }
+                captured_stdout = Some(stdout_bytes);
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("privacy filter runner timed out".to_string());
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    let stdout_bytes = match captured_stdout {
+        Some(stdout_bytes) => stdout_bytes,
+        None => rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| "failed to read privacy filter runner output".to_string())??,
+    };
+    if stdout_bytes.len() > max_stdout_bytes {
+        return Err("runner output exceeded limit".to_string());
+    }
+    Ok((status, stdout_bytes))
 }
 
 fn require_regular_file(path: &Path, message: &str) -> Result<(), String> {
