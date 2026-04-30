@@ -497,45 +497,232 @@ print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PE
     assert!(!report_text.contains("Jane Example"));
 }
 
+fn write_privacy_runner(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+}
+
+fn assert_privacy_filter_rejects(
+    input_path: &Path,
+    runner_path: &Path,
+    report_path: &Path,
+    expected_error: &str,
+) {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(input_path)
+        .arg("--runner-path")
+        .arg(runner_path)
+        .arg("--report-path")
+        .arg(report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(expected_error))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("Jane Example").not());
+
+    assert!(!report_path.exists());
+}
+
 #[test]
-fn privacy_filter_text_rejects_missing_runner_and_invalid_json_without_raw_text() {
+fn privacy_filter_text_rejects_missing_required_flags_and_blank_paths() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    write_privacy_runner(&runner_path, "print('{}')\n");
+
+    for (args, expected_error) in [
+        (
+            vec![
+                "privacy-filter-text",
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --input-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --runner-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+            ],
+            "missing --report-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                "   ",
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --input-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--runner-path",
+                "   ",
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --runner-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+                "--report-path",
+                "   ",
+            ],
+            "missing --report-path",
+        ),
+    ] {
+        Command::cargo_bin("mdid-cli")
+            .unwrap()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(expected_error))
+            .stderr(predicate::str::contains("Jane Example").not())
+            .stdout(predicate::str::contains("Jane Example").not());
+    }
+
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn privacy_filter_text_rejects_missing_files_runner_failure_and_invalid_json_without_raw_text() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let missing_input_path = dir.path().join("missing-input.txt");
     let missing_runner_path = dir.path().join("missing-runner.py");
+    let failing_runner_path = dir.path().join("failing-runner.py");
     let bad_runner_path = dir.path().join("bad-runner.py");
     let report_path = dir.path().join("privacy-report.json");
     fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
 
+    assert_privacy_filter_rejects(
+        &missing_input_path,
+        &bad_runner_path,
+        &report_path,
+        "missing input file",
+    );
+
+    assert_privacy_filter_rejects(
+        &input_path,
+        &missing_runner_path,
+        &report_path,
+        "missing runner file",
+    );
+
+    write_privacy_runner(&failing_runner_path, "import sys\nsys.exit(7)\n");
+    assert_privacy_filter_rejects(
+        &input_path,
+        &failing_runner_path,
+        &report_path,
+        "privacy filter runner failed",
+    );
+
+    write_privacy_runner(&bad_runner_path, "print('not json')\n");
+    assert_privacy_filter_rejects(
+        &input_path,
+        &bad_runner_path,
+        &report_path,
+        "runner returned non-JSON output",
+    );
+}
+
+#[test]
+fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+
+    let valid_payload = r#"{"summary":{},"masked_text":"Patient <PERSON>","spans":[],"metadata":{"network_api_called":false}}"#;
+    for (payload, expected_error) in [
+        (
+            r#"{"masked_text":"x","spans":[],"metadata":{"network_api_called":false}}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"spans":[],"metadata":{"network_api_called":false}}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","metadata":{"network_api_called":false}}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":[]}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":[],"metadata":{"network_api_called":true}}"#,
+            "privacy filter output indicates network API use",
+        ),
+        (r#"[]"#, "privacy filter output must be a JSON object"),
+        (
+            r#"{"summary":[],"masked_text":"x","spans":[],"metadata":{"network_api_called":false}}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{},"masked_text":[],"spans":[],"metadata":{"network_api_called":false}}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":{},"metadata":{"network_api_called":false}}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":[],"metadata":[]}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+    ] {
+        let python_payload = serde_json::to_string(payload).unwrap();
+        write_privacy_runner(&runner_path, &format!("print({python_payload})\n"));
+        assert_privacy_filter_rejects(&input_path, &runner_path, &report_path, expected_error);
+    }
+
+    let python_payload = serde_json::to_string(valid_payload).unwrap();
+    write_privacy_runner(&runner_path, &format!("print({python_payload})\n"));
     Command::cargo_bin("mdid-cli")
         .unwrap()
         .arg("privacy-filter-text")
         .arg("--input-path")
         .arg(&input_path)
         .arg("--runner-path")
-        .arg(&missing_runner_path)
+        .arg(&runner_path)
         .arg("--report-path")
         .arg(&report_path)
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("missing runner file"))
-        .stderr(predicate::str::contains("Jane Example").not());
-
-    fs::write(&bad_runner_path, "print('not json')\n").unwrap();
-    Command::cargo_bin("mdid-cli")
-        .unwrap()
-        .arg("privacy-filter-text")
-        .arg("--input-path")
-        .arg(&input_path)
-        .arg("--runner-path")
-        .arg(&bad_runner_path)
-        .arg("--report-path")
-        .arg(&report_path)
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("runner returned non-JSON output"))
-        .stderr(predicate::str::contains("Jane Example").not());
-
-    assert!(!report_path.exists());
+        .success();
 }
 
 #[test]
