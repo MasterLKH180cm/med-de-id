@@ -260,6 +260,7 @@ impl DesktopApp {
                         );
                         self.decode_values_save_path = next_path;
                         self.generated_decode_values_save_path = generated_path;
+                        self.decode_values_save_status.clear();
                     }
                 } else if let DesktopRuntimeSubmissionMode::Workflow(workflow_mode) = mode {
                     self.response_state
@@ -1085,6 +1086,81 @@ mod tests {
                 Some("Clinic-Batch.mdid-portable-response-report.json".to_string())
             )
         );
+    }
+
+    #[test]
+    fn decode_values_save_path_uses_sanitized_source_when_default() {
+        assert_eq!(
+            next_decode_values_save_path(
+                DEFAULT_DECODE_VALUES_SAVE_PATH,
+                None,
+                Some("C:\\vaults\\Clinic Batch.vault.json"),
+            ),
+            (
+                "Clinic-Batch.vault-decoded-values.json".to_string(),
+                Some("Clinic-Batch.vault-decoded-values.json".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn decode_values_save_path_preserves_explicit_user_override() {
+        assert_eq!(
+            next_decode_values_save_path(
+                "C:\\exports\\custom-decoded-values.json",
+                None,
+                Some("C:\\vaults\\Clinic Batch.vault.json"),
+            ),
+            ("C:\\exports\\custom-decoded-values.json".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn decode_values_save_path_refreshes_previous_generated_path() {
+        assert_eq!(
+            next_decode_values_save_path(
+                "Clinic-Batch.vault-decoded-values.json",
+                Some("Clinic-Batch.vault-decoded-values.json"),
+                Some("/vaults/Partner Audit.vault.json"),
+            ),
+            (
+                "Partner-Audit.vault-decoded-values.json".to_string(),
+                Some("Partner-Audit.vault-decoded-values.json".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn app_decode_values_save_path_refresh_clears_stale_status() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(serde_json::json!({
+                "decoded_value_count": 1,
+                "decoded_values": {"record-1": {"name": "Jane Doe"}},
+                "audit_event_id": "audit-1"
+            })))
+            .expect("send response");
+        let mut app = DesktopApp {
+            runtime_submission_receiver: Some(receiver),
+            runtime_submission_mode: Some(DesktopRuntimeSubmissionMode::Vault(
+                DesktopVaultMode::Decode,
+            )),
+            decode_values_save_status: "Decoded values JSON saved.".to_string(),
+            ..DesktopApp::default()
+        };
+        app.vault_request_state.vault_path = "C:\\vaults\\Clinic Batch.vault.json".to_string();
+
+        app.poll_runtime_submission();
+
+        assert_eq!(
+            app.decode_values_save_path,
+            "Clinic-Batch.vault-decoded-values.json"
+        );
+        assert_eq!(
+            app.generated_decode_values_save_path.as_deref(),
+            Some("Clinic-Batch.vault-decoded-values.json")
+        );
+        assert!(app.decode_values_save_status.is_empty());
     }
 
     #[test]
