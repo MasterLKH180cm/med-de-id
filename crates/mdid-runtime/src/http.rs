@@ -383,6 +383,9 @@ fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryRe
     if contains_incompatible_privacy_filter_marker(report) {
         return None;
     }
+    if contains_true_network_api_called(report) {
+        return None;
+    }
     if let Some(artifact) = report.get("artifact") {
         let artifact = artifact.as_str()?;
         if artifact != "privacy_filter_report" {
@@ -441,6 +444,20 @@ fn contains_incompatible_privacy_filter_marker(report: &Map<String, Value>) -> b
                 Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
                 Value::Array(values) => values.iter().any(|value| match value {
                     Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
+                    _ => false,
+                }),
+                _ => false,
+            }
+    })
+}
+
+fn contains_true_network_api_called(report: &Map<String, Value>) -> bool {
+    report.iter().any(|(key, value)| {
+        (key == "network_api_called" && value.as_bool() == Some(true))
+            || match value {
+                Value::Object(object) => contains_true_network_api_called(object),
+                Value::Array(values) => values.iter().any(|value| match value {
+                    Value::Object(object) => contains_true_network_api_called(object),
                     _ => false,
                 }),
                 _ => false,
@@ -508,7 +525,7 @@ fn safe_identifier(identifier: &str) -> Option<&str> {
 }
 
 fn safe_category_identifier(category: &str) -> Option<&str> {
-    matches!(category, "NAME" | "MRN" | "EMAIL" | "PHONE").then_some(category)
+    matches!(category, "NAME" | "MRN" | "EMAIL" | "PHONE" | "ID").then_some(category)
 }
 
 fn safe_non_goal(non_goal: &str) -> Option<&str> {
