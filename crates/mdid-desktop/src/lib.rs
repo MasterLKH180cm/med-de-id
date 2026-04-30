@@ -900,7 +900,7 @@ pub fn build_desktop_portable_response_report_save(
 
     Ok(DesktopPortableReportSavePayload {
         suggested_file_name,
-        mime_type: "application/json;charset=utf-8",
+        mime_type: "application/json",
         contents,
         status: portable_report_status(mode).to_string(),
     })
@@ -2440,7 +2440,7 @@ mod tests {
             payload.suggested_file_name,
             "Alice_portable-portable-artifact-import-report.json"
         );
-        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(payload.mime_type, "application/json");
         assert_eq!(payload.status, "Portable artifact import report ready to save; artifact and decoded values are redacted from this report.");
         let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
         assert_eq!(report["mode"], "portable_artifact_import");
