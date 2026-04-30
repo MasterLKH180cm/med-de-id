@@ -142,16 +142,16 @@ git commit -m "fix(cli): reject blank portable context"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update completion snapshot**
+- [x] **Step 1: Update completion snapshot**
 
 Update `Current repository status` to mention the blank portable context parser hardening. Keep CLI 95%, browser/web 76%, desktop app 70%, and overall 93%.
 
-- [ ] **Step 2: Run docs verification**
+- [x] **Step 2: Run docs verification**
 
 Run: `cargo fmt --check && git diff --check`
 Expected: PASS.
 
-- [ ] **Step 3: Commit docs truth-sync**
+- [x] **Step 3: Commit docs truth-sync**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-30-cli-portable-blank-context-validation.md
