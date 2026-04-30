@@ -188,12 +188,16 @@ impl InputMode {
         match self {
             Self::PdfBase64 => "PDF",
             Self::DicomBase64 => "DICOM base64",
+            Self::MediaMetadataJson => "media metadata JSON",
             _ => self.label(),
         }
     }
 
     fn requires_source_name(self) -> bool {
-        matches!(self, Self::PdfBase64 | Self::DicomBase64)
+        matches!(
+            self,
+            Self::PdfBase64 | Self::DicomBase64 | Self::MediaMetadataJson
+        )
     }
 
     fn requires_field_policy(self) -> bool {
@@ -743,6 +747,16 @@ impl BrowserFlowState {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn suggested_export_file_name(&self) -> String {
+        if self.input_mode == InputMode::MediaMetadataJson {
+            if !self.source_name.trim().is_empty() {
+                let stem = sanitized_import_stem(&self.source_name);
+                if stem != "mdid-browser-output" && stem != "local-review" {
+                    return format!("{stem}-media-review-report.json");
+                }
+            }
+            return "mdid-browser-media-review-report.json".to_string();
+        }
+
         if let Some(imported_file_name) = &self.imported_file_name {
             let stem = sanitized_import_stem(imported_file_name);
             match self.input_mode {
@@ -750,9 +764,9 @@ impl BrowserFlowState {
                 InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx"),
                 InputMode::PdfBase64 => return format!("{stem}-review-report.json"),
                 InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm"),
-                InputMode::MediaMetadataJson => {
-                    return format!("{stem}-media-review-report.json");
-                }
+                InputMode::MediaMetadataJson => unreachable!(
+                    "media metadata JSON filenames are handled before imported filename fallback"
+                ),
                 InputMode::PortableArtifactInspect => {
                     return format!("{stem}-portable-artifact-inspect.json");
                 }
@@ -2506,6 +2520,71 @@ mod tests {
     }
 
     #[test]
+    fn media_review_download_uses_safe_source_name_when_no_imported_file_exists() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::MediaMetadataJson,
+            source_name: "C:/incoming/Patient Face Photo.JPG".to_string(),
+            imported_file_name: None,
+            result_output: "metadata-only review".to_string(),
+            summary: "Media review summary".to_string(),
+            review_queue: "No review items returned.".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("media report download payload");
+
+        assert_eq!(
+            payload.file_name,
+            "patient-face-photo-media-review-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+    }
+
+    #[test]
+    fn media_review_download_prefers_visible_source_name_over_stale_imported_file() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::MediaMetadataJson,
+            source_name: "Patient Face Photo.JPG".to_string(),
+            imported_file_name: Some("old-patient.csv".to_string()),
+            result_output: "metadata-only review".to_string(),
+            summary: "Media review summary".to_string(),
+            review_queue: "No review items returned.".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("media report download payload");
+
+        assert_eq!(
+            payload.file_name,
+            "patient-face-photo-media-review-report.json"
+        );
+    }
+
+    #[test]
+    fn media_review_download_ignores_stale_imported_file_for_placeholder_source_name() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::MediaMetadataJson,
+            source_name: "local-review.pdf".to_string(),
+            imported_file_name: Some("old-patient.csv".to_string()),
+            result_output: "metadata-only review".to_string(),
+            summary: "Media review summary".to_string(),
+            review_queue: "No review items returned.".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("media report download payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-media-review-report.json");
+    }
+
+    #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn media_review_download_is_structured_and_phi_safe() {
         let mut state = BrowserFlowState::default();
@@ -2771,6 +2850,15 @@ mod tests {
     }
 
     #[test]
+    fn media_metadata_json_requires_source_name_with_media_specific_label() {
+        assert!(InputMode::MediaMetadataJson.requires_source_name());
+        assert_eq!(
+            InputMode::MediaMetadataJson.source_name_label(),
+            "media metadata JSON"
+        );
+    }
+
+    #[test]
     fn imported_csv_suggests_sanitized_deidentified_export_name() {
         let mut state = BrowserFlowState::default();
         state.apply_imported_file("Clinic Patient List.csv", "name\nAda", InputMode::CsvText);
@@ -2778,6 +2866,22 @@ mod tests {
         assert_eq!(
             state.suggested_export_file_name(),
             "clinic-patient-list-deidentified.csv"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn media_metadata_default_placeholder_source_name_uses_static_export_name() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::MediaMetadataJson;
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-media-review-report.json"
+        );
+        assert_ne!(
+            state.suggested_export_file_name(),
+            "local-review-media-review-report.json"
         );
     }
 
