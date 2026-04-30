@@ -45,10 +45,11 @@ Create the corpus fixtures with synthetic-only PHI. Implement `run_synthetic_cor
   "engine": "fallback_synthetic_patterns",
   "scope": "text_only_synthetic_corpus",
   "fixture_count": 2,
-  "total_detected_span_count": 6,
-  "category_counts": {"NAME": 2, "MRN": 2, "EMAIL": 1, "PHONE": 1},
+  "total_detected_span_count": 7,
+  "category_counts": {"EMAIL": 1, "MRN": 2, "NAME": 2, "PHONE": 2},
   "fixtures": [
-    {"fixture": "clinic_note.txt", "detected_span_count": 3, "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1}}
+    {"fixture": "clinic_note.txt", "detected_span_count": 3, "category_counts": {"MRN": 1, "NAME": 1, "PHONE": 1}},
+    {"fixture": "contact_card.txt", "detected_span_count": 4, "category_counts": {"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1}}
   ],
   "non_goals": ["ocr", "visual_redaction", "image_pixel_redaction", "final_pdf_rewrite_export", "browser_ui", "desktop_ui"]
 }
