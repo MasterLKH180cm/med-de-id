@@ -130,7 +130,7 @@ Expected: FAIL until docs mention the wrapper evidence and non-goals.
 
 - [ ] **Step 2: Update docs with exact evidence**
 
-Add a concise evidence paragraph to `docs/research/small-ocr-spike-results.md` with the `mdid-cli ocr-handoff-corpus` command and the Python runner validation command. Update `README.md` current status/evidence to mention the wrapper as CLI/runtime evidence only. Keep completion honest: CLI 95%, Browser/Web 93%, Desktop app 93%, Overall 95% unless controller-visible facts support a different re-baseline. State this is not browser/desktop capability and does not satisfy +5 Browser/Desktop surface progress.
+Add a concise evidence paragraph to `docs/research/small-ocr-spike-results.md` with the `mdid-cli ocr-handoff-corpus` command and the Python runner validation command. Update `README.md` current status/evidence to mention the wrapper as CLI/runtime evidence only. Keep completion honest: CLI 95%, Browser/Web 93%, Desktop app 93%, Overall 95% unless repository-visible landed facts support a different re-baseline. State this is not browser/desktop capability and does not satisfy +5 Browser/Desktop surface progress.
 
 - [ ] **Step 3: Run docs check to verify GREEN**
 
