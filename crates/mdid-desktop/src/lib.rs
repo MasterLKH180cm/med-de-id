@@ -1009,25 +1009,30 @@ fn sanitize_desktop_pdf_page_statuses(value: Option<&serde_json::Value>) -> serd
 fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value {
     let mut requires_ocr_pages = 0_u64;
     let mut visual_review_pages = 0_u64;
+    let mut blocked_page_count = 0_u64;
 
     if let Some(statuses) = response
         .get("page_statuses")
         .and_then(serde_json::Value::as_array)
     {
         for status in statuses.iter().filter_map(serde_json::Value::as_object) {
-            if status
+            let requires_ocr = status
                 .get("requires_ocr")
                 .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
-                requires_ocr_pages += 1;
-            }
-            if status
+                .unwrap_or(false);
+            let visual_review_required = status
                 .get("status")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"))
-            {
+                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+
+            if requires_ocr {
+                requires_ocr_pages += 1;
+            }
+            if visual_review_required {
                 visual_review_pages += 1;
+            }
+            if requires_ocr || visual_review_required {
+                blocked_page_count += 1;
             }
         }
     }
@@ -1035,7 +1040,7 @@ fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json
     serde_json::json!({
         "requires_ocr_pages": requires_ocr_pages,
         "visual_review_pages": visual_review_pages,
-        "blocked_page_count": requires_ocr_pages + visual_review_pages,
+        "blocked_page_count": blocked_page_count,
         "rewrite_available": response
             .get("no_rewritten_pdf")
             .and_then(serde_json::Value::as_bool)
@@ -2792,6 +2797,19 @@ mod tests {
                     "text": "Jane Roe DOB 1970"
                 }
             ],
+            "page_statuses": [
+                {
+                    "page": 1,
+                    "status": "VISUAL_REVIEW_REQUIRED",
+                    "requires_ocr": true,
+                    "candidate_count": 0,
+                    "raw_text": "Jane Roe DOB 1970",
+                    "bbox": [1, 2, 3, 4]
+                }
+            ],
+            "no_rewritten_pdf": true,
+            "filename": "hostile-patient-file.pdf",
+            "passphrase": "hostile-secret",
             "pdf_bytes_base64": "SHOULD_NOT_LEAK"
         });
 
@@ -2808,11 +2826,24 @@ mod tests {
         assert_eq!(report["summary"]["total_pages"], 3);
         assert_eq!(report["review_queue"][0]["page"], 2);
         assert_eq!(report["review_queue"][0]["kind"], "ocr_required");
+        assert_eq!(
+            report["ocr_blockers"],
+            serde_json::json!({
+                "requires_ocr_pages": 1,
+                "visual_review_pages": 1,
+                "blocked_page_count": 1,
+                "rewrite_available": false
+            })
+        );
         let serialized = serde_json::to_string(&report).unwrap();
         assert!(!serialized.contains("Jane"));
         assert!(!serialized.contains("DOB"));
         assert!(!serialized.contains("SHOULD_NOT_LEAK"));
+        assert!(!serialized.contains("hostile-patient-file.pdf"));
+        assert!(!serialized.contains("hostile-secret"));
         assert!(!serialized.contains("pdf_bytes_base64"));
+        assert!(!serialized.contains("filename"));
+        assert!(!serialized.contains("passphrase"));
         assert!(!serialized.contains("\"text\""));
     }
 
@@ -5203,7 +5234,7 @@ mod tests {
         state.apply_success_json(
             DesktopWorkflowMode::PdfBase64Review,
             json!({
-                "summary": {"pages": 3, "ocr_required": true},
+                "summary": {"pages": 4, "ocr_required": true},
                 "page_statuses": [
                     {
                         "page": 1,
@@ -5225,6 +5256,13 @@ mod tests {
                         "requires_ocr": false,
                         "candidate_count": 2,
                         "nested_payload": {"text": "Bob Patient"}
+                    },
+                    {
+                        "page": 4,
+                        "status": "VISUAL_REVIEW_REQUIRED",
+                        "requires_ocr": true,
+                        "candidate_count": 0,
+                        "raw_text": "Overlap Patient"
                     }
                 ],
                 "review_queue": [{"page": 3, "reason": "contains face/photo"}],
@@ -5244,9 +5282,9 @@ mod tests {
         assert_eq!(
             report["ocr_blockers"],
             json!({
-                "requires_ocr_pages": 1,
-                "visual_review_pages": 1,
-                "blocked_page_count": 2,
+                "requires_ocr_pages": 2,
+                "visual_review_pages": 2,
+                "blocked_page_count": 3,
                 "rewrite_available": false
             })
         );

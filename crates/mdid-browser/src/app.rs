@@ -889,25 +889,30 @@ fn sanitized_pdf_page_statuses(response: &serde_json::Value) -> serde_json::Valu
 fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value {
     let mut requires_ocr_pages = 0_u64;
     let mut visual_review_pages = 0_u64;
+    let mut blocked_page_count = 0_u64;
 
     if let Some(statuses) = response
         .get("page_statuses")
         .and_then(serde_json::Value::as_array)
     {
         for status in statuses.iter().filter_map(serde_json::Value::as_object) {
-            if status
+            let requires_ocr = status
                 .get("requires_ocr")
                 .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
-                requires_ocr_pages += 1;
-            }
-            if status
+                .unwrap_or(false);
+            let visual_review_required = status
                 .get("status")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"))
-            {
+                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+
+            if requires_ocr {
+                requires_ocr_pages += 1;
+            }
+            if visual_review_required {
                 visual_review_pages += 1;
+            }
+            if requires_ocr || visual_review_required {
+                blocked_page_count += 1;
             }
         }
     }
@@ -915,7 +920,7 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
     serde_json::json!({
         "requires_ocr_pages": requires_ocr_pages,
         "visual_review_pages": visual_review_pages,
-        "blocked_page_count": requires_ocr_pages + visual_review_pages,
+        "blocked_page_count": blocked_page_count,
         "rewrite_available": response
             .get("no_rewritten_pdf")
             .and_then(serde_json::Value::as_bool)
@@ -3353,7 +3358,7 @@ mod tests {
     #[test]
     fn pdf_review_report_ocr_blockers_download_includes_phi_safe_counts() {
         let response = serde_json::json!({
-            "summary": {"total_pages": 2},
+            "summary": {"total_pages": 3},
             "no_rewritten_pdf": true,
             "page_statuses": [
                 {
@@ -3370,6 +3375,13 @@ mod tests {
                     "requires_ocr": false,
                     "candidate_count": 1,
                     "nested": {"patient": "Alice"}
+                },
+                {
+                    "page": 3,
+                    "status": "VISUAL_REVIEW_REQUIRED",
+                    "requires_ocr": true,
+                    "candidate_count": 0,
+                    "raw_text": "Patient Alice overlap"
                 }
             ],
             "file_name": "alice-scan.pdf",
@@ -3384,9 +3396,9 @@ mod tests {
         assert_eq!(
             report["ocr_blockers"],
             serde_json::json!({
-                "requires_ocr_pages": 1,
-                "visual_review_pages": 1,
-                "blocked_page_count": 2,
+                "requires_ocr_pages": 2,
+                "visual_review_pages": 2,
+                "blocked_page_count": 3,
                 "rewrite_available": false
             })
         );
