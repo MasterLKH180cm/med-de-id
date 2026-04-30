@@ -912,6 +912,7 @@ pub fn build_desktop_pdf_review_report_save(
         "page_statuses": sanitize_desktop_pdf_page_statuses(object.get("page_statuses")),
         "ocr_blockers": sanitize_desktop_pdf_ocr_blockers(&response),
         "visual_redaction_blockers": sanitize_desktop_pdf_visual_redaction_blockers(&response),
+        "actionability": sanitize_desktop_pdf_review_actionability(&response),
     });
     let contents = serde_json::to_string_pretty(&report)
         .map_err(|_| "PDF review report could not be prepared".to_string())?;
@@ -1097,6 +1098,114 @@ fn sanitize_desktop_pdf_visual_redaction_blockers(
             .and_then(serde_json::Value::as_bool)
             == Some(false),
         "status": status,
+    })
+}
+
+fn desktop_pdf_review_page_statuses(
+    response: &serde_json::Value,
+) -> Option<&Vec<serde_json::Value>> {
+    response
+        .get("page_statuses")
+        .or_else(|| response.pointer("/metadata/page_statuses"))
+        .and_then(serde_json::Value::as_array)
+}
+
+fn desktop_pdf_redaction_rewrite_available(response: &serde_json::Value) -> bool {
+    response
+        .pointer("/metadata/redaction_rewrite_available")
+        .or_else(|| response.get("redaction_rewrite_available"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            response
+                .get("no_rewritten_pdf")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        })
+}
+
+fn desktop_pdf_review_actionability_blocked_page_count(response: &serde_json::Value) -> u64 {
+    let mut blocked_pages = std::collections::BTreeSet::new();
+    let mut blocked_without_page = 0_u64;
+
+    if let Some(statuses) = desktop_pdf_review_page_statuses(response) {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            let requires_ocr = status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let visual_review_required = status
+                .get("requires_visual_review")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || status
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+
+            if requires_ocr || visual_review_required {
+                if let Some(page) = status.get("page").and_then(serde_json::Value::as_u64) {
+                    blocked_pages.insert(page);
+                } else {
+                    blocked_without_page += 1;
+                }
+            }
+        }
+    }
+
+    blocked_pages.len() as u64 + blocked_without_page
+}
+
+fn sanitize_desktop_pdf_review_actionability(response: &serde_json::Value) -> serde_json::Value {
+    let mut ocr_required_pages = 0_u64;
+    let mut visual_review_pages = 0_u64;
+
+    if let Some(statuses) = desktop_pdf_review_page_statuses(response) {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            if status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                ocr_required_pages += 1;
+            }
+            if status
+                .get("requires_visual_review")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || status
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"))
+            {
+                visual_review_pages += 1;
+            }
+        }
+    }
+
+    let blocked_page_count = desktop_pdf_review_actionability_blocked_page_count(response);
+    let automatic_rewrite_ready =
+        desktop_pdf_redaction_rewrite_available(response) && blocked_page_count == 0;
+
+    let mut next_steps = Vec::new();
+    if ocr_required_pages > 0 {
+        next_steps.push("Run OCR outside this tool before attempting PDF rewrite.");
+    }
+    if visual_review_pages > 0 {
+        next_steps.push("Review visual-only pages manually before exporting a redacted PDF.");
+    }
+    if automatic_rewrite_ready {
+        next_steps
+            .push("PDF review metadata indicates rewrite readiness; verify output before release.");
+    } else {
+        next_steps.push("Keep this PHI-safe report with the case audit trail.");
+    }
+
+    serde_json::json!({
+        "automatic_rewrite_ready": automatic_rewrite_ready,
+        "blocked_page_count": blocked_page_count,
+        "ocr_required_pages": ocr_required_pages,
+        "visual_review_pages": visual_review_pages,
+        "next_steps": next_steps,
     })
 }
 
@@ -2940,6 +3049,128 @@ mod tests {
         assert!(!encoded.contains("Patient Alice"));
         assert!(!encoded.contains("pdf_bytes_base64"));
         assert!(!encoded.contains("bbox"));
+    }
+
+    #[test]
+    fn pdf_review_report_save_includes_actionability_for_blocked_pdf() {
+        let response = serde_json::json!({
+            "ok": true,
+            "command": "pdf-review",
+            "metadata": {
+                "page_statuses": [
+                    {"page": 1, "status": "review_required", "requires_ocr": true, "can_rewrite": false, "raw_text": "Jane Roe"},
+                    {"page": 2, "status": "visual_review_required", "requires_visual_review": true, "can_rewrite": false}
+                ],
+                "redaction_rewrite_available": false
+            },
+            "raw_text": "patient name must not be copied"
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("intake.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], false);
+        assert_eq!(report["actionability"]["blocked_page_count"], 2);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 1);
+        assert_eq!(report["actionability"]["visual_review_pages"], 1);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "Run OCR outside this tool before attempting PDF rewrite.",
+                "Review visual-only pages manually before exporting a redacted PDF.",
+                "Keep this PHI-safe report with the case audit trail."
+            ])
+        );
+        assert!(!serde_json::to_string(&report["actionability"])
+            .unwrap()
+            .contains("patient name"));
+        assert!(!serde_json::to_string(&report["actionability"])
+            .unwrap()
+            .contains("Jane Roe"));
+    }
+
+    #[test]
+    fn pdf_review_report_save_marks_rewrite_ready_when_no_blockers_remain() {
+        let response = serde_json::json!({
+            "metadata": {
+                "page_statuses": [
+                    {"page": 1, "status": "rewrite_ready", "requires_ocr": false, "requires_visual_review": false, "can_rewrite": true}
+                ],
+                "redaction_rewrite_available": true
+            }
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("ready.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], true);
+        assert_eq!(report["actionability"]["blocked_page_count"], 0);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 0);
+        assert_eq!(report["actionability"]["visual_review_pages"], 0);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "PDF review metadata indicates rewrite readiness; verify output before release."
+            ])
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_save_actionability_supports_existing_no_rewritten_pdf_runtime_shape() {
+        let response = serde_json::json!({
+            "page_statuses": [
+                {"page": 1, "status": "rewrite_ready", "requires_ocr": false}
+            ],
+            "no_rewritten_pdf": false
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("ready.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], true);
+        assert_eq!(report["actionability"]["blocked_page_count"], 0);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "PDF review metadata indicates rewrite readiness; verify output before release."
+            ])
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_save_actionability_deduplicates_overlapping_blocked_pages() {
+        let response = serde_json::json!({
+            "page_statuses": [
+                {"page": 1, "status": "visual_review_required", "requires_ocr": true, "requires_visual_review": true, "raw_text": "Jane Roe"},
+                {"page": 1, "status": "visual_review_required", "requires_ocr": true, "requires_visual_review": true},
+                {"page": 2, "status": "ocr_required", "requires_ocr": true},
+                {"status": "visual_review_required", "requires_visual_review": true}
+            ],
+            "redaction_rewrite_available": true
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("blocked.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], false);
+        assert_eq!(report["actionability"]["blocked_page_count"], 3);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 3);
+        assert_eq!(report["actionability"]["visual_review_pages"], 3);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "Run OCR outside this tool before attempting PDF rewrite.",
+                "Review visual-only pages manually before exporting a redacted PDF.",
+                "Keep this PHI-safe report with the case audit trail."
+            ])
+        );
+        assert!(!serde_json::to_string(&report["actionability"])
+            .unwrap()
+            .contains("Jane Roe"));
     }
 
     #[test]
