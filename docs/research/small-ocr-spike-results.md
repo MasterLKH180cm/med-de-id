@@ -22,7 +22,7 @@ cargo test -p mdid-cli ocr_handoff -- --nocapture
 ```
 RED result before implementation: FAIL with `unknown command` for `ocr-handoff` and missing help text, proving no CLI handoff wrapper existed.
 
-GREEN result after implementation: PASS, 4 targeted tests. The wrapper now validates missing flags/files, rejects oversized OCR runner stdout before writing a final report, rejects invalid handoff JSON contracts while removing the bad report, and succeeds end-to-end on `synthetic_printed_phi_line.png` with normalized text containing `Jane Doe`.
+GREEN result after cleanup hardening: PASS, 8 targeted tests. The wrapper now validates missing flags/files, removes stale reports on OCR runner failure and non-UTF-8 OCR output, rejects oversized OCR runner stdout before writing a final report, rejects invalid or malformed handoff JSON contracts while removing the bad report, cleans up temporary OCR text, and succeeds end-to-end on `synthetic_printed_phi_line.png` with normalized text containing `Jane Doe`.
 
 ### Strict TDD RED evidence
 ```bash

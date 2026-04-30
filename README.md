@@ -61,7 +61,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-Completion snapshot, based only on landed repository features and repository-visible verification state (truth-synced 2026-04-30 on `feat/privacy-filter-cli-spike-cron-2117` through the bounded Privacy Filter CLI synthetic text spike). Prior Browser/Web 100% and Desktop app 100% claims were not valid under the current rubric: PHI-safe report-artifact metadata and actionability summaries are useful workflow evidence, but they are not full browser/desktop workflow completion while full OCR, actual visual redaction, PDF rewrite/export, richer vault/portable UX, deeper upload/download flows, packaging/hardening, and broader review/governance polish remain incomplete. The corrected rubric scores surfaces by real end-to-end workflow capability, not by the presence of report metadata alone:
+Completion snapshot, based only on landed repository features and repository-visible verification state (truth-synced 2026-04-30 through the bounded Privacy Filter CLI synthetic text spike and bounded OCR handoff CLI evidence). Prior Browser/Web 100% and Desktop app 100% claims were not valid under the current rubric: PHI-safe report-artifact metadata and actionability summaries are useful workflow evidence, but they are not full browser/desktop workflow completion while full OCR, actual visual redaction, PDF rewrite/export, richer vault/portable UX, deeper upload/download flows, packaging/hardening, and broader review/governance polish remain incomplete. The corrected rubric scores surfaces by real end-to-end workflow capability, not by the presence of report metadata alone:
 
 | Area | Completion | Status |
 |---|---:|---|

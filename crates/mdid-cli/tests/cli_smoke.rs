@@ -901,6 +901,74 @@ fn ocr_handoff_success_with_synthetic_fixture() {
 }
 
 #[test]
+fn ocr_handoff_removes_stale_report_when_ocr_runner_fails() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "import sys\nsys.exit(7)\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, r#"{"stale":true}"#).unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("OCR runner failed"));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_removes_stale_report_when_ocr_runner_emits_non_utf8() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(
+        &runner_path,
+        "import sys\nsys.stdout.buffer.write(b'\\xff\\xfe')\n",
+    )
+    .unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale report").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "OCR runner returned non-UTF-8 output",
+        ));
+    assert!(!report_path.exists());
+}
+
+#[test]
 fn ocr_handoff_rejects_invalid_builder_contract_and_removes_report() {
     let dir = tempdir().unwrap();
     let image_path = dir.path().join("image.png");
