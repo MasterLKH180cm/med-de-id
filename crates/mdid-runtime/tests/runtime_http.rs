@@ -939,6 +939,38 @@ async fn vault_decode_endpoint_rejects_invalid_decode_request_payload() {
 }
 
 #[tokio::test]
+async fn vault_decode_endpoint_rejects_duplicate_record_ids_with_phi_safe_bad_request() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let duplicate = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [duplicate, duplicate],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_duplicate_record_id_bad_request_response(response, &["values", "audit_event"]).await;
+}
+
+#[tokio::test]
 async fn vault_decode_endpoint_rejects_unusable_vault_target() {
     let dir = tempdir().unwrap();
     let vault_path = dir.path().join("not-a-vault.mdid");
@@ -1533,6 +1565,38 @@ async fn vault_export_endpoint_rejects_invalid_export_payload() {
 
         assert_invalid_export_request_response(response).await;
     }
+}
+
+#[tokio::test]
+async fn vault_export_endpoint_rejects_duplicate_record_ids_with_phi_safe_bad_request() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let duplicate = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [duplicate, duplicate],
+        "export_passphrase": "portable-passphrase",
+        "context": "partner-site transfer package",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/export")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_duplicate_record_id_bad_request_response(response, &["artifact"]).await;
 }
 
 #[tokio::test]
@@ -2469,6 +2533,27 @@ async fn assert_invalid_decode_request_response(response: axum::response::Respon
     );
     assert!(json.get("values").is_none());
     assert!(json.get("audit_event").is_none());
+}
+
+async fn assert_duplicate_record_id_bad_request_response(
+    response: axum::response::Response,
+    absent_fields: &[&str],
+) {
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body_text.contains("duplicate record id"));
+    assert!(!body_text.contains("550e8400"));
+    let json: Value = serde_json::from_str(&body_text).unwrap();
+    assert_eq!(json["error"]["code"], "duplicate_record_id");
+    assert_eq!(
+        json["error"]["message"],
+        "duplicate record id is not allowed"
+    );
+    for field in absent_fields {
+        assert!(json.get(*field).is_none());
+    }
 }
 
 async fn assert_invalid_export_request_response(response: axum::response::Response) {

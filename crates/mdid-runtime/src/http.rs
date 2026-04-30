@@ -19,9 +19,9 @@ use mdid_application::{
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
-    ConservativeMediaSummary, DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary, PdfPageRef,
-    PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
+    ConservativeMediaSummary, DecodeRequest, DecodeRequestError, DicomDeidentificationSummary,
+    DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary,
+    PdfPageRef, PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
@@ -453,6 +453,9 @@ async fn vault_decode(payload: Result<Json<VaultDecodeRequest>, JsonRejection>) 
         payload.requested_by,
     ) {
         Ok(request) => request,
+        Err(DecodeRequestError::DuplicateRecordId) => {
+            return duplicate_record_id_response().into_response();
+        }
         Err(_) => return invalid_decode_request_response().into_response(),
     };
 
@@ -479,6 +482,10 @@ async fn vault_export(payload: Result<Json<VaultExportRequest>, JsonRejection>) 
         Ok(payload) => payload,
         Err(_) => return invalid_export_request_response().into_response(),
     };
+
+    if has_duplicate_record_id(&payload.record_ids) {
+        return duplicate_record_id_response().into_response();
+    }
 
     let mut vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
         Ok(vault) => vault,
@@ -957,6 +964,25 @@ fn invalid_export_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
             },
         }),
     )
+}
+
+fn duplicate_record_id_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "duplicate_record_id",
+                message: "duplicate record id is not allowed",
+            },
+        }),
+    )
+}
+
+fn has_duplicate_record_id(record_ids: &[uuid::Uuid]) -> bool {
+    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
+    record_ids
+        .iter()
+        .any(|record_id| !seen_record_ids.insert(*record_id))
 }
 
 fn invalid_audit_events_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
