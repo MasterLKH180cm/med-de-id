@@ -3371,14 +3371,16 @@ mod tests {
 
     #[test]
     fn desktop_vault_decode_request_rejects_duplicate_record_ids() {
-        let mut state = DesktopVaultRequestState::default();
-        state.vault_path = "C:/vaults/local.mdid".to_string();
-        state.vault_passphrase = "correct horse battery staple".to_string();
-        state.record_ids_json =
-            r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#
-                .to_string();
-        state.output_target = "review-workbench".to_string();
-        state.justification = "case review".to_string();
+        let state = DesktopVaultRequestState {
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            record_ids_json:
+                r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#
+                    .to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "case review".to_string(),
+            ..Default::default()
+        };
 
         let err = state
             .try_build_request()
