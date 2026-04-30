@@ -1245,6 +1245,15 @@ struct XlsxRuntimeSuccessResponse {
     rewritten_workbook_base64: String,
     summary: RuntimeSummary,
     review_queue: Vec<RuntimeReviewCandidate>,
+    worksheet_disclosure: Option<XlsxWorksheetDisclosure>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct XlsxWorksheetDisclosure {
+    selected_sheet_name: String,
+    selected_sheet_index: usize,
+    total_sheet_count: usize,
+    disclosure: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1489,7 +1498,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.rewritten_workbook_base64,
-                summary: format_summary(&parsed.summary),
+                summary: format_xlsx_summary(&parsed.summary, parsed.worksheet_disclosure.as_ref()),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
         }
@@ -1660,6 +1669,23 @@ fn format_summary(summary: &RuntimeSummary) -> String {
         summary.review_required_cells,
         summary.failed_rows
     )
+}
+
+fn format_xlsx_summary(
+    summary: &RuntimeSummary,
+    disclosure: Option<&XlsxWorksheetDisclosure>,
+) -> String {
+    let mut formatted = format_summary(summary);
+    if let Some(disclosure) = disclosure {
+        formatted.push_str(&format!(
+            "\nworksheet_disclosure:\nselected_sheet_name: {}\nselected_sheet_index: {}\ntotal_sheet_count: {}\ndisclosure: {}",
+            disclosure.selected_sheet_name,
+            disclosure.selected_sheet_index,
+            disclosure.total_sheet_count,
+            disclosure.disclosure
+        ));
+    }
+    formatted
 }
 
 fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
@@ -2453,6 +2479,35 @@ mod tests {
         IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    fn xlsx_runtime_success_appends_safe_worksheet_disclosure_summary() {
+        let body = json!({
+            "rewritten_workbook_base64": "d29ya2Jvb2s=",
+            "summary": {
+                "total_rows": 2,
+                "encoded_cells": 1,
+                "review_required_cells": 0,
+                "failed_rows": 0
+            },
+            "review_queue": [],
+            "worksheet_disclosure": {
+                "selected_sheet_name": "Patients",
+                "selected_sheet_index": 1,
+                "total_sheet_count": 3,
+                "disclosure": "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+            }
+        });
+
+        let parsed = parse_runtime_success(InputMode::XlsxBase64, &body.to_string()).unwrap();
+
+        assert!(parsed.summary.contains("worksheet_disclosure:"));
+        assert!(parsed.summary.contains("selected_sheet_name: Patients"));
+        assert!(parsed.summary.contains("selected_sheet_index: 1"));
+        assert!(parsed.summary.contains("total_sheet_count: 3"));
+        assert!(parsed.summary.contains("first non-empty worksheet"));
+        assert!(!parsed.summary.contains("Alice Patient"));
+    }
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]

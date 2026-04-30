@@ -224,7 +224,7 @@ struct TabularXlsxDeidentifyResponse {
     rewritten_workbook_base64: String,
     summary: BatchSummary,
     review_queue: Vec<PhiCandidate>,
-    xlsx_disclosure: Option<XlsxSheetDisclosureResponse>,
+    worksheet_disclosure: Option<XlsxSheetDisclosureResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -855,14 +855,14 @@ fn tabular_xlsx_success_response(
             )?),
             summary: output.summary,
             review_queue: output.review_queue,
-            xlsx_disclosure: output
-                .xlsx_disclosure
-                .map(|disclosure| XlsxSheetDisclosureResponse {
+            worksheet_disclosure: output.worksheet_disclosure.map(|disclosure| {
+                XlsxSheetDisclosureResponse {
                     selected_sheet_name: disclosure.selected_sheet_name,
                     selected_sheet_index: disclosure.selected_sheet_index,
                     total_sheet_count: disclosure.total_sheet_count,
                     disclosure: disclosure.disclosure,
-                }),
+                }
+            }),
         }),
     ))
 }

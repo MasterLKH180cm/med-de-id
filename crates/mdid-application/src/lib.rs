@@ -89,7 +89,7 @@ pub struct TabularDeidentificationOutput {
     pub csv: String,
     pub summary: BatchSummary,
     pub review_queue: Vec<PhiCandidate>,
-    pub xlsx_disclosure: Option<XlsxSheetDisclosure>,
+    pub worksheet_disclosure: Option<XlsxSheetDisclosure>,
 }
 
 impl fmt::Debug for TabularDeidentificationOutput {
@@ -380,7 +380,7 @@ impl TabularDeidentificationService {
             csv: write_csv(&extracted.columns, &rewritten_rows)?,
             summary,
             review_queue,
-            xlsx_disclosure: extracted.xlsx_disclosure,
+            worksheet_disclosure: extracted.xlsx_disclosure,
         })
     }
 }

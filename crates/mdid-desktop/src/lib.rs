@@ -1910,7 +1910,10 @@ impl DesktopWorkflowResponseState {
             }
         };
 
-        self.summary = pretty_json_field(&envelope, "summary");
+        self.summary = match mode {
+            DesktopWorkflowMode::XlsxBase64 => pretty_xlsx_summary(&envelope),
+            _ => pretty_json_field(&envelope, "summary"),
+        };
         self.review_queue = pretty_json_field(&envelope, "review_queue");
         self.error = None;
         self.last_success_mode = Some(mode);
@@ -1975,6 +1978,17 @@ fn pretty_json_field(envelope: &serde_json::Value, field: &str) -> String {
         .get(field)
         .and_then(|value| serde_json::to_string_pretty(value).ok())
         .unwrap_or_else(|| "null".to_string())
+}
+
+fn pretty_xlsx_summary(envelope: &serde_json::Value) -> String {
+    let mut summary = pretty_json_field(envelope, "summary");
+    if let Some(disclosure) = envelope.get("worksheet_disclosure") {
+        if let Ok(disclosure) = serde_json::to_string_pretty(disclosure) {
+            summary.push_str("\nworksheet_disclosure: ");
+            summary.push_str(&disclosure);
+        }
+    }
+    summary
 }
 
 #[cfg(test)]
@@ -2083,6 +2097,37 @@ mod tests {
                 .vault_response_mode(),
             None
         );
+    }
+
+    #[test]
+    fn workflow_response_state_renders_xlsx_worksheet_disclosure_without_cells() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({
+                "rewritten_workbook_base64": "d29ya2Jvb2s=",
+                "summary": {
+                    "total_rows": 2,
+                    "encoded_cells": 1,
+                    "review_required_cells": 0,
+                    "failed_rows": 0
+                },
+                "review_queue": [],
+                "worksheet_disclosure": {
+                    "selected_sheet_name": "Patients",
+                    "selected_sheet_index": 1,
+                    "total_sheet_count": 3,
+                    "disclosure": "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+                },
+                "patient_cell_value": "Alice Patient"
+            }),
+        );
+
+        assert!(state.summary.contains("worksheet_disclosure"));
+        assert!(state.summary.contains("selected_sheet_name"));
+        assert!(state.summary.contains("Patients"));
+        assert!(state.summary.contains("first non-empty worksheet"));
+        assert!(!state.summary.contains("Alice Patient"));
     }
 
     #[test]

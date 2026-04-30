@@ -265,11 +265,15 @@ async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary
     assert_eq!(json["summary"]["review_required_cells"], 2);
     assert_eq!(json["summary"]["failed_rows"], 0);
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
-    assert_eq!(json["xlsx_disclosure"]["selected_sheet_name"], "Patients");
-    assert_eq!(json["xlsx_disclosure"]["selected_sheet_index"], 1);
-    assert_eq!(json["xlsx_disclosure"]["total_sheet_count"], 3);
+    assert!(json.get("xlsx_disclosure").is_none());
     assert_eq!(
-        json["xlsx_disclosure"]["disclosure"],
+        json["worksheet_disclosure"]["selected_sheet_name"],
+        "Patients"
+    );
+    assert_eq!(json["worksheet_disclosure"]["selected_sheet_index"], 1);
+    assert_eq!(json["worksheet_disclosure"]["total_sheet_count"], 3);
+    assert_eq!(
+        json["worksheet_disclosure"]["disclosure"],
         "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
     );
 }
