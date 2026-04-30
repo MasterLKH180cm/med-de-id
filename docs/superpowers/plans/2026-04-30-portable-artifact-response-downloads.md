@@ -24,7 +24,7 @@
 
 - [ ] **Step 1: Write the failing browser tests**
 
-Add tests that call a new helper named `build_portable_response_report_download` and assert it returns a JSON download payload for portable inspect/import/export responses with sanitized source-derived names, redacted artifact fields, mode labels, and no raw decoded values.
+Add tests that call a new helper named `build_portable_response_report_download` and assert it returns a JSON download payload for browser portable inspect/import responses with sanitized source-derived names, redacted artifact fields, mode labels, and no raw decoded values. Browser vault export remains the separate encrypted portable artifact download path.
 
 ```rust
 #[test]
