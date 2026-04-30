@@ -74,6 +74,18 @@ python scripts/ocr_eval/run_ocr_handoff_corpus.py --fixture-dir scripts/ocr_eval
 
 Result: PASS for aggregate fixture readiness. This OCR handoff synthetic corpus evidence proves only that checked-in synthetic printed-text fixtures can be normalized into aggregate, PHI-safe readiness metadata for the downstream text-only Privacy Filter input contract. It is printed-text extraction only and is not OCR quality evidence, not visual redaction, not final PDF rewrite/export, not handwriting recognition, not browser/desktop integration, and not a complete OCR pipeline.
 
+### OCR handoff synthetic corpus CLI wrapper evidence
+
+The bounded CLI wrapper can be reproduced with:
+
+```bash
+mdid-cli ocr-handoff-corpus --fixture-dir scripts/ocr_eval/fixtures/corpus --runner-path scripts/ocr_eval/run_ocr_handoff_corpus.py --report-path <report.json>
+python scripts/ocr_eval/run_ocr_handoff_corpus.py --fixture-dir scripts/ocr_eval/fixtures/corpus --output /tmp/ocr-handoff-corpus.json
+cargo test -p mdid-cli ocr_handoff_corpus -- --nocapture
+```
+
+Result: PASS for the PP-OCRv5 mobile handoff corpus wrapper and direct runner. This documents printed-text extraction readiness only: the CLI validates aggregate-only PHI-safe readiness metadata for checked-in synthetic printed-text fixtures, the downstream text-only Privacy Filter input contract, strict report shape, sanitized fixture IDs, redacted report-path stdout, and stale-report cleanup on failure. It is not visual redaction, not image pixel redaction, not final PDF rewrite/export, not handwriting recognition, not full page detection, not browser integration, not desktop integration, not model-quality evidence, and not a complete OCR pipeline. It adds no Browser/Desktop +5 surface progress and does not change completion: CLI 95%, Browser/Web 93%, Desktop app 93%, Overall 95%.
+
 ### CLI wrapper RED/GREEN evidence
 ```bash
 cargo test -p mdid-cli ocr_handoff -- --nocapture
