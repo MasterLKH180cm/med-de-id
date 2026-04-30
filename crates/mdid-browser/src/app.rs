@@ -820,7 +820,10 @@ fn pdf_review_report_primitive(value: &serde_json::Value) -> Option<serde_json::
 
 fn sanitized_pdf_review_summary(response: &serde_json::Value) -> serde_json::Value {
     let mut summary = serde_json::Map::new();
-    if let Some(source) = response.get("summary").and_then(serde_json::Value::as_object) {
+    if let Some(source) = response
+        .get("summary")
+        .and_then(serde_json::Value::as_object)
+    {
         for key in [
             "total_pages",
             "pages_with_text",
@@ -1440,9 +1443,9 @@ impl BrowserFlowState {
             }),
             InputMode::PdfBase64 => build_pdf_review_report_download(
                 &self.result_output,
-                self.imported_file_name
-                    .as_deref()
-                    .or_else(|| (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())),
+                self.imported_file_name.as_deref().or_else(|| {
+                    (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())
+                }),
             ),
             InputMode::VaultAuditEvents
             | InputMode::VaultDecode
@@ -3219,13 +3222,14 @@ mod tests {
             "pdf_bytes_base64": "SHOULD_NOT_LEAK"
         });
 
-        let payload = build_pdf_review_report_download(
-            &response.to_string(),
-            Some("Clinic Intake Form.pdf"),
-        )
-        .expect("pdf report download");
+        let payload =
+            build_pdf_review_report_download(&response.to_string(), Some("Clinic Intake Form.pdf"))
+                .expect("pdf report download");
 
-        assert_eq!(payload.file_name, "Clinic_Intake_Form-pdf-review-report.json");
+        assert_eq!(
+            payload.file_name,
+            "Clinic_Intake_Form-pdf-review-report.json"
+        );
         assert_eq!(payload.mime_type, "application/json");
         assert!(payload.is_text);
 
