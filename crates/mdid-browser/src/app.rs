@@ -1125,7 +1125,8 @@ fn sanitized_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Val
     for key in [
         "candidate",
         "engine",
-        "status",
+        "engine_status",
+        "scope",
         "ready_for_text_pii_eval",
         "line_count",
         "char_count",
@@ -1146,6 +1147,10 @@ fn sanitized_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Val
 }
 
 fn sanitized_ocr_privacy_filter_contract(value: Option<&serde_json::Value>) -> serde_json::Value {
+    if let Some(value) = value.and_then(pdf_review_report_primitive) {
+        return value;
+    }
+
     let mut contract = serde_json::Map::new();
     if let Some(object) = value.and_then(serde_json::Value::as_object) {
         for key in ["scope", "engine", "network_api_called", "text_only"] {
@@ -3481,28 +3486,11 @@ mod tests {
     type BrowserAppState = BrowserFlowState;
 
     #[test]
-    fn ocr_handoff_summary_download_includes_only_phi_safe_fields() {
-        let handoff = serde_json::json!({
-            "candidate": "PP-OCRv5_mobile_rec",
-            "engine": "PP-OCRv5-mobile-bounded-spike",
-            "status": "ready",
-            "ready_for_text_pii_eval": true,
-            "line_count": 1,
-            "char_count": 52,
-            "privacy_filter_contract": {
-                "scope": "text-only",
-                "input": "normalized_text",
-                "network_api_called": false,
-                "raw_text": "Jane Example MRN-12345"
-            },
-            "non_goals": [
-                "not visual redaction",
-                "not final PDF rewrite/export"
-            ],
-            "normalized_text": "Jane Example MRN-12345 jane@example.com 555-123-4567"
-        });
+    fn ocr_handoff_summary_download_matches_existing_fixture_contract() {
+        let handoff =
+            include_str!("../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json");
 
-        let payload = build_ocr_handoff_summary_download(&handoff.to_string(), Some("case 7.json"))
+        let payload = build_ocr_handoff_summary_download(handoff, Some("case 7.json"))
             .expect("ocr handoff summary download");
 
         assert_eq!(payload.file_name, "case_7-ocr-handoff-summary.json");
@@ -3512,21 +3500,26 @@ mod tests {
         assert_eq!(report["mode"], "ocr_handoff_summary");
         assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
         assert_eq!(report["engine"], "PP-OCRv5-mobile-bounded-spike");
-        assert_eq!(report["status"], "ready");
-        assert_eq!(report["ready_for_text_pii_eval"], true);
-        assert_eq!(report["line_count"], 1);
-        assert_eq!(report["char_count"], 52);
-        assert_eq!(report["privacy_filter_contract"]["scope"], "text-only");
         assert_eq!(
-            report["privacy_filter_contract"]["network_api_called"],
-            false
+            report["engine_status"],
+            "deterministic_synthetic_fixture_fallback"
         );
-        assert_eq!(report["non_goals"][0], "not visual redaction");
+        assert_eq!(report["scope"], "printed_text_line_extraction_only");
+        assert_eq!(report["ready_for_text_pii_eval"], true);
+        assert_eq!(
+            report["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(report["non_goals"][0], "visual_redaction");
+        assert!(report.get("status").is_none());
+        assert!(report.get("line_count").is_none());
+        assert!(report.get("char_count").is_none());
 
         let serialized = serde_json::to_string(&report).unwrap();
         for forbidden in [
+            "extracted_text",
             "normalized_text",
-            "Jane Example",
+            "Patient Jane Example",
             "MRN-12345",
             "jane@example.com",
             "555-123-4567",
