@@ -17,19 +17,32 @@ OCR_ENGINE = "PP-OCRv5-mobile-bounded-spike"
 SCOPE = "printed_text_extraction_to_text_pii_detection_only"
 PRIVACY_FILTER_CONTRACT = "text_only_normalized_input"
 SAFE_CATEGORIES = {"NAME", "MRN", "EMAIL", "PHONE", "ID"}
-NON_GOALS = sorted({"visual_redaction", "final_pdf_rewrite_export", "handwriting_recognition", "browser_ui", "desktop_ui"})
+NON_GOALS = sorted({
+    "visual_redaction",
+    "image_pixel_redaction",
+    "final_pdf_rewrite_export",
+    "handwriting_recognition",
+    "browser_ui",
+    "desktop_ui",
+})
+GENERIC_FAILURE = "ocr_to_privacy_filter_corpus bridge failed"
+STALE_CLEANUP_FAILURE = "ocr_to_privacy_filter_corpus stale output cleanup failed"
 
 
 def remove_stale_output(output: Path) -> None:
     try:
         if output.exists():
             output.unlink()
-    except OSError:
-        pass
+    except OSError as exc:
+        raise RuntimeError(STALE_CLEANUP_FAILURE) from exc
 
 
 def fail(output: Path, message: str) -> int:
-    remove_stale_output(output)
+    try:
+        remove_stale_output(output)
+    except RuntimeError:
+        print(STALE_CLEANUP_FAILURE, file=sys.stderr)
+        return 1
     print(message, file=sys.stderr)
     return 1
 
@@ -98,8 +111,8 @@ def validate_privacy_report(report: object) -> tuple[int, dict[str, int], str]:
 
 
 def build_report(fixture_dir: Path, ocr_runner_path: Path, privacy_runner_path: Path, output: Path) -> int:
-    remove_stale_output(output)
     try:
+        remove_stale_output(output)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             ocr_output = tmp_path / "ocr-report.json"
@@ -152,6 +165,7 @@ def build_report(fixture_dir: Path, ocr_runner_path: Path, privacy_runner_path: 
                 "ready_fixture_count": sum(1 for fixture in fixtures if fixture["ready_for_text_pii_eval"]),
                 "privacy_filter_detected_span_count": total_detected,
                 "category_counts": {key: category_counts[key] for key in sorted(category_counts)},
+                "privacy_filter_category_counts": {key: category_counts[key] for key in sorted(category_counts)},
                 "fixtures": fixtures,
                 "non_goals": NON_GOALS,
             }
@@ -159,8 +173,11 @@ def build_report(fixture_dir: Path, ocr_runner_path: Path, privacy_runner_path: 
             output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             print(json.dumps({"artifact": SUMMARY_ARTIFACT, "report_written": True}, sort_keys=True))
             return 0
-    except Exception as exc:
-        return fail(output, f"ocr_to_privacy_filter_corpus bridge failed: {exc}")
+    except RuntimeError as exc:
+        message = STALE_CLEANUP_FAILURE if str(exc) == STALE_CLEANUP_FAILURE else GENERIC_FAILURE
+        return fail(output, message)
+    except Exception:
+        return fail(output, GENERIC_FAILURE)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
