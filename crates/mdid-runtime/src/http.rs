@@ -432,6 +432,7 @@ fn safe_preview_policy(preview_policy: &str) -> Option<&str> {
 fn safe_identifier(identifier: &str) -> Option<&str> {
     (!identifier.is_empty()
         && identifier.len() <= 128
+        && !contains_phi_sentinel(identifier)
         && identifier
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')))
@@ -443,16 +444,23 @@ fn safe_category_identifier(category: &str) -> Option<&str> {
 }
 
 fn safe_non_goal(non_goal: &str) -> Option<&str> {
-    (!non_goal.is_empty()
-        && non_goal.len() <= 160
-        && !contains_phi_sentinel(non_goal)
-        && non_goal.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b' ' | b'-' | b'_' | b':' | b'/' | b'.' | b',' | b'(' | b')'
-                )
-        }))
+    matches!(
+        non_goal,
+        "text-only candidate"
+            | "No OCR"
+            | "ocr"
+            | "No visual redaction"
+            | "visual_redaction"
+            | "No image pixel redaction"
+            | "image_pixel_redaction"
+            | "No handwriting recognition"
+            | "handwriting_recognition"
+            | "No PDF rewrite/export"
+            | "final_pdf_rewrite_export"
+            | "No network call unless explicitly configured"
+            | "browser_ui"
+            | "desktop_ui"
+    )
     .then_some(non_goal)
 }
 

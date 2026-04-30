@@ -197,6 +197,126 @@ async fn privacy_filter_summary_endpoint_rejects_phi_in_allowlisted_fields() {
 }
 
 #[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_phi_sentinel_engine_identifier() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "MRN-001",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN": 1},
+            "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_phi_sentinel_category_identifier() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "safe-rule-engine",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN-001": 1},
+            "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_freeform_non_goal() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "safe-rule-engine",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN": 1},
+            "non_goals": ["No OCR", "Call patient 555-1212"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("555-1212"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
 async fn privacy_filter_summary_endpoint_rejects_invalid_category_counts() {
     let app = build_router(RuntimeState::default());
 
