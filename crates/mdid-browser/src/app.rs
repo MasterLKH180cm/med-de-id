@@ -131,6 +131,7 @@ impl InputMode {
         match self {
             Self::VaultAuditEvents => "vault_audit_events_safe_response",
             Self::VaultDecode => "vault_decode_safe_response",
+            Self::VaultExport => "vault_export_safe_response",
             Self::PortableArtifactInspect => "portable_artifact_inspect",
             Self::PortableArtifactImport => "portable_artifact_import",
             _ => self.label(),
@@ -1347,31 +1348,16 @@ impl BrowserFlowState {
                 bytes: self.review_report_download_json()?,
                 is_text: true,
             }),
-            InputMode::VaultAuditEvents | InputMode::VaultDecode => Ok(BrowserDownloadPayload {
+            InputMode::VaultAuditEvents
+            | InputMode::VaultDecode
+            | InputMode::VaultExport
+            | InputMode::PortableArtifactInspect
+            | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "application/json;charset=utf-8",
                 bytes: self.safe_vault_response_download_json()?,
                 is_text: true,
             }),
-            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport
-                if self.result_output.trim_start().starts_with('{') =>
-            {
-                let mut payload = build_portable_response_report_download(
-                    self.input_mode,
-                    self.imported_file_name.as_deref(),
-                    &self.result_output,
-                )?;
-                payload.mime_type = "application/json;charset=utf-8";
-                Ok(payload)
-            }
-            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport => {
-                Ok(BrowserDownloadPayload {
-                    file_name,
-                    mime_type: "application/json;charset=utf-8",
-                    bytes: self.safe_vault_response_download_json()?,
-                    is_text: true,
-                })
-            }
             _ => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "text/plain;charset=utf-8",
@@ -3109,11 +3095,18 @@ mod tests {
     }
 
     #[test]
-    fn portable_import_prepared_download_uses_portable_report_payload() {
+    fn portable_import_prepared_download_uses_safe_metadata_report_payload() {
         let state = BrowserFlowState {
             input_mode: InputMode::PortableArtifactImport,
             imported_file_name: Some("Patient Alice bundle.mdid-portable.json".to_string()),
-            result_output: r#"{"artifact":{"records":[{"id":"phi-1"}]},"imported_record_count":1,"audit_event_count":2}"#.to_string(),
+            result_output: serde_json::json!({
+                "artifact": {"records":[{"id":"phi-1", "original_value":"Alice"}]},
+                "imported_record_count": 1,
+                "skipped_record_count": 0,
+                "audit_event_count": 2,
+                "request": {"vault_path":"/phi/vault", "passphrase":"secret"}
+            })
+            .to_string(),
             ..BrowserFlowState::default()
         };
 
@@ -3125,12 +3118,95 @@ mod tests {
 
         assert_eq!(
             payload.file_name,
-            "Patient_Alice_bundle-portable-artifact-import-report.json"
+            "patient-alice-bundle-mdid-portable-portable-artifact-import.json"
         );
         assert_eq!(payload.mime_type, "application/json;charset=utf-8");
         assert_eq!(report["mode"], "portable_artifact_import");
-        assert_eq!(report["artifact"], "redacted");
+        assert_eq!(report["metadata"]["imported_record_count"], 1);
+        assert_eq!(report["metadata"]["skipped_record_count"], 0);
+        assert_eq!(report["metadata"].as_object().unwrap().len(), 2);
+        assert!(report.get("artifact").is_none());
+        assert!(report["metadata"].get("artifact").is_none());
+        assert!(report.get("request").is_none());
         assert!(!text.contains("phi-1"));
+        assert!(!text.contains("Alice"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn portable_inspect_prepared_download_uses_safe_metadata_report_for_json_response() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactInspect,
+            result_output: serde_json::json!({
+                "artifact": {"records":[{"record_id":"patient-1", "token":"portable-token"}]},
+                "artifact_record_count": 3,
+                "body": {"raw":"request body"},
+                "events": [{"path":"/phi/vault"}],
+                "vault_path": "/phi/vault",
+                "passphrase": "secret"
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_download_payload().expect("portable inspect safe report");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let text = String::from_utf8(payload.bytes).unwrap();
+
+        assert_eq!(payload.file_name, "mdid-browser-portable-artifact-inspect.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "portable_artifact_inspect");
+        assert_eq!(report["metadata"]["artifact_record_count"], 3);
+        assert_eq!(report["metadata"].as_object().unwrap().len(), 1);
+        for forbidden in ["artifact", "body", "events", "vault_path", "passphrase"] {
+            assert!(report.get(forbidden).is_none(), "top-level {forbidden} leaked");
+            assert!(report["metadata"].get(forbidden).is_none(), "metadata {forbidden} leaked");
+        }
+        assert!(!text.contains("patient-1"));
+        assert!(!text.contains("portable-token"));
+        assert!(!text.contains("request body"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn vault_export_prepared_download_uses_safe_metadata_report() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            summary: "Exported portable artifact; contents hidden.".to_string(),
+            review_queue: "Vault export response does not include artifact contents.".to_string(),
+            result_output: serde_json::json!({
+                "artifact": {"records":[{"record_id":"patient-1", "original_value":"Alice"}]},
+                "artifact_record_count": 7,
+                "audit_event_id": "audit-789",
+                "vault_path": "/phi/vault",
+                "passphrase": "secret",
+                "request": {"vault_passphrase":"secret"}
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_download_payload().expect("vault export safe report");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let text = String::from_utf8(payload.bytes).unwrap();
+
+        assert_eq!(payload.file_name, "Clinic_Vault_Backup_2026-portable-artifact.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "vault_export_safe_response");
+        assert_eq!(report["metadata"]["artifact_record_count"], 7);
+        assert_eq!(report["metadata"]["audit_event_id"], "audit-789");
+        assert_eq!(report["metadata"].as_object().unwrap().len(), 2);
+        for forbidden in ["artifact", "body", "events", "vault_path", "passphrase", "request"] {
+            assert!(report.get(forbidden).is_none(), "top-level {forbidden} leaked");
+            assert!(report["metadata"].get(forbidden).is_none(), "metadata {forbidden} leaked");
+        }
+        assert!(!text.contains("patient-1"));
+        assert!(!text.contains("Alice"));
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
     }
 
     #[test]
