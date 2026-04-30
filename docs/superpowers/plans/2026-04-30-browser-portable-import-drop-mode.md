@@ -168,7 +168,7 @@ git commit -m "fix(browser): preserve portable import mode on artifact drop"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-30-browser-portable-import-drop-mode.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Update `README.md` Current repository status so it states:
 
@@ -177,7 +177,9 @@ Update `README.md` Current repository status so it states:
 - Overall remains 93% because this removes a bounded browser upload UX gap but does not remove larger >=95% blockers such as richer workflows, OCR/visual redaction, PDF/media rewrite/export, full vault browsing/execution UX, packaging/hardening, or deeper policy/detection.
 - Verification evidence references the commit from Task 1 and the commands `cargo test -p mdid-browser portable_artifact -- --nocapture`, `cargo test -p mdid-browser --lib`, `cargo fmt --check`, and `git diff --check`.
 
-- [ ] **Step 2: Verify README contains the truthful percentages**
+Evidence: `README.md` Current repository status now shows Browser/web `76%`, Overall `93%`, the selected portable import mode preservation/default inspect wording, and verification evidence for `fe7e001` with `cargo test -p mdid-browser portable_artifact -- --nocapture`, `cargo test -p mdid-browser --lib`, `cargo fmt --check`, and `git diff --check`.
+
+- [x] **Step 2: Verify README contains the truthful percentages**
 
 Run:
 
@@ -187,7 +189,9 @@ grep -n "Completion snapshot\|Browser/web | 76%\|Overall | 93%\|portable import 
 
 Expected: matching lines show Browser/web `76%`, Overall `93%`, and the portable import mode wording.
 
-- [ ] **Step 3: Commit docs truth-sync**
+Evidence: `grep -n "Completion snapshot\|Browser/web | 76%\|Overall | 93%\|portable import mode" README.md` matched the completion snapshot, Browser/web `76%`, Overall `93%`, and portable import mode evidence lines; `git diff --check` passed.
+
+- [x] **Step 3: Commit docs truth-sync**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-30-browser-portable-import-drop-mode.md
