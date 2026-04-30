@@ -64,6 +64,16 @@ python scripts/privacy_filter/validate_privacy_filter_output.py scripts/privacy_
 
 Result: PASS in the bounded synthetic chain validators. This OCR-to-Privacy-Filter chain proves printed-text extraction only from the synthetic pre-cropped line fixture can be normalized and handed into the existing text-only Privacy Filter / text-only PII detection contract without PHI leaks in the wrapper output. It is not visual redaction, not final PDF rewrite/export, not handwriting recognition, not page detection/segmentation, not browser or desktop workflow capability, and not a complete OCR pipeline.
 
+### OCR handoff synthetic corpus evidence
+
+The bounded CLI/runtime synthetic corpus runner can be reproduced with:
+
+```bash
+python scripts/ocr_eval/run_ocr_handoff_corpus.py --fixture-dir scripts/ocr_eval/fixtures/corpus --output /tmp/ocr-handoff-corpus.json
+```
+
+Result: PASS for aggregate fixture readiness. This OCR handoff synthetic corpus evidence proves only that checked-in synthetic printed-text fixtures can be normalized into aggregate, PHI-safe readiness metadata for the downstream text-only Privacy Filter input contract. It is printed-text extraction only and is not OCR quality evidence, not visual redaction, not final PDF rewrite/export, not handwriting recognition, not browser/desktop integration, and not a complete OCR pipeline.
+
 ### CLI wrapper RED/GREEN evidence
 ```bash
 cargo test -p mdid-cli ocr_handoff -- --nocapture
