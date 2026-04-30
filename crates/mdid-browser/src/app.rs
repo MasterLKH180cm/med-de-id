@@ -29,6 +29,7 @@ enum InputMode {
     VaultExport,
     PortableArtifactInspect,
     PortableArtifactImport,
+    PrivacyFilterSummary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +94,7 @@ impl InputMode {
             "vault-export" => Self::VaultExport,
             "portable-artifact-inspect" => Self::PortableArtifactInspect,
             "portable-artifact-import" => Self::PortableArtifactImport,
+            "privacy-filter-summary" => Self::PrivacyFilterSummary,
             _ => Self::CsvText,
         }
     }
@@ -109,6 +111,7 @@ impl InputMode {
             Self::VaultExport => "vault-export",
             Self::PortableArtifactInspect => "portable-artifact-inspect",
             Self::PortableArtifactImport => "portable-artifact-import",
+            Self::PrivacyFilterSummary => "privacy-filter-summary",
         }
     }
 
@@ -124,6 +127,7 @@ impl InputMode {
             Self::VaultExport => "Vault export",
             Self::PortableArtifactInspect => "Portable artifact inspect",
             Self::PortableArtifactImport => "Portable artifact import",
+            Self::PrivacyFilterSummary => "Privacy Filter summary",
         }
     }
 
@@ -152,6 +156,7 @@ impl InputMode {
             Self::PortableArtifactImport => {
                 "Portable artifact import request fields are rendered by the browser form"
             }
+            Self::PrivacyFilterSummary => "Paste/import an existing Privacy Filter JSON report here",
         }
     }
 
@@ -167,6 +172,7 @@ impl InputMode {
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
             Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
             Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, or broader platform workflow functionality."),
+            Self::PrivacyFilterSummary => Some("Privacy Filter summary mode is local-only: paste/import an existing Privacy Filter JSON report to prepare a PHI-safe summary download. It does not submit to a runtime endpoint and does not run Privacy Filter."),
         }
     }
 
@@ -182,6 +188,7 @@ impl InputMode {
             Self::VaultExport => "/vault/export",
             Self::PortableArtifactInspect => "/portable-artifacts/inspect",
             Self::PortableArtifactImport => "/portable-artifacts/import",
+            Self::PrivacyFilterSummary => "",
         }
     }
 
@@ -214,7 +221,8 @@ impl InputMode {
             | Self::VaultDecode
             | Self::VaultExport
             | Self::PortableArtifactInspect
-            | Self::PortableArtifactImport => BrowserFileReadMode::Text,
+            | Self::PortableArtifactImport
+            | Self::PrivacyFilterSummary => BrowserFileReadMode::Text,
             Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => {
                 BrowserFileReadMode::DataUrlBase64
             }
@@ -1096,6 +1104,178 @@ fn build_pdf_review_report_download(
     })
 }
 
+fn build_privacy_filter_summary_download(
+    response_json: &str,
+    imported_file_name: Option<&str>,
+) -> Result<BrowserDownloadPayload, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "Privacy Filter summary requires a JSON object response.".to_string())?;
+    if !response.is_object() {
+        return Err("Privacy Filter summary requires a JSON object response.".to_string());
+    }
+
+    let report = sanitized_privacy_filter_summary(&response);
+    Ok(BrowserDownloadPayload {
+        file_name: format!(
+            "{}-privacy-filter-summary.json",
+            imported_file_name
+                .map(sanitized_source_stem_preserving_case)
+                .unwrap_or_else(|| "mdid-browser-output".to_string())
+        ),
+        mime_type: "application/json",
+        bytes: serde_json::to_vec_pretty(&report)
+            .map_err(|_| "Privacy Filter summary could not encode JSON.".to_string())?,
+        is_text: true,
+    })
+}
+
+fn sanitized_privacy_filter_summary(response: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "mode".to_string(),
+        serde_json::json!("privacy_filter_summary"),
+    );
+
+    let metadata = response.get("metadata").unwrap_or(response);
+    let summary = response.get("summary").unwrap_or(response);
+
+    for key in ["engine", "preview_policy"] {
+        if let Some(value) = metadata
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| is_safe_privacy_filter_metadata_string(value))
+        {
+            report.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    if let Some(value) = metadata
+        .get("network_api_called")
+        .and_then(serde_json::Value::as_bool)
+    {
+        report.insert("network_api_called".to_string(), serde_json::json!(value));
+    }
+    for key in ["input_char_count", "detected_span_count"] {
+        if let Some(value) = summary.get(key).and_then(serde_json::Value::as_u64) {
+            report.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+
+    report.insert(
+        "category_counts".to_string(),
+        sanitized_privacy_filter_category_counts(summary.get("category_counts")),
+    );
+    serde_json::Value::Object(report)
+}
+
+fn sanitized_privacy_filter_category_counts(
+    value: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut counts = serde_json::Map::new();
+    if let Some(object) = value.and_then(serde_json::Value::as_object) {
+        for (label, count) in object {
+            if is_safe_privacy_filter_category_label(label) && count.as_u64().is_some() {
+                counts.insert(label.to_string(), count.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(counts)
+}
+
+fn is_safe_privacy_filter_category_label(label: &str) -> bool {
+    matches!(label, "NAME" | "MRN" | "ID" | "EMAIL" | "PHONE")
+}
+
+fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
+    !contains_synthetic_phi_sentinel(value)
+        && !value.is_empty()
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == ':'
+        })
+}
+
+fn contains_synthetic_phi_sentinel(value: &str) -> bool {
+    [
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ]
+    .iter()
+    .any(|sentinel| value.contains(sentinel))
+}
+
+fn build_ocr_handoff_summary_download(
+    handoff_json: &str,
+    imported_file_name: Option<&str>,
+) -> Result<BrowserDownloadPayload, String> {
+    let handoff: serde_json::Value = serde_json::from_str(handoff_json)
+        .map_err(|_| "OCR handoff summary requires a JSON object response.".to_string())?;
+    if !handoff.is_object() {
+        return Err("OCR handoff summary requires a JSON object response.".to_string());
+    }
+
+    let report = sanitized_ocr_handoff_summary(&handoff);
+    Ok(BrowserDownloadPayload {
+        file_name: format!(
+            "{}-ocr-handoff-summary.json",
+            pdf_review_report_source_stem(imported_file_name)
+        ),
+        mime_type: "application/json",
+        bytes: serde_json::to_vec_pretty(&report)
+            .map_err(|_| "OCR handoff summary could not encode JSON.".to_string())?,
+        is_text: true,
+    })
+}
+
+fn sanitized_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert("mode".to_string(), serde_json::json!("ocr_handoff_summary"));
+    for key in [
+        "candidate",
+        "engine",
+        "engine_status",
+        "scope",
+        "ready_for_text_pii_eval",
+    ] {
+        if let Some(value) = handoff.get(key).and_then(pdf_review_report_primitive) {
+            report.insert(key.to_string(), value);
+        }
+    }
+    for key in ["line_count", "char_count"] {
+        if let Some(value) = handoff.get(key).filter(|value| value.is_number()) {
+            report.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = handoff
+        .get("privacy_filter_contract")
+        .and_then(serde_json::Value::as_str)
+    {
+        report.insert(
+            "privacy_filter_contract".to_string(),
+            serde_json::json!(value),
+        );
+    }
+    report.insert(
+        "non_goals".to_string(),
+        sanitized_ocr_handoff_non_goals(handoff.get("non_goals")),
+    );
+    serde_json::Value::Object(report)
+}
+
+fn sanitized_ocr_handoff_non_goals(value: Option<&serde_json::Value>) -> serde_json::Value {
+    serde_json::Value::Array(
+        value
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(|text| serde_json::json!(text)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    )
+}
+
 fn redact_portable_report_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
@@ -1211,6 +1391,10 @@ impl BrowserFlowState {
             && detected_mode == InputMode::PortableArtifactInspect
         {
             InputMode::PortableArtifactImport
+        } else if self.input_mode == InputMode::PrivacyFilterSummary
+            && detected_mode == InputMode::MediaMetadataJson
+        {
+            InputMode::PrivacyFilterSummary
         } else {
             detected_mode
         }
@@ -1268,6 +1452,9 @@ impl BrowserFlowState {
                 InputMode::PortableArtifactImport => {
                     return format!("{stem}-portable-artifact-import.json");
                 }
+                InputMode::PrivacyFilterSummary => {
+                    return format!("{stem}-privacy-filter-summary.json");
+                }
                 InputMode::VaultAuditEvents => {
                     return format!("{stem}-vault-audit-events.json");
                 }
@@ -1308,6 +1495,7 @@ impl BrowserFlowState {
             InputMode::VaultExport => "mdid-browser-portable-artifact.json",
             InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.json",
             InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.json",
+            InputMode::PrivacyFilterSummary => "mdid-browser-privacy-filter-summary.json",
         }
         .to_string()
     }
@@ -1371,6 +1559,7 @@ impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
+            || (self.input_mode == InputMode::PrivacyFilterSummary && !self.payload.trim().is_empty())
     }
 
     fn is_tabular_mode(&self) -> bool {
@@ -1650,6 +1839,19 @@ impl BrowserFlowState {
                     (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())
                 }),
             ),
+            InputMode::PrivacyFilterSummary => {
+                let response_json = if self.result_output.trim().is_empty() {
+                    self.payload.as_str()
+                } else {
+                    self.result_output.as_str()
+                };
+                build_privacy_filter_summary_download(
+                    response_json,
+                    self.imported_file_name.as_deref().or_else(|| {
+                        (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())
+                    }),
+                )
+            }
             InputMode::VaultAuditEvents
             | InputMode::VaultDecode
             | InputMode::VaultExport
@@ -1684,6 +1886,13 @@ impl BrowserFlowState {
     }
 
     fn validate_submission(&self) -> Result<RuntimeSubmitRequest, String> {
+        if self.input_mode == InputMode::PrivacyFilterSummary {
+            return Err(
+                "Privacy Filter summary mode is local-only; use download to prepare a PHI-safe summary from pasted/imported JSON."
+                    .to_string(),
+            );
+        }
+
         if self.input_mode == InputMode::VaultAuditEvents {
             let body_json = serde_json::to_string(&build_vault_audit_request_payload(
                 &self.vault_path,
@@ -2241,6 +2450,9 @@ fn build_submit_request(
         InputMode::PortableArtifactImport => {
             unreachable!("Portable artifact import requests are handled before policy parsing")
         }
+        InputMode::PrivacyFilterSummary => {
+            unreachable!("Privacy Filter summary mode does not submit runtime requests")
+        }
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -2414,6 +2626,10 @@ fn parse_runtime_success(
                 review_queue: format!("{duplicates} duplicate portable record(s). Generic audit notice recorded."),
             })
         }
+        InputMode::PrivacyFilterSummary => Err(
+            "Privacy Filter summary mode does not parse runtime responses because it is local-only."
+                .to_string(),
+        ),
     }
 }
 
@@ -3180,6 +3396,7 @@ pub fn App() -> impl IntoView {
                         <option value="vault-export">"Vault export"</option>
                         <option value="portable-artifact-inspect">"Portable artifact inspect"</option>
                         <option value="portable-artifact-import">"Portable artifact import"</option>
+                        <option value="privacy-filter-summary">"Privacy Filter summary"</option>
                     </select>
                 </label>
 
@@ -3389,12 +3606,13 @@ mod tests {
     use base64::Engine;
 
     use super::{
-        build_pdf_review_report_download, build_portable_artifact_import_request_payload,
+        build_ocr_handoff_summary_download, build_pdf_review_report_download,
+        build_portable_artifact_import_request_payload,
         build_portable_artifact_inspect_request_payload, build_portable_response_report_download,
-        build_submit_request, build_vault_audit_request_payload,
-        build_vault_decode_request_payload, build_vault_export_request_payload,
-        file_import_payload_from_data_url, format_review_queue, format_summary,
-        parse_runtime_error, parse_runtime_success, render_runtime_response,
+        build_privacy_filter_summary_download, build_submit_request,
+        build_vault_audit_request_payload, build_vault_decode_request_payload,
+        build_vault_export_request_payload, file_import_payload_from_data_url, format_review_queue,
+        format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
         validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
         RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY, FETCH_UNAVAILABLE_MESSAGE,
@@ -3403,6 +3621,478 @@ mod tests {
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn ocr_handoff_summary_download_matches_existing_fixture_contract() {
+        let handoff =
+            include_str!("../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json");
+
+        let payload = build_ocr_handoff_summary_download(handoff, Some("case 7.json"))
+            .expect("ocr handoff summary download");
+
+        assert_eq!(payload.file_name, "case_7-ocr-handoff-summary.json");
+        assert_eq!(payload.mime_type, "application/json");
+        assert!(payload.is_text);
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(report["mode"], "ocr_handoff_summary");
+        assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(report["engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(
+            report["engine_status"],
+            "deterministic_synthetic_fixture_fallback"
+        );
+        assert_eq!(report["scope"], "printed_text_line_extraction_only");
+        assert_eq!(report["ready_for_text_pii_eval"], true);
+        assert_eq!(
+            report["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(report["non_goals"][0], "visual_redaction");
+        assert!(report.get("status").is_none());
+        assert!(report.get("line_count").is_none());
+        assert!(report.get("char_count").is_none());
+
+        let serialized = serde_json::to_string(&report).unwrap();
+        for forbidden in [
+            "extracted_text",
+            "normalized_text",
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_handoff_summary_download_omits_non_string_privacy_filter_contract() {
+        for privacy_filter_contract in [
+            json!(true),
+            json!({
+                "scope": "text_only_normalized_input",
+                "network_api_called": false,
+                "text_only": true
+            }),
+        ] {
+            let handoff = json!({
+                "candidate": "PP-OCRv5_mobile_rec",
+                "engine": "PP-OCRv5-mobile-bounded-spike",
+                "scope": "printed_text_line_extraction_only",
+                "ready_for_text_pii_eval": true,
+                "privacy_filter_contract": privacy_filter_contract,
+                "non_goals": ["visual_redaction"],
+                "normalized_text": "Patient Jane Example MRN-12345"
+            });
+
+            let payload =
+                build_ocr_handoff_summary_download(&handoff.to_string(), Some("case.json"))
+                    .expect("ocr handoff summary download");
+            let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+            assert!(
+                report.get("privacy_filter_contract").is_none(),
+                "non-string privacy_filter_contract must be omitted: {report}"
+            );
+            assert!(!serde_json::to_string(&report)
+                .unwrap()
+                .contains("Patient Jane Example"));
+        }
+    }
+
+    #[test]
+    fn ocr_handoff_summary_download_omits_phi_string_counts_but_preserves_numeric_counts() {
+        let handoff = json!({
+            "candidate": "PP-OCRv5_mobile_rec",
+            "engine": "PP-OCRv5-mobile-bounded-spike",
+            "scope": "printed_text_line_extraction_only",
+            "ready_for_text_pii_eval": true,
+            "line_count": "Patient Jane Example MRN-12345",
+            "char_count": "jane@example.com 555-123-4567",
+            "normalized_text": "Patient Jane Example MRN-12345"
+        });
+
+        let payload = build_ocr_handoff_summary_download(&handoff.to_string(), Some("case.json"))
+            .expect("ocr handoff summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert!(report.get("line_count").is_none());
+        assert!(report.get("char_count").is_none());
+        let serialized = serde_json::to_string(&report).unwrap();
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
+
+        let handoff = json!({
+            "candidate": "PP-OCRv5_mobile_rec",
+            "engine": "PP-OCRv5-mobile-bounded-spike",
+            "scope": "printed_text_line_extraction_only",
+            "ready_for_text_pii_eval": true,
+            "line_count": 7,
+            "char_count": 1234
+        });
+        let payload = build_ocr_handoff_summary_download(&handoff.to_string(), Some("case.json"))
+            .expect("ocr handoff summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert_eq!(report["line_count"], 7);
+        assert_eq!(report["char_count"], 1234);
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_preserves_only_safe_aggregates_and_source_stem() {
+        let response = json!({
+            "summary": {
+                "input_char_count": 86,
+                "detected_span_count": 4,
+                "category_counts": {
+                    "NAME": 1,
+                    "MRN": 1,
+                    "EMAIL": 1,
+                    "PHONE": 1,
+                    "Patient Jane Example": 99,
+                    "SSN": "MRN-12345",
+                    "bad label": 2,
+                    "ADDRESS": {"count": 1}
+                }
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_bracket_labels_only"
+            },
+            "masked_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
+            "spans": [{"text": "Patient Jane Example", "label": "NAME"}],
+            "preview": "Patient Jane Example",
+            "input_text": "Patient Jane Example MRN-12345"
+        });
+
+        let payload = build_privacy_filter_summary_download(
+            &response.to_string(),
+            Some("privacy-output.json"),
+        )
+        .expect("privacy filter summary download");
+
+        assert_eq!(
+            payload.file_name,
+            "privacy-output-privacy-filter-summary.json"
+        );
+        assert_eq!(payload.mime_type, "application/json");
+        assert!(payload.is_text);
+
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert_eq!(report["engine"], "fallback_synthetic_patterns");
+        assert_eq!(report["network_api_called"], false);
+        assert_eq!(report["preview_policy"], "redacted_bracket_labels_only");
+        assert_eq!(report["input_char_count"], 86);
+        assert_eq!(report["detected_span_count"], 4);
+        assert_eq!(report["category_counts"]["NAME"], 1);
+        assert_eq!(report["category_counts"]["MRN"], 1);
+        assert_eq!(report["category_counts"]["EMAIL"], 1);
+        assert_eq!(report["category_counts"]["PHONE"], 1);
+        assert!(report["category_counts"]
+            .get("Patient Jane Example")
+            .is_none());
+        assert!(report["category_counts"].get("SSN").is_none());
+        assert!(report["category_counts"].get("bad label").is_none());
+        assert!(report.get("metadata").is_none());
+        assert!(report.get("masked_text").is_none());
+        assert!(report.get("spans").is_none());
+        assert!(report.get("preview").is_none());
+        assert!(report.get("input_text").is_none());
+
+        let serialized = serde_json::to_string(&report).unwrap();
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_omits_object_metadata_and_string_counts() {
+        let response = json!({
+            "metadata": {
+                "engine": {"name": "privacy-filter-v1"},
+                "network_api_called": {"value": false},
+                "preview_policy": {"policy": "masked_preview_only"}
+            },
+            "summary": {
+                "input_char_count": "Patient Jane Example",
+                "detected_span_count": "MRN-12345",
+                "category_counts": {
+                    "NAME": "Patient Jane Example",
+                    "MRN": 2
+                }
+            }
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert!(report.get("engine").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("preview_policy").is_none());
+        assert!(report.get("input_char_count").is_none());
+        assert!(report.get("detected_span_count").is_none());
+        assert!(report["category_counts"].get("NAME").is_none());
+        assert_eq!(report["category_counts"]["MRN"], 2);
+        assert!(!serde_json::to_string(&report)
+            .unwrap()
+            .contains("Patient Jane Example"));
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_rejects_phi_sentinels_in_allowed_metadata_fields() {
+        let response = json!({
+            "metadata": {
+                "engine": "Patient Jane Example",
+                "preview_policy": "MRN-12345 jane@example.com 555-123-4567",
+                "network_api_called": "jane@example.com"
+            },
+            "summary": {
+                "input_char_count": 100,
+                "detected_span_count": 1,
+                "category_counts": {
+                    "SAFE_LABEL": 1,
+                    "PHONE": "555-123-4567"
+                }
+            }
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let serialized = serde_json::to_string(&report).unwrap();
+
+        assert!(report.get("engine").is_none());
+        assert!(report.get("preview_policy").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report["category_counts"].get("SAFE_LABEL").is_none());
+        assert!(report["category_counts"].get("PHONE").is_none());
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_enforces_metadata_field_types() {
+        let response = json!({
+            "metadata": {
+                "engine": true,
+                "network_api_called": "false",
+                "preview_policy": 7
+            },
+            "summary": {"category_counts": {}}
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert!(report.get("engine").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("preview_policy").is_none());
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_accepts_only_allowlisted_category_counts() {
+        let response = json!({
+            "summary": {"category_counts": {
+                "NAME": 3,
+                "MRN": 4,
+                "ID": 5,
+                "EMAIL": 0,
+                "PHONE": 1,
+                "ADDRESS": 3,
+                "ZIP_CODE_5": 4,
+                "DX2": 0,
+                "123": 1,
+                "lowercase": 1,
+                "BAD LABEL": 1,
+                "BAD-LABEL": 1,
+                "jane@example.com": 1,
+                "Patient Jane Example": 1,
+                "NEGATIVE": -1,
+                "FRACTIONAL": 1.5,
+                "TOO_BIG": 18446744073709551616.0,
+                "STRING_COUNT": "1"
+            }}
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let counts = report["category_counts"].as_object().unwrap();
+
+        assert_eq!(counts.get("NAME"), Some(&json!(3)));
+        assert_eq!(counts.get("MRN"), Some(&json!(4)));
+        assert_eq!(counts.get("ID"), Some(&json!(5)));
+        assert_eq!(counts.get("EMAIL"), Some(&json!(0)));
+        assert_eq!(counts.get("PHONE"), Some(&json!(1)));
+        for rejected in [
+            "ADDRESS",
+            "ZIP_CODE_5",
+            "DX2",
+            "123",
+            "lowercase",
+            "BAD LABEL",
+            "BAD-LABEL",
+            "jane@example.com",
+            "Patient Jane Example",
+            "NEGATIVE",
+            "FRACTIONAL",
+            "TOO_BIG",
+            "STRING_COUNT",
+        ] {
+            assert!(counts.get(rejected).is_none(), "accepted {rejected}");
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_preserves_runtime_safe_engine_id() {
+        let response = json!({
+            "metadata": {
+                "engine": "safe.rule:engine-v1",
+                "preview_policy": "redacted.bracket:labels-v1"
+            },
+            "summary": {"category_counts": {"ID": 2, "UNSAFE-LABEL": 1}}
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let counts = report["category_counts"].as_object().unwrap();
+
+        assert_eq!(report["engine"], "safe.rule:engine-v1");
+        assert_eq!(report["preview_policy"], "redacted.bracket:labels-v1");
+        assert_eq!(counts.get("ID"), Some(&json!(2)));
+        assert!(counts.get("UNSAFE-LABEL").is_none());
+    }
+
+    #[test]
+    fn privacy_filter_summary_prepared_download_uses_result_output_without_runtime_submission() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PrivacyFilterSummary,
+            result_output: json!({
+                "metadata": {
+                    "engine": "privacy-filter-v1",
+                    "network_api_called": false
+                },
+                "summary": {
+                    "input_char_count": 25,
+                    "detected_span_count": 2,
+                    "category_counts": {"NAME": 1, "MRN": 1, "DATE": 1}
+                },
+                "masked_text": "Patient Jane Example MRN-12345"
+            })
+            .to_string(),
+            imported_file_name: Some("privacy-report.json".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("prepared privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert_eq!(payload.file_name, "privacy-report-privacy-filter-summary.json");
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert_eq!(report["category_counts"]["NAME"], 1);
+        assert_eq!(report["category_counts"]["MRN"], 1);
+        assert!(report["category_counts"].get("DATE").is_none());
+        assert!(report.get("masked_text").is_none());
+
+        state.payload = json!({"category_counts": {"PHONE": 99}}).to_string();
+        let request = state.validate_submission();
+        assert!(request.is_err(), "summary mode must not submit to runtime");
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_omits_non_allowlisted_category_labels() {
+        let response = json!({
+            "summary": {"category_counts": {
+                "NAME": 1,
+                "MRN": 2,
+                "EMAIL": 3,
+                "PHONE": 4,
+                "JANE_DOE": 5,
+                "MRN_12345": 6,
+                "PATIENT_JANE_EXAMPLE": 7,
+                "DATE": 8
+            }}
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let counts = report["category_counts"].as_object().unwrap();
+
+        assert_eq!(counts.get("NAME"), Some(&json!(1)));
+        assert_eq!(counts.get("MRN"), Some(&json!(2)));
+        assert_eq!(counts.get("EMAIL"), Some(&json!(3)));
+        assert_eq!(counts.get("PHONE"), Some(&json!(4)));
+        for rejected in ["JANE_DOE", "MRN_12345", "PATIENT_JANE_EXAMPLE", "DATE"] {
+            assert!(counts.get(rejected).is_none(), "accepted {rejected}");
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_omits_negative_and_fractional_summary_counts() {
+        for (field, value) in [
+            ("input_char_count", json!(-1)),
+            ("input_char_count", json!(1.5)),
+            ("detected_span_count", json!(-1)),
+            ("detected_span_count", json!(1.5)),
+        ] {
+            let response = json!({
+                "summary": {
+                    field: value,
+                    "category_counts": {"NAME": 1}
+                }
+            });
+            let payload =
+                build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                    .expect("privacy filter summary download");
+            let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+            assert!(report.get(field).is_none(), "accepted {field}={value}");
+        }
+    }
 
     #[test]
     fn pdf_review_report_download_redacts_text_and_uses_source_stem() {

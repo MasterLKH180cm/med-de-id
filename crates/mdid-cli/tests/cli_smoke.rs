@@ -5,9 +5,25 @@ use mdid_adapters::XlsxTabularAdapter;
 use predicates::prelude::*;
 use rust_xlsxwriter::Workbook;
 use serde_json::Value;
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
 use tempfile::tempdir;
+
+fn repo_path(relative: &str) -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn default_python_command() -> &'static str {
+    if cfg!(windows) {
+        "py"
+    } else {
+        "python3"
+    }
+}
 
 fn write_xlsx(path: &Path) {
     let mut workbook = Workbook::new();
@@ -66,6 +82,124 @@ fn cli_prints_status_banner() {
         .assert()
         .success()
         .stdout(predicate::str::contains("med-de-id CLI ready"));
+}
+
+#[test]
+fn ocr_handoff_corpus_runs_repo_fixture_runner_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            &repo_path("scripts/ocr_eval/fixtures/corpus"),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_handoff_corpus.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("ocr-handoff-corpus"));
+    assert!(stdout.contains("<redacted>"));
+    for sentinel in ["Jane Example", "MRN-12345"] {
+        assert!(!stdout.contains(sentinel));
+        assert!(!stderr.contains(sentinel));
+    }
+    assert!(stderr.is_empty());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    for sentinel in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ] {
+        assert!(!report_text.contains(sentinel));
+    }
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["engine"], "PP-OCRv5-mobile-bounded-spike");
+    assert_eq!(report["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        report["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    let fixture_count = report["fixture_count"].as_u64().unwrap();
+    assert!(fixture_count >= 2);
+    assert_eq!(
+        report["ready_fixture_count"].as_u64().unwrap(),
+        fixture_count
+    );
+    for fixture in report["fixtures"].as_array().unwrap() {
+        assert!(fixture["id"].as_str().unwrap().starts_with("fixture_"));
+    }
+}
+
+#[test]
+fn ocr_handoff_corpus_removes_stale_report_when_runner_fails() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic printed line").unwrap();
+    let runner_path = dir.path().join("fail_runner.py");
+    fs::write(&runner_path, "import sys\nsys.exit(1)\n").unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+    fs::write(&report_path, "stale raw Jane Example").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            fixture_dir.to_str().unwrap(),
+            "--runner-path",
+            runner_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .failure();
+
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_corpus_removes_stale_report_when_runner_path_missing() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic printed line").unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+    fs::write(&report_path, "stale raw Jane Example").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            fixture_dir.to_str().unwrap(),
+            "--runner-path",
+            dir.path().join("missing_runner.py").to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .failure();
+
+    assert!(!report_path.exists());
 }
 
 #[test]
@@ -461,6 +595,1413 @@ fn cli_review_media_rejects_blank_artifact_label() {
 }
 
 #[test]
+fn cli_privacy_filter_corpus_writes_phi_safe_aggregate_summary() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("Alice-MRN-99999-report.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(repo_path("scripts/privacy_filter/fixtures/corpus"))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("MRN-12345").not())
+        .stdout(predicate::str::contains("jane@example.test").not())
+        .stdout(predicate::str::contains("555-111-2222").not())
+        .stdout(predicate::str::contains("Alice-MRN-99999").not())
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not())
+        .stderr(predicate::str::contains("jane@example.test").not())
+        .stderr(predicate::str::contains("555-111-2222").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    let summary: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(summary["command"], "privacy-filter-corpus");
+    assert_eq!(summary["engine"], "fallback_synthetic_patterns");
+    assert_eq!(summary["scope"], "text_only_synthetic_corpus");
+    assert_eq!(summary["fixture_count"], 2);
+    assert!(summary["total_detected_span_count"].as_u64().unwrap() >= 4);
+    assert_eq!(summary["report_path"], "<redacted>");
+
+    let report = fs::read_to_string(&report_path).unwrap();
+    assert!(!report.contains("Jane Example"));
+    assert!(!report.contains("MRN-12345"));
+    assert!(!report.contains("jane@example.test"));
+    assert!(!report.contains("555-111-2222"));
+    let report_json: Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report_json["category_counts"]["NAME"], 2);
+    assert_eq!(report_json["category_counts"]["MRN"], 2);
+    assert_eq!(report_json["category_counts"]["EMAIL"], 1);
+    assert_eq!(report_json["category_counts"]["PHONE"], 2);
+    assert!(report_json["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&Value::String("visual_redaction".to_string())));
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_fake_canonical_report_with_single_fixture() {
+    let dir = tempdir().unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "fixtures": [
+        {
+            "fixture": "fake.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 0, "PHONE": 1},
+        }
+    ],
+    "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 0, "PHONE": 1},
+    "non_goals": ["visual_redaction"],
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(repo_path("scripts/privacy_filter/fixtures/corpus"))
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    assert!(!report_path.exists(), "invalid report should be removed");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_sanitizes_phi_bearing_fixture_names() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(
+        fixture_dir.join("Alice-MRN-99999.txt"),
+        "Patient Alice Example MRN-99999 phone 555-999-0000",
+    )
+    .unwrap();
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success();
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let report = fs::read_to_string(&report_path).unwrap();
+    for raw_phi in [
+        "Alice-MRN-99999",
+        "Alice Example",
+        "MRN-99999",
+        "555-999-0000",
+    ] {
+        assert!(
+            !stdout.contains(raw_phi),
+            "stdout leaked raw PHI: {raw_phi}"
+        );
+        assert!(
+            !stderr.contains(raw_phi),
+            "stderr leaked raw PHI: {raw_phi}"
+        );
+        assert!(
+            !report.contains(raw_phi),
+            "report leaked raw PHI: {raw_phi}"
+        );
+    }
+
+    let report_json: Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report_json["fixtures"][0]["fixture"], "fixture_001");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_unexpected_phi_bearing_fields() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+            "preview": "Alice Example",
+        }
+    ],
+    "non_goals": ["visual_redaction"],
+    "raw_text": "Alice Example MRN-99999",
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for raw_phi in ["Alice Example", "MRN-99999"] {
+        assert!(
+            !stdout.contains(raw_phi),
+            "stdout leaked raw PHI: {raw_phi}"
+        );
+        assert!(
+            !stderr.contains(raw_phi),
+            "stderr leaked raw PHI: {raw_phi}"
+        );
+    }
+    assert!(!report_path.exists(), "invalid report should be removed");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_phi_bearing_category_count_keys() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN-99999": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "Alice Example": 1, "PHONE": 1},
+        }
+    ],
+    "non_goals": ["visual_redaction"],
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    assert!(!report_path.exists(), "invalid report should be removed");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_phi_bearing_non_goals() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+        }
+    ],
+    "non_goals": ["visual_redaction", "MRN-99999"],
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    assert!(!report_path.exists(), "invalid report should be removed");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_network_api_called_true() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+        }
+    ],
+    "non_goals": ["visual_redaction"],
+    "network_api_called": True,
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    assert!(!report_path.exists(), "networked report should be removed");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_oversized_report_before_read() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+        }
+    ],
+    "non_goals": ["visual_redaction"],
+    "padding": "x" * (1024 * 1024 + 1),
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "privacy filter corpus report exceeded limit",
+        ));
+
+    assert!(!report_path.exists(), "oversized report should be removed");
+}
+
+#[test]
+fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-report.json");
+    let input_path = repo_path("scripts/privacy_filter/fixtures/sample_text_input.txt");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let validator_path = repo_path("scripts/privacy_filter/validate_privacy_filter_output.py");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .assert()
+        .success();
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let raw_fixture_values = [
+        "Jane Example",
+        "555-0100",
+        "555-123-4567",
+        "jane@example.com",
+        "+1-555-123-4567",
+        "MRN-12345",
+    ];
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !stdout.contains(raw_pii),
+            "stdout leaked raw PII: {raw_pii}"
+        );
+        assert!(
+            !stderr.contains(raw_pii),
+            "stderr leaked raw PII: {raw_pii}"
+        );
+    }
+    assert!(report_path.exists());
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !report_text.contains(raw_pii),
+            "report leaked raw PII: {raw_pii}"
+        );
+    }
+
+    let validator = std::process::Command::new(default_python_command())
+        .arg(&validator_path)
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        validator.status.success(),
+        "validator failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&validator.stdout),
+        String::from_utf8_lossy(&validator.stderr)
+    );
+}
+
+#[test]
+fn privacy_filter_text_writes_verbatim_runner_json_report() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(
+        &runner_path,
+        r#"import json, pathlib, sys
+pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
+print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PERSON> has <ID>","spans":[{"label":"PERSON","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("privacy-filter-text"))
+        .stdout(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("Jane Example").not());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(report_text.contains("\"network_api_called\": false"));
+    assert!(report_text.contains("Patient <PERSON> has <ID>"));
+    assert!(!report_text.contains("Jane Example"));
+}
+
+fn write_privacy_runner(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+}
+
+#[test]
+fn privacy_filter_text_uses_explicit_python_command_when_provided() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    let python_command = dir.path().join("fake-python");
+    let argv_path = dir.path().join("argv.txt");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(&runner_path, "not executed by a real python in this test\n").unwrap();
+    fs::write(
+        &python_command,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nprintf '%s\\n' '{{\"summary\":{{}},\"masked_text\":\"Patient <PERSON>\",\"spans\":[],\"metadata\":{{\"engine\":\"fallback_synthetic_patterns\",\"network_api_called\":false,\"preview_policy\":\"redacted_placeholders_only\"}}}}'\n",
+            argv_path.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&python_command).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&python_command, perms).unwrap();
+    }
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(&python_command)
+        .assert()
+        .success();
+
+    let argv = fs::read_to_string(argv_path).unwrap();
+    assert!(argv.contains(runner_path.to_str().unwrap()));
+    assert!(argv.contains(input_path.to_str().unwrap()));
+}
+
+#[test]
+fn privacy_filter_text_mock_flag_forwards_mock_to_runner() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    let argv_path = dir.path().join("argv.txt");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(
+        &runner_path,
+        format!(
+            r#"import json, pathlib, sys
+pathlib.Path({argv_path:?}).write_text('\n'.join(sys.argv[1:]), encoding='utf-8')
+print(json.dumps({{"summary":{{}},"masked_text":"Patient <PERSON>","spans":[],"metadata":{{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}}}))
+"#,
+            argv_path = argv_path
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--mock")
+        .assert()
+        .success();
+
+    let argv = fs::read_to_string(argv_path).unwrap();
+    assert!(argv.lines().any(|arg| arg == "--mock"));
+    assert!(argv.lines().any(|arg| arg == input_path.to_str().unwrap()));
+}
+
+#[test]
+fn privacy_filter_text_rejects_oversized_runner_stdout_without_writing_report() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    write_privacy_runner(
+        &runner_path,
+        "import sys, time\nsys.stdout.write('x' * (1024 * 1024 + 1))\nsys.stdout.flush()\ntime.sleep(10)\n",
+    );
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(3))
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("runner output exceeded limit"))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("Jane Example").not());
+
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn privacy_filter_text_times_out_silent_hanging_runner_and_removes_stale_report() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(&report_path, "stale report must be removed").unwrap();
+    write_privacy_runner(&runner_path, "import time\ntime.sleep(30)\n");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("privacy filter runner timed out"))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("Jane Example").not());
+
+    assert!(!report_path.exists());
+}
+
+fn assert_privacy_filter_rejects(
+    input_path: &Path,
+    runner_path: &Path,
+    report_path: &Path,
+    expected_error: &str,
+) {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(input_path)
+        .arg("--runner-path")
+        .arg(runner_path)
+        .arg("--report-path")
+        .arg(report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(expected_error))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("Jane Example").not());
+
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn privacy_filter_text_rejects_missing_required_flags_and_blank_paths() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    write_privacy_runner(&runner_path, "print('{}')\n");
+
+    for (args, expected_error) in [
+        (
+            vec![
+                "privacy-filter-text",
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --input-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --runner-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+            ],
+            "missing --report-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                "   ",
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --input-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--runner-path",
+                "   ",
+                "--report-path",
+                report_path.to_str().unwrap(),
+            ],
+            "missing --runner-path",
+        ),
+        (
+            vec![
+                "privacy-filter-text",
+                "--input-path",
+                input_path.to_str().unwrap(),
+                "--runner-path",
+                runner_path.to_str().unwrap(),
+                "--report-path",
+                "   ",
+            ],
+            "missing --report-path",
+        ),
+    ] {
+        Command::cargo_bin("mdid-cli")
+            .unwrap()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(expected_error))
+            .stderr(predicate::str::contains("Jane Example").not())
+            .stdout(predicate::str::contains("Jane Example").not());
+    }
+
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn privacy_filter_text_rejects_missing_files_runner_failure_and_invalid_json_without_raw_text() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let missing_input_path = dir.path().join("missing-input.txt");
+    let missing_runner_path = dir.path().join("missing-runner.py");
+    let failing_runner_path = dir.path().join("failing-runner.py");
+    let bad_runner_path = dir.path().join("bad-runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+
+    assert_privacy_filter_rejects(
+        &missing_input_path,
+        &bad_runner_path,
+        &report_path,
+        "missing input file",
+    );
+
+    assert_privacy_filter_rejects(
+        &input_path,
+        &missing_runner_path,
+        &report_path,
+        "missing runner file",
+    );
+
+    write_privacy_runner(&failing_runner_path, "import sys\nsys.exit(7)\n");
+    fs::write(&report_path, "stale report must be removed").unwrap();
+    assert_privacy_filter_rejects(
+        &input_path,
+        &failing_runner_path,
+        &report_path,
+        "privacy filter runner failed",
+    );
+
+    write_privacy_runner(&bad_runner_path, "print('not json')\n");
+    assert_privacy_filter_rejects(
+        &input_path,
+        &bad_runner_path,
+        &report_path,
+        "runner returned non-JSON output",
+    );
+}
+
+#[test]
+fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+
+    let valid_payload = r#"{"summary":{},"masked_text":"Patient <PERSON>","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#;
+    for (payload, expected_error) in [
+        (
+            r#"{"masked_text":"x","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":[]}"#,
+            "privacy filter output missing required field",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":true,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output indicates network API use",
+        ),
+        (r#"[]"#, "privacy filter output must be a JSON object"),
+        (
+            r#"{"summary":[],"masked_text":"x","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{},"masked_text":[],"spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":{},"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{},"masked_text":"x","spans":[],"metadata":[]}"#,
+            "privacy filter output has invalid required field shape",
+        ),
+    ] {
+        let python_payload = serde_json::to_string(payload).unwrap();
+        write_privacy_runner(&runner_path, &format!("print({python_payload})\n"));
+        assert_privacy_filter_rejects(&input_path, &runner_path, &report_path, expected_error);
+    }
+
+    let python_payload = serde_json::to_string(valid_payload).unwrap();
+    write_privacy_runner(&runner_path, &format!("print({python_payload})\n"));
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .success();
+}
+
+#[test]
+fn ocr_handoff_help_mentions_command() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ocr-handoff"));
+}
+
+#[test]
+fn ocr_handoff_missing_flags_and_files_are_rejected() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("ocr-handoff")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing --image-path"));
+
+    let dir = tempdir().unwrap();
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&runner_path, "print('Jane Doe')\n").unwrap();
+    fs::write(&builder_path, "print('ok')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            dir.path().join("missing.png").to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing image file"));
+}
+
+#[test]
+fn ocr_handoff_success_with_synthetic_fixture() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-handoff.json");
+
+    let stdout = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--handoff-builder-path",
+            &repo_path("scripts/ocr_eval/build_ocr_handoff.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ocr-handoff"))
+        .get_output()
+        .stdout
+        .clone();
+    let summary: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(summary["command"], "ocr-handoff");
+    assert_eq!(
+        summary["report_path"],
+        report_path.to_string_lossy().to_string()
+    );
+
+    let report: Value = serde_json::from_str(&fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(report["source"], "synthetic_printed_phi_line.png");
+    assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(report["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        report["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    assert_eq!(report["ready_for_text_pii_eval"], true);
+    assert!(report["normalized_text"]
+        .as_str()
+        .unwrap()
+        .contains("Jane Example"));
+    assert!(!report_path.with_extension("json.ocr-text.tmp").exists());
+}
+
+#[test]
+fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let handoff_report = dir.path().join("ocr-handoff.json");
+    let normalized_text = dir.path().join("ocr-normalized.txt");
+    let privacy_report = dir.path().join("privacy-filter.json");
+
+    let raw_fixture_values = [
+        "Jane Example",
+        "jane@example.com",
+        "+1-555-123-4567",
+        "MRN-12345",
+    ];
+
+    let ocr_output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("ocr-handoff")
+        .arg("--image-path")
+        .arg(repo_path(
+            "scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png",
+        ))
+        .arg("--ocr-runner-path")
+        .arg(repo_path("scripts/ocr_eval/run_small_ocr.py"))
+        .arg("--handoff-builder-path")
+        .arg(repo_path("scripts/ocr_eval/build_ocr_handoff.py"))
+        .arg("--report-path")
+        .arg(&handoff_report)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let ocr_stdout = String::from_utf8_lossy(&ocr_output.stdout);
+    let ocr_stderr = String::from_utf8_lossy(&ocr_output.stderr);
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !ocr_stdout.contains(raw_pii),
+            "OCR stdout leaked raw PII: {raw_pii}"
+        );
+        assert!(
+            !ocr_stderr.contains(raw_pii),
+            "OCR stderr leaked raw PII: {raw_pii}"
+        );
+    }
+    let ocr_output = ocr_output.stdout.clone();
+
+    let ocr_summary: Value = serde_json::from_slice(&ocr_output).unwrap();
+    assert_eq!(ocr_summary["ready_for_text_pii_eval"], true);
+    assert_eq!(
+        ocr_summary["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+
+    let handoff: Value =
+        serde_json::from_str(&fs::read_to_string(&handoff_report).unwrap()).unwrap();
+    let text = handoff["normalized_text"].as_str().unwrap();
+    assert!(text.contains("Jane Example"));
+    assert!(text.contains("MRN-12345"));
+    fs::write(&normalized_text, text).unwrap();
+
+    let privacy_output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&normalized_text)
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&privacy_report)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let privacy_stdout = String::from_utf8_lossy(&privacy_output.stdout);
+    let privacy_stderr = String::from_utf8_lossy(&privacy_output.stderr);
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !privacy_stdout.contains(raw_pii),
+            "Privacy Filter stdout leaked raw PII: {raw_pii}"
+        );
+        assert!(
+            !privacy_stderr.contains(raw_pii),
+            "Privacy Filter stderr leaked raw PII: {raw_pii}"
+        );
+    }
+    let privacy_output = privacy_output.stdout.clone();
+
+    let privacy_summary: Value = serde_json::from_slice(&privacy_output).unwrap();
+    assert_eq!(privacy_summary["engine"], "fallback_synthetic_patterns");
+    assert_eq!(privacy_summary["network_api_called"], false);
+    assert!(privacy_summary["detected_span_count"].as_u64().unwrap() >= 2);
+
+    let privacy_json = fs::read_to_string(&privacy_report).unwrap();
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !privacy_json.contains(raw_pii),
+            "Privacy Filter report leaked raw PII: {raw_pii}"
+        );
+    }
+    assert!(privacy_json.contains("[NAME]"));
+    assert!(privacy_json.contains("[EMAIL]"));
+    assert!(privacy_json.contains("[PHONE]"));
+    assert!(privacy_json.contains("[MRN]"));
+}
+
+#[test]
+fn ocr_handoff_removes_stale_report_when_ocr_runner_fails() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "import sys\nsys.exit(7)\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, r#"{"stale":true}"#).unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("OCR runner failed"));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_removes_stale_report_when_ocr_runner_emits_non_utf8() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(
+        &runner_path,
+        "import sys\nsys.stdout.buffer.write(b'\\xff\\xfe')\n",
+    )
+    .unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale report").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "OCR runner returned non-UTF-8 output",
+        ));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_rejects_invalid_builder_contract_and_removes_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Doe')\n").unwrap();
+    fs::write(&builder_path, "import pathlib, sys\npathlib.Path(sys.argv[sys.argv.index('--output')+1]).write_text('{}')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "OCR handoff missing required field",
+        ));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_rejects_malformed_builder_report_and_removes_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Doe')\n").unwrap();
+    fs::write(&builder_path, "import pathlib, sys\npathlib.Path(sys.argv[sys.argv.index('--output')+1]).write_text('not json')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "OCR handoff report is not valid JSON",
+        ));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_rejects_oversized_ocr_stdout_without_writing_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "import sys, time\nsys.stdout.write('x' * (1024 * 1024 + 1))\nsys.stdout.flush()\ntime.sleep(10)\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(3))
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("OCR runner output exceeded limit"));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_times_out_silent_hanging_runner_and_removes_stale_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "import time\ntime.sleep(30)\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale report must be removed").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("OCR runner timed out"));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_times_out_silent_hanging_builder_and_removes_stale_outputs() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    let temp_path = report_path.with_extension("json.ocr-text.tmp");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Doe')\n").unwrap();
+    fs::write(&builder_path, "import time\ntime.sleep(30)\n").unwrap();
+    fs::write(&report_path, "stale report must be removed").unwrap();
+    fs::write(&temp_path, "stale temp must be removed").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("OCR handoff builder timed out"));
+    assert!(!report_path.exists());
+    assert!(!temp_path.exists());
+}
+
+#[test]
+fn docs_ocr_privacy_chain_uses_handoff_normalized_text_file() {
+    let repo_readme = fs::read_to_string(repo_path("README.md")).unwrap();
+    let ocr_readme = fs::read_to_string(repo_path("scripts/ocr_eval/README.md")).unwrap();
+    let research_results =
+        fs::read_to_string(repo_path("docs/research/small-ocr-spike-results.md")).unwrap();
+
+    for docs in [&repo_readme, &ocr_readme, &research_results] {
+        assert!(docs.contains("/tmp/ocr-normalized-text.txt"));
+        assert!(docs.contains("Path('/tmp/ocr-handoff.json')"));
+        assert!(docs.contains("['normalized_text']"));
+        assert!(docs.contains("python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-text.txt"));
+    }
+    assert!(!repo_readme.contains("run_privacy_filter.py --mock /tmp/small-ocr-output.txt"));
+    assert!(!ocr_readme.contains("run_privacy_filter.py --mock /tmp/small-ocr-output.txt"));
+    assert!(!research_results.contains("run_privacy_filter.py --mock /tmp/small-ocr-output.txt"));
+}
+
+#[test]
 fn cli_usage_stays_deidentification_scoped() {
     let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
@@ -472,6 +2013,8 @@ fn cli_usage_stays_deidentification_scoped() {
             "local de-identification automation",
         ))
         .stderr(predicate::str::contains("review-media"))
+        .stderr(predicate::str::contains("privacy-filter-text"))
+        .stderr(predicate::str::contains("ocr-handoff"))
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());

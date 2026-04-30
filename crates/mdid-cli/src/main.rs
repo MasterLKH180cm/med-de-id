@@ -4,6 +4,9 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use mdid_adapters::{
@@ -21,7 +24,7 @@ use mdid_domain::{
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact};
 use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
@@ -47,6 +50,10 @@ enum CliCommand {
     DeidentifyDicom(DeidentifyDicomArgs),
     DeidentifyPdf(DeidentifyPdfArgs),
     ReviewMedia(ReviewMediaArgs),
+    PrivacyFilterText(PrivacyFilterTextArgs),
+    PrivacyFilterCorpus(PrivacyFilterCorpusArgs),
+    OcrHandoffCorpus(OcrHandoffCorpusArgs),
+    OcrHandoff(OcrHandoffArgs),
     VaultAudit(VaultAuditArgs),
     VaultDecode(VaultDecodeArgs),
     VaultExport(VaultExportArgs),
@@ -102,6 +109,46 @@ struct ReviewMediaArgs {
     requires_visual_review: bool,
     unsupported_payload: bool,
     report_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PrivacyFilterTextArgs {
+    input_path: PathBuf,
+    runner_path: PathBuf,
+    report_path: PathBuf,
+    python_command: String,
+    mock: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PrivacyFilterCorpusArgs {
+    fixture_dir: PathBuf,
+    runner_path: PathBuf,
+    report_path: PathBuf,
+    python_command: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct OcrHandoffCorpusArgs {
+    fixture_dir: PathBuf,
+    runner_path: PathBuf,
+    report_path: PathBuf,
+    python_command: String,
+}
+
+const PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
+const PRIVACY_FILTER_RUNNER_TIMEOUT: Duration = Duration::from_secs(2);
+const OCR_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
+const OCR_RUNNER_TIMEOUT: Duration = PRIVACY_FILTER_RUNNER_TIMEOUT;
+const OCR_HANDOFF_BUILDER_TIMEOUT: Duration = PRIVACY_FILTER_RUNNER_TIMEOUT;
+
+#[derive(Clone, PartialEq, Eq)]
+struct OcrHandoffArgs {
+    image_path: PathBuf,
+    ocr_runner_path: PathBuf,
+    handoff_builder_path: PathBuf,
+    report_path: PathBuf,
+    python_command: String,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -189,6 +236,18 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "review-media" => {
             parse_review_media_args(rest).map(CliCommand::ReviewMedia)
+        }
+        [command, rest @ ..] if command == "privacy-filter-text" => {
+            parse_privacy_filter_text_args(rest).map(CliCommand::PrivacyFilterText)
+        }
+        [command, rest @ ..] if command == "privacy-filter-corpus" => {
+            parse_privacy_filter_corpus_args(rest).map(CliCommand::PrivacyFilterCorpus)
+        }
+        [command, rest @ ..] if command == "ocr-handoff-corpus" => {
+            parse_ocr_handoff_corpus_args(rest).map(CliCommand::OcrHandoffCorpus)
+        }
+        [command, rest @ ..] if command == "ocr-handoff" => {
+            parse_ocr_handoff_args(rest).map(CliCommand::OcrHandoff)
         }
         [command, rest @ ..] if command == "vault-audit" => {
             parse_vault_audit_args(rest).map(CliCommand::VaultAudit)
@@ -431,6 +490,151 @@ fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
     })
 }
 
+fn parse_privacy_filter_text_args(args: &[String]) -> Result<PrivacyFilterTextArgs, String> {
+    let mut input_path = None;
+    let mut runner_path = None;
+    let mut report_path = None;
+    let mut python_command = None;
+    let mut mock = false;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        if flag == "--mock" {
+            mock = true;
+            index += 1;
+            continue;
+        }
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--input-path" => input_path = Some(non_blank_path(value, "--input-path")?),
+            "--runner-path" => runner_path = Some(non_blank_path(value, "--runner-path")?),
+            "--report-path" => report_path = Some(non_blank_path(value, "--report-path")?),
+            "--python-command" => {
+                if value.trim().is_empty() {
+                    return Err("missing --python-command".to_string());
+                }
+                python_command = Some(value.clone());
+            }
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(PrivacyFilterTextArgs {
+        input_path: input_path.ok_or_else(|| "missing --input-path".to_string())?,
+        runner_path: runner_path.ok_or_else(|| "missing --runner-path".to_string())?,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+        python_command: python_command.unwrap_or_else(default_python_command),
+        mock,
+    })
+}
+
+fn parse_privacy_filter_corpus_args(args: &[String]) -> Result<PrivacyFilterCorpusArgs, String> {
+    let mut fixture_dir = None;
+    let mut runner_path = None;
+    let mut report_path = None;
+    let mut python_command = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--fixture-dir" => fixture_dir = Some(non_blank_path(value, "--fixture-dir")?),
+            "--runner-path" => runner_path = Some(non_blank_path(value, "--runner-path")?),
+            "--report-path" => report_path = Some(non_blank_path(value, "--report-path")?),
+            "--python-command" => {
+                if value.trim().is_empty() {
+                    return Err("missing --python-command".to_string());
+                }
+                python_command = Some(value.clone());
+            }
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(PrivacyFilterCorpusArgs {
+        fixture_dir: fixture_dir.ok_or_else(|| "missing --fixture-dir".to_string())?,
+        runner_path: runner_path.ok_or_else(|| "missing --runner-path".to_string())?,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+        python_command: python_command.unwrap_or_else(default_python_command),
+    })
+}
+
+fn parse_ocr_handoff_corpus_args(args: &[String]) -> Result<OcrHandoffCorpusArgs, String> {
+    let parsed = parse_privacy_filter_corpus_args(args)?;
+    Ok(OcrHandoffCorpusArgs {
+        fixture_dir: parsed.fixture_dir,
+        runner_path: parsed.runner_path,
+        report_path: parsed.report_path,
+        python_command: parsed.python_command,
+    })
+}
+
+fn parse_ocr_handoff_args(args: &[String]) -> Result<OcrHandoffArgs, String> {
+    let mut image_path = None;
+    let mut ocr_runner_path = None;
+    let mut handoff_builder_path = None;
+    let mut report_path = None;
+    let mut python_command = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--image-path" => image_path = Some(non_blank_path(value, "--image-path")?),
+            "--ocr-runner-path" => {
+                ocr_runner_path = Some(non_blank_path(value, "--ocr-runner-path")?)
+            }
+            "--handoff-builder-path" => {
+                handoff_builder_path = Some(non_blank_path(value, "--handoff-builder-path")?)
+            }
+            "--report-path" => report_path = Some(non_blank_path(value, "--report-path")?),
+            "--python-command" => {
+                if value.trim().is_empty() {
+                    return Err("missing --python-command".to_string());
+                }
+                python_command = Some(value.clone());
+            }
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(OcrHandoffArgs {
+        image_path: image_path.ok_or_else(|| "missing --image-path".to_string())?,
+        ocr_runner_path: ocr_runner_path.ok_or_else(|| "missing --ocr-runner-path".to_string())?,
+        handoff_builder_path: handoff_builder_path
+            .ok_or_else(|| "missing --handoff-builder-path".to_string())?,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+        python_command: python_command.unwrap_or_else(default_python_command),
+    })
+}
+
+fn default_python_command() -> String {
+    if cfg!(windows) {
+        "py".to_string()
+    } else {
+        "python3".to_string()
+    }
+}
+
+fn non_blank_path(value: &str, flag: &str) -> Result<PathBuf, String> {
+    if value.trim().is_empty() {
+        return Err(format!("missing {flag}"));
+    }
+    Ok(PathBuf::from(value))
+}
+
 fn parse_conservative_media_format(value: &str) -> Result<ConservativeMediaFormat, String> {
     match value {
         "image" => Ok(ConservativeMediaFormat::Image),
@@ -653,12 +857,830 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
         CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
         CliCommand::ReviewMedia(args) => run_review_media(args),
+        CliCommand::PrivacyFilterText(args) => run_privacy_filter_text(args),
+        CliCommand::PrivacyFilterCorpus(args) => run_privacy_filter_corpus(args),
+        CliCommand::OcrHandoffCorpus(args) => run_ocr_handoff_corpus(args),
+        CliCommand::OcrHandoff(args) => run_ocr_handoff(args),
         CliCommand::VaultAudit(args) => run_vault_audit(args),
         CliCommand::VaultDecode(args) => run_vault_decode(args),
         CliCommand::VaultExport(args) => run_vault_export(args),
         CliCommand::VaultImport(args) => run_vault_import(args),
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
     }
+}
+
+fn run_ocr_handoff_corpus(args: OcrHandoffCorpusArgs) -> Result<(), String> {
+    let _ = fs::remove_file(&args.report_path);
+    let result = (|| {
+        require_directory(&args.fixture_dir, "missing fixture directory")?;
+        require_regular_file(&args.runner_path, "missing runner file")?;
+        run_ocr_handoff_corpus_inner(&args)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&args.report_path);
+    }
+    result
+}
+
+fn run_ocr_handoff_corpus_inner(args: &OcrHandoffCorpusArgs) -> Result<(), String> {
+    let mut child = std::process::Command::new(&args.python_command)
+        .arg(&args.runner_path)
+        .arg("--fixture-dir")
+        .arg(&args.fixture_dir)
+        .arg("--output")
+        .arg(&args.report_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to run OCR handoff corpus runner: {err}"))?;
+
+    let status = wait_for_ocr_handoff_builder(&mut child, OCR_HANDOFF_BUILDER_TIMEOUT)
+        .map_err(|_| "OCR handoff corpus runner timed out".to_string())?;
+    if !status.success() {
+        return Err("OCR handoff corpus runner failed".to_string());
+    }
+
+    let report_metadata = fs::metadata(&args.report_path)
+        .map_err(|err| format!("failed to inspect OCR handoff corpus report: {err}"))?;
+    if report_metadata.len() > OCR_RUNNER_STDOUT_MAX_BYTES as u64 {
+        return Err("OCR handoff corpus report exceeded limit".to_string());
+    }
+    let report_text = fs::read_to_string(&args.report_path)
+        .map_err(|err| format!("failed to read OCR handoff corpus report: {err}"))?;
+    reject_ocr_handoff_corpus_phi_sentinels(&report_text)?;
+    let value: Value = serde_json::from_str(&report_text)
+        .map_err(|_| "OCR handoff corpus report is not valid JSON".to_string())?;
+    validate_ocr_handoff_corpus_report(&value)?;
+
+    let summary = json!({
+        "command": "ocr-handoff-corpus",
+        "report_path": "<redacted>",
+        "engine": value["engine"],
+        "scope": value["scope"],
+        "fixture_count": value["fixture_count"],
+        "ready_fixture_count": value["ready_fixture_count"],
+        "privacy_filter_contract": value["privacy_filter_contract"],
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn reject_ocr_handoff_corpus_phi_sentinels(report_text: &str) -> Result<(), String> {
+    for sentinel in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ] {
+        if report_text.contains(sentinel) {
+            return Err("OCR handoff corpus report contains raw synthetic PHI".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_ocr_handoff_corpus_report(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "OCR handoff corpus report must be a JSON object".to_string())?;
+    let allowed: HashSet<&str> = [
+        "engine",
+        "scope",
+        "fixture_count",
+        "ready_fixture_count",
+        "total_char_count",
+        "fixtures",
+        "non_goals",
+        "privacy_filter_contract",
+    ]
+    .into_iter()
+    .collect();
+    if object.keys().any(|key| !allowed.contains(key.as_str())) {
+        return Err("OCR handoff corpus report contains unexpected top-level field".to_string());
+    }
+    for key in allowed {
+        if !object.contains_key(key) {
+            return Err("OCR handoff corpus report missing required field".to_string());
+        }
+    }
+    for (key, expected) in [
+        ("engine", "PP-OCRv5-mobile-bounded-spike"),
+        ("scope", "printed_text_line_extraction_only"),
+        ("privacy_filter_contract", "text_only_normalized_input"),
+    ] {
+        if value[key] != expected {
+            return Err("OCR handoff corpus required field has unexpected value".to_string());
+        }
+    }
+    let fixture_count = value["fixture_count"]
+        .as_u64()
+        .ok_or_else(|| "OCR handoff corpus report has invalid required count shape".to_string())?;
+    let ready_fixture_count = value["ready_fixture_count"]
+        .as_u64()
+        .ok_or_else(|| "OCR handoff corpus report has invalid required count shape".to_string())?;
+    value["total_char_count"]
+        .as_u64()
+        .ok_or_else(|| "OCR handoff corpus report has invalid required count shape".to_string())?;
+    let fixtures = value["fixtures"]
+        .as_array()
+        .ok_or_else(|| "OCR handoff corpus report has invalid fixtures shape".to_string())?;
+    if fixtures.len() as u64 != fixture_count {
+        return Err("OCR handoff corpus fixture count mismatch".to_string());
+    }
+    if fixtures
+        .iter()
+        .filter(|fixture| fixture["ready_for_text_pii_eval"] == true)
+        .count() as u64
+        != ready_fixture_count
+    {
+        return Err("OCR handoff corpus ready fixture count mismatch".to_string());
+    }
+    for fixture in fixtures {
+        let fixture_object = fixture
+            .as_object()
+            .ok_or_else(|| "OCR handoff corpus report has invalid fixture shape".to_string())?;
+        let allowed_fixture: HashSet<&str> = ["id", "char_count", "ready_for_text_pii_eval"]
+            .into_iter()
+            .collect();
+        if fixture_object.len() != allowed_fixture.len()
+            || fixture_object
+                .keys()
+                .any(|key| !allowed_fixture.contains(key.as_str()))
+        {
+            return Err("OCR handoff corpus fixture contains unexpected field".to_string());
+        }
+        let id = fixture["id"]
+            .as_str()
+            .ok_or_else(|| "OCR handoff corpus fixture has invalid id".to_string())?;
+        if !is_fixture_ordinal_id(id)
+            || fixture["char_count"].as_u64().is_none()
+            || !fixture["ready_for_text_pii_eval"].is_boolean()
+        {
+            return Err("OCR handoff corpus fixture has invalid field shape".to_string());
+        }
+    }
+    for expected in ["visual_redaction", "final_pdf_rewrite_export"] {
+        if !value["non_goals"]
+            .as_array()
+            .ok_or_else(|| "OCR handoff corpus report has invalid non-goals shape".to_string())?
+            .iter()
+            .any(|item| item == expected)
+        {
+            return Err("OCR handoff corpus missing required non-goal".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn is_fixture_ordinal_id(id: &str) -> bool {
+    id.len() == 11
+        && id.starts_with("fixture_")
+        && id[8..].chars().all(|character| character.is_ascii_digit())
+}
+
+fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
+    require_regular_file(&args.image_path, "missing image file")?;
+    require_regular_file(&args.ocr_runner_path, "missing OCR runner file")?;
+    require_regular_file(&args.handoff_builder_path, "missing handoff builder file")?;
+
+    let _ = fs::remove_file(&args.report_path);
+    let temp_path = ocr_temp_path(&args.report_path);
+    let _ = fs::remove_file(&temp_path);
+
+    let mut child = std::process::Command::new(&args.python_command)
+        .arg(&args.ocr_runner_path)
+        .arg("--mock")
+        .arg(&args.image_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to run OCR runner: {err}"))?;
+    let (status, stdout_bytes) =
+        wait_for_ocr_runner(&mut child, OCR_RUNNER_TIMEOUT, OCR_RUNNER_STDOUT_MAX_BYTES).map_err(
+            |err| {
+                let _ = fs::remove_file(&args.report_path);
+                let _ = fs::remove_file(&temp_path);
+                err
+            },
+        )?;
+    if !status.success() {
+        let _ = fs::remove_file(&args.report_path);
+        let _ = fs::remove_file(&temp_path);
+        return Err("OCR runner failed".to_string());
+    }
+    let ocr_text = String::from_utf8(stdout_bytes).map_err(|_| {
+        let _ = fs::remove_file(&args.report_path);
+        let _ = fs::remove_file(&temp_path);
+        "OCR runner returned non-UTF-8 output".to_string()
+    })?;
+
+    fs::write(&temp_path, ocr_text).map_err(|err| {
+        let _ = fs::remove_file(&args.report_path);
+        let _ = fs::remove_file(&temp_path);
+        format!("failed to write OCR temp text: {err}")
+    })?;
+    let mut builder_child = std::process::Command::new(&args.python_command)
+        .arg(&args.handoff_builder_path)
+        .arg("--source")
+        .arg(&args.image_path)
+        .arg("--input")
+        .arg(&temp_path)
+        .arg("--output")
+        .arg(&args.report_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| {
+            let _ = fs::remove_file(&args.report_path);
+            let _ = fs::remove_file(&temp_path);
+            format!("failed to run OCR handoff builder: {err}")
+        })?;
+    let builder_status =
+        wait_for_ocr_handoff_builder(&mut builder_child, OCR_HANDOFF_BUILDER_TIMEOUT).map_err(
+            |err| {
+                let _ = fs::remove_file(&args.report_path);
+                let _ = fs::remove_file(&temp_path);
+                err
+            },
+        )?;
+    let _ = fs::remove_file(&temp_path);
+    if !builder_status.success() {
+        let _ = fs::remove_file(&args.report_path);
+        return Err("OCR handoff builder failed".to_string());
+    }
+
+    let report_text = fs::read_to_string(&args.report_path).map_err(|err| {
+        let _ = fs::remove_file(&args.report_path);
+        format!("failed to read OCR handoff report: {err}")
+    })?;
+    let value: Value = serde_json::from_str(&report_text).map_err(|_| {
+        let _ = fs::remove_file(&args.report_path);
+        "OCR handoff report is not valid JSON".to_string()
+    })?;
+    if let Err(error) = validate_ocr_handoff(&value) {
+        let _ = fs::remove_file(&args.report_path);
+        return Err(error);
+    }
+    let summary = json!({
+        "command": "ocr-handoff",
+        "report_path": args.report_path,
+        "ready_for_text_pii_eval": value["ready_for_text_pii_eval"],
+        "privacy_filter_contract": value["privacy_filter_contract"],
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn ocr_temp_path(report_path: &Path) -> PathBuf {
+    let mut path = report_path.to_path_buf().into_os_string();
+    path.push(".ocr-text.tmp");
+    PathBuf::from(path)
+}
+
+fn wait_for_ocr_handoff_builder(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to wait for OCR handoff builder: {err}"))?
+        {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("OCR handoff builder timed out".to_string());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn validate_ocr_handoff(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "OCR handoff must be a JSON object".to_string())?;
+    for key in [
+        "source",
+        "extracted_text",
+        "normalized_text",
+        "ready_for_text_pii_eval",
+        "candidate",
+        "engine",
+        "scope",
+        "privacy_filter_contract",
+        "non_goals",
+    ] {
+        if !object.contains_key(key) {
+            return Err("OCR handoff missing required field".to_string());
+        }
+    }
+    if !value["source"].is_string()
+        || !value["extracted_text"].is_string()
+        || !value["normalized_text"].is_string()
+        || !value["ready_for_text_pii_eval"].is_boolean()
+        || !value["non_goals"].is_array()
+    {
+        return Err("OCR handoff has invalid required field shape".to_string());
+    }
+    for (key, expected) in [
+        ("candidate", "PP-OCRv5_mobile_rec"),
+        ("engine", "PP-OCRv5-mobile-bounded-spike"),
+        ("scope", "printed_text_line_extraction_only"),
+        ("privacy_filter_contract", "text_only_normalized_input"),
+    ] {
+        if value[key] != expected {
+            return Err("OCR handoff required field has unexpected value".to_string());
+        }
+    }
+    for expected in [
+        "visual_redaction",
+        "final_pdf_rewrite_export",
+        "handwriting_recognition",
+        "full_page_detection_or_segmentation",
+        "complete_ocr_pipeline",
+    ] {
+        if !value["non_goals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == expected)
+        {
+            return Err("OCR handoff missing required non-goal".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn wait_for_ocr_runner(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    max_stdout_bytes: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to read OCR runner output".to_string())?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout_bytes = Vec::new();
+        let result = stdout
+            .take((max_stdout_bytes + 1) as u64)
+            .read_to_end(&mut stdout_bytes)
+            .map(|_| stdout_bytes)
+            .map_err(|err| format!("failed to read OCR runner output: {err}"));
+        let _ = tx.send(result);
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut captured_stdout: Option<Vec<u8>> = None;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to wait for OCR runner: {err}"))?
+        {
+            break status;
+        }
+        if captured_stdout.is_none() {
+            if let Ok(read_result) = rx.try_recv() {
+                let stdout_bytes = read_result?;
+                if stdout_bytes.len() > max_stdout_bytes {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("OCR runner output exceeded limit".to_string());
+                }
+                captured_stdout = Some(stdout_bytes);
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("OCR runner timed out".to_string());
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    let stdout_bytes = match captured_stdout {
+        Some(stdout_bytes) => stdout_bytes,
+        None => rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| "failed to read OCR runner output".to_string())??,
+    };
+    if stdout_bytes.len() > max_stdout_bytes {
+        return Err("OCR runner output exceeded limit".to_string());
+    }
+    Ok((status, stdout_bytes))
+}
+
+fn run_privacy_filter_corpus(args: PrivacyFilterCorpusArgs) -> Result<(), String> {
+    require_directory(&args.fixture_dir, "missing fixture directory")?;
+    require_regular_file(&args.runner_path, "missing runner file")?;
+
+    let _ = fs::remove_file(&args.report_path);
+    let result = run_privacy_filter_corpus_inner(&args);
+    if result.is_err() {
+        let _ = fs::remove_file(&args.report_path);
+    }
+    result
+}
+
+fn run_privacy_filter_corpus_inner(args: &PrivacyFilterCorpusArgs) -> Result<(), String> {
+    let is_canonical_fixture_dir = is_canonical_privacy_filter_corpus_dir(&args.fixture_dir);
+    let mut child = std::process::Command::new(&args.python_command)
+        .arg(&args.runner_path)
+        .arg("--fixture-dir")
+        .arg(&args.fixture_dir)
+        .arg("--output")
+        .arg(&args.report_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to run privacy filter corpus runner: {err}"))?;
+
+    let status = wait_for_ocr_handoff_builder(&mut child, PRIVACY_FILTER_RUNNER_TIMEOUT)
+        .map_err(|_| "privacy filter corpus runner timed out".to_string())?;
+    if !status.success() {
+        return Err("privacy filter corpus runner failed".to_string());
+    }
+
+    let report_metadata = fs::metadata(&args.report_path)
+        .map_err(|err| format!("failed to inspect privacy filter corpus report: {err}"))?;
+    if report_metadata.len() > PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES as u64 {
+        return Err("privacy filter corpus report exceeded limit".to_string());
+    }
+    let report_text = fs::read_to_string(&args.report_path)
+        .map_err(|err| format!("failed to read privacy filter corpus report: {err}"))?;
+    let mut value: Value = serde_json::from_str(&report_text)
+        .map_err(|_| "privacy filter corpus report is not valid JSON".to_string())?;
+    sanitize_privacy_filter_corpus_fixture_ids(&mut value)?;
+    let report_text = serde_json::to_string_pretty(&value)
+        .map_err(|err| format!("failed to render privacy filter corpus report: {err}"))?;
+    let report_text_with_newline = format!("{report_text}\n");
+    if report_text_with_newline.len() > PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES {
+        return Err("privacy filter corpus report exceeded limit".to_string());
+    }
+    fs::write(&args.report_path, report_text_with_newline)
+        .map_err(|err| format!("failed to write privacy filter corpus report: {err}"))?;
+    validate_privacy_filter_corpus_report(&value, &report_text, is_canonical_fixture_dir)
+        .map_err(|err| format!("invalid privacy filter corpus report: {err}"))?;
+
+    let summary = json!({
+        "command": "privacy-filter-corpus",
+        "report_path": "<redacted>",
+        "engine": value["engine"],
+        "scope": value["scope"],
+        "fixture_count": value["fixture_count"],
+        "total_detected_span_count": value["total_detected_span_count"],
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn sanitize_privacy_filter_corpus_fixture_ids(value: &mut Value) -> Result<(), String> {
+    let fixtures = value["fixtures"].as_array_mut().ok_or_else(|| {
+        "privacy filter corpus report has invalid required field shape".to_string()
+    })?;
+    for (index, fixture) in fixtures.iter_mut().enumerate() {
+        let fixture_object = fixture
+            .as_object_mut()
+            .ok_or_else(|| "privacy filter corpus report has invalid fixture shape".to_string())?;
+        fixture_object.insert(
+            "fixture".to_string(),
+            Value::String(format!("fixture_{:03}", index + 1)),
+        );
+    }
+    Ok(())
+}
+
+fn require_directory(path: &Path, message: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(message.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(message.to_string()),
+        Err(error) => Err(format!("failed to inspect privacy filter path: {error}")),
+    }
+}
+
+fn is_canonical_privacy_filter_corpus_dir(fixture_dir: &Path) -> bool {
+    let canonical_fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts/privacy_filter/fixtures/corpus");
+    match (
+        fs::canonicalize(fixture_dir),
+        fs::canonicalize(canonical_fixture_dir),
+    ) {
+        (Ok(requested), Ok(canonical)) => requested == canonical,
+        _ => false,
+    }
+}
+
+fn validate_privacy_filter_corpus_report(
+    value: &Value,
+    report_text: &str,
+    require_canonical_counts: bool,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "privacy filter corpus report must be a JSON object".to_string())?;
+    let required_keys = [
+        "engine",
+        "scope",
+        "fixture_count",
+        "total_detected_span_count",
+        "fixtures",
+        "category_counts",
+        "non_goals",
+    ];
+    let allowed_keys = [
+        "engine",
+        "scope",
+        "fixture_count",
+        "total_detected_span_count",
+        "fixtures",
+        "category_counts",
+        "non_goals",
+        "network_api_called",
+    ];
+    for key in required_keys {
+        if !object.contains_key(key) {
+            return Err("privacy filter corpus report missing required field".to_string());
+        }
+    }
+    for key in object.keys() {
+        if !allowed_keys.contains(&key.as_str()) {
+            return Err("privacy filter corpus report has unexpected field".to_string());
+        }
+    }
+    if object
+        .get("network_api_called")
+        .is_some_and(|network_api_called| network_api_called != false)
+    {
+        return Err("privacy filter corpus report cannot call network APIs".to_string());
+    }
+    if value["engine"] != "fallback_synthetic_patterns"
+        || value["scope"] != "text_only_synthetic_corpus"
+    {
+        return Err("privacy filter corpus report required field has unexpected value".to_string());
+    }
+    let fixture_count = value["fixture_count"].as_u64().unwrap_or(0);
+    let total_detected_span_count = value["total_detected_span_count"].as_u64().unwrap_or(0);
+    let fixtures = value["fixtures"].as_array();
+    if fixture_count == 0
+        || fixtures.is_none()
+        || fixtures.unwrap().len() as u64 != fixture_count
+        || total_detected_span_count == 0
+        || !validate_privacy_filter_category_counts(&value["category_counts"])
+        || !value["non_goals"].is_array()
+    {
+        return Err("privacy filter corpus report has invalid required field shape".to_string());
+    }
+    if fixture_count == 2 || require_canonical_counts {
+        if total_detected_span_count < 4
+            || fixture_count != 2
+            || value["category_counts"]["NAME"].as_u64().unwrap_or(0) != 2
+            || value["category_counts"]["MRN"].as_u64().unwrap_or(0) != 2
+            || value["category_counts"]["EMAIL"].as_u64().unwrap_or(0) != 1
+            || value["category_counts"]["PHONE"].as_u64().unwrap_or(0) != 2
+        {
+            return Err(
+                "privacy filter corpus report aggregate counts did not match requirements"
+                    .to_string(),
+            );
+        }
+    }
+    let non_goals = value["non_goals"].as_array().unwrap();
+    let allowed_non_goals = [
+        "ocr",
+        "visual_redaction",
+        "image_pixel_redaction",
+        "final_pdf_rewrite_export",
+        "browser_ui",
+        "desktop_ui",
+    ];
+    if !non_goals.iter().all(|item| {
+        item.as_str()
+            .is_some_and(|non_goal| allowed_non_goals.contains(&non_goal))
+    }) {
+        return Err("privacy filter corpus report has invalid non-goal".to_string());
+    }
+    if !non_goals.iter().any(|item| item == "visual_redaction") {
+        return Err("privacy filter corpus report missing required non-goal".to_string());
+    }
+    let fixture_allowed_keys = ["fixture", "detected_span_count", "category_counts"];
+    for fixture in value["fixtures"].as_array().unwrap() {
+        let fixture_object = fixture
+            .as_object()
+            .ok_or_else(|| "privacy filter corpus report has invalid fixture shape".to_string())?;
+        for key in fixture_object.keys() {
+            if !fixture_allowed_keys.contains(&key.as_str()) {
+                return Err("privacy filter corpus report fixture has unexpected field".to_string());
+            }
+        }
+        if !fixture_object
+            .get("fixture")
+            .is_some_and(|fixture| fixture.is_string())
+            || !fixture_object
+                .get("detected_span_count")
+                .is_some_and(|count| count.is_u64())
+            || !fixture_object
+                .get("category_counts")
+                .is_some_and(validate_privacy_filter_category_counts)
+        {
+            return Err("privacy filter corpus report has invalid fixture shape".to_string());
+        }
+    }
+    for raw_phi in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.test",
+        "555-111-2222",
+    ] {
+        if report_text.contains(raw_phi) {
+            return Err("privacy filter corpus report leaked raw PHI".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_privacy_filter_category_counts(value: &Value) -> bool {
+    let Some(counts) = value.as_object() else {
+        return false;
+    };
+    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE"];
+    counts
+        .iter()
+        .all(|(label, count)| allowed_labels.contains(&label.as_str()) && count.as_u64().is_some())
+}
+
+fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
+    require_regular_file(&args.input_path, "missing input file")?;
+    require_regular_file(&args.runner_path, "missing runner file")?;
+
+    let _ = fs::remove_file(&args.report_path);
+    let result = run_privacy_filter_text_inner(&args);
+    if result.is_err() {
+        let _ = fs::remove_file(&args.report_path);
+    }
+    result
+}
+
+fn run_privacy_filter_text_inner(args: &PrivacyFilterTextArgs) -> Result<(), String> {
+    let mut command = std::process::Command::new(&args.python_command);
+    command.arg(&args.runner_path);
+    if args.mock {
+        command.arg("--mock");
+    }
+    let mut child = command
+        .arg(&args.input_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
+
+    let (status, stdout_bytes) = wait_for_privacy_filter_runner(
+        &mut child,
+        PRIVACY_FILTER_RUNNER_TIMEOUT,
+        PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES,
+    )?;
+    if !status.success() {
+        return Err("privacy filter runner failed".to_string());
+    }
+
+    let stdout = String::from_utf8(stdout_bytes)
+        .map_err(|_| "runner returned non-UTF-8 output".to_string())?;
+    let value: Value =
+        serde_json::from_str(&stdout).map_err(|_| "runner returned non-JSON output".to_string())?;
+    validate_privacy_filter_output(&value)?;
+    fs::write(&args.report_path, stdout)
+        .map_err(|err| format!("failed to write privacy filter report: {err}"))?;
+
+    let summary = json!({
+        "command": "privacy-filter-text",
+        "report_path": args.report_path,
+        "engine": value["metadata"]["engine"],
+        "network_api_called": value["metadata"]["network_api_called"],
+        "detected_span_count": value["summary"]["detected_span_count"],
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn wait_for_privacy_filter_runner(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    max_stdout_bytes: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to read privacy filter runner output".to_string())?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout_bytes = Vec::new();
+        let result = stdout
+            .take((max_stdout_bytes + 1) as u64)
+            .read_to_end(&mut stdout_bytes)
+            .map(|_| stdout_bytes)
+            .map_err(|err| format!("failed to read privacy filter runner output: {err}"));
+        let _ = tx.send(result);
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut captured_stdout: Option<Vec<u8>> = None;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to wait for privacy filter runner: {err}"))?
+        {
+            break status;
+        }
+        if captured_stdout.is_none() {
+            if let Ok(read_result) = rx.try_recv() {
+                let stdout_bytes = read_result?;
+                if stdout_bytes.len() > max_stdout_bytes {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("runner output exceeded limit".to_string());
+                }
+                captured_stdout = Some(stdout_bytes);
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("privacy filter runner timed out".to_string());
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    let stdout_bytes = match captured_stdout {
+        Some(stdout_bytes) => stdout_bytes,
+        None => rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| "failed to read privacy filter runner output".to_string())??,
+    };
+    if stdout_bytes.len() > max_stdout_bytes {
+        return Err("runner output exceeded limit".to_string());
+    }
+    Ok((status, stdout_bytes))
+}
+
+fn require_regular_file(path: &Path, message: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(_) => Err(message.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(message.to_string()),
+        Err(error) => Err(format!("failed to inspect privacy filter path: {error}")),
+    }
+}
+
+fn validate_privacy_filter_output(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "privacy filter output must be a JSON object".to_string())?;
+    for key in ["summary", "masked_text", "spans", "metadata"] {
+        if !object.contains_key(key) {
+            return Err("privacy filter output missing required field".to_string());
+        }
+    }
+    if !value["summary"].is_object()
+        || !value["masked_text"].is_string()
+        || !value["spans"].is_array()
+        || !value["metadata"].is_object()
+    {
+        return Err("privacy filter output has invalid required field shape".to_string());
+    }
+    for key in ["engine", "network_api_called", "preview_policy"] {
+        if value["metadata"].get(key).is_none() {
+            return Err("privacy filter output missing required metadata field".to_string());
+        }
+    }
+    if !value["metadata"]["engine"].is_string() || !value["metadata"]["preview_policy"].is_string()
+    {
+        return Err("privacy filter output has invalid metadata field shape".to_string());
+    }
+    if value["metadata"]["network_api_called"] != false {
+        return Err("privacy filter output indicates network API use".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -1320,7 +2342,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text --input-path <path> --runner-path <path> --report-path <report.json> [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--python-command <cmd>]\n       mdid-cli ocr-handoff --image-path <image> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]

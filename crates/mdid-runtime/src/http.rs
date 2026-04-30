@@ -25,7 +25,9 @@ use mdid_domain::{
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::{
+    collections::BTreeMap,
     io::{Cursor, Read, Write},
     path::PathBuf,
 };
@@ -158,6 +160,11 @@ impl ConservativeMediaDeidentifyRequest {
             || self.file_bytes_present
             || self.base64_present
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct PrivacyFilterSummaryRequest {
+    report: Value,
 }
 
 fn deserialize_field_presence<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -294,6 +301,19 @@ struct ConservativeMediaDeidentifyResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PrivacyFilterSummaryResponse {
+    artifact: &'static str,
+    mode: String,
+    engine: String,
+    network_api_called: bool,
+    preview_policy: String,
+    input_char_count: u64,
+    detected_span_count: u64,
+    category_counts: BTreeMap<String, u64>,
+    non_goals: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorEnvelope {
     error: ErrorBody,
 }
@@ -308,6 +328,7 @@ pub fn build_router(state: RuntimeState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
+        .route("/privacy-filter/summary", post(privacy_filter_summary))
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/tabular/deidentify/xlsx", post(tabular_xlsx_deidentify))
         .route(
@@ -341,6 +362,202 @@ async fn create_pipeline(
 ) -> impl IntoResponse {
     let pipeline = state.application.register_pipeline(payload.name);
     (StatusCode::CREATED, Json(pipeline))
+}
+
+async fn privacy_filter_summary(
+    payload: Result<Json<PrivacyFilterSummaryRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_privacy_filter_summary_request_response().into_response(),
+    };
+
+    match build_privacy_filter_summary(&payload.report) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => invalid_privacy_filter_summary_request_response().into_response(),
+    }
+}
+
+fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryResponse> {
+    let report = report.as_object()?;
+    if contains_incompatible_privacy_filter_marker(report) {
+        return None;
+    }
+    if contains_true_network_api_called(report) {
+        return None;
+    }
+    if let Some(artifact) = report.get("artifact") {
+        let artifact = artifact.as_str()?;
+        if artifact != "privacy_filter_report" {
+            return None;
+        }
+    }
+
+    let summary = report
+        .get("summary")
+        .and_then(Value::as_object)
+        .unwrap_or(report);
+    let metadata = report
+        .get("metadata")
+        .and_then(Value::as_object)
+        .unwrap_or(report);
+
+    let input_char_count = required_u64(summary, "input_char_count")?;
+    let detected_span_count = required_u64(summary, "detected_span_count")?;
+    let category_counts = extract_category_counts(summary)?;
+    let non_goals = extract_non_goals(report)?;
+    let network_api_called = metadata.get("network_api_called")?.as_bool()?;
+    if network_api_called {
+        return None;
+    }
+
+    Some(PrivacyFilterSummaryResponse {
+        artifact: "privacy_filter_summary",
+        mode: safe_mode(report.get("mode").and_then(Value::as_str).unwrap_or("text"))?.to_owned(),
+        engine: safe_identifier(metadata.get("engine")?.as_str()?)?.to_owned(),
+        network_api_called,
+        preview_policy: safe_preview_policy(metadata.get("preview_policy")?.as_str()?)?.to_owned(),
+        input_char_count,
+        detected_span_count,
+        category_counts,
+        non_goals,
+    })
+}
+
+fn contains_incompatible_privacy_filter_marker(report: &Map<String, Value>) -> bool {
+    const INCOMPATIBLE_MARKERS: &[&str] = &[
+        "ocr_output",
+        "image_bytes",
+        "visual_redaction",
+        "pixel_redaction",
+        "pdf_rewrite",
+        "pdf_export",
+        "agent_id",
+        "controller_step",
+        "complete_command",
+        "claim",
+    ];
+
+    report.iter().any(|(key, value)| {
+        INCOMPATIBLE_MARKERS.contains(&key.as_str())
+            || match value {
+                Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
+                Value::Array(values) => values.iter().any(|value| match value {
+                    Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
+                    _ => false,
+                }),
+                _ => false,
+            }
+    })
+}
+
+fn contains_true_network_api_called(report: &Map<String, Value>) -> bool {
+    report.iter().any(|(key, value)| {
+        (key == "network_api_called" && value.as_bool() == Some(true))
+            || match value {
+                Value::Object(object) => contains_true_network_api_called(object),
+                Value::Array(values) => values.iter().any(|value| match value {
+                    Value::Object(object) => contains_true_network_api_called(object),
+                    _ => false,
+                }),
+                _ => false,
+            }
+    })
+}
+
+fn required_u64(report: &Map<String, Value>, field: &str) -> Option<u64> {
+    report.get(field)?.as_u64()
+}
+
+fn extract_category_counts(report: &Map<String, Value>) -> Option<BTreeMap<String, u64>> {
+    report
+        .get("category_counts")?
+        .as_object()?
+        .iter()
+        .map(|(category, count)| {
+            Some((
+                safe_category_identifier(category)?.to_owned(),
+                count.as_u64()?,
+            ))
+        })
+        .collect::<Option<BTreeMap<String, u64>>>()
+}
+
+fn extract_non_goals(report: &Map<String, Value>) -> Option<Vec<String>> {
+    match report.get("non_goals") {
+        Some(non_goals) => non_goals
+            .as_array()?
+            .iter()
+            .map(|non_goal| safe_non_goal(non_goal.as_str()?).map(ToOwned::to_owned))
+            .collect::<Option<Vec<_>>>(),
+        None => Some(default_privacy_filter_non_goals()),
+    }
+}
+
+fn default_privacy_filter_non_goals() -> Vec<String> {
+    vec![
+        "No OCR".to_owned(),
+        "No image pixel redaction".to_owned(),
+        "No PDF rewrite/export".to_owned(),
+    ]
+}
+
+fn safe_mode(mode: &str) -> Option<&str> {
+    matches!(mode, "text" | "mock" | "summary_only").then_some(mode)
+}
+
+fn safe_preview_policy(preview_policy: &str) -> Option<&str> {
+    matches!(
+        preview_policy,
+        "redacted_preview_only" | "masked-only" | "masked_only" | "redacted_placeholders_only"
+    )
+    .then_some(preview_policy)
+}
+
+fn safe_identifier(identifier: &str) -> Option<&str> {
+    (!identifier.is_empty()
+        && identifier.len() <= 128
+        && !contains_phi_sentinel(identifier)
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')))
+    .then_some(identifier)
+}
+
+fn safe_category_identifier(category: &str) -> Option<&str> {
+    matches!(category, "NAME" | "MRN" | "EMAIL" | "PHONE" | "ID").then_some(category)
+}
+
+fn safe_non_goal(non_goal: &str) -> Option<&str> {
+    (!contains_phi_sentinel(non_goal)
+        && matches!(
+            non_goal,
+            "text-only candidate"
+                | "No OCR"
+                | "ocr"
+                | "No visual redaction"
+                | "visual_redaction"
+                | "No image pixel redaction"
+                | "image_pixel_redaction"
+                | "No handwriting recognition"
+                | "handwriting_recognition"
+                | "No PDF rewrite/export"
+                | "final_pdf_rewrite_export"
+                | "No network call unless explicitly configured"
+                | "browser_ui"
+                | "desktop_ui"
+        ))
+    .then_some(non_goal)
+}
+
+fn contains_phi_sentinel(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("patient jane example")
+        || lower.contains("mrn-")
+        || lower.contains("jane@example.com")
+        || lower.contains("555-123-4567")
+        || lower.contains("555-")
+        || lower.contains("alice smith")
 }
 
 async fn tabular_deidentify(
@@ -1003,6 +1220,18 @@ fn invalid_pdf_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_pdf",
                 message: "request body did not contain a valid PDF payload",
+            },
+        }),
+    )
+}
+
+fn invalid_privacy_filter_summary_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_privacy_filter_summary_request",
+                message: "request body did not contain a valid privacy filter report object",
             },
         }),
     )
