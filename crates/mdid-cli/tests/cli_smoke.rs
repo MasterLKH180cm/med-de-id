@@ -145,6 +145,33 @@ fn ocr_handoff_corpus_runs_repo_fixture_runner_without_phi_leaks() {
 }
 
 #[test]
+fn ocr_handoff_corpus_rejects_summary_output_flag_and_removes_stale_summary() {
+    let dir = tempdir().unwrap();
+    let summary_path = dir.path().join("ocr-handoff-summary.md");
+    fs::write(&summary_path, "Patient Jane Example MRN-12345").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for sentinel in ["Jane Example", "MRN-12345", summary_path.to_str().unwrap()] {
+        assert!(!stdout.contains(sentinel));
+        assert!(!stderr.contains(sentinel));
+    }
+}
+
+#[test]
 fn ocr_handoff_corpus_removes_stale_report_when_runner_fails() {
     let dir = tempdir().unwrap();
     let fixture_dir = dir.path().join("fixtures");
@@ -1011,6 +1038,94 @@ fn cli_privacy_filter_corpus_writes_phi_safe_aggregate_summary() {
         .as_array()
         .unwrap()
         .contains(&Value::String("visual_redaction".to_string())));
+}
+
+#[test]
+fn privacy_filter_corpus_writes_phi_safe_summary_output() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    let summary_path = dir.path().join("privacy-filter-corpus-summary.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(repo_path("scripts/privacy_filter/fixtures/corpus"))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--summary-output")
+        .arg(&summary_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success();
+
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    for sentinel in [
+        "Jane Example",
+        "Alice Smith",
+        "MRN-12345",
+        "MRN-001",
+        "jane@example.com",
+        "555-123-4567",
+        "synthetic_patient_label_",
+        "/home/",
+        "/tmp/",
+        "fixtures/",
+    ] {
+        assert!(
+            !summary_text.contains(sentinel),
+            "summary leaked {sentinel}"
+        );
+    }
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "privacy_filter_corpus_summary");
+    assert_eq!(summary["engine"], "fallback_synthetic_patterns");
+    assert_eq!(summary["scope"], "text_only_synthetic_corpus");
+    assert_eq!(summary["network_api_called"], false);
+    assert_eq!(summary["fixture_count"], 2);
+    assert!(summary["total_detected_span_count"].as_u64().unwrap() > 0);
+    assert!(summary["category_counts"]["NAME"].as_u64().unwrap() > 0);
+    let non_goals = summary["non_goals"].as_array().unwrap();
+    assert!(non_goals.contains(&Value::String("ocr".to_string())));
+    assert!(non_goals.contains(&Value::String("visual_redaction".to_string())));
+    for omitted in ["fixtures", "masked_text", "spans", "preview"] {
+        assert!(summary.get(omitted).is_none(), "summary included {omitted}");
+    }
+}
+
+#[test]
+fn privacy_filter_corpus_removes_stale_summary_on_prerequisite_failure() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    let summary_path = dir.path().join("privacy-filter-corpus-summary.json");
+    fs::write(&summary_path, "Patient Jane Example MRN-12345").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(dir.path().join("missing-fixtures"))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--summary-output")
+        .arg(&summary_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stdout.contains("Jane Example"));
+    assert!(!stderr.contains("Jane Example"));
 }
 
 #[test]
