@@ -1084,6 +1084,10 @@ impl DesktopWorkflowRequestState {
                     return Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson);
                 }
 
+                if media_metadata_json_contains_media_bytes(&body) {
+                    return Err(DesktopWorkflowValidationError::MediaBytesNotAccepted);
+                }
+
                 Ok(DesktopWorkflowRequest {
                     route: self.mode.route(),
                     body,
@@ -1091,6 +1095,16 @@ impl DesktopWorkflowRequestState {
             }
         }
     }
+}
+
+fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
+    const MEDIA_BYTE_FIELDS: &[&str] =
+        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
+    value.as_object().is_some_and(|object| {
+        MEDIA_BYTE_FIELDS
+            .iter()
+            .any(|field| object.contains_key(*field))
+    })
 }
 
 fn parse_field_policies(
@@ -1166,6 +1180,7 @@ pub enum DesktopWorkflowValidationError {
     InvalidFieldPolicyJson(String),
     BlankSourceName,
     InvalidMediaMetadataJson,
+    MediaBytesNotAccepted,
 }
 
 impl std::fmt::Display for DesktopWorkflowValidationError {
@@ -1179,6 +1194,9 @@ impl std::fmt::Display for DesktopWorkflowValidationError {
                 f,
                 "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
             ),
+            Self::MediaBytesNotAccepted => {
+                write!(f, "metadata-only media review does not accept media bytes")
+            }
         }
     }
 }
@@ -2501,6 +2519,36 @@ mod tests {
             invalid.try_build_request(),
             Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson)
         );
+    }
+
+    #[test]
+    fn media_metadata_request_rejects_media_byte_payload_fields_phi_safely() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+            let state = DesktopWorkflowRequestState {
+                mode: DesktopWorkflowMode::MediaMetadataJson,
+                payload: serde_json::json!({
+                    "artifact_label": "patient-jane-image.png",
+                    "format": "image",
+                    "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+                    field: raw_media_value,
+                })
+                .to_string(),
+                field_policy_json: "{}".to_string(),
+                source_name: "local-media-metadata.json".to_string(),
+            };
+
+            let error = state.try_build_request().unwrap_err();
+            assert_eq!(error, DesktopWorkflowValidationError::MediaBytesNotAccepted);
+            let message = error.to_string();
+            assert_eq!(
+                message,
+                "metadata-only media review does not accept media bytes"
+            );
+            assert!(!message.contains(raw_media_value));
+            assert!(!message.contains("Jane Patient"));
+        }
     }
 
     #[test]

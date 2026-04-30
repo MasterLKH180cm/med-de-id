@@ -502,6 +502,50 @@ async fn conservative_media_deidentify_endpoint_reports_unsupported_payload_with
 }
 
 #[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_media_byte_payload_fields_phi_safely() {
+    let app = build_router(RuntimeState::default());
+    let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+    for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        let mut request = serde_json::json!({
+            "artifact_label": "patient-jane-image.png",
+            "format": "image",
+            "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}]
+        });
+        request[field] = serde_json::Value::String(raw_media_value.to_string());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media/conservative/deidentify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
+        assert_eq!(
+            json["error"]["message"],
+            "metadata-only media review does not accept media bytes"
+        );
+        let body_text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body_text.contains(raw_media_value));
+        assert!(!body_text.contains("Jane Patient"));
+        assert!(json.get("summary").is_none());
+        assert!(json.get("review_queue").is_none());
+        assert!(json.get("rewritten_media_bytes_base64").is_none());
+    }
+}
+
+#[tokio::test]
 async fn conservative_media_deidentify_endpoint_rejects_blank_artifact_label() {
     let app = build_router(RuntimeState::default());
     let request = json!({

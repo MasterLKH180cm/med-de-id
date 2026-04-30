@@ -123,6 +123,23 @@ struct ConservativeMediaDeidentifyRequest {
     ocr_or_visual_review_required: bool,
     #[serde(default)]
     unsupported_payload: bool,
+    #[serde(default)]
+    media_bytes_base64: Option<serde_json::Value>,
+    #[serde(default)]
+    image_bytes: Option<serde_json::Value>,
+    #[serde(default)]
+    file_bytes: Option<serde_json::Value>,
+    #[serde(default)]
+    base64: Option<serde_json::Value>,
+}
+
+impl ConservativeMediaDeidentifyRequest {
+    fn contains_media_byte_payload(&self) -> bool {
+        self.media_bytes_base64.is_some()
+            || self.image_bytes.is_some()
+            || self.file_bytes.is_some()
+            || self.base64.is_some()
+    }
 }
 
 #[derive(Deserialize)]
@@ -385,6 +402,10 @@ async fn conservative_media_deidentify(
         Ok(payload) => payload,
         Err(_) => return invalid_conservative_media_request_response().into_response(),
     };
+
+    if payload.contains_media_byte_payload() {
+        return conservative_media_bytes_not_accepted_response().into_response();
+    }
 
     let input = ConservativeMediaInput::from(payload);
     let output =
@@ -959,6 +980,18 @@ fn invalid_conservative_media_request_response() -> (StatusCode, Json<ErrorEnvel
             error: ErrorBody {
                 code: "invalid_conservative_media_request",
                 message: "request body did not contain a valid conservative media deidentification request",
+            },
+        }),
+    )
+}
+
+fn conservative_media_bytes_not_accepted_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_conservative_media_request",
+                message: "metadata-only media review does not accept media bytes",
             },
         }),
     )

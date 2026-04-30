@@ -1370,6 +1370,16 @@ struct RuntimeResponseEnvelope {
     review_queue: String,
 }
 
+fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
+    const MEDIA_BYTE_FIELDS: &[&str] =
+        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
+    value.as_object().is_some_and(|object| {
+        MEDIA_BYTE_FIELDS
+            .iter()
+            .any(|field| object.contains_key(*field))
+    })
+}
+
 fn build_submit_request(
     input_mode: InputMode,
     payload: &str,
@@ -1421,6 +1431,10 @@ fn build_submit_request(
 
         if !value.is_object() {
             return Err("Media metadata JSON must be a JSON object accepted by the local media review runtime route.".to_string());
+        }
+
+        if media_metadata_json_contains_media_bytes(&value) {
+            return Err("metadata-only media review does not accept media bytes".to_string());
         }
 
         let body_json = serde_json::to_string(&value)
@@ -3920,8 +3934,32 @@ mod tests {
     fn media_metadata_mode_rejects_non_object_payload() {
         let error = build_submit_request(InputMode::MediaMetadataJson, "[]", "metadata.json", "")
             .unwrap_err();
-
         assert_eq!(error, "Media metadata JSON must be a JSON object accepted by the local media review runtime route.");
+    }
+
+    #[test]
+    fn media_metadata_json_request_rejects_media_byte_payload_fields_phi_safely() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+            let payload = serde_json::json!({
+                "artifact_label": "patient-jane-image.png",
+                "format": "image",
+                "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+                field: raw_media_value,
+            })
+            .to_string();
+
+            let error =
+                build_submit_request(InputMode::MediaMetadataJson, &payload, "metadata.json", "")
+                    .unwrap_err();
+            assert_eq!(
+                error,
+                "metadata-only media review does not accept media bytes"
+            );
+            assert!(!error.contains(raw_media_value));
+            assert!(!error.contains("Jane Patient"));
+        }
     }
 
     #[test]
