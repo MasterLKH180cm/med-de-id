@@ -123,23 +123,47 @@ struct ConservativeMediaDeidentifyRequest {
     ocr_or_visual_review_required: bool,
     #[serde(default)]
     unsupported_payload: bool,
-    #[serde(default)]
-    media_bytes_base64: Option<serde_json::Value>,
-    #[serde(default)]
-    image_bytes: Option<serde_json::Value>,
-    #[serde(default)]
-    file_bytes: Option<serde_json::Value>,
-    #[serde(default)]
-    base64: Option<serde_json::Value>,
+    #[serde(
+        default,
+        rename = "media_bytes_base64",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    media_bytes_base64_present: bool,
+    #[serde(
+        default,
+        rename = "image_bytes",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    image_bytes_present: bool,
+    #[serde(
+        default,
+        rename = "file_bytes",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    file_bytes_present: bool,
+    #[serde(
+        default,
+        rename = "base64",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    base64_present: bool,
 }
 
 impl ConservativeMediaDeidentifyRequest {
     fn contains_media_byte_payload(&self) -> bool {
-        self.media_bytes_base64.is_some()
-            || self.image_bytes.is_some()
-            || self.file_bytes.is_some()
-            || self.base64.is_some()
+        self.media_bytes_base64_present
+            || self.image_bytes_present
+            || self.file_bytes_present
+            || self.base64_present
     }
+}
+
+fn deserialize_field_presence<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde_json::Value::deserialize(deserializer)?;
+    Ok(true)
 }
 
 #[derive(Deserialize)]
