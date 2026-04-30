@@ -86,6 +86,18 @@ cargo test -p mdid-cli ocr_handoff_corpus -- --nocapture
 
 Result: PASS for the PP-OCRv5 mobile handoff corpus wrapper and direct runner. This documents printed-text extraction readiness only: the CLI validates aggregate-only PHI-safe readiness metadata for checked-in synthetic printed-text fixtures, the downstream text-only Privacy Filter input contract, strict report shape, sanitized fixture IDs, redacted report-path stdout, and stale-report cleanup on failure. It is not visual redaction, not image pixel redaction, not final PDF rewrite/export, not handwriting recognition, not full page detection, not browser integration, not desktop integration, not model-quality evidence, and not a complete OCR pipeline. Browser/Web +5 target: FAIL; Desktop app +5 target: FAIL because this round lands CLI/runtime blocker progress only, not browser/desktop capability. It adds no Browser/Desktop +5 surface progress and does not change completion: CLI 95%, Browser/Web 93%, Desktop app 93%, Overall 95%.
 
+### OCR-to-Privacy-Filter corpus bridge evidence
+
+The bounded CLI/runtime corpus bridge can be reproduced with:
+
+```bash
+python scripts/ocr_eval/run_ocr_to_privacy_filter_corpus.py --fixture-dir scripts/ocr_eval/fixtures/corpus --ocr-runner-path scripts/ocr_eval/run_ocr_handoff_corpus.py --privacy-runner-path scripts/privacy_filter/run_privacy_filter.py --output /tmp/ocr-to-privacy-filter-corpus.json
+```
+
+Result: PASS for the bounded PP-OCRv5 mobile synthetic handoff corpus composed with the existing text-only Privacy Filter runner. The bridge writes an aggregate-only PHI-safe report containing sanitized fixture IDs, readiness counts, Privacy Filter detected-span counts, Privacy Filter category counts, and explicit non-goals only.
+
+The report intentionally omits raw OCR text, normalized text, masked text, raw spans, raw previews, fixture filenames, fixture paths, image data, bbox data, and raw synthetic PHI. This is CLI/runtime evidence for aggregate OCR handoff readiness flowing into text-only Privacy Filter detection only. It is not Browser/Web execution, not Desktop execution, not visual redaction, not image pixel redaction, not handwriting recognition, not final PDF rewrite/export, not OCR production readiness, and not model-quality benchmark evidence.
+
 ### CLI wrapper RED/GREEN evidence
 ```bash
 cargo test -p mdid-cli ocr_handoff -- --nocapture
