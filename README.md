@@ -61,16 +61,71 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-Completion snapshot, based only on landed repository features and repository-visible verification state (truth-synced 2026-04-30 on `feat/cross-surface-pdf-visual-redaction-blockers-cron-2021` through desktop/browser PDF visual-redaction blocker commits). Prior Browser/Web 100% and Desktop app 100% claims were not valid under the current rubric: PHI-safe report-artifact metadata is useful blocker evidence, but it is not full browser/desktop workflow completion while full OCR, actual visual redaction, PDF rewrite/export, richer vault/portable UX, deeper upload/download flows, packaging/hardening, and broader review/governance polish remain incomplete. The corrected rubric now scores surfaces by real end-to-end workflow capability, not by the presence of report metadata alone:
+Completion snapshot, based only on landed repository features and repository-visible verification state (truth-synced 2026-04-30 on `feat/cross-surface-pdf-review-actionability-cron-2046` through browser/desktop PDF review actionability commits). Prior Browser/Web 100% and Desktop app 100% claims were not valid under the current rubric: PHI-safe report-artifact metadata and actionability summaries are useful workflow evidence, but they are not full browser/desktop workflow completion while full OCR, actual visual redaction, PDF rewrite/export, richer vault/portable UX, deeper upload/download flows, packaging/hardening, and broader review/governance polish remain incomplete. The corrected rubric scores surfaces by real end-to-end workflow capability, not by the presence of report metadata alone:
 
 | Area | Completion | Status |
 |---|---:|---|
 | CLI | 95% | Automation surface remains hardened: local de-identification readiness, bounded CSV/XLSX/DICOM rewrite commands, PDF review report only, conservative media metadata review, vault audit/decode, portable export/import/inspect, and metadata-only artifact verification are landed. No PDF rewrite/export, full OCR, visual redaction, generalized transfer workflow UX, unrelated workflow behavior, or packaging/hardening is claimed. |
-| Browser/web | 88% | Browser/web now includes PHI-safe PDF visual-redaction blocker metadata in successful PDF review report downloads, alongside previously landed page statuses, OCR blocker evidence, PDF review report downloads, tabular/DICOM output downloads, safe vault/portable response reports, decoded-values/audit-events exports, and bounded localhost request surfaces. This is a meaningful workflow-progress slice because users can now see why a PDF remains blocked for visual redaction/OCR without exposing raw text, bbox arrays, nested sensitive payloads, PDF bytes/base64 payloads, or unallowlisted runtime response data. It is still not 100% because full OCR, actual visual redaction, rewritten PDF export, richer file-picker/upload/download depth, full vault/portable UX, auth/session decisions where needed, and final governance polish remain incomplete. |
-| Desktop app | 88% | Desktop now includes matching PHI-safe PDF visual-redaction blocker metadata in PDF review report save helpers, alongside previously landed page statuses, OCR blocker evidence, PDF review report saves, DICOM/tabular workflow output helpers, safe vault/portable response reports, decoded-values/audit-events saves, portable artifact JSON handoff, and bounded workstation request helpers. This improves the sensitive workstation PDF review path by preserving blocker evidence without leaking raw text, bbox arrays, nested sensitive payloads, PDF bytes/base64 payloads, or unallowlisted runtime response data. It is still not 100% because full OCR, actual visual redaction, rewritten PDF export, full desktop execution/file-picker/save UX depth, deeper vault/decode/audit investigation workflows, packaging/hardening, and review/governance polish remain incomplete. |
-| Overall | 94% | The repo remains a local-first medical de-identification workspace with strong bounded CLI/runtime/browser/desktop slices, vault MVP, tabular CSV/XLSX support, DICOM rewrite support, PDF review/report support, conservative media metadata review, portable artifact handling, and cross-surface PHI-safe report artifacts. Overall completion is corrected downward from the previous 99% because Browser/Web and Desktop were overstated at 100%; the newly landed visual-redaction blocker evidence improves both surfaces from the corrected 83% baseline to 88%, but the product still needs full OCR/visual redaction/PDF rewrite-export, richer browser/desktop workflow UX, deeper vault/portable flows, packaging/hardening, and final audit/governance polish. |
+| Browser/web | 93% | Browser/web now includes PHI-safe PDF review actionability summaries in successful PDF review report downloads, alongside visual-redaction blocker metadata, page statuses, OCR blocker evidence, PDF review report downloads, tabular/DICOM output downloads, safe vault/portable response reports, decoded-values/audit-events exports, and bounded localhost request surfaces. The actionability object tells users whether automatic rewrite appears ready, counts distinct blocked pages, distinguishes OCR-required versus visual-review pages, and emits fixed safe next-step strings without copying raw text, bbox arrays, nested sensitive payloads, PDF bytes/base64 payloads, or unallowlisted runtime response data. It is still not 100% because full OCR, actual visual redaction, rewritten PDF export, richer file-picker/upload/download depth, full vault/portable UX, auth/session decisions where needed, and final governance polish remain incomplete. |
+| Desktop app | 93% | Desktop now includes matching PHI-safe PDF review actionability summaries in PDF review report save helpers, alongside visual-redaction blocker metadata, page statuses, OCR blocker evidence, PDF review report saves, DICOM/tabular workflow output helpers, safe vault/portable response reports, decoded-values/audit-events saves, portable artifact JSON handoff, and bounded workstation request helpers. This improves the sensitive workstation PDF review path by preserving safe next-action guidance and distinct blocker counts without leaking raw text, bbox arrays, nested sensitive payloads, PDF bytes/base64 payloads, or unallowlisted runtime response data. It is still not 100% because full OCR, actual visual redaction, rewritten PDF export, full desktop execution/file-picker/save UX depth, deeper vault/decode/audit investigation workflows, packaging/hardening, and review/governance polish remain incomplete. |
+| Overall | 95% | The repo remains a local-first medical de-identification workspace with strong bounded CLI/runtime/browser/desktop slices, vault MVP, tabular CSV/XLSX support, DICOM rewrite support, PDF review/report support, conservative media metadata review, portable artifact handling, and cross-surface PHI-safe report artifacts. Browser/Web and Desktop both advanced from 88% to 93% because the landed actionability summaries convert prior PDF blocker evidence into user-facing next-step guidance across both workflow surfaces; overall moves from 94% to 95%. The product still needs full OCR/visual redaction/PDF rewrite-export, richer browser/desktop workflow UX, deeper vault/portable flows, packaging/hardening, and final audit/governance polish. |
 
-Verification evidence for this truth-sync: cross-surface PDF visual-redaction blocker evidence landed on `feat/cross-surface-pdf-visual-redaction-blockers-cron-2021` in `a1bb9b7` (`feat(browser): add pdf visual redaction blockers`), `03437ca` (`fix(browser): count visual blocker entries`), and `b040f3a` (`feat(desktop): add pdf visual redaction blockers`). Browser/Web PDF review report downloads and Desktop PDF review report saves now include a PHI-safe `visual_redaction_blockers` object with visual-review page counts, OCR-required page counts, entry-based blocked-page counts, redaction rewrite availability, and a blocker status string, derived only from allowlisted primitive page-status fields plus `no_rewritten_pdf`. This is blocker evidence only: it does not add OCR, visual redaction, handwriting handling, PDF rewrite/export, or broader workflow semantics. Verification passed: `cargo test -p mdid-browser pdf_review_report -- --nocapture`, `cargo test -p mdid-desktop pdf_review_report -- --nocapture`, `cargo fmt --check`, `git diff --check`, SDD spec reviews PASS, and SDD quality reviews APPROVED for both surfaces. Completion now reads CLI 95%, browser/web 88%, desktop app 88%, overall 94%.
+Verification evidence for this truth-sync: cross-surface PDF review actionability landed on `feat/cross-surface-pdf-review-actionability-cron-2046` in `a7c26df` (`feat(browser): add pdf review actionability`), `e31a4a7` (`fix(browser): align pdf actionability semantics`), `e4ade80` (`fix(browser): count distinct actionability pages`), and `179ccf3` (`feat(desktop): add pdf review actionability`). Browser/Web PDF review report downloads and Desktop PDF review report saves now include a PHI-safe `actionability` object with automatic rewrite readiness, distinct blocked-page counts, OCR-required page counts, visual-review page counts, and fixed next-step guidance derived only from allowlisted page-status metadata plus safe rewrite-availability flags such as `redaction_rewrite_available` or `no_rewritten_pdf`. This is actionability/report evidence only: it does not add OCR, visual redaction, handwriting handling, PDF rewrite/export, or broader workflow semantics. Verification passed: `cargo test -p mdid-browser pdf_review_report -- --nocapture`, `cargo test -p mdid-desktop pdf_review_report -- --nocapture`, `cargo fmt --check`, `git diff --check`, SDD spec reviews PASS, and SDD quality reviews APPROVED for both surfaces. Completion now reads CLI 95%, browser/web 93%, desktop app 93%, overall 95%.
+
+## Current open action items
+
+Truth-synced 2026-04-30 from the current completion rubric, the still-open plan backlog, and repository-visible missing capabilities. These items are **not done** and must not be counted as completed progress until the related code, tests, and truth-sync land.
+
+1. **Land the five unfinished core safety/completion slices from `docs/superpowers/plans/2026-04-30-core-completion-safety-disclosures.md`.**
+   - **XLSX multi-sheet disclosure:** expose which worksheet was processed, keep first-non-empty-sheet behavior, and thread that disclosure through adapter/application/runtime plus browser/desktop copy.
+   - **Conservative media payload rejection:** reject `media_bytes`, `media_bytes_base64`, or metadata-declared raw payloads with PHI-safe errors instead of silently treating the route as metadata-only review.
+   - **DICOM disclosure hardening:** explicitly disclose that burned-in annotations / pixel redaction are not performed so current DICOM behavior is not overstated.
+   - **PDF review-only guard:** make review-only/no-rewrite status explicit across shared/domain/runtime/browser/desktop paths so users cannot misread PDF review as rewritten PDF support.
+   - **Vault audit pagination:** finish offset/cursor pagination threading across runtime, CLI, browser, and desktop contract/copy.
+   - **Required exit condition:** do not truth-sync these slices as complete until focused tests, broader package suites, workspace verification, and README updates all pass.
+
+2. **Finish cross-surface portable response report save/download support from `docs/superpowers/plans/2026-04-30-portable-artifact-response-downloads.md`.**
+   - Add browser portable inspect/import PHI-safe response report downloads with redacted `artifact`, `decoded_values`, `records`, and passphrase-bearing fields.
+   - Add matching desktop portable export/inspect/import PHI-safe response report save helpers and status copy.
+   - Keep browser vault export as the explicit high-risk encrypted artifact download path instead of routing it through the safe response-report path.
+   - Only increase Browser/Web, Desktop, or Overall completion after controller-visible verification and README truth-sync actually land.
+
+3. **Close the remaining Browser/Web workflow depth gaps that still block 100%.**
+   - Full OCR for PDFs.
+   - Actual visual redaction and rewritten PDF export instead of blocker/report-only evidence.
+   - Richer upload/download and file-picker UX beyond the current bounded helper/download set.
+   - Deeper vault/portable workflow UX beyond bounded localhost request/response surfaces.
+   - Any auth/session decision work only where a real browser workflow truly needs it.
+   - Final browser governance/review polish after the core workflow gaps above are no longer blocking.
+
+4. **Close the remaining Desktop workstation gaps that still block 100%.**
+   - Full OCR, actual visual redaction, and rewritten PDF export instead of review/report-only saves.
+   - Full desktop execution/file-picker/save UX depth beyond bounded helpers.
+   - Deeper vault decode/audit investigation workflows and richer workstation browsing/inspection.
+   - Broader portable transfer workflow UX beyond JSON handoff helpers.
+   - Remaining DICOM/PDF/media workflow depth that is currently helper-level only.
+   - Packaging/hardening and final workstation governance/review polish.
+
+5. **Close the remaining CLI/product-core gaps that still block production readiness.**
+   - Conservative media rewrite/export remains unfinished; current CLI media support is metadata-review only.
+   - Generalized transfer workflow UX remains narrower than the final product story.
+   - Production packaging/hardening remains unfinished.
+   - Deeper policy/detection coverage is still incomplete, especially where current bounded routes rely on conservative or partial semantics.
+
+6. **Finish the still-missing shared product capabilities that block the repo from claiming end-to-end completion.**
+   - Full OCR pipeline.
+   - Actual visual redaction.
+   - Full PDF rewrite/export.
+   - Media-byte rewrite/export beyond metadata-only review.
+   - Handwriting handling.
+   - FCS semantic parsing.
+   - Generalized spreadsheet/workbook handling beyond the current first-non-empty-sheet bounded contract.
+   - Cross-surface final verification/audit polish once the real workflow gaps above are closed.
+
+7. **Keep README and cron truth aligned with landed facts only.**
+   - README completion numbers must move only when landed, controller-visible work changes the rubric-relevant capability surface.
+   - Cron output must explicitly report which of the open action items above advanced, which stayed blocked, what tests ran, and why any completion number did or did not move.
+   - Do not replace implementation progress with documentation churn, branch accounting churn, or synthetic action-item splitting.
 
 Superseded historical verification evidence follows for audit trail only. Any completion percentages in the retained historical paragraphs below describe their original point in time and do not override the corrected current snapshot above.
 
