@@ -1,11 +1,11 @@
 use mdid_desktop::{
-    write_desktop_decode_values_json, write_portable_artifact_json, write_safe_vault_response_json,
-    DesktopFileImportPayload, DesktopFileImportTarget, DesktopPortableFileImportPayload,
-    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
-    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
-    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseMode,
-    DesktopVaultResponseState, DesktopWorkflowMode, DesktopWorkflowRequestState,
-    DesktopWorkflowResponseState,
+    write_desktop_audit_events_json, write_desktop_decode_values_json,
+    write_portable_artifact_json, write_safe_vault_response_json, DesktopFileImportPayload,
+    DesktopFileImportTarget, DesktopPortableFileImportPayload, DesktopPortableMode,
+    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
+    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
+    DesktopVaultRequestState, DesktopVaultResponseMode, DesktopVaultResponseState,
+    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -17,6 +17,7 @@ const DROPPED_FILE_READ_ERROR: &str = "file import failed: unable to read droppe
 const DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH: &str = "desktop-deidentified-output.bin";
 const DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH: &str = "desktop-vault-response-report.json";
 const DEFAULT_DECODE_VALUES_SAVE_PATH: &str = "desktop-decoded-values.json";
+const DEFAULT_AUDIT_EVENTS_SAVE_PATH: &str = "desktop-audit-events.json";
 
 fn is_replaceable_workflow_output_save_path(path: &str, generated_path: Option<&str>) -> bool {
     let path = path.trim();
@@ -109,6 +110,30 @@ fn next_decode_values_save_path(
     (next_path, next_generated_path)
 }
 
+fn is_replaceable_audit_events_save_path(path: &str, generated_path: Option<&str>) -> bool {
+    let path = path.trim();
+    path.is_empty()
+        || path == DEFAULT_AUDIT_EVENTS_SAVE_PATH
+        || generated_path.is_some_and(|generated| path == generated.trim())
+}
+
+fn next_audit_events_save_path(
+    current_path: &str,
+    generated_path: Option<&str>,
+    source_name: Option<&str>,
+) -> (String, Option<String>) {
+    if !is_replaceable_audit_events_save_path(current_path, generated_path) {
+        return (current_path.to_string(), None);
+    }
+
+    let next_path = safe_desktop_source_stem(source_name)
+        .map(|stem| format!("{stem}-audit-events.json"))
+        .unwrap_or_else(|| DEFAULT_AUDIT_EVENTS_SAVE_PATH.to_string());
+    let next_generated_path =
+        (next_path != DEFAULT_AUDIT_EVENTS_SAVE_PATH).then(|| next_path.clone());
+    (next_path, next_generated_path)
+}
+
 fn response_report_source_name<'a>(
     mode: DesktopRuntimeSubmissionMode,
     vault_request_state: &'a DesktopVaultRequestState,
@@ -181,6 +206,9 @@ struct DesktopApp {
     decode_values_save_path: String,
     generated_decode_values_save_path: Option<String>,
     decode_values_save_status: String,
+    audit_events_save_path: String,
+    generated_audit_events_save_path: Option<String>,
+    audit_events_save_status: String,
     portable_response_report_source_name: Option<String>,
 }
 
@@ -206,6 +234,9 @@ impl Default for DesktopApp {
             decode_values_save_path: DEFAULT_DECODE_VALUES_SAVE_PATH.to_string(),
             generated_decode_values_save_path: None,
             decode_values_save_status: String::new(),
+            audit_events_save_path: DEFAULT_AUDIT_EVENTS_SAVE_PATH.to_string(),
+            generated_audit_events_save_path: None,
+            audit_events_save_status: String::new(),
             portable_response_report_source_name: None,
         }
     }
@@ -261,6 +292,16 @@ impl DesktopApp {
                         self.decode_values_save_path = next_path;
                         self.generated_decode_values_save_path = generated_path;
                         self.decode_values_save_status.clear();
+                    }
+                    if self.vault_response_state.audit_events_export_json().is_ok() {
+                        let (next_path, generated_path) = next_audit_events_save_path(
+                            &self.audit_events_save_path,
+                            self.generated_audit_events_save_path.as_deref(),
+                            source_name,
+                        );
+                        self.audit_events_save_path = next_path;
+                        self.generated_audit_events_save_path = generated_path;
+                        self.audit_events_save_status.clear();
                     }
                 } else if let DesktopRuntimeSubmissionMode::Workflow(workflow_mode) = mode {
                     self.response_state
@@ -407,6 +448,23 @@ impl DesktopApp {
             Err(_) => {
                 self.decode_values_save_status =
                     "decoded values JSON could not be saved".to_string();
+            }
+        }
+    }
+
+    fn save_audit_events(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        write_desktop_audit_events_json(&self.vault_response_state, path)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn save_audit_events_response(&mut self) {
+        match self.save_audit_events(self.audit_events_save_path.trim()) {
+            Ok(()) => {
+                self.audit_events_save_status = "Audit events JSON saved.".to_string();
+            }
+            Err(_) => {
+                self.audit_events_save_status = "audit events JSON could not be saved".to_string();
             }
         }
     }
@@ -763,6 +821,16 @@ impl eframe::App for DesktopApp {
                 }
                 if !self.decode_values_save_status.is_empty() {
                     ui.label(&self.decode_values_save_status);
+                }
+            }
+            if self.vault_response_state.audit_events_export_json().is_ok() {
+                ui.label("Save audit events JSON");
+                ui.text_edit_singleline(&mut self.audit_events_save_path);
+                if ui.button("Save audit events JSON").clicked() {
+                    self.save_audit_events_response();
+                }
+                if !self.audit_events_save_status.is_empty() {
+                    ui.label(&self.audit_events_save_status);
                 }
             }
             ui.separator();
@@ -1128,6 +1196,66 @@ mod tests {
                 Some("Partner-Audit.vault-decoded-values.json".to_string())
             )
         );
+    }
+
+    #[test]
+    fn audit_events_save_path_uses_sanitized_source_when_default() {
+        assert_eq!(
+            next_audit_events_save_path(
+                DEFAULT_AUDIT_EVENTS_SAVE_PATH,
+                None,
+                Some("C:\\vaults\\Clinic Batch.vault.json"),
+            ),
+            (
+                "Clinic-Batch.vault-audit-events.json".to_string(),
+                Some("Clinic-Batch.vault-audit-events.json".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn audit_events_save_path_preserves_explicit_user_override() {
+        assert_eq!(
+            next_audit_events_save_path(
+                "C:\\exports\\custom-audit-events.json",
+                None,
+                Some("C:\\vaults\\Clinic Batch.vault.json"),
+            ),
+            ("C:\\exports\\custom-audit-events.json".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn app_audit_events_save_path_refresh_clears_stale_status() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(serde_json::json!({
+                "event_count": 1,
+                "returned_event_count": 1,
+                "events": [{"event_id": "evt-1", "kind": "decode"}]
+            })))
+            .expect("send response");
+        let mut app = DesktopApp {
+            runtime_submission_receiver: Some(receiver),
+            runtime_submission_mode: Some(DesktopRuntimeSubmissionMode::Vault(
+                DesktopVaultMode::AuditEvents,
+            )),
+            audit_events_save_status: "Audit events JSON saved.".to_string(),
+            ..DesktopApp::default()
+        };
+        app.vault_request_state.vault_path = "C:\\vaults\\Clinic Batch.vault.json".to_string();
+
+        app.poll_runtime_submission();
+
+        assert_eq!(
+            app.audit_events_save_path,
+            "Clinic-Batch.vault-audit-events.json"
+        );
+        assert_eq!(
+            app.generated_audit_events_save_path.as_deref(),
+            Some("Clinic-Batch.vault-audit-events.json")
+        );
+        assert!(app.audit_events_save_status.is_empty());
     }
 
     #[test]

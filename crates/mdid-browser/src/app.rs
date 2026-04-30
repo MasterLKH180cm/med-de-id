@@ -1117,6 +1117,70 @@ impl BrowserFlowState {
         })
     }
 
+    fn suggested_audit_events_file_name(&self) -> String {
+        self.imported_file_name
+            .as_deref()
+            .or_else(|| {
+                let source_name = self.source_name.trim();
+                (!source_name.is_empty()).then_some(source_name)
+            })
+            .map(sanitized_import_stem)
+            .filter(|stem| stem != "mdid-browser-output" && stem != "local-review")
+            .map(|stem| format!("{stem}-vault-audit-events.json"))
+            .unwrap_or_else(|| "mdid-browser-vault-audit-events.json".to_string())
+    }
+
+    fn audit_events_payload(&self) -> Result<serde_json::Value, String> {
+        const ERROR: &str = "Audit events download is only available after a successful vault audit events response.";
+
+        if self.input_mode != InputMode::VaultAuditEvents {
+            return Err(ERROR.to_string());
+        }
+
+        let response = [&self.result_output, &self.summary]
+            .into_iter()
+            .filter_map(|candidate| serde_json::from_str::<serde_json::Value>(candidate).ok())
+            .find(|candidate| candidate.get("events").is_some())
+            .ok_or_else(|| ERROR.to_string())?;
+
+        let events = response
+            .get("events")
+            .filter(|value| value.is_array())
+            .cloned()
+            .ok_or_else(|| ERROR.to_string())?;
+
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "mode".to_string(),
+            serde_json::Value::String("vault_audit_events".to_string()),
+        );
+        payload.insert("events".to_string(), events);
+
+        for field in ["event_count", "returned_event_count", "next_offset"] {
+            if let Some(value) = response.get(field) {
+                payload.insert(field.to_string(), value.clone());
+            }
+        }
+
+        Ok(serde_json::Value::Object(payload))
+    }
+
+    fn can_export_audit_events(&self) -> bool {
+        self.audit_events_payload().is_ok()
+    }
+
+    fn prepared_audit_events_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
+        let bytes = serde_json::to_vec_pretty(&self.audit_events_payload()?)
+            .map_err(|_| "Browser audit events download could not encode JSON.".to_string())?;
+
+        Ok(BrowserDownloadPayload {
+            file_name: self.suggested_audit_events_file_name(),
+            mime_type: "application/json;charset=utf-8",
+            bytes,
+            is_text: true,
+        })
+    }
+
     fn suggested_decoded_values_file_name(&self) -> String {
         self.imported_file_name
             .as_deref()
@@ -3225,6 +3289,98 @@ mod tests {
         );
 
         assert!(!state.can_export_decoded_values());
+    }
+
+    #[test]
+    fn audit_events_download_exports_runtime_events_with_count_metadata() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultAuditEvents,
+            imported_file_name: Some("Clinic Vault 2026.vault".to_string()),
+            result_output: serde_json::json!({
+                "events": [{"kind":"vault.decode","actor":"clinician","record_id":"patient-1"}],
+                "event_count": 42,
+                "returned_event_count": 1,
+                "next_offset": 11,
+                "vault_path": "/phi/vault",
+                "passphrase": "secret",
+                "request": {"vault_passphrase":"secret"}
+            })
+            .to_string(),
+            summary: serde_json::json!({"event_count": 0, "events": []}).to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        assert!(state.can_export_audit_events());
+        let payload = state
+            .prepared_audit_events_download_payload()
+            .expect("audit events payload");
+        let json: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json");
+        let text = String::from_utf8(payload.bytes).expect("utf8");
+
+        assert_eq!(
+            payload.file_name,
+            "clinic-vault-2026-vault-audit-events.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(json["mode"], "vault_audit_events");
+        assert_eq!(json["events"][0]["kind"], "vault.decode");
+        assert_eq!(json["event_count"], 42);
+        assert_eq!(json["returned_event_count"], 1);
+        assert_eq!(json["next_offset"], 11);
+        assert!(json.get("vault_path").is_none());
+        assert!(json.get("passphrase").is_none());
+        assert!(json.get("request").is_none());
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn audit_events_download_falls_back_to_summary_json() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultAuditEvents,
+            source_name: "Audit Export Source.json".to_string(),
+            result_output: "Read-only audit response summarized below.".to_string(),
+            summary: serde_json::json!({
+                "events": [{"kind":"vault.export"}],
+                "event_count": 1
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_audit_events_download_payload().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert_eq!(
+            payload.file_name,
+            "audit-export-source-vault-audit-events.json"
+        );
+        assert_eq!(json["mode"], "vault_audit_events");
+        assert_eq!(json["events"][0]["kind"], "vault.export");
+        assert_eq!(json["event_count"], 1);
+        assert!(json.get("returned_event_count").is_none());
+        assert!(json.get("next_offset").is_none());
+    }
+
+    #[test]
+    fn audit_events_download_rejects_non_audit_mode_and_responses_without_events() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            result_output: serde_json::json!({"events":[{"kind":"vault.decode"}]}).to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        assert!(!state.can_export_audit_events());
+        assert_eq!(
+            state.prepared_audit_events_download_payload().unwrap_err(),
+            "Audit events download is only available after a successful vault audit events response."
+        );
+
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.result_output = serde_json::json!({"event_count": 0}).to_string();
+        assert!(!state.can_export_audit_events());
+        assert!(state.prepared_audit_events_download_payload().is_err());
     }
 
     #[test]
