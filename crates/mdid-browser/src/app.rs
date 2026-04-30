@@ -484,6 +484,7 @@ struct BrowserFlowState {
     imported_file_name: Option<String>,
     field_policy_json: String,
     result_output: String,
+    decoded_values_output: Option<String>,
     summary: String,
     review_queue: String,
     error_banner: Option<String>,
@@ -520,6 +521,10 @@ impl fmt::Debug for BrowserFlowState {
             )
             .field("field_policy_json", &"<redacted>")
             .field("result_output", &"<redacted>")
+            .field(
+                "decoded_values_output",
+                &self.decoded_values_output.as_ref().map(|_| "<redacted>"),
+            )
             .field("summary", &"<redacted>")
             .field("review_queue", &"<redacted>")
             .field(
@@ -642,6 +647,7 @@ impl Default for BrowserFlowState {
             imported_file_name: None,
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
+            decoded_values_output: None,
             summary: IDLE_SUMMARY.to_string(),
             review_queue: IDLE_REVIEW_QUEUE.to_string(),
             error_banner: None,
@@ -785,6 +791,12 @@ impl BrowserFlowState {
         );
     }
 
+    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+    fn apply_import_read_error(&mut self, message: &str) {
+        self.invalidate_generated_state();
+        self.error_banner = Some(message.to_string());
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn suggested_export_file_name(&self) -> String {
         if self.input_mode == InputMode::MediaMetadataJson {
@@ -918,6 +930,56 @@ impl BrowserFlowState {
         !self.result_output.trim().is_empty()
     }
 
+    fn suggested_decoded_values_file_name(&self) -> String {
+        self.imported_file_name
+            .as_deref()
+            .map(sanitized_import_stem)
+            .filter(|stem| stem != "mdid-browser-output")
+            .map(|stem| format!("{stem}-decoded-values.json"))
+            .unwrap_or_else(|| "mdid-browser-decoded-values.json".to_string())
+    }
+
+    fn decoded_values_payload(&self) -> Result<serde_json::Value, String> {
+        const ERROR: &str = "Decoded values download is only available after a successful vault decode response with decoded values.";
+
+        if self.input_mode != InputMode::VaultDecode {
+            return Err(ERROR.to_string());
+        }
+
+        let decoded_values_output = self
+            .decoded_values_output
+            .as_ref()
+            .ok_or_else(|| ERROR.to_string())?;
+        let response: serde_json::Value =
+            serde_json::from_str(decoded_values_output).map_err(|_| ERROR.to_string())?;
+        let decoded_values = response
+            .get("decoded_values")
+            .filter(|value| value.is_array() || value.is_object())
+            .cloned()
+            .ok_or_else(|| ERROR.to_string())?;
+
+        Ok(serde_json::json!({
+            "mode": "vault_decode_values",
+            "decoded_values": decoded_values,
+        }))
+    }
+
+    fn can_export_decoded_values(&self) -> bool {
+        self.decoded_values_payload().is_ok()
+    }
+
+    fn prepared_decoded_values_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
+        let bytes = serde_json::to_vec_pretty(&self.decoded_values_payload()?)
+            .map_err(|_| "Browser decoded values download could not encode JSON.".to_string())?;
+
+        Ok(BrowserDownloadPayload {
+            file_name: self.suggested_decoded_values_file_name(),
+            mime_type: "application/json;charset=utf-8",
+            bytes,
+            is_text: true,
+        })
+    }
+
     fn review_report_download_json(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec_pretty(&serde_json::json!({
             "mode": self.input_mode.label(),
@@ -1013,6 +1075,7 @@ impl BrowserFlowState {
 
     fn clear_generated_state(&mut self) {
         self.result_output.clear();
+        self.decoded_values_output = None;
         self.summary = IDLE_SUMMARY.to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = None;
@@ -1137,6 +1200,7 @@ impl BrowserFlowState {
         }
 
         self.result_output.clear();
+        self.decoded_values_output = None;
         self.summary = "Submitting to runtime...".to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = None;
@@ -1183,6 +1247,7 @@ impl BrowserFlowState {
         }
 
         self.result_output = response.rewritten_output;
+        self.decoded_values_output = response.decoded_values_output;
         self.summary = response.summary;
         self.review_queue = response.review_queue;
         self.error_banner = None;
@@ -1201,6 +1266,7 @@ impl BrowserFlowState {
         }
 
         self.result_output.clear();
+        self.decoded_values_output = None;
         self.summary = IDLE_SUMMARY.to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = Some(message);
@@ -1423,12 +1489,16 @@ struct VaultDecodeRuntimeSuccessResponse {
     audit_event: VaultDecodeAuditEventResponse,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct VaultDecodeValueResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    record_id: Option<String>,
     #[allow(dead_code)]
     original_value: String,
     #[allow(dead_code)]
     token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1452,6 +1522,7 @@ struct ErrorBody {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeResponseEnvelope {
     rewritten_output: String,
+    decoded_values_output: Option<String>,
     summary: String,
     review_queue: String,
 }
@@ -1589,6 +1660,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.csv,
+                decoded_values_output: None,
                 summary: format_summary(&parsed.summary),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
@@ -1598,6 +1670,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.rewritten_workbook_base64,
+                decoded_values_output: None,
                 summary: format_xlsx_summary(&parsed.summary, parsed.worksheet_disclosure.as_ref()),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
@@ -1609,6 +1682,7 @@ fn parse_runtime_success(
                 rewritten_output:
                     "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
                         .to_string(),
+                decoded_values_output: None,
                 summary: format_pdf_summary(
                     &parsed.summary,
                     &parsed.page_statuses,
@@ -1624,6 +1698,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.rewritten_dicom_bytes_base64,
+                decoded_values_output: None,
                 summary: format_dicom_summary(&parsed.summary),
                 review_queue: format_dicom_review_queue(&parsed.review_queue),
             })
@@ -1633,12 +1708,14 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string(),
+                decoded_values_output: None,
                 summary: format_media_summary(&parsed.summary),
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
         }
         InputMode::VaultAuditEvents => Ok(RuntimeResponseEnvelope {
             rewritten_output: response_body.trim().to_string(),
+            decoded_values_output: None,
             summary: "Vault audit events returned by read-only runtime endpoint.".to_string(),
             review_queue: "No review items returned.".to_string(),
         }),
@@ -1646,10 +1723,15 @@ fn parse_runtime_success(
             let parsed: VaultDecodeRuntimeSuccessResponse = serde_json::from_str(response_body)
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             let value_count = parsed.values.len();
+            let decoded_values_output = serde_json::to_string(&serde_json::json!({
+                "decoded_values": parsed.values,
+            }))
+            .map_err(|error| format!("Failed to serialize decoded values response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: format!(
                     "Decoded values hidden for PHI safety. {value_count} value(s) decoded by bounded runtime endpoint."
                 ),
+                decoded_values_output: Some(decoded_values_output),
                 summary: format!("Vault decode completed for {value_count} value(s)."),
                 review_queue: format!("- {}", parsed.audit_event.kind),
             })
@@ -1679,6 +1761,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to render portable artifact: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output,
+                decoded_values_output: None,
                 summary: "Portable artifact created and available for local download.".to_string(),
                 review_queue: "encrypted portable artifact available. Decoded PHI is not rendered."
                     .to_string(),
@@ -1693,6 +1776,7 @@ fn parse_runtime_success(
                 .ok_or("Portable artifact inspect response missing record_count.".to_string())?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Portable artifact inspect completed. Artifact records and values are hidden for PHI safety.".to_string(),
+                decoded_values_output: None,
                 summary: format!("{record_count} portable record(s) inspected."),
                 review_queue: "No record details rendered.".to_string(),
             })
@@ -1714,6 +1798,7 @@ fn parse_runtime_success(
                 )?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: "Portable artifact import completed. Audit detail and artifact contents are hidden for PHI safety.".to_string(),
+                decoded_values_output: None,
                 summary: format!("{imported} imported portable record(s)."),
                 review_queue: format!("{duplicates} duplicate portable record(s). Generic audit notice recorded."),
             })
@@ -2125,7 +2210,7 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
                 state.apply_imported_file(&load_file_name, &payload, effective_mode);
             }),
             None => load_state.update(|state| {
-                state.error_banner = Some("Failed to read browser import payload.".to_string());
+                state.apply_import_read_error("Failed to read browser import payload.");
             }),
         }
 
@@ -2141,7 +2226,7 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
         error_cleanup_reader.set_onload(None);
         error_cleanup_reader.set_onerror(None);
         error_state.update(|state| {
-            state.error_banner = Some("Failed to read selected browser import file.".to_string());
+            state.apply_import_read_error("Failed to read selected browser import file.");
         });
         error_onload_slot.borrow_mut().take();
         error_onerror_slot.borrow_mut().take();
@@ -2163,7 +2248,7 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
         onload_slot.borrow_mut().take();
         onerror_slot.borrow_mut().take();
         state.update(|state| {
-            state.error_banner = Some("Failed to start browser import file read.".to_string());
+            state.apply_import_read_error("Failed to start browser import file read.");
         });
     }
 }
@@ -2323,11 +2408,29 @@ pub fn App() -> impl IntoView {
 
     let export_file_name = move || state.get().suggested_export_file_name();
     let can_export_output = move || state.get().can_export_output();
+    let can_export_decoded_values = move || state.get().can_export_decoded_values();
 
     let on_export = move |_| {
         let export = state.with_untracked(|state| {
             if state.can_export_output() {
                 Some(state.prepared_download_payload())
+            } else {
+                None
+            }
+        });
+
+        if let Some(export) = export {
+            match export.and_then(|payload| trigger_browser_download(&payload)) {
+                Ok(()) => {}
+                Err(message) => state.update(|state| state.error_banner = Some(message)),
+            }
+        }
+    };
+
+    let on_export_decoded_values = move |_| {
+        let export = state.with_untracked(|state| {
+            if state.can_export_decoded_values() {
+                Some(state.prepared_decoded_values_download_payload())
             } else {
                 None
             }
@@ -2575,6 +2678,16 @@ pub fn App() -> impl IntoView {
                 <button disabled=move || !can_export_output() on:click=on_export type="button">
                     "Export current result output text"
                 </button>
+                <Show when=move || state.get().input_mode == InputMode::VaultDecode>
+                    <div class="decoded-values-export-warning">
+                        <p>
+                            "Decoded values contain high-risk PHI. Download only on a trusted local workstation and handle the JSON according to your vault access controls."
+                        </p>
+                        <button disabled=move || !can_export_decoded_values() on:click=on_export_decoded_values type="button">
+                            "Download decoded values JSON"
+                        </button>
+                    </div>
+                </Show>
                 <pre>{move || state.get().result_output}</pre>
             </section>
 
@@ -2614,6 +2727,152 @@ mod tests {
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn browser_decode_values_download_exports_only_decoded_values() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            imported_file_name: Some("Clinic Vault 2026.vault".to_string()),
+            decoded_values_output: Some(
+                serde_json::json!({
+                    "decoded_values": {"patient-1": {"name": "Alice Example"}},
+                    "vault_path": "/phi/vault",
+                    "passphrase": "secret",
+                    "audit_event": {"kind": "decode"}
+                })
+                .to_string(),
+            ),
+            ..BrowserFlowState::default()
+        };
+
+        assert!(state.can_export_decoded_values());
+        let payload = state
+            .prepared_decoded_values_download_payload()
+            .expect("decoded values payload");
+        let json: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json");
+        let text = String::from_utf8(payload.bytes).expect("utf8");
+
+        assert_eq!(payload.file_name, "clinic-vault-2026-decoded-values.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(json["mode"], "vault_decode_values");
+        assert_eq!(json["decoded_values"]["patient-1"]["name"], "Alice Example");
+        assert!(json.get("audit_event").is_none());
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn browser_decode_values_download_available_after_vault_decode_runtime_success() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            imported_file_name: Some("Clinic Vault 2026.vault".to_string()),
+            active_submission_token: Some(7),
+            is_submitting: true,
+            ..BrowserFlowState::default()
+        };
+        let response = parse_runtime_success(
+            InputMode::VaultDecode,
+            "{\"values\":[{\"record_id\":\"patient-1\",\"original_value\":\"Alice Example\",\"token\":\"tok_patient_1\",\"scope\":\"demographics\"}],\"audit_event\":{\"kind\":\"vault.decode\"}}",
+        )
+        .expect("runtime response");
+
+        state.apply_runtime_success(7, 0, response);
+
+        assert!(state.can_export_decoded_values());
+        assert_eq!(
+            state.result_output,
+            "Decoded values hidden for PHI safety. 1 value(s) decoded by bounded runtime endpoint."
+        );
+        let safe_payload = state.prepared_download_payload().expect("safe payload");
+        let safe_text = String::from_utf8(safe_payload.bytes).expect("utf8");
+        assert!(!safe_text.contains("Alice Example"));
+        assert!(!safe_text.contains("tok_patient_1"));
+
+        let decoded_payload = state
+            .prepared_decoded_values_download_payload()
+            .expect("decoded payload");
+        let decoded_json: serde_json::Value =
+            serde_json::from_slice(&decoded_payload.bytes).expect("decoded json");
+        assert_eq!(decoded_json["mode"], "vault_decode_values");
+        assert_eq!(
+            decoded_json["decoded_values"][0]["original_value"],
+            "Alice Example"
+        );
+        assert_eq!(decoded_json["decoded_values"][0]["token"], "tok_patient_1");
+        assert_eq!(decoded_json["decoded_values"][0]["record_id"], "patient-1");
+        assert_eq!(decoded_json["decoded_values"][0]["scope"], "demographics");
+        assert!(decoded_json.get("audit_event").is_none());
+        assert!(decoded_json.get("passphrase").is_none());
+        assert!(decoded_json.get("vault_path").is_none());
+    }
+
+    #[test]
+    fn decoded_values_download_filename_falls_back_without_source_file() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            decoded_values_output: Some(
+                serde_json::json!({
+                    "decoded_values": [{"original_value":"Alice Example","token":"tok_patient_1"}]
+                })
+                .to_string(),
+            ),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_decoded_values_download_payload()
+            .expect("decoded values payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-decoded-values.json");
+    }
+
+    #[test]
+    fn browser_import_read_error_clears_decoded_values_export_state() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            decoded_values_output: Some(
+                serde_json::json!({
+                    "decoded_values": [{"original_value":"Alice Example","token":"tok_patient_1"}]
+                })
+                .to_string(),
+            ),
+            ..BrowserFlowState::default()
+        };
+        assert!(state.can_export_decoded_values());
+
+        state.apply_import_read_error("Failed to read browser import payload.");
+
+        assert!(!state.can_export_decoded_values());
+        assert_eq!(
+            state.error_banner.as_deref(),
+            Some("Failed to read browser import payload.")
+        );
+    }
+
+    #[test]
+    fn browser_decode_values_download_is_unavailable_without_decoded_values() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            ..BrowserFlowState::default()
+        };
+
+        assert!(!state.can_export_decoded_values());
+        assert_eq!(
+            state.prepared_decoded_values_download_payload().unwrap_err(),
+            "Decoded values download is only available after a successful vault decode response with decoded values."
+        );
+
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.decoded_values_output = Some(
+            serde_json::json!({
+                "decoded_values": {"patient-1": {"name": "Alice Example"}}
+            })
+            .to_string(),
+        );
+
+        assert!(!state.can_export_decoded_values());
+    }
 
     #[test]
     fn vault_audit_pagination_status_reports_requested_window_and_next_page() {
