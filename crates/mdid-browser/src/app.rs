@@ -761,6 +761,27 @@ fn portable_report_source_stem(file_name: &str) -> String {
     sanitized
 }
 
+fn redact_portable_report_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for field in ["artifact", "decoded_values", "records", "vault_passphrase"] {
+                if object.contains_key(field) {
+                    object.insert(field.to_string(), serde_json::Value::String("redacted".to_string()));
+                }
+            }
+            for value in object.values_mut() {
+                redact_portable_report_value(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_portable_report_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn build_portable_response_report_download(
     mode: InputMode,
     imported_file_name: Option<&str>,
@@ -780,15 +801,14 @@ fn build_portable_response_report_download(
 
     let mut report = serde_json::from_str::<serde_json::Value>(response_json)
         .map_err(|_| INVALID_RESPONSE.to_string())?;
+    if !report.is_object() {
+        return Err(INVALID_RESPONSE.to_string());
+    }
+
+    redact_portable_report_value(&mut report);
     let object = report
         .as_object_mut()
         .ok_or_else(|| INVALID_RESPONSE.to_string())?;
-
-    for field in ["artifact", "decoded_values", "records", "vault_passphrase"] {
-        if object.contains_key(field) {
-            object.insert(field.to_string(), serde_json::Value::String("redacted".to_string()));
-        }
-    }
     object.insert(
         "mode".to_string(),
         serde_json::Value::String(mode_label.to_string()),
@@ -2940,7 +2960,7 @@ mod tests {
         let payload = build_portable_response_report_download(
             InputMode::PortableArtifactImport,
             Some("Patient Alice bundle.mdid-portable.json"),
-            r#"{"artifact":{"records":[{"id":"phi-1"}]},"imported_record_count":1,"audit_event_count":2}"#,
+            r#"{"artifact":{"records":[{"id":"phi-1"}]},"nested":{"decoded_values":{"patient":"Alice"}},"imported_record_count":1,"audit_event_count":2}"#,
         )
         .expect("portable import response should produce report download");
 
@@ -2955,7 +2975,10 @@ mod tests {
         assert_eq!(report["imported_record_count"], 1);
         assert_eq!(report["audit_event_count"], 2);
         assert_eq!(report["artifact"], "redacted");
-        assert!(!String::from_utf8(payload.bytes).unwrap().contains("phi-1"));
+        assert_eq!(report["nested"]["decoded_values"], "redacted");
+        let text = String::from_utf8(payload.bytes).unwrap();
+        assert!(!text.contains("phi-1"));
+        assert!(!text.contains("Alice"));
     }
 
     #[test]
