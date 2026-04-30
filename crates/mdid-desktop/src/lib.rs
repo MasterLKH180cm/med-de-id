@@ -895,6 +895,76 @@ impl std::fmt::Display for DesktopPortableReportSaveError {
 
 impl std::error::Error for DesktopPortableReportSaveError {}
 
+pub fn build_desktop_ocr_handoff_summary_save(
+    handoff_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let handoff: serde_json::Value = serde_json::from_str(handoff_json)
+        .map_err(|_| "OCR handoff summary requires a JSON object report".to_string())?;
+    if !handoff.is_object() {
+        return Err("OCR handoff summary requires a JSON object report".to_string());
+    }
+    let contents = serde_json::to_string_pretty(&desktop_ocr_handoff_summary(&handoff))
+        .map_err(|_| "OCR handoff summary could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-ocr-handoff".to_string());
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-ocr-handoff-summary.json"),
+        contents,
+        status: "OCR handoff summary ready to save; normalized text and OCR line text are redacted from this report.".to_string(),
+    })
+}
+
+fn desktop_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert("mode".to_string(), serde_json::json!("ocr_handoff_summary"));
+    for key in [
+        "candidate",
+        "engine",
+        "status",
+        "ready_for_text_pii_eval",
+        "line_count",
+        "char_count",
+    ] {
+        if let Some(value) = handoff.get(key).filter(|value| is_json_primitive(value)) {
+            report.insert(key.to_string(), value.clone());
+        }
+    }
+    report.insert(
+        "privacy_filter_contract".to_string(),
+        desktop_ocr_privacy_filter_contract(handoff.get("privacy_filter_contract")),
+    );
+    report.insert(
+        "non_goals".to_string(),
+        serde_json::Value::Array(
+            handoff
+                .get("non_goals")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|text| serde_json::json!(text)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
+    );
+    serde_json::Value::Object(report)
+}
+
+fn desktop_ocr_privacy_filter_contract(value: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut contract = serde_json::Map::new();
+    if let Some(object) = value.and_then(serde_json::Value::as_object) {
+        for key in ["scope", "engine", "network_api_called", "text_only"] {
+            if let Some(value) = object.get(key).filter(|value| is_json_primitive(value)) {
+                contract.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(contract)
+}
+
 pub fn build_desktop_pdf_review_report_save(
     response_json: &str,
     source_name: Option<&str>,
@@ -2772,6 +2842,61 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn ocr_handoff_summary_save_includes_only_phi_safe_fields() {
+        let handoff = serde_json::json!({
+            "candidate": "PP-OCRv5_mobile_rec",
+            "engine": "PP-OCRv5-mobile-bounded-spike",
+            "status": "ready",
+            "ready_for_text_pii_eval": true,
+            "line_count": 1,
+            "char_count": 52,
+            "privacy_filter_contract": {
+                "scope": "text-only",
+                "input": "normalized_text",
+                "network_api_called": false,
+                "raw_text": "Jane Example MRN-12345"
+            },
+            "non_goals": ["not visual redaction", "not final PDF rewrite/export"],
+            "normalized_text": "Jane Example MRN-12345 jane@example.com 555-123-4567"
+        });
+
+        let payload =
+            build_desktop_ocr_handoff_summary_save(&handoff.to_string(), Some("case 7.json"))
+                .expect("ocr handoff summary save");
+
+        assert_eq!(payload.file_name, "case_7-ocr-handoff-summary.json");
+        assert_eq!(payload.status, "OCR handoff summary ready to save; normalized text and OCR line text are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "ocr_handoff_summary");
+        assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(report["engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(report["status"], "ready");
+        assert_eq!(report["ready_for_text_pii_eval"], true);
+        assert_eq!(report["line_count"], 1);
+        assert_eq!(report["char_count"], 52);
+        assert_eq!(report["privacy_filter_contract"]["scope"], "text-only");
+        assert_eq!(
+            report["privacy_filter_contract"]["network_api_called"],
+            false
+        );
+        assert_eq!(report["non_goals"][0], "not visual redaction");
+
+        for forbidden in [
+            "normalized_text",
+            "Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+    }
 
     #[test]
     fn desktop_product_copy_avoids_scope_drift_terms() {
