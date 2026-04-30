@@ -932,10 +932,15 @@ fn desktop_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value
             report.insert(key.to_string(), value.clone());
         }
     }
-    report.insert(
-        "privacy_filter_contract".to_string(),
-        desktop_ocr_privacy_filter_contract(handoff.get("privacy_filter_contract")),
-    );
+    if let Some(value) = handoff
+        .get("privacy_filter_contract")
+        .and_then(serde_json::Value::as_str)
+    {
+        report.insert(
+            "privacy_filter_contract".to_string(),
+            serde_json::json!(value),
+        );
+    }
     report.insert(
         "non_goals".to_string(),
         serde_json::Value::Array(
@@ -952,22 +957,6 @@ fn desktop_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value
         ),
     );
     serde_json::Value::Object(report)
-}
-
-fn desktop_ocr_privacy_filter_contract(value: Option<&serde_json::Value>) -> serde_json::Value {
-    if let Some(value) = value.filter(|value| is_json_primitive(value)) {
-        return value.clone();
-    }
-
-    let mut contract = serde_json::Map::new();
-    if let Some(object) = value.and_then(serde_json::Value::as_object) {
-        for key in ["scope", "engine", "network_api_called", "text_only"] {
-            if let Some(value) = object.get(key).filter(|value| is_json_primitive(value)) {
-                contract.insert(key.to_string(), value.clone());
-            }
-        }
-    }
-    serde_json::Value::Object(contract)
 }
 
 pub fn build_desktop_pdf_review_report_save(
@@ -2890,6 +2879,39 @@ mod tests {
                 "leaked {forbidden}: {}",
                 payload.contents
             );
+        }
+    }
+
+    #[test]
+    fn ocr_handoff_summary_save_omits_non_string_privacy_filter_contract() {
+        for privacy_filter_contract in [
+            json!(true),
+            json!({
+                "scope": "text_only_normalized_input",
+                "network_api_called": false,
+                "text_only": true
+            }),
+        ] {
+            let handoff = json!({
+                "candidate": "PP-OCRv5_mobile_rec",
+                "engine": "PP-OCRv5-mobile-bounded-spike",
+                "scope": "printed_text_line_extraction_only",
+                "ready_for_text_pii_eval": true,
+                "privacy_filter_contract": privacy_filter_contract,
+                "non_goals": ["visual_redaction"],
+                "normalized_text": "Patient Jane Example MRN-12345"
+            });
+
+            let payload =
+                build_desktop_ocr_handoff_summary_save(&handoff.to_string(), Some("case.json"))
+                    .expect("ocr handoff summary save");
+            let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+            assert!(
+                report.get("privacy_filter_contract").is_none(),
+                "non-string privacy_filter_contract must be omitted: {report}"
+            );
+            assert!(!payload.contents.contains("Patient Jane Example"));
         }
     }
 
