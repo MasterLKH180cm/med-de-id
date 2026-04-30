@@ -469,6 +469,56 @@ fn cli_review_media_rejects_blank_artifact_label() {
 }
 
 #[test]
+fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-report.json");
+    let input_path = repo_path("scripts/privacy_filter/fixtures/sample_text_input.txt");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let validator_path = repo_path("scripts/privacy_filter/validate_privacy_filter_output.py");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg("python")
+        .assert()
+        .success();
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for raw_pii in ["Jane Example", "555-0100", "555-123-4567"] {
+        assert!(
+            !stdout.contains(raw_pii),
+            "stdout leaked raw PII: {raw_pii}"
+        );
+        assert!(
+            !stderr.contains(raw_pii),
+            "stderr leaked raw PII: {raw_pii}"
+        );
+    }
+    assert!(report_path.exists());
+
+    let validator = std::process::Command::new("python")
+        .arg(&validator_path)
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        validator.status.success(),
+        "validator failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&validator.stdout),
+        String::from_utf8_lossy(&validator.stderr)
+    );
+}
+
+#[test]
 fn privacy_filter_text_writes_verbatim_runner_json_report() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("synthetic-input.txt");
