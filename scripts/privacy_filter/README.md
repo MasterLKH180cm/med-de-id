@@ -12,11 +12,11 @@ This directory is only for a bounded local text-only PII detection/masking spike
 - not production Privacy Filter integration
 
 ## Bootstrap
-If upstream OpenAI Privacy Filter tooling (`opf`) is installed locally, the runner tries that command and normalizes its JSON into this repo's bounded contract. If `opf` is not installed, normal invocation intentionally falls back to the deterministic local `fallback_synthetic_patterns` engine so contract verification remains offline and reproducible.
+Normal invocation intentionally uses the deterministic local `fallback_synthetic_patterns` engine so contract verification remains offline and reproducible. The runner only invokes upstream OpenAI Privacy Filter tooling (`opf`) when `--use-opf` is explicitly supplied, and then normalizes its JSON into this repo's bounded contract.
 
 The fallback is a synthetic plumbing/evaluation aid only. It proves output shape and downstream wiring, not real model quality.
 
-All successful local outputs must include:
+All successful single-text runner outputs must include:
 - `summary.input_char_count`
 - `summary.detected_span_count`
 - `summary.category_counts`
