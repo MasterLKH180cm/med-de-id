@@ -477,6 +477,61 @@ fn cli_review_media_rejects_blank_artifact_label() {
 }
 
 #[test]
+fn cli_privacy_filter_corpus_writes_phi_safe_aggregate_summary() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(repo_path("scripts/privacy_filter/fixtures/corpus"))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("MRN-12345").not())
+        .stdout(predicate::str::contains("jane@example.test").not())
+        .stdout(predicate::str::contains("555-111-2222").not())
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    let summary: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(summary["command"], "privacy-filter-corpus");
+    assert_eq!(summary["engine"], "fallback_synthetic_patterns");
+    assert_eq!(summary["scope"], "text_only_synthetic_corpus");
+    assert_eq!(summary["fixture_count"], 2);
+    assert!(summary["total_detected_span_count"].as_u64().unwrap() >= 4);
+    assert_eq!(
+        summary["report_path"],
+        report_path.to_string_lossy().to_string()
+    );
+
+    let report = fs::read_to_string(&report_path).unwrap();
+    assert!(!report.contains("Jane Example"));
+    assert!(!report.contains("MRN-12345"));
+    assert!(!report.contains("jane@example.test"));
+    assert!(!report.contains("555-111-2222"));
+    let report_json: Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report_json["category_counts"]["NAME"], 2);
+    assert_eq!(report_json["category_counts"]["MRN"], 2);
+    assert_eq!(report_json["category_counts"]["EMAIL"], 1);
+    assert_eq!(report_json["category_counts"]["PHONE"], 2);
+    assert!(report_json["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&Value::String("visual_redaction".to_string())));
+}
+
+#[test]
 fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-report.json");
