@@ -925,10 +925,13 @@ fn desktop_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value
         "engine_status",
         "scope",
         "ready_for_text_pii_eval",
-        "line_count",
-        "char_count",
     ] {
         if let Some(value) = handoff.get(key).filter(|value| is_json_primitive(value)) {
+            report.insert(key.to_string(), value.clone());
+        }
+    }
+    for key in ["line_count", "char_count"] {
+        if let Some(value) = handoff.get(key).filter(|value| value.is_number()) {
             report.insert(key.to_string(), value.clone());
         }
     }
@@ -2913,6 +2916,55 @@ mod tests {
             );
             assert!(!payload.contents.contains("Patient Jane Example"));
         }
+    }
+
+    #[test]
+    fn ocr_handoff_summary_save_omits_phi_string_counts_but_preserves_numeric_counts() {
+        let handoff = json!({
+            "candidate": "PP-OCRv5_mobile_rec",
+            "engine": "PP-OCRv5-mobile-bounded-spike",
+            "scope": "printed_text_line_extraction_only",
+            "ready_for_text_pii_eval": true,
+            "line_count": "Patient Jane Example MRN-12345",
+            "char_count": "jane@example.com 555-123-4567",
+            "normalized_text": "Patient Jane Example MRN-12345"
+        });
+
+        let payload =
+            build_desktop_ocr_handoff_summary_save(&handoff.to_string(), Some("case.json"))
+                .expect("ocr handoff summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert!(report.get("line_count").is_none());
+        assert!(report.get("char_count").is_none());
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+
+        let handoff = json!({
+            "candidate": "PP-OCRv5_mobile_rec",
+            "engine": "PP-OCRv5-mobile-bounded-spike",
+            "scope": "printed_text_line_extraction_only",
+            "ready_for_text_pii_eval": true,
+            "line_count": 7,
+            "char_count": 1234
+        });
+        let payload =
+            build_desktop_ocr_handoff_summary_save(&handoff.to_string(), Some("case.json"))
+                .expect("ocr handoff summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["line_count"], 7);
+        assert_eq!(report["char_count"], 1234);
     }
 
     #[test]
