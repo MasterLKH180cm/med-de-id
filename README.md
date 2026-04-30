@@ -76,18 +76,18 @@ Verification evidence for this truth-sync: cross-surface PDF review actionabilit
 
 Truth-synced 2026-04-30 from the current completion rubric, the still-open plan backlog, and repository-visible missing capabilities. These items are **not done** and must not be counted as completed progress until the related code, tests, and truth-sync land.
 
-1. **Land the five unfinished core safety/completion slices from `docs/superpowers/plans/2026-04-30-core-completion-safety-disclosures.md`.**
+1. **Land the still-unfinished core safety/completion disclosure slices from `docs/superpowers/plans/2026-04-30-core-completion-safety-disclosures.md`.**
    - **XLSX multi-sheet disclosure:** expose which worksheet was processed, keep first-non-empty-sheet behavior, and thread that disclosure through adapter/application/runtime plus browser/desktop copy.
    - **Conservative media payload rejection:** reject `media_bytes`, `media_bytes_base64`, or metadata-declared raw payloads with PHI-safe errors instead of silently treating the route as metadata-only review.
    - **DICOM disclosure hardening:** explicitly disclose that burned-in annotations / pixel redaction are not performed so current DICOM behavior is not overstated.
-   - **PDF review-only guard:** make review-only/no-rewrite status explicit across shared/domain/runtime/browser/desktop paths so users cannot misread PDF review as rewritten PDF support.
-   - **Vault audit pagination:** finish offset/cursor pagination threading across runtime, CLI, browser, and desktop contract/copy.
+   - **PDF review-only guard:** keep review-only/no-rewrite status explicit across shared/domain/runtime/browser/desktop paths so users cannot misread PDF review reports or actionability as rewritten PDF support.
    - **Required exit condition:** do not truth-sync these slices as complete until focused tests, broader package suites, workspace verification, and README updates all pass.
+   - **Already landed and not counted as open here:** vault audit offset/status pagination and portable response report downloads/saves are retained in the historical evidence below and must not be re-counted as unfinished work.
 
-2. **Finish cross-surface portable response report save/download support from `docs/superpowers/plans/2026-04-30-portable-artifact-response-downloads.md`.**
-   - Add browser portable inspect/import PHI-safe response report downloads with redacted `artifact`, `decoded_values`, `records`, and passphrase-bearing fields.
-   - Add matching desktop portable export/inspect/import PHI-safe response report save helpers and status copy.
-   - Keep browser vault export as the explicit high-risk encrypted artifact download path instead of routing it through the safe response-report path.
+2. **Finish broader cross-surface portable transfer workflow UX beyond the already-landed safe response reports.**
+   - Keep the existing browser portable inspect/import PHI-safe response report downloads and desktop portable export/inspect/import PHI-safe response report saves as landed evidence, not open backlog.
+   - Add richer end-to-end portable transfer UX only where still missing: clearer mode selection, file-picker/save flows, transfer-state review, error recovery, and audit-friendly handoff copy across browser and desktop.
+   - Preserve browser vault export as the explicit high-risk encrypted artifact download path instead of routing it through a safe response-report path.
    - Only increase Browser/Web, Desktop, or Overall completion after controller-visible verification and README truth-sync actually land.
 
 3. **Close the remaining Browser/Web workflow depth gaps that still block 100%.**
