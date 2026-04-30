@@ -53,4 +53,20 @@ cargo run -p mdid-cli -- privacy-filter-text \
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/mdid-privacy-filter-wrapper-output.json
 ```
 
-Use of fallback or `--mock` proves only the output contract/pipeline shape, not real model quality.
+### Run the synthetic corpus aggregate evidence
+```bash
+python scripts/privacy_filter/run_synthetic_corpus.py --fixture-dir scripts/privacy_filter/fixtures/corpus --output /tmp/privacy-filter-corpus.json
+```
+
+`run_synthetic_corpus.py` is synthetic text-only PII detection/masking evidence for the bounded Privacy Filter spike. It runs only checked-in synthetic corpus fixtures through the local text-only runner and writes a PHI-safe aggregate report.
+
+The PHI-safe aggregate report must contain only counts, category coverage, fixture names, engine/scope metadata, and explicit non-goals. It must not include raw fixture text, `masked_text`, spans, raw previews, or any per-detection text payload.
+
+Corpus-runner non-goals:
+- not OCR
+- not visual redaction
+- not image/pixel redaction
+- not final PDF rewrite/export
+- not browser/desktop UI
+
+Use of fallback, `--mock`, or the synthetic corpus proves only the output contract/pipeline shape, not real model quality.
