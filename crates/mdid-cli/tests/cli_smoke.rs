@@ -17,6 +17,14 @@ fn repo_path(relative: &str) -> String {
         .to_string()
 }
 
+fn default_python_command() -> &'static str {
+    if cfg!(windows) {
+        "py"
+    } else {
+        "python3"
+    }
+}
+
 fn write_xlsx(path: &Path) {
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
@@ -475,6 +483,15 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
     let input_path = repo_path("scripts/privacy_filter/fixtures/sample_text_input.txt");
     let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
     let validator_path = repo_path("scripts/privacy_filter/validate_privacy_filter_output.py");
+    let mock_runner_path = dir.path().join("run_privacy_filter_mock.py");
+    fs::write(
+        &mock_runner_path,
+        format!(
+            "import runpy, sys\nsys.argv = [{runner:?}, sys.argv[1], '--mock']\nrunpy.run_path({runner:?}, run_name='__main__')\n",
+            runner = runner_path
+        ),
+    )
+    .unwrap();
 
     let assert = Command::cargo_bin("mdid-cli")
         .unwrap()
@@ -482,18 +499,26 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
         .arg("--input-path")
         .arg(&input_path)
         .arg("--runner-path")
-        .arg(&runner_path)
+        .arg(&mock_runner_path)
         .arg("--report-path")
         .arg(&report_path)
         .arg("--python-command")
-        .arg("python")
+        .arg(default_python_command())
         .assert()
         .success();
 
     let output = assert.get_output();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    for raw_pii in ["Jane Example", "555-0100", "555-123-4567"] {
+    let raw_fixture_values = [
+        "Jane Example",
+        "555-0100",
+        "555-123-4567",
+        "jane@example.com",
+        "+1-555-123-4567",
+        "MRN-12345",
+    ];
+    for raw_pii in raw_fixture_values {
         assert!(
             !stdout.contains(raw_pii),
             "stdout leaked raw PII: {raw_pii}"
@@ -504,8 +529,15 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
         );
     }
     assert!(report_path.exists());
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !report_text.contains(raw_pii),
+            "report leaked raw PII: {raw_pii}"
+        );
+    }
 
-    let validator = std::process::Command::new("python")
+    let validator = std::process::Command::new(default_python_command())
         .arg(&validator_path)
         .arg(&report_path)
         .output()
