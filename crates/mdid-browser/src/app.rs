@@ -930,6 +930,83 @@ impl BrowserFlowState {
         !self.result_output.trim().is_empty()
     }
 
+    fn is_tabular_mode(&self) -> bool {
+        matches!(self.input_mode, InputMode::CsvText | InputMode::XlsxBase64)
+    }
+
+    fn suggested_tabular_report_file_name(&self) -> String {
+        fn safe_report_stem(file_name: &str) -> String {
+            let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+            let stem = file_name
+                .rsplit_once('.')
+                .map_or(file_name, |(stem, _)| stem);
+
+            let mut sanitized = String::new();
+            let mut needs_separator = false;
+            for ch in stem.chars() {
+                if ch.is_ascii_alphanumeric() {
+                    if needs_separator && !sanitized.is_empty() {
+                        sanitized.push('_');
+                    }
+                    sanitized.push(ch.to_ascii_lowercase());
+                    needs_separator = false;
+                } else {
+                    needs_separator = !sanitized.is_empty();
+                }
+            }
+
+            if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+                sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+                while sanitized.ends_with('_') {
+                    sanitized.pop();
+                }
+            }
+
+            if sanitized.is_empty() {
+                "mdid-browser-output".to_string()
+            } else {
+                sanitized
+            }
+        }
+
+        self.imported_file_name
+            .as_deref()
+            .map(safe_report_stem)
+            .filter(|stem| stem != "mdid-browser-output")
+            .map(|stem| format!("{stem}-tabular-report.json"))
+            .unwrap_or_else(|| "mdid-browser-tabular-report.json".to_string())
+    }
+
+    fn tabular_report_download_json(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "mode": "tabular_report",
+            "input_mode": self.input_mode.select_value(),
+            "summary": self.summary,
+            "review_queue": self.review_queue,
+        }))
+        .map_err(|_| "Browser tabular report download could not encode JSON.".to_string())
+    }
+
+    fn can_export_tabular_report(&self) -> bool {
+        self.is_tabular_mode() && !self.result_output.trim().is_empty()
+    }
+
+    fn prepared_tabular_report_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
+        if !self.can_export_tabular_report() {
+            return Err(
+                "Tabular report download is only available after a successful CSV/XLSX response."
+                    .to_string(),
+            );
+        }
+
+        Ok(BrowserDownloadPayload {
+            file_name: self.suggested_tabular_report_file_name(),
+            mime_type: "application/json;charset=utf-8",
+            bytes: self.tabular_report_download_json()?,
+            is_text: true,
+        })
+    }
+
     fn suggested_decoded_values_file_name(&self) -> String {
         self.imported_file_name
             .as_deref()
@@ -2407,7 +2484,9 @@ pub fn App() -> impl IntoView {
     let on_file_import_change = move |event| read_browser_import_file(event, state);
 
     let export_file_name = move || state.get().suggested_export_file_name();
+    let tabular_report_file_name = move || state.get().suggested_tabular_report_file_name();
     let can_export_output = move || state.get().can_export_output();
+    let can_export_tabular_report = move || state.get().can_export_tabular_report();
     let can_export_decoded_values = move || state.get().can_export_decoded_values();
 
     let on_export = move |_| {
@@ -2431,6 +2510,23 @@ pub fn App() -> impl IntoView {
         let export = state.with_untracked(|state| {
             if state.can_export_decoded_values() {
                 Some(state.prepared_decoded_values_download_payload())
+            } else {
+                None
+            }
+        });
+
+        if let Some(export) = export {
+            match export.and_then(|payload| trigger_browser_download(&payload)) {
+                Ok(()) => {}
+                Err(message) => state.update(|state| state.error_banner = Some(message)),
+            }
+        }
+    };
+
+    let on_export_tabular_report = move |_| {
+        let export = state.with_untracked(|state| {
+            if state.can_export_tabular_report() {
+                Some(state.prepared_tabular_report_download_payload())
             } else {
                 None
             }
@@ -2678,6 +2774,17 @@ pub fn App() -> impl IntoView {
                 <button disabled=move || !can_export_output() on:click=on_export type="button">
                     "Export current result output text"
                 </button>
+                <Show when=move || state.get().is_tabular_mode()>
+                    <div class="tabular-report-export">
+                        <p>
+                            "Suggested structured report file: "
+                            <code>{tabular_report_file_name}</code>
+                        </p>
+                        <button disabled=move || !can_export_tabular_report() on:click=on_export_tabular_report type="button">
+                            "Download tabular structured report JSON"
+                        </button>
+                    </div>
+                </Show>
                 <Show when=move || state.get().input_mode == InputMode::VaultDecode>
                     <div class="decoded-values-export-warning">
                         <p>
@@ -2727,6 +2834,59 @@ mod tests {
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn tabular_report_download_payload_uses_safe_source_name_for_csv() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file("patient roster.csv", "name\nAlice", InputMode::CsvText);
+        state.summary = "total_rows: 1\nencoded_cells: 1".to_string();
+        state.review_queue = "No review items returned.".to_string();
+        state.result_output = "name\nTOKEN_1".to_string();
+
+        assert!(state.can_export_tabular_report());
+        let payload = state.prepared_tabular_report_download_payload().unwrap();
+
+        assert_eq!(payload.file_name, "patient_roster-tabular-report.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(report["mode"], "tabular_report");
+        assert_eq!(report["input_mode"], "csv-text");
+        assert_eq!(report["summary"], "total_rows: 1\nencoded_cells: 1");
+        assert_eq!(report["review_queue"], "No review items returned.");
+        assert!(report.get("rewritten_output").is_none());
+    }
+
+    #[test]
+    fn tabular_report_download_payload_supports_xlsx_without_rewritten_bytes() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file("workbook.xlsx", "UEsDBAo=", InputMode::XlsxBase64);
+        state.summary = "total_rows: 2\nencoded_cells: 2".to_string();
+        state.review_queue = "- row 2 needs review".to_string();
+        state.result_output = "UEsDBAo=".to_string();
+
+        let payload = state.prepared_tabular_report_download_payload().unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert_eq!(payload.file_name, "workbook-tabular-report.json");
+        assert_eq!(report["mode"], "tabular_report");
+        assert_eq!(report["input_mode"], "xlsx-base64");
+        assert_eq!(report["review_queue"], "- row 2 needs review");
+        assert!(report.get("rewritten_output").is_none());
+    }
+
+    #[test]
+    fn tabular_report_download_rejects_non_tabular_or_empty_output() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::PdfBase64;
+        state.result_output = "PDF rewrite/export unavailable".to_string();
+        assert!(!state.can_export_tabular_report());
+        assert!(state.prepared_tabular_report_download_payload().is_err());
+
+        state.input_mode = InputMode::CsvText;
+        state.result_output.clear();
+        assert!(!state.can_export_tabular_report());
+    }
 
     #[test]
     fn browser_decode_values_download_exports_only_decoded_values() {
