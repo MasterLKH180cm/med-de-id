@@ -61,7 +61,7 @@ Planned follow-on core crates from the design, not yet implemented in this repos
 
 ## Current repository status
 
-Completion snapshot, based only on landed repository features and verification state (truth-synced 2026-04-30 after desktop vault audit pagination controls were verified on `feat/desktop-vault-audit-pagination-controls` through `f59f8f5`; CLI remains 95%, browser/web remains 78%, desktop app increases to 71%, and overall completion remains 93% because this desktop audit-browsing depth improves workstation vault investigation UX but does not land a major missing capability such as OCR/visual redaction, PDF/media rewrite/export, richer workflows, packaging/hardening, deeper policy/detection, or full vault UX):
+Completion snapshot, based only on landed repository features and verification state (truth-synced 2026-04-30 after desktop vault audit pagination controls were verified on `feat/desktop-vault-audit-pagination-controls` through the current branch HEAD; CLI remains 95%, browser/web remains 78%, desktop app increases to 71%, and overall completion remains 93% because this desktop audit-browsing depth improves workstation vault investigation UX but does not land a major missing capability such as OCR/visual redaction, PDF/media rewrite/export, richer workflows, packaging/hardening, deeper policy/detection, or full vault UX):
 
 | Area | Completion | Status |
 |---|---:|---|
