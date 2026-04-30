@@ -19,9 +19,9 @@ use mdid_application::{
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
-    ConservativeMediaSummary, DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary, PdfPageRef,
-    PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
+    ConservativeMediaSummary, DecodeRequest, DecodeRequestError, DicomDeidentificationSummary,
+    DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary,
+    PdfPageRef, PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
@@ -453,6 +453,9 @@ async fn vault_decode(payload: Result<Json<VaultDecodeRequest>, JsonRejection>) 
         payload.requested_by,
     ) {
         Ok(request) => request,
+        Err(DecodeRequestError::DuplicateRecordId) => {
+            return duplicate_record_id_response().into_response();
+        }
         Err(_) => return invalid_decode_request_response().into_response(),
     };
 
@@ -479,6 +482,10 @@ async fn vault_export(payload: Result<Json<VaultExportRequest>, JsonRejection>) 
         Ok(payload) => payload,
         Err(_) => return invalid_export_request_response().into_response(),
     };
+
+    if has_duplicate_record_id(&payload.record_ids) {
+        return duplicate_record_id_response().into_response();
+    }
 
     let mut vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
         Ok(vault) => vault,
@@ -680,6 +687,7 @@ fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
         VaultError::UnlockFailed => vault_unlock_failed_response(),
         VaultError::BlankPassphrase
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext => invalid_decode_request_response(),
         VaultError::Io(_)
@@ -705,6 +713,7 @@ fn map_export_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope
     match error {
         VaultError::BlankPassphrase
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext => invalid_export_request_response(),
         VaultError::UnknownRecord(_) => unknown_export_record_response(),
         _ => map_vault_error(error),
@@ -725,6 +734,7 @@ fn map_portable_artifact_inspection_error(error: &VaultError) -> (StatusCode, Js
         | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext
         | VaultError::AlreadyExists(_)
@@ -750,6 +760,7 @@ fn map_portable_artifact_import_vault_error(
         | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::AlreadyExists(_)
         | VaultError::Encrypt => internal_error_response(),
@@ -772,6 +783,7 @@ fn map_portable_artifact_import_unlock_error(
         | VaultError::InvalidArtifact => invalid_vault_target_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext
         | VaultError::AlreadyExists(_)
@@ -957,6 +969,25 @@ fn invalid_export_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
             },
         }),
     )
+}
+
+fn duplicate_record_id_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "duplicate_record_id",
+                message: "duplicate record id is not allowed",
+            },
+        }),
+    )
+}
+
+fn has_duplicate_record_id(record_ids: &[uuid::Uuid]) -> bool {
+    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
+    record_ids
+        .iter()
+        .any(|record_id| !seen_record_ids.insert(*record_id))
 }
 
 fn invalid_audit_events_request_response() -> (StatusCode, Json<ErrorEnvelope>) {

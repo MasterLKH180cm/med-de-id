@@ -177,6 +177,12 @@ impl DecodeRequest {
         if record_ids.is_empty() {
             return Err(DecodeRequestError::EmptyScope);
         }
+        let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
+        for record_id in &record_ids {
+            if !seen_record_ids.insert(*record_id) {
+                return Err(DecodeRequestError::DuplicateRecordId);
+            }
+        }
 
         if output_target.trim().is_empty() {
             return Err(DecodeRequestError::MissingOutputTarget);
@@ -240,6 +246,8 @@ pub enum DecodeRequestError {
     MissingOutputTarget,
     #[error("decode justification is required")]
     MissingJustification,
+    #[error("duplicate record id is not allowed")]
+    DuplicateRecordId,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

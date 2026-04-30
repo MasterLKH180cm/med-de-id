@@ -67,6 +67,21 @@ fn decode_request_requires_an_explicit_output_target() {
 }
 
 #[test]
+fn decode_request_rejects_duplicate_record_ids() {
+    let duplicate = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let err = DecodeRequest::new(
+        vec![duplicate, duplicate],
+        "stdout".into(),
+        "case review".into(),
+        SurfaceKind::Desktop,
+    )
+    .expect_err("domain request must reject duplicate decode ids");
+    let message = err.to_string();
+    assert!(message.contains("duplicate record id"));
+    assert!(!message.contains("550e8400"));
+}
+
+#[test]
 fn decode_request_exposes_validated_fields_via_accessors() {
     let record_id = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
 

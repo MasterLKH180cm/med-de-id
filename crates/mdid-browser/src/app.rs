@@ -306,29 +306,7 @@ fn build_vault_decode_request_payload(
         return Err("Vault passphrase is required before submitting.".to_string());
     }
 
-    let record_ids_value: serde_json::Value = serde_json::from_str(record_ids_json.trim())
-        .map_err(|error| {
-            format!("Vault decode record ids must be a JSON array of UUID strings: {error}")
-        })?;
-    let record_ids_array = record_ids_value
-        .as_array()
-        .ok_or("Vault decode record ids must be a JSON array of UUID strings.".to_string())?;
-    if record_ids_array.is_empty() {
-        return Err(
-            "Vault decode record ids must include at least one explicit record id.".to_string(),
-        );
-    }
-
-    let mut record_ids = Vec::with_capacity(record_ids_array.len());
-    for record_id in record_ids_array {
-        let record_id = record_id
-            .as_str()
-            .ok_or("Vault decode record ids must be UUID strings.".to_string())?
-            .trim();
-        uuid::Uuid::parse_str(record_id)
-            .map_err(|_| "Vault decode record ids must be valid UUID strings.".to_string())?;
-        record_ids.push(record_id.to_string());
-    }
+    let record_ids = parse_required_uuid_array(record_ids_json, "Vault decode record ids")?;
 
     let output_target = output_target.trim();
     if output_target.is_empty() {
@@ -365,18 +343,21 @@ fn parse_required_uuid_array(
         ));
     }
 
-    record_ids_array
-        .iter()
-        .map(|record_id| {
-            let record_id = record_id
-                .as_str()
-                .ok_or_else(|| format!("{field_name} must be UUID strings."))?
-                .trim();
-            uuid::Uuid::parse_str(record_id)
-                .map_err(|_| format!("{field_name} must be valid UUID strings."))?;
-            Ok(record_id.to_string())
-        })
-        .collect()
+    let mut record_ids = Vec::with_capacity(record_ids_array.len());
+    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids_array.len());
+    for record_id in record_ids_array {
+        let record_id = record_id
+            .as_str()
+            .ok_or_else(|| format!("{field_name} must be UUID strings."))?
+            .trim();
+        let record_id = uuid::Uuid::parse_str(record_id)
+            .map_err(|_| format!("{field_name} must be valid UUID strings."))?;
+        if !seen_record_ids.insert(record_id) {
+            return Err("duplicate record id is not allowed".to_string());
+        }
+        record_ids.push(record_id.to_string());
+    }
+    Ok(record_ids)
 }
 
 fn parse_required_artifact_object(artifact_json: &str) -> Result<serde_json::Value, String> {
@@ -3078,6 +3059,20 @@ mod tests {
     }
 
     #[test]
+    fn browser_portable_export_payload_rejects_duplicate_record_ids() {
+        let err = build_vault_export_request_payload(
+            "vault",
+            "pw",
+            r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#,
+            "portable passphrase",
+            "case handoff",
+        )
+        .expect_err("browser must reject duplicate export record ids");
+        assert!(err.contains("duplicate record id"));
+        assert!(!err.contains("550e8400"));
+    }
+
+    #[test]
     fn portable_artifact_modes_use_existing_runtime_endpoints() {
         assert_eq!(
             InputMode::from_select_value("portable-artifact-inspect"),
@@ -3395,6 +3390,20 @@ mod tests {
         assert!(body.get("policies").is_none());
         assert!(body.get("field_policies").is_none());
         assert!(body.get("source_name").is_none());
+    }
+
+    #[test]
+    fn browser_vault_decode_payload_rejects_duplicate_record_ids() {
+        let err = build_vault_decode_request_payload(
+            "vault",
+            "pw",
+            r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#,
+            "desktop",
+            "case review",
+        )
+        .expect_err("browser must reject duplicate decode record ids");
+        assert!(err.contains("duplicate record id"));
+        assert!(!err.contains("550e8400"));
     }
 
     #[test]
