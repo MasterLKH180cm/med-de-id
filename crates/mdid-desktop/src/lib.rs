@@ -841,6 +841,29 @@ pub struct DesktopVaultResponseReportDownload {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopPortableReportSavePayload {
+    pub suggested_file_name: String,
+    pub mime_type: &'static str,
+    pub contents: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopPortableReportSaveError {
+    InvalidResponseJson,
+}
+
+impl std::fmt::Display for DesktopPortableReportSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidResponseJson => write!(f, "portable response JSON must be an object"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopPortableReportSaveError {}
+
 impl std::fmt::Debug for DesktopVaultResponseReportDownload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DesktopVaultResponseReportDownload")
@@ -848,6 +871,126 @@ impl std::fmt::Debug for DesktopVaultResponseReportDownload {
             .field("bytes", &"<redacted>")
             .finish()
     }
+}
+
+pub fn build_desktop_portable_response_report_save(
+    mode: DesktopPortableMode,
+    imported_file_name: Option<&str>,
+    response_json: &str,
+) -> Result<DesktopPortableReportSavePayload, DesktopPortableReportSaveError> {
+    let mut report: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| DesktopPortableReportSaveError::InvalidResponseJson)?;
+    let object = report
+        .as_object_mut()
+        .ok_or(DesktopPortableReportSaveError::InvalidResponseJson)?;
+    object.insert(
+        "mode".to_string(),
+        serde_json::Value::String(portable_report_mode(mode).to_string()),
+    );
+    redact_portable_report_value(&mut report);
+
+    let contents = serde_json::to_string_pretty(&report)
+        .map_err(|_| DesktopPortableReportSaveError::InvalidResponseJson)?;
+    let operation = portable_report_operation(mode);
+    let stem = imported_file_name
+        .and_then(portable_report_source_stem)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "desktop".to_string());
+
+    Ok(DesktopPortableReportSavePayload {
+        suggested_file_name: if stem == "desktop" {
+            "desktop-portable-artifact-report.json".to_string()
+        } else {
+            format!("{stem}-portable-artifact-{operation}-report.json")
+        },
+        mime_type: "application/json;charset=utf-8",
+        contents,
+        status: portable_report_status(mode).to_string(),
+    })
+}
+
+fn portable_report_mode(mode: DesktopPortableMode) -> &'static str {
+    match mode {
+        DesktopPortableMode::VaultExport => "portable_artifact_export",
+        DesktopPortableMode::InspectArtifact => "portable_artifact_inspect",
+        DesktopPortableMode::ImportArtifact => "portable_artifact_import",
+    }
+}
+
+fn portable_report_operation(mode: DesktopPortableMode) -> &'static str {
+    match mode {
+        DesktopPortableMode::VaultExport => "export",
+        DesktopPortableMode::InspectArtifact => "inspect",
+        DesktopPortableMode::ImportArtifact => "import",
+    }
+}
+
+fn portable_report_status(mode: DesktopPortableMode) -> &'static str {
+    match mode {
+        DesktopPortableMode::VaultExport => "Portable artifact export report ready to save; artifact and decoded values are redacted from this report.",
+        DesktopPortableMode::InspectArtifact => "Portable artifact inspect report ready to save; artifact and decoded values are redacted from this report.",
+        DesktopPortableMode::ImportArtifact => "Portable artifact import report ready to save; artifact and decoded values are redacted from this report.",
+    }
+}
+
+fn redact_portable_report_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if matches!(
+                    key.as_str(),
+                    "artifact" | "decoded_values" | "records" | "vault_passphrase"
+                ) {
+                    *value = serde_json::Value::String("redacted".to_string());
+                } else {
+                    redact_portable_report_value(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_portable_report_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn portable_report_source_stem(source_name: &str) -> Option<String> {
+    let filename = source_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(source_name)
+        .trim();
+    let mut stem = filename;
+    for suffix in [".mdid-portable.json", "-mdid-portable.json"] {
+        if let Some(stripped) = stem.strip_suffix(suffix) {
+            stem = stripped;
+            break;
+        }
+    }
+    if stem == filename {
+        stem = stem.rsplit_once('.').map_or(stem, |(stem, _)| stem);
+    }
+
+    let mut safe = String::new();
+    let mut last_was_sep = false;
+    for ch in stem.trim().chars() {
+        if safe.len() >= 64 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            safe.push(ch);
+            last_was_sep = false;
+        } else if !last_was_sep && !safe.is_empty() {
+            safe.push('_');
+            last_was_sep = true;
+        }
+    }
+    while safe.ends_with(['_', '-']) {
+        safe.pop();
+    }
+    (!safe.is_empty()).then_some(safe)
 }
 
 impl DesktopVaultResponseState {
@@ -2285,6 +2428,43 @@ mod tests {
         assert!(!state.summary.contains("Alice Patient"));
         assert!(!state.summary.contains("PATIENT_TOKEN"));
         assert!(!state.summary.contains("Dr Patient"));
+    }
+
+    #[test]
+    fn desktop_portable_response_report_save_uses_safe_source_name_and_redacts_artifact() {
+        let payload = build_desktop_portable_response_report_save(
+            DesktopPortableMode::ImportArtifact,
+            Some("Alice portable.mdid-portable.json"),
+            r#"{"artifact":{"records":[{"id":"phi-1"}]},"nested":{"decoded_values":{"patient":"Alice"}},"imported_record_count":1,"audit_event_count":2}"#,
+        )
+        .expect("portable import response should produce report save payload");
+
+        assert_eq!(
+            payload.suggested_file_name,
+            "Alice_portable-portable-artifact-import-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(payload.status, "Portable artifact import report ready to save; artifact and decoded values are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "portable_artifact_import");
+        assert_eq!(report["imported_record_count"], 1);
+        assert_eq!(report["audit_event_count"], 2);
+        assert_eq!(report["artifact"], "redacted");
+        assert_eq!(report["nested"]["decoded_values"], "redacted");
+        assert!(!payload.contents.contains("phi-1"));
+        assert!(!payload.contents.contains("Alice"));
+    }
+
+    #[test]
+    fn desktop_portable_response_report_save_rejects_invalid_json() {
+        let error = build_desktop_portable_response_report_save(
+            DesktopPortableMode::InspectArtifact,
+            Some("portable.mdid-portable.json"),
+            "not-json",
+        )
+        .unwrap_err();
+
+        assert_eq!(error, DesktopPortableReportSaveError::InvalidResponseJson);
     }
 
     #[test]
