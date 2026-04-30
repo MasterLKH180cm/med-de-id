@@ -1273,6 +1273,9 @@ struct DicomRuntimeSummary {
     removed_private_tags: usize,
     remapped_uids: usize,
     burned_in_suspicions: usize,
+    pixel_redaction_performed: bool,
+    burned_in_review_required: bool,
+    burned_in_annotation_notice: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1721,13 +1724,16 @@ fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
 
 fn format_dicom_summary(summary: &DicomRuntimeSummary) -> String {
     format!(
-        "total_tags: {}\nencoded_tags: {}\nreview_required_tags: {}\nremoved_private_tags: {}\nremapped_uids: {}\nburned_in_suspicions: {}",
+        "total_tags: {}\nencoded_tags: {}\nreview_required_tags: {}\nremoved_private_tags: {}\nremapped_uids: {}\nburned_in_suspicions: {}\npixel_redaction_performed: {}\nburned_in_review_required: {}\nburned_in_annotation_notice: {}",
         summary.total_tags,
         summary.encoded_tags,
         summary.review_required_tags,
         summary.removed_private_tags,
         summary.remapped_uids,
-        summary.burned_in_suspicions
+        summary.burned_in_suspicions,
+        summary.pixel_redaction_performed,
+        summary.burned_in_review_required,
+        summary.burned_in_annotation_notice
     )
 }
 
@@ -3840,7 +3846,10 @@ mod tests {
                 "review_required_tags": 1,
                 "removed_private_tags": 3,
                 "remapped_uids": 4,
-                "burned_in_suspicions": 1
+                "burned_in_suspicions": 1,
+                "pixel_redaction_performed": false,
+                "burned_in_review_required": true,
+                "burned_in_annotation_notice": "Pixel redaction was not performed. Suspicious DICOM burned-in annotation metadata was detected; burned-in annotation review is required before relying on the de-identified image."
             },
             "review_queue": [
                 {"tag": {"group": 16, "element": 16, "keyword": "PatientName"}, "phi_type": "patient_name", "value": "Jane Patient", "decision": "Review"}
@@ -3858,6 +3867,13 @@ mod tests {
         assert!(rendered.summary.contains("removed_private_tags: 3"));
         assert!(rendered.summary.contains("remapped_uids: 4"));
         assert!(rendered.summary.contains("burned_in_suspicions: 1"));
+        assert!(rendered
+            .summary
+            .contains("pixel_redaction_performed: false"));
+        assert!(rendered.summary.contains("burned_in_review_required: true"));
+        assert!(rendered
+            .summary
+            .contains("burned-in annotation review is required"));
         assert_eq!(
             rendered.review_queue,
             "- tag (0010,0010) PatientName / patient_name / Review / value: <redacted>"

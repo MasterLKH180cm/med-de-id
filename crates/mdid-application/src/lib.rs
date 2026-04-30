@@ -9,7 +9,7 @@ use mdid_domain::{
     BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
     DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, MappingScope,
     PdfExtractionSummary, PdfPhiCandidate, PhiCandidate, PipelineDefinition, PipelineRun,
-    PipelineRunState, SurfaceKind, TabularColumn,
+    PipelineRunState, SurfaceKind, TabularColumn, DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -224,6 +224,8 @@ impl DicomDeidentificationService {
         let extracted = adapter.extract(bytes, source_name)?;
         let job_id = Uuid::new_v4();
         let artifact_id = Uuid::new_v4();
+        let burned_in_review_required =
+            extracted.burned_in_annotation == BurnedInAnnotationStatus::Suspicious;
         let mut summary = DicomDeidentificationSummary {
             total_tags: extracted.candidates.len(),
             removed_private_tags: if private_tag_policy == DicomPrivateTagPolicy::Remove {
@@ -231,10 +233,10 @@ impl DicomDeidentificationService {
             } else {
                 0
             },
-            burned_in_suspicions: match extracted.burned_in_annotation {
-                BurnedInAnnotationStatus::Suspicious => 1,
-                BurnedInAnnotationStatus::Clean => 0,
-            },
+            burned_in_suspicions: usize::from(burned_in_review_required),
+            burned_in_review_required,
+            burned_in_annotation_notice: burned_in_annotation_notice(burned_in_review_required)
+                .into(),
             ..DicomDeidentificationSummary::default()
         };
         let mut review_queue = Vec::new();
@@ -400,6 +402,14 @@ fn write_csv(columns: &[TabularColumn], rows: &[Vec<String>]) -> Result<String, 
 
     let bytes = writer.into_inner().map_err(|err| err.into_error())?;
     Ok(String::from_utf8(bytes)?)
+}
+
+fn burned_in_annotation_notice(review_required: bool) -> &'static str {
+    if review_required {
+        "Pixel redaction was not performed. Suspicious DICOM burned-in annotation metadata was detected; burned-in annotation review is required before relying on the de-identified image."
+    } else {
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    }
 }
 
 const DICOM_COMMON_PHI_MAPPING_TYPE: &str = "dicom_common_phi";

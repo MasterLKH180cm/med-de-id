@@ -54,3 +54,24 @@ fn dicom_summary_requires_review_for_review_items_or_burned_in_suspicion() {
     assert!(suspicious_summary.requires_review());
     assert!(!DicomDeidentificationSummary::default().requires_review());
 }
+
+#[test]
+fn dicom_summary_discloses_pixel_redaction_is_not_performed() {
+    let summary = DicomDeidentificationSummary::default();
+
+    assert!(!summary.pixel_redaction_performed);
+    assert!(summary
+        .burned_in_annotation_notice
+        .contains("Pixel redaction was not performed"));
+}
+
+#[test]
+fn dicom_summary_flags_burned_in_review_when_suspicious() {
+    let summary = DicomDeidentificationSummary {
+        burned_in_suspicions: 1,
+        burned_in_review_required: true,
+        ..DicomDeidentificationSummary::default()
+    };
+
+    assert!(summary.burned_in_review_required);
+}

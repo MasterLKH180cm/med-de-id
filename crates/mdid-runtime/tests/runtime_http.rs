@@ -773,6 +773,12 @@ async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
     assert_eq!(json["summary"]["removed_private_tags"], 0);
     assert_eq!(json["summary"]["remapped_uids"], 3);
     assert_eq!(json["summary"]["burned_in_suspicions"], 1);
+    assert_eq!(json["summary"]["pixel_redaction_performed"], false);
+    assert_eq!(json["summary"]["burned_in_review_required"], true);
+    assert!(json["summary"]["burned_in_annotation_notice"]
+        .as_str()
+        .unwrap()
+        .contains("Pixel redaction was not performed"));
     assert!(json["review_queue"].is_array());
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
 

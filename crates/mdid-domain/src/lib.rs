@@ -551,7 +551,7 @@ impl std::fmt::Debug for DicomPhiCandidate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DicomDeidentificationSummary {
     pub total_tags: usize,
     pub encoded_tags: usize,
@@ -559,13 +559,36 @@ pub struct DicomDeidentificationSummary {
     pub removed_private_tags: usize,
     pub remapped_uids: usize,
     pub burned_in_suspicions: usize,
+    pub pixel_redaction_performed: bool,
+    pub burned_in_review_required: bool,
+    pub burned_in_annotation_notice: String,
+}
+
+impl Default for DicomDeidentificationSummary {
+    fn default() -> Self {
+        Self {
+            total_tags: 0,
+            encoded_tags: 0,
+            review_required_tags: 0,
+            removed_private_tags: 0,
+            remapped_uids: 0,
+            burned_in_suspicions: 0,
+            pixel_redaction_performed: false,
+            burned_in_review_required: false,
+            burned_in_annotation_notice: DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into(),
+        }
+    }
 }
 
 impl DicomDeidentificationSummary {
     pub fn requires_review(&self) -> bool {
-        self.review_required_tags > 0 || self.burned_in_suspicions > 0
+        self.review_required_tags > 0
+            || self.burned_in_review_required
+            || self.burned_in_suspicions > 0
     }
 }
+
+pub const DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE: &str = "Pixel redaction was not performed. DICOM tag-level de-identification does not inspect or redact pixels; burned-in annotations may contain PHI and require manual image review when indicated.";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PhiCandidate {
