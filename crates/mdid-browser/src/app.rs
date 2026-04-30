@@ -791,6 +791,7 @@ impl BrowserFlowState {
         );
     }
 
+    #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
     fn apply_import_read_error(&mut self, message: &str) {
         self.invalidate_generated_state();
         self.error_banner = Some(message.to_string());
