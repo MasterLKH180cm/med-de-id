@@ -4,7 +4,7 @@
 
 **Goal:** Add a bounded CLI wrapper for the synthetic PP-OCRv5 mobile handoff corpus runner so checked-in OCR text fixtures can be verified through a PHI-safe aggregate CLI/runtime contract.
 
-**Architecture:** This adds a CLI/runtime-only `mdid-cli ocr-handoff-corpus` command that runs the existing Python corpus runner, validates its aggregate JSON contract, redacts report paths in stdout, and removes stale reports on failure. It is printed-text extraction readiness evidence only; it is not OCR model-quality proof, visual redaction, PDF rewrite/export, browser UI, desktop UI, or agent/controller workflow.
+**Architecture:** This adds a CLI/runtime-only `mdid-cli ocr-handoff-corpus` command that runs the existing Python corpus runner, validates its aggregate JSON contract, redacts report paths in stdout, and removes stale reports on failure. It is printed-text extraction readiness evidence only; it is not OCR model-quality proof, visual redaction, PDF rewrite/export, browser UI, desktop UI, or unrelated workflow orchestration semantics.
 
 **Tech Stack:** Rust `mdid-cli`, `assert_cmd`, `serde_json`, Python helper `scripts/ocr_eval/run_ocr_handoff_corpus.py`, markdown docs.
 
