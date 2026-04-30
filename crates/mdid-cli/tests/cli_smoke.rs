@@ -85,6 +85,96 @@ fn cli_prints_status_banner() {
 }
 
 #[test]
+fn ocr_handoff_corpus_runs_repo_fixture_runner_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            &repo_path("scripts/ocr_eval/fixtures/corpus"),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_handoff_corpus.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("ocr-handoff-corpus"));
+    assert!(stdout.contains("<redacted>"));
+    for sentinel in ["Jane Example", "MRN-12345"] {
+        assert!(!stdout.contains(sentinel));
+        assert!(!stderr.contains(sentinel));
+    }
+    assert!(stderr.is_empty());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    for sentinel in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ] {
+        assert!(!report_text.contains(sentinel));
+    }
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["engine"], "PP-OCRv5-mobile-bounded-spike");
+    assert_eq!(report["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        report["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    let fixture_count = report["fixture_count"].as_u64().unwrap();
+    assert!(fixture_count >= 2);
+    assert_eq!(
+        report["ready_fixture_count"].as_u64().unwrap(),
+        fixture_count
+    );
+    for fixture in report["fixtures"].as_array().unwrap() {
+        assert!(fixture["id"].as_str().unwrap().starts_with("fixture_"));
+    }
+}
+
+#[test]
+fn ocr_handoff_corpus_removes_stale_report_when_runner_fails() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic printed line").unwrap();
+    let runner_path = dir.path().join("fail_runner.py");
+    fs::write(&runner_path, "import sys\nsys.exit(1)\n").unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+    fs::write(&report_path, "stale raw Jane Example").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            fixture_dir.to_str().unwrap(),
+            "--runner-path",
+            runner_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .failure();
+
+    assert!(!report_path.exists());
+}
+
+#[test]
 fn cli_deidentify_csv_writes_rewritten_csv_and_phi_safe_summary() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("input.csv");

@@ -52,6 +52,7 @@ enum CliCommand {
     ReviewMedia(ReviewMediaArgs),
     PrivacyFilterText(PrivacyFilterTextArgs),
     PrivacyFilterCorpus(PrivacyFilterCorpusArgs),
+    OcrHandoffCorpus(OcrHandoffCorpusArgs),
     OcrHandoff(OcrHandoffArgs),
     VaultAudit(VaultAuditArgs),
     VaultDecode(VaultDecodeArgs),
@@ -121,6 +122,14 @@ struct PrivacyFilterTextArgs {
 
 #[derive(Clone, PartialEq, Eq)]
 struct PrivacyFilterCorpusArgs {
+    fixture_dir: PathBuf,
+    runner_path: PathBuf,
+    report_path: PathBuf,
+    python_command: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct OcrHandoffCorpusArgs {
     fixture_dir: PathBuf,
     runner_path: PathBuf,
     report_path: PathBuf,
@@ -233,6 +242,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "privacy-filter-corpus" => {
             parse_privacy_filter_corpus_args(rest).map(CliCommand::PrivacyFilterCorpus)
+        }
+        [command, rest @ ..] if command == "ocr-handoff-corpus" => {
+            parse_ocr_handoff_corpus_args(rest).map(CliCommand::OcrHandoffCorpus)
         }
         [command, rest @ ..] if command == "ocr-handoff" => {
             parse_ocr_handoff_args(rest).map(CliCommand::OcrHandoff)
@@ -555,6 +567,16 @@ fn parse_privacy_filter_corpus_args(args: &[String]) -> Result<PrivacyFilterCorp
     })
 }
 
+fn parse_ocr_handoff_corpus_args(args: &[String]) -> Result<OcrHandoffCorpusArgs, String> {
+    let parsed = parse_privacy_filter_corpus_args(args)?;
+    Ok(OcrHandoffCorpusArgs {
+        fixture_dir: parsed.fixture_dir,
+        runner_path: parsed.runner_path,
+        report_path: parsed.report_path,
+        python_command: parsed.python_command,
+    })
+}
+
 fn parse_ocr_handoff_args(args: &[String]) -> Result<OcrHandoffArgs, String> {
     let mut image_path = None;
     let mut ocr_runner_path = None;
@@ -837,6 +859,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::ReviewMedia(args) => run_review_media(args),
         CliCommand::PrivacyFilterText(args) => run_privacy_filter_text(args),
         CliCommand::PrivacyFilterCorpus(args) => run_privacy_filter_corpus(args),
+        CliCommand::OcrHandoffCorpus(args) => run_ocr_handoff_corpus(args),
         CliCommand::OcrHandoff(args) => run_ocr_handoff(args),
         CliCommand::VaultAudit(args) => run_vault_audit(args),
         CliCommand::VaultDecode(args) => run_vault_decode(args),
@@ -844,6 +867,178 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultImport(args) => run_vault_import(args),
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
     }
+}
+
+fn run_ocr_handoff_corpus(args: OcrHandoffCorpusArgs) -> Result<(), String> {
+    require_directory(&args.fixture_dir, "missing fixture directory")?;
+    require_regular_file(&args.runner_path, "missing runner file")?;
+
+    let _ = fs::remove_file(&args.report_path);
+    let result = run_ocr_handoff_corpus_inner(&args);
+    if result.is_err() {
+        let _ = fs::remove_file(&args.report_path);
+    }
+    result
+}
+
+fn run_ocr_handoff_corpus_inner(args: &OcrHandoffCorpusArgs) -> Result<(), String> {
+    let mut child = std::process::Command::new(&args.python_command)
+        .arg(&args.runner_path)
+        .arg("--fixture-dir")
+        .arg(&args.fixture_dir)
+        .arg("--output")
+        .arg(&args.report_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to run OCR handoff corpus runner: {err}"))?;
+
+    let status = wait_for_ocr_handoff_builder(&mut child, OCR_HANDOFF_BUILDER_TIMEOUT)
+        .map_err(|_| "OCR handoff corpus runner timed out".to_string())?;
+    if !status.success() {
+        return Err("OCR handoff corpus runner failed".to_string());
+    }
+
+    let report_metadata = fs::metadata(&args.report_path)
+        .map_err(|err| format!("failed to inspect OCR handoff corpus report: {err}"))?;
+    if report_metadata.len() > OCR_RUNNER_STDOUT_MAX_BYTES as u64 {
+        return Err("OCR handoff corpus report exceeded limit".to_string());
+    }
+    let report_text = fs::read_to_string(&args.report_path)
+        .map_err(|err| format!("failed to read OCR handoff corpus report: {err}"))?;
+    reject_ocr_handoff_corpus_phi_sentinels(&report_text)?;
+    let value: Value = serde_json::from_str(&report_text)
+        .map_err(|_| "OCR handoff corpus report is not valid JSON".to_string())?;
+    validate_ocr_handoff_corpus_report(&value)?;
+
+    let summary = json!({
+        "command": "ocr-handoff-corpus",
+        "report_path": "<redacted>",
+        "engine": value["engine"],
+        "scope": value["scope"],
+        "fixture_count": value["fixture_count"],
+        "ready_fixture_count": value["ready_fixture_count"],
+        "privacy_filter_contract": value["privacy_filter_contract"],
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn reject_ocr_handoff_corpus_phi_sentinels(report_text: &str) -> Result<(), String> {
+    for sentinel in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ] {
+        if report_text.contains(sentinel) {
+            return Err("OCR handoff corpus report contains raw synthetic PHI".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_ocr_handoff_corpus_report(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "OCR handoff corpus report must be a JSON object".to_string())?;
+    let allowed: HashSet<&str> = [
+        "engine",
+        "scope",
+        "fixture_count",
+        "ready_fixture_count",
+        "total_char_count",
+        "fixtures",
+        "non_goals",
+        "privacy_filter_contract",
+    ]
+    .into_iter()
+    .collect();
+    if object.keys().any(|key| !allowed.contains(key.as_str())) {
+        return Err("OCR handoff corpus report contains unexpected top-level field".to_string());
+    }
+    for key in allowed {
+        if !object.contains_key(key) {
+            return Err("OCR handoff corpus report missing required field".to_string());
+        }
+    }
+    for (key, expected) in [
+        ("engine", "PP-OCRv5-mobile-bounded-spike"),
+        ("scope", "printed_text_line_extraction_only"),
+        ("privacy_filter_contract", "text_only_normalized_input"),
+    ] {
+        if value[key] != expected {
+            return Err("OCR handoff corpus required field has unexpected value".to_string());
+        }
+    }
+    let fixture_count = value["fixture_count"]
+        .as_u64()
+        .ok_or_else(|| "OCR handoff corpus report has invalid required count shape".to_string())?;
+    let ready_fixture_count = value["ready_fixture_count"]
+        .as_u64()
+        .ok_or_else(|| "OCR handoff corpus report has invalid required count shape".to_string())?;
+    value["total_char_count"]
+        .as_u64()
+        .ok_or_else(|| "OCR handoff corpus report has invalid required count shape".to_string())?;
+    let fixtures = value["fixtures"]
+        .as_array()
+        .ok_or_else(|| "OCR handoff corpus report has invalid fixtures shape".to_string())?;
+    if fixtures.len() as u64 != fixture_count {
+        return Err("OCR handoff corpus fixture count mismatch".to_string());
+    }
+    if fixtures
+        .iter()
+        .filter(|fixture| fixture["ready_for_text_pii_eval"] == true)
+        .count() as u64
+        != ready_fixture_count
+    {
+        return Err("OCR handoff corpus ready fixture count mismatch".to_string());
+    }
+    for fixture in fixtures {
+        let fixture_object = fixture
+            .as_object()
+            .ok_or_else(|| "OCR handoff corpus report has invalid fixture shape".to_string())?;
+        let allowed_fixture: HashSet<&str> = ["id", "char_count", "ready_for_text_pii_eval"]
+            .into_iter()
+            .collect();
+        if fixture_object.len() != allowed_fixture.len()
+            || fixture_object
+                .keys()
+                .any(|key| !allowed_fixture.contains(key.as_str()))
+        {
+            return Err("OCR handoff corpus fixture contains unexpected field".to_string());
+        }
+        let id = fixture["id"]
+            .as_str()
+            .ok_or_else(|| "OCR handoff corpus fixture has invalid id".to_string())?;
+        if !is_fixture_ordinal_id(id)
+            || fixture["char_count"].as_u64().is_none()
+            || !fixture["ready_for_text_pii_eval"].is_boolean()
+        {
+            return Err("OCR handoff corpus fixture has invalid field shape".to_string());
+        }
+    }
+    for expected in ["visual_redaction", "final_pdf_rewrite_export"] {
+        if !value["non_goals"]
+            .as_array()
+            .ok_or_else(|| "OCR handoff corpus report has invalid non-goals shape".to_string())?
+            .iter()
+            .any(|item| item == expected)
+        {
+            return Err("OCR handoff corpus missing required non-goal".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn is_fixture_ordinal_id(id: &str) -> bool {
+    id.len() == 11
+        && id.starts_with("fixture_")
+        && id[8..].chars().all(|character| character.is_ascii_digit())
 }
 
 fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
