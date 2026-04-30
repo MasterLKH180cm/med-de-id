@@ -4169,12 +4169,45 @@ mod tests {
     fn pdf_review_download_exports_structured_json_report() {
         let mut state = BrowserFlowState {
             input_mode: InputMode::PdfBase64,
-            result_output:
-                "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
-                    .to_string(),
-            summary: "total_pages: 1\nocr_required_pages: 0".to_string(),
-            review_queue: "- page 1 / patient_name / confidence 20 / review: <redacted>"
-                .to_string(),
+            result_output: serde_json::json!({
+                "summary": {
+                    "total_pages": 2,
+                    "pages_with_text": 1,
+                    "ocr_required_pages": 1,
+                    "candidate_count": 3,
+                    "requires_ocr": true,
+                    "status": "review_only",
+                    "unsafe_note": "Patient Doe"
+                },
+                "page_statuses": [
+                    {
+                        "page": 1,
+                        "status": "ok",
+                        "requires_ocr": false,
+                        "candidate_count": 2,
+                        "raw_text": "Patient Doe"
+                    },
+                    {
+                        "page": 2,
+                        "status": "visual_review_required",
+                        "requires_ocr": true,
+                        "candidate_count": 1,
+                        "raw_text": "Patient Doe DOB 1970-01-01"
+                    }
+                ],
+                "review_queue": [
+                    {
+                        "page": 2,
+                        "kind": "ocr_required",
+                        "status": "pending",
+                        "snippet": "Patient Doe DOB 1970-01-01"
+                    }
+                ],
+                "no_rewritten_pdf": true
+            })
+            .to_string(),
+            summary: "total_pages: 2\nocr_required_pages: 1".to_string(),
+            review_queue: "- page 2 / ocr_required / pending".to_string(),
             ..BrowserFlowState::default()
         };
         state.imported_file_name = Some("Patient Doe.pdf".to_string());
@@ -4182,15 +4215,24 @@ mod tests {
         let payload = state.prepared_download_payload().expect("download payload");
         let json: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json report");
 
-        assert_eq!(payload.file_name, "patient-doe-review-report.json");
-        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(payload.file_name, "Patient_Doe-pdf-review-report.json");
+        assert_eq!(payload.mime_type, "application/json");
         assert!(payload.is_text);
-        assert_eq!(json["mode"], "PDF base64");
-        assert_eq!(json["summary"], "total_pages: 1\nocr_required_pages: 0");
-        assert!(json["output"]
-            .as_str()
-            .unwrap()
-            .contains("review-only PDF analysis"));
+        assert_eq!(json["mode"], "pdf_review_report");
+        assert_eq!(json["summary"]["total_pages"], 2);
+        assert_eq!(json["summary"]["ocr_required_pages"], 1);
+        assert!(json["summary"].get("unsafe_note").is_none());
+        assert_eq!(json["review_queue"][0]["page"], 2);
+        assert_eq!(json["review_queue"][0]["kind"], "ocr_required");
+        assert_eq!(json["review_queue"][0]["status"], "pending");
+        assert!(json["review_queue"][0].get("snippet").is_none());
+        assert_eq!(json["page_statuses"][1]["status"], "visual_review_required");
+        assert_eq!(json["page_statuses"][1]["requires_ocr"], true);
+        assert!(json["page_statuses"][1].get("raw_text").is_none());
+        assert_eq!(json["ocr_blockers"]["requires_ocr_pages"], 1);
+        assert_eq!(json["ocr_blockers"]["visual_review_pages"], 1);
+        assert_eq!(json["ocr_blockers"]["blocked_page_count"], 1);
+        assert_eq!(json["ocr_blockers"]["rewrite_available"], false);
     }
 
     #[test]
@@ -4198,21 +4240,47 @@ mod tests {
         let mut state = BrowserFlowState {
             input_mode: InputMode::PdfBase64,
             source_name: "C:/records/Patient Jane MRI Scan.pdf".to_string(),
-            result_output: "review only".to_string(),
+            result_output: serde_json::json!({
+                "summary": {
+                    "total_pages": 1,
+                    "pages_with_text": 1,
+                    "ocr_required_pages": 0,
+                    "candidate_count": 0,
+                    "requires_ocr": false,
+                    "status": "ok"
+                },
+                "page_statuses": [
+                    {
+                        "page": 1,
+                        "status": "ok",
+                        "requires_ocr": false,
+                        "candidate_count": 0
+                    }
+                ],
+                "review_queue": [],
+                "no_rewritten_pdf": false
+            })
+            .to_string(),
             summary: "PDF review summary".to_string(),
-            review_queue: "review queue".to_string(),
+            review_queue: "No review items returned.".to_string(),
             ..BrowserFlowState::default()
         };
         state.imported_file_name = None;
 
         let payload = state.prepared_download_payload().expect("download payload");
+        let json: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json report");
 
         assert_eq!(
             payload.file_name,
-            "patient-jane-mri-scan-review-report.json"
+            "Patient_Jane_MRI_Scan-pdf-review-report.json"
         );
-        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(payload.mime_type, "application/json");
         assert!(payload.is_text);
+        assert_eq!(json["mode"], "pdf_review_report");
+        assert_eq!(json["summary"]["total_pages"], 1);
+        assert_eq!(json["review_queue"].as_array().unwrap().len(), 0);
+        assert_eq!(json["page_statuses"][0]["status"], "ok");
+        assert_eq!(json["ocr_blockers"]["rewrite_available"], true);
     }
 
     #[test]
