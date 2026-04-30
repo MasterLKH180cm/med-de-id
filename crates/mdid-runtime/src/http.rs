@@ -508,33 +508,39 @@ fn safe_identifier(identifier: &str) -> Option<&str> {
 }
 
 fn safe_category_identifier(category: &str) -> Option<&str> {
-    safe_identifier(category)
+    matches!(category, "NAME" | "MRN" | "EMAIL" | "PHONE").then_some(category)
 }
 
 fn safe_non_goal(non_goal: &str) -> Option<&str> {
-    matches!(
-        non_goal,
-        "text-only candidate"
-            | "No OCR"
-            | "ocr"
-            | "No visual redaction"
-            | "visual_redaction"
-            | "No image pixel redaction"
-            | "image_pixel_redaction"
-            | "No handwriting recognition"
-            | "handwriting_recognition"
-            | "No PDF rewrite/export"
-            | "final_pdf_rewrite_export"
-            | "No network call unless explicitly configured"
-            | "browser_ui"
-            | "desktop_ui"
-    )
+    (!contains_phi_sentinel(non_goal)
+        && matches!(
+            non_goal,
+            "text-only candidate"
+                | "No OCR"
+                | "ocr"
+                | "No visual redaction"
+                | "visual_redaction"
+                | "No image pixel redaction"
+                | "image_pixel_redaction"
+                | "No handwriting recognition"
+                | "handwriting_recognition"
+                | "No PDF rewrite/export"
+                | "final_pdf_rewrite_export"
+                | "No network call unless explicitly configured"
+                | "browser_ui"
+                | "desktop_ui"
+        ))
     .then_some(non_goal)
 }
 
 fn contains_phi_sentinel(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    lower.contains("mrn-") || lower.contains("alice smith")
+    lower.contains("patient jane example")
+        || lower.contains("mrn-")
+        || lower.contains("jane@example.com")
+        || lower.contains("555-123-4567")
+        || lower.contains("555-")
+        || lower.contains("alice smith")
 }
 
 async fn tabular_deidentify(
