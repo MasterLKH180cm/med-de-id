@@ -886,6 +886,43 @@ fn sanitized_pdf_page_statuses(response: &serde_json::Value) -> serde_json::Valu
     serde_json::Value::Array(statuses)
 }
 
+fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value {
+    let mut requires_ocr_pages = 0_u64;
+    let mut visual_review_pages = 0_u64;
+
+    if let Some(statuses) = response
+        .get("page_statuses")
+        .and_then(serde_json::Value::as_array)
+    {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            if status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                requires_ocr_pages += 1;
+            }
+            if status
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"))
+            {
+                visual_review_pages += 1;
+            }
+        }
+    }
+
+    serde_json::json!({
+        "requires_ocr_pages": requires_ocr_pages,
+        "visual_review_pages": visual_review_pages,
+        "blocked_page_count": requires_ocr_pages + visual_review_pages,
+        "rewrite_available": response
+            .get("no_rewritten_pdf")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false),
+    })
+}
+
 fn build_pdf_review_report_download(
     response_json: &str,
     imported_file_name: Option<&str>,
@@ -903,6 +940,7 @@ fn build_pdf_review_report_download(
         "summary": sanitized_pdf_review_summary(&response),
         "review_queue": sanitized_pdf_review_queue(&response),
         "page_statuses": sanitized_pdf_page_statuses(&response),
+        "ocr_blockers": sanitized_pdf_ocr_blockers(&response),
     });
 
     Ok(BrowserDownloadPayload {
@@ -3310,6 +3348,57 @@ mod tests {
         assert_eq!(report["page_statuses"][1]["page"], 2);
         assert!(report["page_statuses"][1].get("nested").is_none());
         assert_eq!(report["page_statuses"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn pdf_review_report_ocr_blockers_download_includes_phi_safe_counts() {
+        let response = serde_json::json!({
+            "summary": {"total_pages": 2},
+            "no_rewritten_pdf": true,
+            "page_statuses": [
+                {
+                    "page": 1,
+                    "status": "ocr_required",
+                    "requires_ocr": true,
+                    "candidate_count": 0,
+                    "raw_text": "Patient Alice",
+                    "bbox": [1, 2, 3, 4]
+                },
+                {
+                    "page": 2,
+                    "status": "visual_review_required",
+                    "requires_ocr": false,
+                    "candidate_count": 1,
+                    "nested": {"patient": "Alice"}
+                }
+            ],
+            "file_name": "alice-scan.pdf",
+            "pdf_bytes_base64": "SHOULD_NOT_LEAK",
+            "arbitrary": {"patient": "Alice"}
+        });
+
+        let download =
+            build_pdf_review_report_download(&response.to_string(), Some("scan.pdf")).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+
+        assert_eq!(
+            report["ocr_blockers"],
+            serde_json::json!({
+                "requires_ocr_pages": 1,
+                "visual_review_pages": 1,
+                "blocked_page_count": 2,
+                "rewrite_available": false
+            })
+        );
+        let serialized = serde_json::to_string(&report["ocr_blockers"]).unwrap();
+        assert!(!serialized.contains("Alice"));
+        assert!(!serialized.contains("bbox"));
+        assert!(!serialized.contains("SHOULD_NOT_LEAK"));
+        assert!(report["ocr_blockers"]
+            .as_object()
+            .unwrap()
+            .get("file_name")
+            .is_none());
     }
 
     #[test]
