@@ -28,7 +28,7 @@
 - Modify: `crates/mdid-desktop/src/main.rs:1-775`
 - Test: `crates/mdid-desktop/src/main.rs` inline `#[cfg(test)]` module
 
-- [ ] **Step 1: Write the failing success test**
+- [x] **Step 1: Write the failing success test**
 
 Add this test in the existing `#[cfg(test)] mod tests` after `app_save_portable_artifact_writes_artifact_json_without_sensitive_runtime_envelope`:
 
@@ -85,7 +85,7 @@ Add this test in the existing `#[cfg(test)] mod tests` after `app_save_portable_
     }
 ```
 
-- [ ] **Step 2: Run the targeted test and verify RED**
+- [x] **Step 2: Run the targeted test and verify RED**
 
 Run:
 
@@ -95,7 +95,7 @@ cargo test -p mdid-desktop app_save_vault_response_report_writes_safe_audit_summ
 
 Expected: FAIL to compile because `DesktopApp` has no `vault_response_report_save_path`, no `vault_response_report_save_status`, and no `save_vault_response_report_response` method.
 
-- [ ] **Step 3: Implement minimal app state and save action**
+- [x] **Step 3: Implement minimal app state and save action**
 
 In `crates/mdid-desktop/src/main.rs`:
 
@@ -139,7 +139,7 @@ In `crates/mdid-desktop/src/main.rs`:
     }
 ```
 
-- [ ] **Step 4: Run the targeted test and verify GREEN**
+- [x] **Step 4: Run the targeted test and verify GREEN**
 
 Run:
 
@@ -149,7 +149,7 @@ cargo test -p mdid-desktop app_save_vault_response_report_writes_safe_audit_summ
 
 Expected: PASS.
 
-- [ ] **Step 5: Add the no-response PHI-safe status test**
+- [x] **Step 5: Add the no-response PHI-safe status test**
 
 Add this test after the success test:
 
@@ -174,7 +174,7 @@ Add this test after the success test:
     }
 ```
 
-- [ ] **Step 6: Run the no-response test and verify RED/GREEN honestly**
+- [x] **Step 6: Run the no-response test and verify RED/GREEN honestly**
 
 Run:
 
@@ -184,7 +184,7 @@ cargo test -p mdid-desktop app_save_vault_response_report_action_sets_phi_safe_n
 
 Expected: It may pass immediately if the existing library writer already returns the correct safe no-response error. If it passes immediately, record this as test-hardening truthfulness evidence; do not force production churn.
 
-- [ ] **Step 7: Render the UI save controls**
+- [x] **Step 7: Render the UI save controls**
 
 In the vault/portable response workbench after the portable artifact JSON block and before the runtime-shaped response workbench separator, add:
 
@@ -208,7 +208,7 @@ In the vault/portable response workbench after the portable artifact JSON block 
             }
 ```
 
-- [ ] **Step 8: Run desktop tests and clippy**
+- [x] **Step 8: Run desktop tests and clippy**
 
 Run:
 
@@ -220,7 +220,7 @@ cargo clippy -p mdid-desktop --all-targets -- -D warnings
 
 Expected: all PASS with no clippy warnings.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/main.rs
@@ -232,11 +232,11 @@ git commit -m "feat(desktop): expose safe vault response report save"
 **Files:**
 - Modify: `README.md:62-75`
 
-- [ ] **Step 1: Update completion snapshot text**
+- [x] **Step 1: Update completion snapshot text**
 
 Edit the current repository status section to mention that the desktop app now exposes the PHI-safe vault/portable response report JSON save action in the desktop UI, not only the helper-layer writer.
 
-- [ ] **Step 2: Run doc hygiene and relevant verification**
+- [x] **Step 2: Run doc hygiene and relevant verification**
 
 Run:
 
@@ -249,7 +249,7 @@ cargo clippy -p mdid-desktop --all-targets -- -D warnings
 
 Expected: all PASS.
 
-- [ ] **Step 3: Commit docs**
+- [x] **Step 3: Commit docs**
 
 ```bash
 git add README.md
