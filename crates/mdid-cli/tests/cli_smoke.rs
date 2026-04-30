@@ -989,6 +989,13 @@ fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
     let normalized_text = dir.path().join("ocr-normalized.txt");
     let privacy_report = dir.path().join("privacy-filter.json");
 
+    let raw_fixture_values = [
+        "Jane Example",
+        "jane@example.com",
+        "+1-555-123-4567",
+        "MRN-12345",
+    ];
+
     let ocr_output = Command::cargo_bin("mdid-cli")
         .unwrap()
         .arg("ocr-handoff")
@@ -1006,13 +1013,22 @@ fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
         .arg(default_python_command())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Jane Example").not())
-        .stdout(predicate::str::contains("MRN-12345").not())
-        .stderr(predicate::str::contains("Jane Example").not())
-        .stderr(predicate::str::contains("MRN-12345").not())
         .get_output()
-        .stdout
         .clone();
+
+    let ocr_stdout = String::from_utf8_lossy(&ocr_output.stdout);
+    let ocr_stderr = String::from_utf8_lossy(&ocr_output.stderr);
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !ocr_stdout.contains(raw_pii),
+            "OCR stdout leaked raw PII: {raw_pii}"
+        );
+        assert!(
+            !ocr_stderr.contains(raw_pii),
+            "OCR stderr leaked raw PII: {raw_pii}"
+        );
+    }
+    let ocr_output = ocr_output.stdout.clone();
 
     let ocr_summary: Value = serde_json::from_slice(&ocr_output).unwrap();
     assert_eq!(ocr_summary["ready_for_text_pii_eval"], true);
@@ -1041,13 +1057,22 @@ fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
         .arg(default_python_command())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Jane Example").not())
-        .stdout(predicate::str::contains("MRN-12345").not())
-        .stderr(predicate::str::contains("Jane Example").not())
-        .stderr(predicate::str::contains("MRN-12345").not())
         .get_output()
-        .stdout
         .clone();
+
+    let privacy_stdout = String::from_utf8_lossy(&privacy_output.stdout);
+    let privacy_stderr = String::from_utf8_lossy(&privacy_output.stderr);
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !privacy_stdout.contains(raw_pii),
+            "Privacy Filter stdout leaked raw PII: {raw_pii}"
+        );
+        assert!(
+            !privacy_stderr.contains(raw_pii),
+            "Privacy Filter stderr leaked raw PII: {raw_pii}"
+        );
+    }
+    let privacy_output = privacy_output.stdout.clone();
 
     let privacy_summary: Value = serde_json::from_slice(&privacy_output).unwrap();
     assert_eq!(privacy_summary["engine"], "fallback_synthetic_patterns");
@@ -1055,9 +1080,15 @@ fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
     assert!(privacy_summary["detected_span_count"].as_u64().unwrap() >= 2);
 
     let privacy_json = fs::read_to_string(&privacy_report).unwrap();
-    assert!(!privacy_json.contains("Jane Example"));
-    assert!(!privacy_json.contains("MRN-12345"));
+    for raw_pii in raw_fixture_values {
+        assert!(
+            !privacy_json.contains(raw_pii),
+            "Privacy Filter report leaked raw PII: {raw_pii}"
+        );
+    }
     assert!(privacy_json.contains("[NAME]"));
+    assert!(privacy_json.contains("[EMAIL]"));
+    assert!(privacy_json.contains("[PHONE]"));
     assert!(privacy_json.contains("[MRN]"));
 }
 
