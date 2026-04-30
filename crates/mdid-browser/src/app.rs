@@ -998,12 +998,44 @@ fn pdf_redaction_rewrite_available(response: &serde_json::Value) -> bool {
         })
 }
 
+fn pdf_review_actionability_blocked_page_count(response: &serde_json::Value) -> u64 {
+    let mut blocked_pages = std::collections::BTreeSet::new();
+    let mut blocked_without_page = 0_u64;
+
+    if let Some(statuses) = pdf_review_page_statuses(response) {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            let requires_ocr = status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let visual_review_required = status
+                .get("requires_visual_review")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || status
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+
+            if requires_ocr || visual_review_required {
+                if let Some(page) = status.get("page").and_then(serde_json::Value::as_u64) {
+                    blocked_pages.insert(page);
+                } else {
+                    blocked_without_page += 1;
+                }
+            }
+        }
+    }
+
+    blocked_pages.len() as u64 + blocked_without_page
+}
+
 fn sanitized_pdf_review_actionability(response: &serde_json::Value) -> serde_json::Value {
     let ocr_blockers = sanitized_pdf_ocr_blockers(response);
     let visual_blockers = sanitized_pdf_visual_redaction_blockers(response);
     let ocr_required_pages = ocr_blockers["requires_ocr_pages"].as_u64().unwrap_or(0);
     let visual_review_pages = visual_blockers["visual_review_pages"].as_u64().unwrap_or(0);
-    let blocked_page_count = visual_blockers["blocked_page_count"].as_u64().unwrap_or(0);
+    let blocked_page_count = pdf_review_actionability_blocked_page_count(response);
     let automatic_rewrite_ready =
         pdf_redaction_rewrite_available(response) && blocked_page_count == 0;
 
@@ -1015,7 +1047,8 @@ fn sanitized_pdf_review_actionability(response: &serde_json::Value) -> serde_jso
         next_steps.push("Review visual-only pages manually before exporting a redacted PDF.");
     }
     if automatic_rewrite_ready {
-        next_steps.push("PDF review metadata indicates rewrite readiness; verify output before release.");
+        next_steps
+            .push("PDF review metadata indicates rewrite readiness; verify output before release.");
     } else {
         next_steps.push("Keep this PHI-safe report with the case audit trail.");
     }
@@ -3636,7 +3669,8 @@ mod tests {
         });
 
         let download =
-            build_pdf_review_report_download(&response.to_string(), Some("runtime-ready.pdf")).unwrap();
+            build_pdf_review_report_download(&response.to_string(), Some("runtime-ready.pdf"))
+                .unwrap();
         let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
 
         assert_eq!(report["actionability"]["automatic_rewrite_ready"], true);
@@ -3671,6 +3705,34 @@ mod tests {
         assert_eq!(report["actionability"]["blocked_page_count"], 1);
         assert_eq!(report["actionability"]["ocr_required_pages"], 1);
         assert_eq!(report["actionability"]["visual_review_pages"], 1);
+    }
+
+    #[test]
+    fn pdf_review_report_download_counts_duplicate_page_statuses_as_one_actionability_page() {
+        let response = serde_json::json!({
+            "ok": true,
+            "command": "pdf-review",
+            "source": {"path": "/tmp/forms/duplicate-statuses.pdf"},
+            "metadata": {
+                "page_statuses": [
+                    {"page": 2, "status": "ocr_required", "requires_ocr": true, "requires_visual_review": false, "can_rewrite": false},
+                    {"page": 2, "status": "visual_review_required", "requires_ocr": false, "requires_visual_review": true, "can_rewrite": false},
+                    {"page": 3, "status": "visual_review_required", "requires_ocr": false, "requires_visual_review": true, "can_rewrite": false}
+                ],
+                "redaction_rewrite_available": true
+            }
+        });
+
+        let download =
+            build_pdf_review_report_download(&response.to_string(), Some("duplicate-statuses.pdf"))
+                .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], false);
+        assert_eq!(report["actionability"]["blocked_page_count"], 2);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 1);
+        assert_eq!(report["actionability"]["visual_review_pages"], 2);
+        assert_eq!(report["visual_redaction_blockers"]["blocked_page_count"], 3);
     }
 
     #[test]
