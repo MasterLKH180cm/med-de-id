@@ -140,12 +140,12 @@ impl DesktopFileImportPayload {
                 payload: std::str::from_utf8(bytes)
                     .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
                     .to_string(),
-                source_name: None,
+                source_name: Some(source_name),
             }),
             "xlsx" => Ok(Self {
                 mode: DesktopWorkflowMode::XlsxBase64,
                 payload: encode_base64(bytes),
-                source_name: None,
+                source_name: Some(source_name),
             }),
             "pdf" => Ok(Self {
                 mode: DesktopWorkflowMode::PdfBase64Review,
@@ -3135,7 +3135,16 @@ mod tests {
 
         assert_eq!(imported.mode, DesktopWorkflowMode::CsvText);
         assert_eq!(imported.payload, "name\nAlice");
-        assert_eq!(imported.source_name, None);
+        assert_eq!(imported.source_name.as_deref(), Some("patients.csv"));
+    }
+
+    #[test]
+    fn desktop_csv_file_import_preserves_source_name_for_save_suggestions() {
+        let payload = DesktopFileImportPayload::from_bytes("clinic-export.csv", b"name\nAda\n")
+            .expect("csv import should be accepted");
+
+        assert_eq!(payload.mode, DesktopWorkflowMode::CsvText);
+        assert_eq!(payload.source_name.as_deref(), Some("clinic-export.csv"));
     }
 
     #[test]
@@ -3145,7 +3154,16 @@ mod tests {
 
         assert_eq!(imported.mode, DesktopWorkflowMode::XlsxBase64);
         assert_eq!(imported.payload, "UEsDBA==");
-        assert_eq!(imported.source_name, None);
+        assert_eq!(imported.source_name.as_deref(), Some("patients.xlsx"));
+    }
+
+    #[test]
+    fn desktop_xlsx_file_import_preserves_source_name_for_save_suggestions() {
+        let payload = DesktopFileImportPayload::from_bytes("clinic-export.xlsx", b"not-real-xlsx")
+            .expect("xlsx helper import should accept bytes before runtime validation");
+
+        assert_eq!(payload.mode, DesktopWorkflowMode::XlsxBase64);
+        assert_eq!(payload.source_name.as_deref(), Some("clinic-export.xlsx"));
     }
 
     #[test]
@@ -3346,7 +3364,7 @@ mod tests {
 
         assert_eq!(state.mode, DesktopWorkflowMode::CsvText);
         assert_eq!(state.payload, "name\nAlice");
-        assert_eq!(state.source_name, "chart.pdf");
+        assert_eq!(state.source_name, "patients.csv");
         assert_eq!(
             state.field_policy_json,
             r#"[{"header":"keep","phi_type":"Name","action":"review"}]"#
