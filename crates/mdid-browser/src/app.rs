@@ -918,6 +918,52 @@ impl BrowserFlowState {
         !self.result_output.trim().is_empty()
     }
 
+    fn suggested_decoded_values_file_name(&self) -> String {
+        self.imported_file_name
+            .as_deref()
+            .map(sanitized_import_stem)
+            .filter(|stem| stem != "mdid-browser-output")
+            .map(|stem| format!("{stem}-decoded-values.json"))
+            .unwrap_or_else(|| "mdid-browser-decoded-values.json".to_string())
+    }
+
+    fn decoded_values_payload(&self) -> Result<serde_json::Value, String> {
+        const ERROR: &str = "Decoded values download is only available after a successful vault decode response with decoded values.";
+
+        if self.input_mode != InputMode::VaultDecode {
+            return Err(ERROR.to_string());
+        }
+
+        let response: serde_json::Value =
+            serde_json::from_str(&self.result_output).map_err(|_| ERROR.to_string())?;
+        let decoded_values = response
+            .get("decoded_values")
+            .filter(|value| value.is_object())
+            .cloned()
+            .ok_or_else(|| ERROR.to_string())?;
+
+        Ok(serde_json::json!({
+            "mode": "vault_decode_values",
+            "decoded_values": decoded_values,
+        }))
+    }
+
+    fn can_export_decoded_values(&self) -> bool {
+        self.decoded_values_payload().is_ok()
+    }
+
+    fn prepared_decoded_values_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
+        let bytes = serde_json::to_vec_pretty(&self.decoded_values_payload()?)
+            .map_err(|_| "Browser decoded values download could not encode JSON.".to_string())?;
+
+        Ok(BrowserDownloadPayload {
+            file_name: self.suggested_decoded_values_file_name(),
+            mime_type: "application/json;charset=utf-8",
+            bytes,
+            is_text: true,
+        })
+    }
+
     fn review_report_download_json(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec_pretty(&serde_json::json!({
             "mode": self.input_mode.label(),
@@ -2614,6 +2660,61 @@ mod tests {
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn browser_decode_values_download_exports_only_decoded_values() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            imported_file_name: Some("Clinic Vault 2026.vault".to_string()),
+            result_output: serde_json::json!({
+                "decoded_values": {"patient-1": {"name": "Alice Example"}},
+                "vault_path": "/phi/vault",
+                "passphrase": "secret",
+                "audit_event": {"kind": "decode"}
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        assert!(state.can_export_decoded_values());
+        let payload = state
+            .prepared_decoded_values_download_payload()
+            .expect("decoded values payload");
+        let json: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("json");
+        let text = String::from_utf8(payload.bytes).expect("utf8");
+
+        assert_eq!(payload.file_name, "clinic-vault-2026-decoded-values.json");
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+        assert_eq!(json["mode"], "vault_decode_values");
+        assert_eq!(json["decoded_values"]["patient-1"]["name"], "Alice Example");
+        assert!(json.get("audit_event").is_none());
+        assert!(!text.contains("/phi/vault"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn browser_decode_values_download_is_unavailable_without_decoded_values() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            result_output: serde_json::json!({"decoded_count": 0}).to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        assert!(!state.can_export_decoded_values());
+        assert_eq!(
+            state.prepared_decoded_values_download_payload().unwrap_err(),
+            "Decoded values download is only available after a successful vault decode response with decoded values."
+        );
+
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.result_output = serde_json::json!({
+            "decoded_values": {"patient-1": {"name": "Alice Example"}}
+        })
+        .to_string();
+
+        assert!(!state.can_export_decoded_values());
+    }
 
     #[test]
     fn vault_audit_pagination_status_reports_requested_window_and_next_page() {
