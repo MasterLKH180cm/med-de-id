@@ -1218,10 +1218,24 @@ impl BrowserFlowState {
                 bytes: self.review_report_download_json()?,
                 is_text: true,
             }),
-            InputMode::VaultAuditEvents
-            | InputMode::VaultDecode
-            | InputMode::PortableArtifactInspect
-            | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
+            InputMode::VaultAuditEvents | InputMode::VaultDecode => Ok(BrowserDownloadPayload {
+                file_name,
+                mime_type: "application/json;charset=utf-8",
+                bytes: self.safe_vault_response_download_json()?,
+                is_text: true,
+            }),
+            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport
+                if self.result_output.trim_start().starts_with('{') =>
+            {
+                let mut payload = build_portable_response_report_download(
+                    self.input_mode,
+                    self.imported_file_name.as_deref(),
+                    &self.result_output,
+                )?;
+                payload.mime_type = "application/json;charset=utf-8";
+                Ok(payload)
+            }
+            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "application/json;charset=utf-8",
                 bytes: self.safe_vault_response_download_json()?,
@@ -2949,11 +2963,34 @@ mod tests {
         let error = build_portable_response_report_download(
             InputMode::CsvText,
             Some("rows.csv"),
-            r#"{"summary":"ok"}"#,
+            r#"{\"summary\":\"ok\"}"#,
         )
         .unwrap_err();
 
         assert_eq!(error, "Portable response report download is only available for portable artifact modes.");
+    }
+
+    #[test]
+    fn portable_import_prepared_download_uses_portable_report_payload() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactImport,
+            imported_file_name: Some("Patient Alice bundle.mdid-portable.json".to_string()),
+            result_output: r#"{"artifact":{"records":[{"id":"phi-1"}]},"imported_record_count":1,"audit_event_count":2}"#.to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state.prepared_download_payload().expect("portable response report");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let text = String::from_utf8(payload.bytes).unwrap();
+
+        assert_eq!(
+            payload.file_name,
+            "Patient_Alice_bundle-portable-artifact-import-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "portable_artifact_import");
+        assert_eq!(report["artifact"], "redacted");
+        assert!(!text.contains("phi-1"));
     }
 
     #[test]
