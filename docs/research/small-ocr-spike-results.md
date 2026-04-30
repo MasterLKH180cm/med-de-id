@@ -30,7 +30,13 @@ python scripts/ocr_eval/run_small_ocr.py --mock scripts/ocr_eval/fixtures/synthe
 python scripts/ocr_eval/validate_small_ocr_output.py /tmp/small-ocr-output.txt scripts/ocr_eval/fixtures/synthetic_printed_phi_expected.txt
 python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --input /tmp/small-ocr-output.txt --output /tmp/ocr-handoff.json
 python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
-python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/small-ocr-output.txt > /tmp/privacy-filter-output.json
+python - <<'PY'
+import json
+from pathlib import Path
+handoff = json.loads(Path('/tmp/ocr-handoff.json').read_text(encoding='utf-8'))
+Path('/tmp/ocr-normalized-text.txt').write_text(handoff['normalized_text'], encoding='utf-8')
+PY
+python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-text.txt > /tmp/privacy-filter-output.json
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
 ```
 
@@ -88,10 +94,16 @@ Result: PASS. The JSON handoff now includes `candidate: PP-OCRv5_mobile_rec`, `e
 
 ### Downstream text-only Privacy Filter handoff check
 ```bash
-python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/small-ocr-output.txt > /tmp/privacy-filter-output.json
+python - <<'PY'
+import json
+from pathlib import Path
+handoff = json.loads(Path('/tmp/ocr-handoff.json').read_text(encoding='utf-8'))
+Path('/tmp/ocr-normalized-text.txt').write_text(handoff['normalized_text'], encoding='utf-8')
+PY
+python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-text.txt > /tmp/privacy-filter-output.json
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
 ```
-Result: PASS. This only verifies that normalized OCR text can be handed into the existing text-only privacy-filter contract; it does not make Privacy Filter an OCR engine.
+Result: PASS. This verifies that normalized OCR handoff text can be handed into the existing text-only privacy-filter contract; it does not make Privacy Filter an OCR engine.
 
 ## Current limitation
 The real PaddleOCR stack is not installed locally in this environment, so the real OCR path currently exits with a truthful error instructing the operator to install the OCR stack or use `--mock` for plumbing-only validation.

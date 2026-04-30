@@ -122,6 +122,7 @@ const PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
 const PRIVACY_FILTER_RUNNER_TIMEOUT: Duration = Duration::from_secs(2);
 const OCR_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
 const OCR_RUNNER_TIMEOUT: Duration = PRIVACY_FILTER_RUNNER_TIMEOUT;
+const OCR_HANDOFF_BUILDER_TIMEOUT: Duration = PRIVACY_FILTER_RUNNER_TIMEOUT;
 
 #[derive(Clone, PartialEq, Eq)]
 struct OcrHandoffArgs {
@@ -838,7 +839,7 @@ fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
         let _ = fs::remove_file(&temp_path);
         format!("failed to write OCR temp text: {err}")
     })?;
-    let builder_status = std::process::Command::new(&args.python_command)
+    let mut builder_child = std::process::Command::new(&args.python_command)
         .arg(&args.handoff_builder_path)
         .arg("--source")
         .arg(&args.image_path)
@@ -848,10 +849,22 @@ fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
         .arg(&args.report_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|err| format!("failed to run OCR handoff builder: {err}"));
+        .spawn()
+        .map_err(|err| {
+            let _ = fs::remove_file(&args.report_path);
+            let _ = fs::remove_file(&temp_path);
+            format!("failed to run OCR handoff builder: {err}")
+        })?;
+    let builder_status =
+        wait_for_ocr_handoff_builder(&mut builder_child, OCR_HANDOFF_BUILDER_TIMEOUT).map_err(
+            |err| {
+                let _ = fs::remove_file(&args.report_path);
+                let _ = fs::remove_file(&temp_path);
+                err
+            },
+        )?;
     let _ = fs::remove_file(&temp_path);
-    if !builder_status?.success() {
+    if !builder_status.success() {
         let _ = fs::remove_file(&args.report_path);
         return Err("OCR handoff builder failed".to_string());
     }
@@ -886,6 +899,27 @@ fn ocr_temp_path(report_path: &Path) -> PathBuf {
     let mut path = report_path.to_path_buf().into_os_string();
     path.push(".ocr-text.tmp");
     PathBuf::from(path)
+}
+
+fn wait_for_ocr_handoff_builder(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to wait for OCR handoff builder: {err}"))?
+        {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("OCR handoff builder timed out".to_string());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn validate_ocr_handoff(value: &Value) -> Result<(), String> {
