@@ -730,18 +730,38 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
     require_regular_file(&args.input_path, "missing input file")?;
     require_regular_file(&args.runner_path, "missing runner file")?;
 
-    let output = std::process::Command::new(&args.python_command)
+    let mut child = std::process::Command::new(&args.python_command)
         .arg(&args.runner_path)
         .arg(&args.input_path)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
-    if !output.status.success() {
-        return Err("privacy filter runner failed".to_string());
-    }
-    if output.stdout.len() > PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES {
+
+    let mut stdout_bytes = Vec::new();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to read privacy filter runner output".to_string())?;
+    stdout
+        .take((PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut stdout_bytes)
+        .map_err(|err| format!("failed to read privacy filter runner output: {err}"))?;
+
+    if stdout_bytes.len() > PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
         return Err("runner output exceeded limit".to_string());
     }
-    let stdout = String::from_utf8(output.stdout)
+
+    let status = child
+        .wait()
+        .map_err(|err| format!("failed to wait for privacy filter runner: {err}"))?;
+    if !status.success() {
+        return Err("privacy filter runner failed".to_string());
+    }
+
+    let stdout = String::from_utf8(stdout_bytes)
         .map_err(|_| "runner returned non-UTF-8 output".to_string())?;
     let value: Value =
         serde_json::from_str(&stdout).map_err(|_| "runner returned non-JSON output".to_string())?;

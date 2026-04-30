@@ -5,7 +5,7 @@ use mdid_adapters::XlsxTabularAdapter;
 use predicates::prelude::*;
 use rust_xlsxwriter::Workbook;
 use serde_json::Value;
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
 use tempfile::tempdir;
 
@@ -553,14 +553,28 @@ fn privacy_filter_text_rejects_oversized_runner_stdout_without_writing_report() 
     let runner_path = dir.path().join("privacy_runner.py");
     let report_path = dir.path().join("privacy-report.json");
     fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
-    write_privacy_runner(&runner_path, "print('x' * (1024 * 1024 + 1))\n");
-
-    assert_privacy_filter_rejects(
-        &input_path,
+    write_privacy_runner(
         &runner_path,
-        &report_path,
-        "runner output exceeded limit",
+        "import sys, time\nsys.stdout.write('x' * (1024 * 1024 + 1))\nsys.stdout.flush()\ntime.sleep(10)\n",
     );
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(3))
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("runner output exceeded limit"))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains("Jane Example").not());
+
+    assert!(!report_path.exists());
 }
 
 fn assert_privacy_filter_rejects(
