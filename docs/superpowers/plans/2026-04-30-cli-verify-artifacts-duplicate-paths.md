@@ -91,17 +91,17 @@ git commit -m "fix(cli): reject duplicate artifact verification paths"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update completion snapshot**
+- [x] **Step 1: Update completion snapshot**
 
 Update the `Current repository status` snapshot to mention this bounded CLI verification hardening. CLI remains 95%, browser/web remains 76%, desktop app remains 70%, and overall remains 93% because the change hardens verification semantics but does not add a major missing capability.
 
-- [ ] **Step 2: Run docs verification**
+- [x] **Step 2: Run docs verification**
 
 Run: `cargo fmt --check && git diff --check`
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit docs truth-sync**
+- [x] **Step 3: Commit docs truth-sync**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-30-cli-verify-artifacts-duplicate-paths.md
