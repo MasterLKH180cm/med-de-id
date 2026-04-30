@@ -16,6 +16,14 @@
 - bounded README with exact commands
 
 ## Verification run
+### CLI wrapper RED/GREEN evidence
+```bash
+cargo test -p mdid-cli ocr_handoff -- --nocapture
+```
+RED result before implementation: FAIL with `unknown command` for `ocr-handoff` and missing help text, proving no CLI handoff wrapper existed.
+
+GREEN result after implementation: PASS, 4 targeted tests. The wrapper now validates missing flags/files, rejects oversized OCR runner stdout before writing a final report, rejects invalid handoff JSON contracts while removing the bad report, and succeeds end-to-end on `synthetic_printed_phi_line.png` with normalized text containing `Jane Doe`.
+
 ### Strict TDD RED evidence
 ```bash
 python -m pytest tests/test_ocr_handoff_contract.py -q

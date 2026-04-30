@@ -9,6 +9,14 @@ use std::{fs, path::Path, time::Duration};
 
 use tempfile::tempdir;
 
+fn repo_path(relative: &str) -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative)
+        .to_string_lossy()
+        .to_string()
+}
+
 fn write_xlsx(path: &Path) {
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
@@ -802,6 +810,160 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
 }
 
 #[test]
+fn ocr_handoff_help_mentions_command() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ocr-handoff"));
+}
+
+#[test]
+fn ocr_handoff_missing_flags_and_files_are_rejected() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("ocr-handoff")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing --image-path"));
+
+    let dir = tempdir().unwrap();
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&runner_path, "print('Jane Doe')\n").unwrap();
+    fs::write(&builder_path, "print('ok')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            dir.path().join("missing.png").to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing image file"));
+}
+
+#[test]
+fn ocr_handoff_success_with_synthetic_fixture() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-handoff.json");
+
+    let stdout = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--handoff-builder-path",
+            &repo_path("scripts/ocr_eval/build_ocr_handoff.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ocr-handoff"))
+        .get_output()
+        .stdout
+        .clone();
+    let summary: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(summary["command"], "ocr-handoff");
+    assert_eq!(
+        summary["report_path"],
+        report_path.to_string_lossy().to_string()
+    );
+
+    let report: Value = serde_json::from_str(&fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(report["source"], "synthetic_printed_phi_line.png");
+    assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(report["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        report["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    assert_eq!(report["ready_for_text_pii_eval"], true);
+    assert!(report["normalized_text"]
+        .as_str()
+        .unwrap()
+        .contains("Jane Doe"));
+    assert!(!report_path.with_extension("json.ocr-text.tmp").exists());
+}
+
+#[test]
+fn ocr_handoff_rejects_invalid_builder_contract_and_removes_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Doe')\n").unwrap();
+    fs::write(&builder_path, "import pathlib, sys\npathlib.Path(sys.argv[sys.argv.index('--output')+1]).write_text('{}')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "OCR handoff missing required field",
+        ));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_handoff_rejects_oversized_ocr_stdout_without_writing_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "import sys, time\nsys.stdout.write('x' * (1024 * 1024 + 1))\nsys.stdout.flush()\ntime.sleep(10)\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(3))
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("OCR runner output exceeded limit"));
+    assert!(!report_path.exists());
+}
+
+#[test]
 fn cli_usage_stays_deidentification_scoped() {
     let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
@@ -814,6 +976,7 @@ fn cli_usage_stays_deidentification_scoped() {
         ))
         .stderr(predicate::str::contains("review-media"))
         .stderr(predicate::str::contains("privacy-filter-text"))
+        .stderr(predicate::str::contains("ocr-handoff"))
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());
