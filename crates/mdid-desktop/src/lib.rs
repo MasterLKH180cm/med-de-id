@@ -811,6 +811,30 @@ impl std::fmt::Display for DesktopPortableArtifactSaveError {
 
 impl std::error::Error for DesktopPortableArtifactSaveError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopDecodedValuesExportError {
+    NotVaultDecode,
+    MissingDecodedValues,
+    Io(String),
+    InvalidJson(String),
+}
+
+impl std::fmt::Display for DesktopDecodedValuesExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVaultDecode => write!(
+                f,
+                "decoded values export is only available for successful vault decode responses"
+            ),
+            Self::MissingDecodedValues => write!(f, "decoded values are unavailable"),
+            Self::Io(_) => write!(f, "decoded values JSON could not be written"),
+            Self::InvalidJson(_) => write!(f, "decoded values JSON could not be prepared"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopDecodedValuesExportError {}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopVaultResponseReportDownload {
     pub file_name: String,
@@ -913,6 +937,38 @@ impl DesktopVaultResponseState {
             .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))
     }
 
+    pub fn decode_values_export_json(
+        &self,
+    ) -> Result<serde_json::Value, DesktopDecodedValuesExportError> {
+        if self.last_success_mode != Some(DesktopVaultResponseMode::VaultDecode) {
+            return Err(DesktopDecodedValuesExportError::NotVaultDecode);
+        }
+
+        let response = self
+            .last_success_response
+            .as_ref()
+            .ok_or(DesktopDecodedValuesExportError::NotVaultDecode)?;
+        let decoded_values = response
+            .get("decoded_values")
+            .filter(|decoded_values| decoded_values.is_object())
+            .ok_or(DesktopDecodedValuesExportError::MissingDecodedValues)?;
+        let decoded_value_count = response
+            .get("decoded_value_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| {
+                decoded_values
+                    .as_object()
+                    .map_or(0, |values| values.len() as u64)
+            });
+
+        Ok(serde_json::json!({
+            "mode": "vault_decode_values",
+            "decoded_value_count": decoded_value_count,
+            "disclosure": "high-risk decoded values; store only in an approved local workstation location",
+            "decoded_values": decoded_values,
+        }))
+    }
+
     pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
         serde_json::json!({
             "mode": mode.safe_export_label(),
@@ -933,6 +989,18 @@ pub fn write_portable_artifact_json(
     let path = path.as_ref();
     std::fs::write(path, artifact_json)
         .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
+pub fn write_desktop_decode_values_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopDecodedValuesExportError> {
+    let decode_values_json = serde_json::to_string_pretty(&state.decode_values_export_json()?)
+        .map_err(|error| DesktopDecodedValuesExportError::InvalidJson(error.to_string()))?;
+    let path = path.as_ref();
+    std::fs::write(path, decode_values_json)
+        .map_err(|error| DesktopDecodedValuesExportError::Io(error.to_string()))?;
     Ok(path.to_path_buf())
 }
 
@@ -3033,6 +3101,65 @@ mod tests {
         assert!(!rendered.contains("/tmp/Alice-Smith-decode-report.json"));
         assert!(!rendered.contains("patient Alice"));
         assert!(!rendered.contains("PHI-TOKEN-1"));
+    }
+
+    #[test]
+    fn desktop_decode_values_export_contains_decoded_values_for_decode_response() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_value_count": 2,
+            "decoded_values": {
+                "record-1": {"name": "Jane Doe"},
+                "record-2": {"mrn": "12345"}
+            },
+            "audit_event_id": "audit-1"
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let json = state
+            .decode_values_export_json()
+            .expect("decode values export");
+
+        assert_eq!(json["mode"], "vault_decode_values");
+        assert_eq!(json["decoded_value_count"], 2);
+        assert_eq!(json["decoded_values"]["record-1"]["name"], "Jane Doe");
+        assert_eq!(json["decoded_values"]["record-2"]["mrn"], "12345");
+        assert_eq!(
+            json["disclosure"],
+            "high-risk decoded values; store only in an approved local workstation location"
+        );
+    }
+
+    #[test]
+    fn desktop_decode_values_export_rejects_non_decode_response() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({"event_count": 0, "events": []}),
+        );
+
+        let error = state.decode_values_export_json().expect_err("not decode");
+
+        assert_eq!(
+            error.to_string(),
+            "decoded values export is only available for successful vault decode responses"
+        );
+    }
+
+    #[test]
+    fn desktop_decode_values_export_rejects_missing_decoded_values() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultDecode,
+            &serde_json::json!({"decoded_value_count": 0}),
+        );
+
+        let error = state
+            .decode_values_export_json()
+            .expect_err("missing values");
+
+        assert_eq!(error.to_string(), "decoded values are unavailable");
     }
 
     #[test]
