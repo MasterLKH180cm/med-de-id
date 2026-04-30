@@ -1,6 +1,6 @@
 # Desktop Vault Audit Pagination Controls Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add bounded desktop vault audit offset/page-window support so the workstation can request and truthfully display paginated audit-event windows from the existing localhost runtime route.
 
@@ -32,7 +32,7 @@
 - Modify: `crates/mdid-desktop/src/lib.rs`
 - Test: `crates/mdid-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add these tests to the existing `#[cfg(test)]` module in `crates/mdid-desktop/src/lib.rs` near the other vault request tests:
 
@@ -95,13 +95,13 @@ fn vault_audit_request_rejects_negative_offset_without_echoing_input() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p mdid-desktop vault_audit_request_ -- --nocapture`
 
 Expected: FAIL to compile because `audit_offset` and `InvalidAuditOffset` do not exist yet.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Update `DesktopVaultRequestState` and audit-events request building in `crates/mdid-desktop/src/lib.rs`:
 
@@ -162,13 +162,13 @@ fn parse_optional_non_negative_usize<E>(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p mdid-desktop vault_audit_request_ -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/lib.rs
@@ -184,7 +184,7 @@ git commit -m "feat(desktop): add vault audit offset requests"
 - Modify: `crates/mdid-desktop/src/main.rs`
 - Test: `crates/mdid-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add this test near the desktop vault response tests in `crates/mdid-desktop/src/lib.rs`:
 
@@ -212,13 +212,13 @@ fn vault_audit_response_summary_includes_pagination_status() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p mdid-desktop vault_audit_response_summary_includes_pagination_status -- --nocapture`
 
 Expected: FAIL because the summary does not yet include the pagination status.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `DesktopVaultResponseState::render_success`, when rendering `DesktopVaultResponseMode::VaultAudit`, append a status string from a helper such as:
 
@@ -268,7 +268,7 @@ ui.horizontal(|ui| {
 
 Place it near the existing Limit input.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run:
 
@@ -282,7 +282,7 @@ git diff --check
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/lib.rs crates/mdid-desktop/src/main.rs
@@ -296,7 +296,7 @@ git commit -m "feat(desktop): show vault audit pagination status"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Re-run verification**
+- [x] **Step 1: Re-run verification**
 
 Run:
 
@@ -309,27 +309,27 @@ git diff --check
 
 Expected: all pass.
 
-- [ ] **Step 2: Update README completion snapshot**
+- [x] **Step 2: Update README completion snapshot**
 
 Update `README.md` current repository status to mention desktop vault audit pagination controls and status rendering. Keep completion percentages truthful; use CLI 95%, Browser/Web 78%, Desktop app 71% only if the landed desktop audit pagination controls materially improve the desktop workstation vault/audit workflow; keep Overall 93% unless a major blocker is removed.
 
 Add verification evidence including the exact commands from Step 1 and the landed commit hashes.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-30-desktop-vault-audit-pagination-controls.md
 git commit -m "docs: truth-sync desktop audit pagination controls"
 ```
 
-- [ ] **Step 4: Merge to develop**
+- [x] **Step 4: Merge to develop**
 
 ```bash
 git checkout develop
 git merge --no-ff feat/desktop-vault-audit-pagination-controls -m "merge: desktop audit pagination controls"
 ```
 
-- [ ] **Step 5: Final controller verification**
+- [x] **Step 5: Final controller verification**
 
 Run:
 
@@ -343,3 +343,7 @@ git diff --check
 ```
 
 Expected: on `develop`, clean or only intentional uncommitted none, commands pass.
+
+---
+
+Execution note: This plan was executed on `feat/desktop-vault-audit-pagination-controls` and verified through `27257e8`; implementation commits were `d584024` and `26e1a9e`, followed by docs truth-sync commits `f6fabdd` and `27257e8`.
