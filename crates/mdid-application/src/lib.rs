@@ -3,13 +3,14 @@ use mdid_adapters::{
     sanitize_output_name, ConservativeMediaAdapter, ConservativeMediaAdapterError,
     ConservativeMediaInput, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
     DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy, PdfAdapter,
-    PdfAdapterError, PdfPageExtraction, TabularAdapterError,
+    PdfAdapterError, PdfPageExtraction, TabularAdapterError, XlsxSheetDisclosure,
 };
 use mdid_domain::{
     BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
     DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, MappingScope,
-    PdfExtractionSummary, PdfPhiCandidate, PhiCandidate, PipelineDefinition, PipelineRun,
-    PipelineRunState, SurfaceKind, TabularColumn,
+    PdfExtractionSummary, PdfPhiCandidate, PdfRewriteStatus, PhiCandidate, PipelineDefinition,
+    PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -89,6 +90,7 @@ pub struct TabularDeidentificationOutput {
     pub csv: String,
     pub summary: BatchSummary,
     pub review_queue: Vec<PhiCandidate>,
+    pub worksheet_disclosure: Option<XlsxSheetDisclosure>,
 }
 
 impl fmt::Debug for TabularDeidentificationOutput {
@@ -125,6 +127,9 @@ pub struct PdfDeidentificationOutput {
     pub summary: PdfExtractionSummary,
     pub page_statuses: Vec<PdfPageExtraction>,
     pub review_queue: Vec<PdfPhiCandidate>,
+    pub rewrite_status: PdfRewriteStatus,
+    pub no_rewritten_pdf: bool,
+    pub review_only: bool,
     pub rewritten_pdf_bytes: Option<Vec<u8>>,
 }
 
@@ -135,6 +140,9 @@ impl fmt::Debug for PdfDeidentificationOutput {
             .field("page_statuses", &self.page_statuses)
             .field("review_queue", &"[REDACTED]")
             .field("review_queue_len", &self.review_queue.len())
+            .field("rewrite_status", &self.rewrite_status)
+            .field("no_rewritten_pdf", &self.no_rewritten_pdf)
+            .field("review_only", &self.review_only)
             .field(
                 "rewritten_pdf_bytes",
                 &self.rewritten_pdf_bytes.as_ref().map(|_| "[REDACTED]"),
@@ -205,6 +213,9 @@ impl PdfDeidentificationService {
             summary: extracted.summary,
             page_statuses: extracted.pages,
             review_queue: extracted.candidates,
+            rewrite_status: PdfRewriteStatus::ReviewOnlyNoRewrittenPdf,
+            no_rewritten_pdf: true,
+            review_only: true,
             rewritten_pdf_bytes: None,
         })
     }
@@ -223,6 +234,8 @@ impl DicomDeidentificationService {
         let extracted = adapter.extract(bytes, source_name)?;
         let job_id = Uuid::new_v4();
         let artifact_id = Uuid::new_v4();
+        let burned_in_review_required =
+            extracted.burned_in_annotation == BurnedInAnnotationStatus::Suspicious;
         let mut summary = DicomDeidentificationSummary {
             total_tags: extracted.candidates.len(),
             removed_private_tags: if private_tag_policy == DicomPrivateTagPolicy::Remove {
@@ -230,10 +243,11 @@ impl DicomDeidentificationService {
             } else {
                 0
             },
-            burned_in_suspicions: match extracted.burned_in_annotation {
-                BurnedInAnnotationStatus::Suspicious => 1,
-                BurnedInAnnotationStatus::Clean => 0,
-            },
+            burned_in_suspicions: usize::from(burned_in_review_required),
+            burned_in_review_required,
+            burned_in_annotation_notice: burned_in_annotation_notice(burned_in_review_required)
+                .into(),
+            burned_in_disclosure: DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into(),
             ..DicomDeidentificationSummary::default()
         };
         let mut review_queue = Vec::new();
@@ -379,6 +393,7 @@ impl TabularDeidentificationService {
             csv: write_csv(&extracted.columns, &rewritten_rows)?,
             summary,
             review_queue,
+            worksheet_disclosure: extracted.xlsx_disclosure,
         })
     }
 }
@@ -398,6 +413,14 @@ fn write_csv(columns: &[TabularColumn], rows: &[Vec<String>]) -> Result<String, 
 
     let bytes = writer.into_inner().map_err(|err| err.into_error())?;
     Ok(String::from_utf8(bytes)?)
+}
+
+fn burned_in_annotation_notice(review_required: bool) -> &'static str {
+    if review_required {
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    } else {
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    }
 }
 
 const DICOM_COMMON_PHI_MAPPING_TYPE: &str = "dicom_common_phi";

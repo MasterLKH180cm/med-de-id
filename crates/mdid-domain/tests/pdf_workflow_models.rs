@@ -1,5 +1,6 @@
 use mdid_domain::{
-    PdfExtractionSummary, PdfPageRef, PdfPhiCandidate, PdfScanStatus, ReviewDecision,
+    PdfExtractionSummary, PdfPageRef, PdfPhiCandidate, PdfRewriteStatus, PdfScanStatus,
+    ReviewDecision,
 };
 
 #[test]
@@ -24,6 +25,26 @@ fn pdf_scan_status_wire_values_are_stable() {
         serde_json::to_string(&PdfScanStatus::OcrRequired).unwrap(),
         "\"ocr_required\""
     );
+}
+
+#[test]
+fn pdf_rewrite_status_wire_value_is_explicitly_review_only() {
+    assert_eq!(
+        serde_json::to_string(&PdfRewriteStatus::ReviewOnlyNoRewrittenPdf).unwrap(),
+        "\"review_only_no_rewritten_pdf\""
+    );
+}
+
+#[test]
+fn pdf_summary_defaults_to_review_only_no_rewritten_pdf() {
+    let summary = PdfExtractionSummary::default();
+
+    assert_eq!(
+        summary.rewrite_status,
+        PdfRewriteStatus::ReviewOnlyNoRewrittenPdf
+    );
+    assert!(summary.no_rewritten_pdf);
+    assert!(summary.review_only);
 }
 
 #[test]

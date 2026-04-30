@@ -265,6 +265,17 @@ async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary
     assert_eq!(json["summary"]["review_required_cells"], 2);
     assert_eq!(json["summary"]["failed_rows"], 0);
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
+    assert!(json.get("xlsx_disclosure").is_none());
+    assert_eq!(
+        json["worksheet_disclosure"]["selected_sheet_name"],
+        "Patients"
+    );
+    assert_eq!(json["worksheet_disclosure"]["selected_sheet_index"], 1);
+    assert_eq!(json["worksheet_disclosure"]["total_sheet_count"], 3);
+    assert_eq!(
+        json["worksheet_disclosure"]["disclosure"],
+        "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+    );
 }
 
 #[tokio::test]
@@ -491,6 +502,93 @@ async fn conservative_media_deidentify_endpoint_reports_unsupported_payload_with
 }
 
 #[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_media_byte_payload_fields_phi_safely() {
+    let app = build_router(RuntimeState::default());
+    let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+    for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        let mut request = serde_json::json!({
+            "artifact_label": "patient-jane-image.png",
+            "format": "image",
+            "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}]
+        });
+        request[field] = serde_json::Value::String(raw_media_value.to_string());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media/conservative/deidentify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
+        assert_eq!(
+            json["error"]["message"],
+            "metadata-only media review does not accept media bytes"
+        );
+        let body_text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body_text.contains(raw_media_value));
+        assert!(!body_text.contains("Jane Patient"));
+        assert!(json.get("summary").is_none());
+        assert!(json.get("review_queue").is_none());
+        assert!(json.get("rewritten_media_bytes_base64").is_none());
+    }
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_null_media_byte_payload_fields_phi_safely()
+{
+    let app = build_router(RuntimeState::default());
+
+    for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        let mut request = serde_json::json!({
+            "artifact_label": "patient-jane-image.png",
+            "format": "image",
+            "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}]
+        });
+        request[field] = serde_json::Value::Null;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media/conservative/deidentify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
+        assert_eq!(
+            json["error"]["message"],
+            "metadata-only media review does not accept media bytes"
+        );
+        let body_text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body_text.contains("Jane Patient"));
+        assert!(json.get("summary").is_none());
+        assert!(json.get("review_queue").is_none());
+        assert!(json.get("rewritten_media_bytes_base64").is_none());
+    }
+}
+
+#[tokio::test]
 async fn conservative_media_deidentify_endpoint_rejects_blank_artifact_label() {
     let app = build_router(RuntimeState::default());
     let request = json!({
@@ -555,6 +653,15 @@ async fn pdf_deidentify_endpoint_routes_text_layer_candidates_to_review_without_
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 1);
     assert_eq!(json["review_queue"][0]["phi_type"], "extracted_text");
     assert_eq!(json["review_queue"][0]["decision"], "needs_review");
+    assert_eq!(json["rewrite_status"], "review_only_no_rewritten_pdf");
+    assert_eq!(json["no_rewritten_pdf"], true);
+    assert_eq!(json["review_only"], true);
+    assert_eq!(
+        json["summary"]["rewrite_status"],
+        "review_only_no_rewritten_pdf"
+    );
+    assert_eq!(json["summary"]["no_rewritten_pdf"], true);
+    assert_eq!(json["summary"]["review_only"], true);
     assert_eq!(json["rewritten_pdf_bytes_base64"], Value::Null);
 }
 
@@ -675,6 +782,16 @@ async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
     assert_eq!(json["summary"]["removed_private_tags"], 0);
     assert_eq!(json["summary"]["remapped_uids"], 3);
     assert_eq!(json["summary"]["burned_in_suspicions"], 1);
+    assert_eq!(json["summary"]["pixel_redaction_performed"], false);
+    assert_eq!(json["summary"]["burned_in_review_required"], true);
+    assert_eq!(
+        json["summary"]["burned_in_annotation_notice"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+    assert_eq!(
+        json["summary"]["burned_in_disclosure"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
     assert!(json["review_queue"].is_array());
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
 
@@ -1174,6 +1291,76 @@ async fn audit_events_endpoint_returns_filtered_events_in_reverse_chronological_
 }
 
 #[tokio::test]
+async fn audit_events_endpoint_paginates_with_offset_and_next_metadata() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    for index in 0..5 {
+        vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: sample_scope(&format!("patient.field{index}")),
+                    phi_type: "patient_id".into(),
+                    original_value: format!("MRN-{index:03}"),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+    }
+
+    let app = build_router(RuntimeState::default());
+    for (offset, expected_fields, expected_next_offset, expected_has_more) in [
+        (
+            0usize,
+            vec!["patient.field4", "patient.field3"],
+            Some(2usize),
+            true,
+        ),
+        (2, vec!["patient.field2", "patient.field1"], Some(4), true),
+        (4, vec!["patient.field0"], None, false),
+    ] {
+        let mut request = json!({
+            "vault_path": vault_path,
+            "vault_passphrase": "correct horse battery staple",
+            "kind": "encode",
+            "limit": 2,
+        });
+        if offset > 0 {
+            request["offset"] = json!(offset);
+        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vault/audit/events")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let events = json["events"].as_array().unwrap();
+
+        assert_eq!(events.len(), expected_fields.len());
+        for (event, expected_field) in events.iter().zip(expected_fields) {
+            assert!(event["detail"].as_str().unwrap().contains(expected_field));
+        }
+        assert_eq!(json["limit"], 2);
+        assert_eq!(json["offset"], offset);
+        assert_eq!(json["total_matching_events"], 5);
+        assert_eq!(json["next_offset"], json!(expected_next_offset));
+        assert_eq!(json["has_more"], expected_has_more);
+    }
+}
+
+#[tokio::test]
 async fn audit_events_endpoint_rejects_wrong_passphrase() {
     let dir = tempdir().unwrap();
     let vault_path = dir.path().join("runtime-vault.mdid");
@@ -1281,6 +1468,27 @@ async fn audit_events_endpoint_rejects_invalid_filter_payload() {
         .await
         .unwrap();
     assert_invalid_audit_events_request_response(blank_passphrase_response).await;
+
+    let bad_offset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "offset": "2"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_audit_events_request_response(bad_offset_response).await;
 
     let bad_enum_response = app
         .oneshot(

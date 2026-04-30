@@ -161,7 +161,7 @@ impl InputMode {
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
-            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
+            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
             Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
@@ -246,6 +246,7 @@ fn build_vault_audit_request_payload(
     kind: &str,
     actor: &str,
     limit: &str,
+    offset: &str,
 ) -> Result<serde_json::Value, String> {
     let vault_path = vault_path.trim();
     if vault_path.is_empty() {
@@ -282,6 +283,16 @@ fn build_vault_audit_request_payload(
                 return Err("Vault audit limit must be a positive integer.".to_string());
             }
             object.insert("limit".to_string(), serde_json::json!(parsed_limit));
+        }
+
+        let offset = offset.trim();
+        if !offset.is_empty() {
+            let parsed_offset = offset
+                .parse::<usize>()
+                .map_err(|_| "Vault audit offset must be a non-negative integer.".to_string())?;
+            if parsed_offset > 0 {
+                object.insert("offset".to_string(), serde_json::json!(parsed_offset));
+            }
         }
     }
 
@@ -463,6 +474,7 @@ struct BrowserFlowState {
     vault_audit_kind: String,
     vault_audit_actor: String,
     vault_audit_limit: String,
+    vault_audit_offset: String,
     vault_decode_record_ids_json: String,
     vault_decode_output_target: String,
     vault_decode_justification: String,
@@ -495,6 +507,7 @@ impl fmt::Debug for BrowserFlowState {
             .field("vault_audit_kind", &"<redacted>")
             .field("vault_audit_actor", &"<redacted>")
             .field("vault_audit_limit", &"<redacted>")
+            .field("vault_audit_offset", &"<redacted>")
             .field("vault_decode_record_ids_json", &"<redacted>")
             .field("vault_decode_output_target", &"<redacted>")
             .field("vault_decode_justification", &"<redacted>")
@@ -619,6 +632,7 @@ impl Default for BrowserFlowState {
             vault_audit_kind: String::new(),
             vault_audit_actor: String::new(),
             vault_audit_limit: String::new(),
+            vault_audit_offset: String::new(),
             vault_decode_record_ids_json: "[]".to_string(),
             vault_decode_output_target: String::new(),
             vault_decode_justification: String::new(),
@@ -961,6 +975,7 @@ impl BrowserFlowState {
                 &self.vault_audit_kind,
                 &self.vault_audit_actor,
                 &self.vault_audit_limit,
+                &self.vault_audit_offset,
             )?)
             .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -1245,6 +1260,15 @@ struct XlsxRuntimeSuccessResponse {
     rewritten_workbook_base64: String,
     summary: RuntimeSummary,
     review_queue: Vec<RuntimeReviewCandidate>,
+    worksheet_disclosure: Option<XlsxWorksheetDisclosure>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+struct XlsxWorksheetDisclosure {
+    selected_sheet_name: String,
+    selected_sheet_index: usize,
+    total_sheet_count: usize,
+    disclosure: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1264,6 +1288,15 @@ struct DicomRuntimeSummary {
     removed_private_tags: usize,
     remapped_uids: usize,
     burned_in_suspicions: usize,
+    pixel_redaction_performed: bool,
+    burned_in_review_required: bool,
+    burned_in_annotation_notice: String,
+    #[serde(default = "default_dicom_burned_in_disclosure")]
+    burned_in_disclosure: String,
+}
+
+fn default_dicom_burned_in_disclosure() -> String {
+    "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review.".to_string()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1287,6 +1320,9 @@ struct PdfRuntimeSuccessResponse {
     summary: PdfExtractionSummary,
     page_statuses: Vec<PdfPageStatusResponse>,
     review_queue: Vec<PdfReviewCandidate>,
+    rewrite_status: String,
+    no_rewritten_pdf: bool,
+    review_only: bool,
     // PDF mode is review-only; rewrite/export bytes are intentionally ignored.
     #[allow(dead_code)]
     rewritten_pdf_bytes_base64: Option<String>,
@@ -1299,6 +1335,9 @@ struct PdfExtractionSummary {
     ocr_required_pages: usize,
     extracted_candidates: usize,
     review_required_candidates: usize,
+    rewrite_status: String,
+    no_rewritten_pdf: bool,
+    review_only: bool,
 }
 
 #[derive(Clone, Eq, PartialEq, Deserialize)]
@@ -1361,6 +1400,16 @@ struct RuntimeResponseEnvelope {
     review_queue: String,
 }
 
+fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
+    const MEDIA_BYTE_FIELDS: &[&str] =
+        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
+    value.as_object().is_some_and(|object| {
+        MEDIA_BYTE_FIELDS
+            .iter()
+            .any(|field| object.contains_key(*field))
+    })
+}
+
 fn build_submit_request(
     input_mode: InputMode,
     payload: &str,
@@ -1412,6 +1461,10 @@ fn build_submit_request(
 
         if !value.is_object() {
             return Err("Media metadata JSON must be a JSON object accepted by the local media review runtime route.".to_string());
+        }
+
+        if media_metadata_json_contains_media_bytes(&value) {
+            return Err("metadata-only media review does not accept media bytes".to_string());
         }
 
         let body_json = serde_json::to_string(&value)
@@ -1489,7 +1542,7 @@ fn parse_runtime_success(
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
             Ok(RuntimeResponseEnvelope {
                 rewritten_output: parsed.rewritten_workbook_base64,
-                summary: format_summary(&parsed.summary),
+                summary: format_xlsx_summary(&parsed.summary, parsed.worksheet_disclosure.as_ref()),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
         }
@@ -1500,7 +1553,13 @@ fn parse_runtime_success(
                 rewritten_output:
                     "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
                         .to_string(),
-                summary: format_pdf_summary(&parsed.summary, &parsed.page_statuses),
+                summary: format_pdf_summary(
+                    &parsed.summary,
+                    &parsed.page_statuses,
+                    &parsed.rewrite_status,
+                    parsed.no_rewritten_pdf,
+                    parsed.review_only,
+                ),
                 review_queue: format_pdf_review_queue(&parsed.review_queue),
             })
         }
@@ -1662,6 +1721,23 @@ fn format_summary(summary: &RuntimeSummary) -> String {
     )
 }
 
+fn format_xlsx_summary(
+    summary: &RuntimeSummary,
+    disclosure: Option<&XlsxWorksheetDisclosure>,
+) -> String {
+    let mut formatted = format_summary(summary);
+    if let Some(disclosure) = disclosure {
+        formatted.push_str(&format!(
+            "\nworksheet_disclosure:\nselected_sheet_name: {}\nselected_sheet_index: {}\ntotal_sheet_count: {}\ndisclosure: {}",
+            disclosure.selected_sheet_name,
+            disclosure.selected_sheet_index,
+            disclosure.total_sheet_count,
+            disclosure.disclosure
+        ));
+    }
+    formatted
+}
+
 fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
     if review_queue.is_empty() {
         return "No review items returned.".to_string();
@@ -1681,13 +1757,17 @@ fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
 
 fn format_dicom_summary(summary: &DicomRuntimeSummary) -> String {
     format!(
-        "total_tags: {}\nencoded_tags: {}\nreview_required_tags: {}\nremoved_private_tags: {}\nremapped_uids: {}\nburned_in_suspicions: {}",
+        "total_tags: {}\nencoded_tags: {}\nreview_required_tags: {}\nremoved_private_tags: {}\nremapped_uids: {}\nburned_in_suspicions: {}\npixel_redaction_performed: {}\nburned_in_review_required: {}\nburned_in_annotation_notice: {}\nburned_in_disclosure: {}",
         summary.total_tags,
         summary.encoded_tags,
         summary.review_required_tags,
         summary.removed_private_tags,
         summary.remapped_uids,
-        summary.burned_in_suspicions
+        summary.burned_in_suspicions,
+        summary.pixel_redaction_performed,
+        summary.burned_in_review_required,
+        summary.burned_in_annotation_notice,
+        summary.burned_in_disclosure
     )
 }
 
@@ -1746,6 +1826,9 @@ fn format_media_review_queue(review_queue: &[MediaReviewCandidate]) -> String {
 fn format_pdf_summary(
     summary: &PdfExtractionSummary,
     page_statuses: &[PdfPageStatusResponse],
+    rewrite_status: &str,
+    no_rewritten_pdf: bool,
+    review_only: bool,
 ) -> String {
     let mut lines = vec![
         format!("total_pages: {}", summary.total_pages),
@@ -1756,6 +1839,9 @@ fn format_pdf_summary(
             "review_required_candidates: {}",
             summary.review_required_candidates
         ),
+        format!("rewrite_status: {rewrite_status}"),
+        format!("no_rewritten_pdf: {no_rewritten_pdf}"),
+        format!("review_only: {review_only}"),
         "page_statuses:".to_string(),
     ];
 
@@ -2121,6 +2207,14 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let on_vault_offset_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_offset = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
     let on_vault_decode_record_ids_input = move |event| {
         let next_value = event_target_value(&event);
         state.update(|state| {
@@ -2300,6 +2394,10 @@ pub fn App() -> impl IntoView {
                             "Limit (optional)"
                             <input on:input=on_vault_limit_input prop:value=move || state.get().vault_audit_limit type="text" />
                         </label>
+                        <label>
+                            "Offset (optional)"
+                            <input on:input=on_vault_offset_input prop:value=move || state.get().vault_audit_offset type="text" />
+                        </label>
                     </div>
                 </Show>
 
@@ -2453,6 +2551,35 @@ mod tests {
         IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
+
+    #[test]
+    fn xlsx_runtime_success_appends_safe_worksheet_disclosure_summary() {
+        let body = json!({
+            "rewritten_workbook_base64": "d29ya2Jvb2s=",
+            "summary": {
+                "total_rows": 2,
+                "encoded_cells": 1,
+                "review_required_cells": 0,
+                "failed_rows": 0
+            },
+            "review_queue": [],
+            "worksheet_disclosure": {
+                "selected_sheet_name": "Patients",
+                "selected_sheet_index": 1,
+                "total_sheet_count": 3,
+                "disclosure": "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+            }
+        });
+
+        let parsed = parse_runtime_success(InputMode::XlsxBase64, &body.to_string()).unwrap();
+
+        assert!(parsed.summary.contains("worksheet_disclosure:"));
+        assert!(parsed.summary.contains("selected_sheet_name: Patients"));
+        assert!(parsed.summary.contains("selected_sheet_index: 1"));
+        assert!(parsed.summary.contains("total_sheet_count: 3"));
+        assert!(parsed.summary.contains("first non-empty worksheet"));
+        assert!(!parsed.summary.contains("Alice Patient"));
+    }
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]
@@ -3536,6 +3663,7 @@ mod tests {
             "decode",
             "browser",
             "25",
+            "10",
         )
         .expect("valid bounded audit payload");
 
@@ -3544,6 +3672,7 @@ mod tests {
         assert_eq!(payload["kind"], "decode");
         assert_eq!(payload["actor"], "browser");
         assert_eq!(payload["limit"], 25);
+        assert_eq!(payload["offset"], 10);
     }
 
     #[test]
@@ -3554,6 +3683,7 @@ mod tests {
             " ",
             "",
             "",
+            "",
         )
         .expect("blank optional filters are valid");
 
@@ -3562,6 +3692,22 @@ mod tests {
         assert!(payload.get("kind").is_none());
         assert!(payload.get("actor").is_none());
         assert!(payload.get("limit").is_none());
+        assert!(payload.get("offset").is_none());
+    }
+
+    #[test]
+    fn vault_audit_payload_omits_zero_offset() {
+        let payload = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "",
+            "",
+            "",
+            "0",
+        )
+        .expect("zero offset is the runtime default");
+
+        assert!(payload.get("offset").is_none());
     }
 
     #[test]
@@ -3572,6 +3718,7 @@ mod tests {
             "decode",
             "browser",
             "not-a-number",
+            "",
         )
         .expect_err("invalid limit must be rejected before localhost submission");
 
@@ -3586,10 +3733,26 @@ mod tests {
             "decode",
             "browser",
             "0",
+            "",
         )
         .expect_err("zero limit must be rejected before localhost submission");
 
         assert!(error.contains("positive"));
+    }
+
+    #[test]
+    fn vault_audit_payload_rejects_invalid_offset() {
+        let error = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "",
+            "not-a-number",
+        )
+        .expect_err("invalid offset must be rejected before localhost submission");
+
+        assert!(error.contains("offset"));
     }
 
     #[test]
@@ -3771,7 +3934,11 @@ mod tests {
                 "review_required_tags": 1,
                 "removed_private_tags": 3,
                 "remapped_uids": 4,
-                "burned_in_suspicions": 1
+                "burned_in_suspicions": 1,
+                "pixel_redaction_performed": false,
+                "burned_in_review_required": true,
+                "burned_in_annotation_notice": "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review.",
+                "burned_in_disclosure": "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
             },
             "review_queue": [
                 {"tag": {"group": 16, "element": 16, "keyword": "PatientName"}, "phi_type": "patient_name", "value": "Jane Patient", "decision": "Review"}
@@ -3789,6 +3956,14 @@ mod tests {
         assert!(rendered.summary.contains("removed_private_tags: 3"));
         assert!(rendered.summary.contains("remapped_uids: 4"));
         assert!(rendered.summary.contains("burned_in_suspicions: 1"));
+        assert!(rendered
+            .summary
+            .contains("pixel_redaction_performed: false"));
+        assert!(rendered.summary.contains("burned_in_review_required: true"));
+        assert!(rendered
+            .summary
+            .contains("DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
+        assert!(rendered.summary.contains("burned_in_disclosure: DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
         assert_eq!(
             rendered.review_queue,
             "- tag (0010,0010) PatientName / patient_name / Review / value: <redacted>"
@@ -3802,6 +3977,10 @@ mod tests {
         assert!(InputMode::DicomBase64.disclosure_copy().unwrap().contains(
             "DICOM mode uses the existing local runtime tag-level de-identification route"
         ));
+        assert!(InputMode::DicomBase64
+            .disclosure_copy()
+            .unwrap()
+            .contains("DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
         assert!(InputMode::DicomBase64
             .disclosure_copy()
             .unwrap()
@@ -3865,8 +4044,32 @@ mod tests {
     fn media_metadata_mode_rejects_non_object_payload() {
         let error = build_submit_request(InputMode::MediaMetadataJson, "[]", "metadata.json", "")
             .unwrap_err();
-
         assert_eq!(error, "Media metadata JSON must be a JSON object accepted by the local media review runtime route.");
+    }
+
+    #[test]
+    fn media_metadata_json_request_rejects_media_byte_payload_fields_phi_safely() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+            let payload = serde_json::json!({
+                "artifact_label": "patient-jane-image.png",
+                "format": "image",
+                "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+                field: raw_media_value,
+            })
+            .to_string();
+
+            let error =
+                build_submit_request(InputMode::MediaMetadataJson, &payload, "metadata.json", "")
+                    .unwrap_err();
+            assert_eq!(
+                error,
+                "metadata-only media review does not accept media bytes"
+            );
+            assert!(!error.contains(raw_media_value));
+            assert!(!error.contains("Jane Patient"));
+        }
     }
 
     #[test]
@@ -4164,7 +4367,10 @@ mod tests {
                     "text_layer_pages": 1,
                     "ocr_required_pages": 1,
                     "extracted_candidates": 1,
-                    "review_required_candidates": 1
+                    "review_required_candidates": 1,
+                    "rewrite_status": "review_only_no_rewritten_pdf",
+                    "no_rewritten_pdf": true,
+                    "review_only": true
                 },
                 "page_statuses": [
                     {"page": {"label": "radiology/report.pdf", "page_number": 1}, "status": "text_layer_present"},
@@ -4179,6 +4385,9 @@ mod tests {
                         "decision": "needs_review"
                     }
                 ],
+                "rewrite_status": "review_only_no_rewritten_pdf",
+                "no_rewritten_pdf": true,
+                "review_only": true,
                 "rewritten_pdf_bytes_base64": null
             })
             .to_string(),
@@ -4191,6 +4400,11 @@ mod tests {
         );
         assert!(response.summary.contains("total_pages: 2"));
         assert!(response.summary.contains("ocr_required_pages: 1"));
+        assert!(response
+            .summary
+            .contains("rewrite_status: review_only_no_rewritten_pdf"));
+        assert!(response.summary.contains("no_rewritten_pdf: true"));
+        assert!(response.summary.contains("review_only: true"));
         assert!(response.summary.contains("page_statuses:"));
         assert!(response
             .summary

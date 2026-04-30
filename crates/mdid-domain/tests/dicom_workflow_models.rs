@@ -1,6 +1,6 @@
 use mdid_domain::{
     BurnedInAnnotationStatus, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, DicomTagRef, ReviewDecision,
+    DicomPrivateTagPolicy, DicomTagRef, ReviewDecision, DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
 };
 
 #[test]
@@ -53,4 +53,71 @@ fn dicom_summary_requires_review_for_review_items_or_burned_in_suspicion() {
     assert!(review_summary.requires_review());
     assert!(suspicious_summary.requires_review());
     assert!(!DicomDeidentificationSummary::default().requires_review());
+}
+
+#[test]
+fn dicom_summary_discloses_pixel_redaction_is_not_performed() {
+    let summary = DicomDeidentificationSummary::default();
+
+    assert!(!summary.pixel_redaction_performed);
+    assert_eq!(
+        summary.burned_in_annotation_notice,
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+    assert_eq!(
+        summary.burned_in_disclosure,
+        summary.burned_in_annotation_notice
+    );
+}
+
+#[test]
+fn dicom_summary_serializes_exact_burned_in_disclosure_alias() {
+    let json = serde_json::to_value(DicomDeidentificationSummary::default()).unwrap();
+
+    assert_eq!(
+        json["burned_in_annotation_notice"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+    assert_eq!(
+        json["burned_in_disclosure"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+}
+
+#[test]
+fn dicom_summary_deserializes_older_json_without_pixel_disclosure_fields() {
+    let summary: DicomDeidentificationSummary = serde_json::from_str(
+        r#"{
+            "total_tags": 5,
+            "encoded_tags": 2,
+            "review_required_tags": 1,
+            "removed_private_tags": 3,
+            "remapped_uids": 4,
+            "burned_in_suspicions": 0
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(summary.total_tags, 5);
+    assert!(!summary.pixel_redaction_performed);
+    assert!(!summary.burned_in_review_required);
+    assert_eq!(
+        summary.burned_in_annotation_notice,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
+    assert_eq!(
+        summary.burned_in_disclosure,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
+}
+
+#[test]
+fn dicom_summary_flags_burned_in_review_when_suspicious() {
+    let summary = DicomDeidentificationSummary {
+        burned_in_suspicions: 1,
+        burned_in_review_required: true,
+        ..DicomDeidentificationSummary::default()
+    };
+
+    assert!(summary.burned_in_review_required);
 }

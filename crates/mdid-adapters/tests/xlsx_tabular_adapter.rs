@@ -39,6 +39,35 @@ fn xlsx_adapter_uses_first_non_empty_worksheet_and_matches_csv_semantics() {
         candidate_summary(&extracted),
         candidate_summary(&csv_extracted)
     );
+    let disclosure = extracted
+        .xlsx_disclosure
+        .as_ref()
+        .expect("xlsx extraction should disclose selected worksheet scope");
+    assert_eq!(disclosure.selected_sheet_name, "Sheet2");
+    assert_eq!(disclosure.selected_sheet_index, 1);
+    assert_eq!(disclosure.total_sheet_count, 2);
+    assert_eq!(
+        disclosure.disclosure,
+        "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+    );
+}
+
+#[test]
+fn xlsx_adapter_discloses_first_sheet_fallback_when_all_sheets_blank() {
+    let mut workbook = Workbook::new();
+    workbook.add_worksheet().set_name("Blank One").unwrap();
+    workbook.add_worksheet().set_name("Blank Two").unwrap();
+    let workbook = workbook.save_to_buffer().unwrap();
+    let adapter = XlsxTabularAdapter::new(Vec::new());
+
+    let extracted = adapter.extract(&workbook).unwrap();
+
+    assert!(extracted.columns.is_empty());
+    assert!(extracted.rows.is_empty());
+    let disclosure = extracted.xlsx_disclosure.as_ref().unwrap();
+    assert_eq!(disclosure.selected_sheet_name, "Blank One");
+    assert_eq!(disclosure.selected_sheet_index, 0);
+    assert_eq!(disclosure.total_sheet_count, 2);
 }
 
 #[test]

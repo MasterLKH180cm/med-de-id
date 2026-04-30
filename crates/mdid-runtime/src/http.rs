@@ -21,7 +21,7 @@ use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
     ConservativeMediaSummary, DecodeRequest, DecodeRequestError, DicomDeidentificationSummary,
     DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary,
-    PdfPageRef, PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
+    PdfPageRef, PdfPhiCandidate, PdfRewriteStatus, PdfScanStatus, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,8 @@ struct VaultAuditEventsRequest {
     actor: Option<SurfaceKind>,
     #[serde(default, deserialize_with = "deserialize_optional_limit")]
     limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +125,47 @@ struct ConservativeMediaDeidentifyRequest {
     ocr_or_visual_review_required: bool,
     #[serde(default)]
     unsupported_payload: bool,
+    #[serde(
+        default,
+        rename = "media_bytes_base64",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    media_bytes_base64_present: bool,
+    #[serde(
+        default,
+        rename = "image_bytes",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    image_bytes_present: bool,
+    #[serde(
+        default,
+        rename = "file_bytes",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    file_bytes_present: bool,
+    #[serde(
+        default,
+        rename = "base64",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    base64_present: bool,
+}
+
+impl ConservativeMediaDeidentifyRequest {
+    fn contains_media_byte_payload(&self) -> bool {
+        self.media_bytes_base64_present
+            || self.image_bytes_present
+            || self.file_bytes_present
+            || self.base64_present
+    }
+}
+
+fn deserialize_field_presence<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde_json::Value::deserialize(deserializer)?;
+    Ok(true)
 }
 
 #[derive(Deserialize)]
@@ -164,6 +207,9 @@ struct PdfDeidentifyResponse {
     summary: PdfExtractionSummary,
     page_statuses: Vec<PdfPageStatusResponse>,
     review_queue: Vec<PdfPhiCandidate>,
+    rewrite_status: PdfRewriteStatus,
+    no_rewritten_pdf: bool,
+    review_only: bool,
     rewritten_pdf_bytes_base64: Option<String>,
 }
 
@@ -187,6 +233,11 @@ struct VaultExportResponse {
 #[derive(Debug, Serialize)]
 struct VaultAuditEventsResponse {
     events: Vec<AuditEvent>,
+    limit: usize,
+    offset: usize,
+    total_matching_events: usize,
+    next_offset: Option<usize>,
+    has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,6 +275,15 @@ struct TabularXlsxDeidentifyResponse {
     rewritten_workbook_base64: String,
     summary: BatchSummary,
     review_queue: Vec<PhiCandidate>,
+    worksheet_disclosure: Option<XlsxSheetDisclosureResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct XlsxSheetDisclosureResponse {
+    selected_sheet_name: String,
+    selected_sheet_index: usize,
+    total_sheet_count: usize,
+    disclosure: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -377,6 +437,10 @@ async fn conservative_media_deidentify(
         Err(_) => return invalid_conservative_media_request_response().into_response(),
     };
 
+    if payload.contains_media_byte_payload() {
+        return conservative_media_bytes_not_accepted_response().into_response();
+    }
+
     let input = ConservativeMediaInput::from(payload);
     let output =
         match ConservativeMediaDeidentificationService::default().deidentify_metadata(input) {
@@ -517,17 +581,40 @@ async fn vault_audit_events(
     };
 
     let limit = payload.limit.unwrap_or(100).min(100);
-    let events = vault
+    let offset = payload.offset.unwrap_or(0);
+    let filtered = vault
         .audit_events()
         .iter()
         .rev()
         .filter(|event| payload.kind.is_none_or(|kind| event.kind == kind))
         .filter(|event| payload.actor.is_none_or(|actor| event.actor == actor))
-        .take(limit)
         .cloned()
         .collect::<Vec<_>>();
+    let total_matching_events = filtered.len();
+    let mut filtered_events = filtered
+        .into_iter()
+        .skip(offset)
+        .take(limit.saturating_add(1))
+        .collect::<Vec<_>>();
+    let has_more = filtered_events.len() > limit;
+    if has_more {
+        filtered_events.truncate(limit);
+    }
+    let returned_events = filtered_events.len();
+    let next_offset = has_more.then_some(offset.saturating_add(returned_events));
 
-    (StatusCode::OK, Json(VaultAuditEventsResponse { events })).into_response()
+    (
+        StatusCode::OK,
+        Json(VaultAuditEventsResponse {
+            events: filtered_events,
+            limit,
+            offset,
+            total_matching_events,
+            next_offset,
+            has_more,
+        }),
+    )
+        .into_response()
 }
 
 async fn portable_artifact_inspect(
@@ -846,6 +933,14 @@ fn tabular_xlsx_success_response(
             )?),
             summary: output.summary,
             review_queue: output.review_queue,
+            worksheet_disclosure: output.worksheet_disclosure.map(|disclosure| {
+                XlsxSheetDisclosureResponse {
+                    selected_sheet_name: disclosure.selected_sheet_name,
+                    selected_sheet_index: disclosure.selected_sheet_index,
+                    total_sheet_count: disclosure.total_sheet_count,
+                    disclosure: disclosure.disclosure,
+                }
+            }),
         }),
     ))
 }
@@ -879,6 +974,9 @@ fn pdf_success_response(
                 })
                 .collect(),
             review_queue: output.review_queue,
+            rewrite_status: output.rewrite_status,
+            no_rewritten_pdf: output.no_rewritten_pdf,
+            review_only: output.review_only,
             rewritten_pdf_bytes_base64: output
                 .rewritten_pdf_bytes
                 .map(|bytes| STANDARD.encode(bytes)),
@@ -942,6 +1040,18 @@ fn invalid_conservative_media_request_response() -> (StatusCode, Json<ErrorEnvel
             error: ErrorBody {
                 code: "invalid_conservative_media_request",
                 message: "request body did not contain a valid conservative media deidentification request",
+            },
+        }),
+    )
+}
+
+fn conservative_media_bytes_not_accepted_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_conservative_media_request",
+                message: "metadata-only media review does not accept media bytes",
             },
         }),
     )

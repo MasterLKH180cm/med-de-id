@@ -258,9 +258,9 @@ impl DesktopWorkflowMode {
     pub fn disclosure(self) -> &'static str {
         match self {
             Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; it stays limited to this local de-identification request surface.",
-            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it stays limited to this local de-identification request surface.",
+            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it processes the first non-empty worksheet only. Sheet selection is not supported in this desktop flow; it stays limited to this local de-identification request surface.",
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
-            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; it stays limited to this local de-identification request surface.",
+            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
         }
     }
@@ -1084,6 +1084,10 @@ impl DesktopWorkflowRequestState {
                     return Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson);
                 }
 
+                if media_metadata_json_contains_media_bytes(&body) {
+                    return Err(DesktopWorkflowValidationError::MediaBytesNotAccepted);
+                }
+
                 Ok(DesktopWorkflowRequest {
                     route: self.mode.route(),
                     body,
@@ -1091,6 +1095,16 @@ impl DesktopWorkflowRequestState {
             }
         }
     }
+}
+
+fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
+    const MEDIA_BYTE_FIELDS: &[&str] =
+        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
+    value.as_object().is_some_and(|object| {
+        MEDIA_BYTE_FIELDS
+            .iter()
+            .any(|field| object.contains_key(*field))
+    })
 }
 
 fn parse_field_policies(
@@ -1166,6 +1180,7 @@ pub enum DesktopWorkflowValidationError {
     InvalidFieldPolicyJson(String),
     BlankSourceName,
     InvalidMediaMetadataJson,
+    MediaBytesNotAccepted,
 }
 
 impl std::fmt::Display for DesktopWorkflowValidationError {
@@ -1179,6 +1194,9 @@ impl std::fmt::Display for DesktopWorkflowValidationError {
                 f,
                 "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
             ),
+            Self::MediaBytesNotAccepted => {
+                write!(f, "metadata-only media review does not accept media bytes")
+            }
         }
     }
 }
@@ -1910,7 +1928,10 @@ impl DesktopWorkflowResponseState {
             }
         };
 
-        self.summary = pretty_json_field(&envelope, "summary");
+        self.summary = match mode {
+            DesktopWorkflowMode::XlsxBase64 => pretty_xlsx_summary(&envelope),
+            _ => pretty_json_field(&envelope, "summary"),
+        };
         self.review_queue = pretty_json_field(&envelope, "review_queue");
         self.error = None;
         self.last_success_mode = Some(mode);
@@ -1975,6 +1996,17 @@ fn pretty_json_field(envelope: &serde_json::Value, field: &str) -> String {
         .get(field)
         .and_then(|value| serde_json::to_string_pretty(value).ok())
         .unwrap_or_else(|| "null".to_string())
+}
+
+fn pretty_xlsx_summary(envelope: &serde_json::Value) -> String {
+    let mut summary = pretty_json_field(envelope, "summary");
+    if let Some(disclosure) = envelope.get("worksheet_disclosure") {
+        if let Ok(disclosure) = serde_json::to_string_pretty(disclosure) {
+            summary.push_str("\nworksheet_disclosure: ");
+            summary.push_str(&disclosure);
+        }
+    }
+    summary
 }
 
 #[cfg(test)]
@@ -2083,6 +2115,37 @@ mod tests {
                 .vault_response_mode(),
             None
         );
+    }
+
+    #[test]
+    fn workflow_response_state_renders_xlsx_worksheet_disclosure_without_cells() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({
+                "rewritten_workbook_base64": "d29ya2Jvb2s=",
+                "summary": {
+                    "total_rows": 2,
+                    "encoded_cells": 1,
+                    "review_required_cells": 0,
+                    "failed_rows": 0
+                },
+                "review_queue": [],
+                "worksheet_disclosure": {
+                    "selected_sheet_name": "Patients",
+                    "selected_sheet_index": 1,
+                    "total_sheet_count": 3,
+                    "disclosure": "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+                },
+                "patient_cell_value": "Alice Patient"
+            }),
+        );
+
+        assert!(state.summary.contains("worksheet_disclosure"));
+        assert!(state.summary.contains("selected_sheet_name"));
+        assert!(state.summary.contains("Patients"));
+        assert!(state.summary.contains("first non-empty worksheet"));
+        assert!(!state.summary.contains("Alice Patient"));
     }
 
     #[test]
@@ -2456,6 +2519,36 @@ mod tests {
             invalid.try_build_request(),
             Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson)
         );
+    }
+
+    #[test]
+    fn media_metadata_request_rejects_media_byte_payload_fields_phi_safely() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+            let state = DesktopWorkflowRequestState {
+                mode: DesktopWorkflowMode::MediaMetadataJson,
+                payload: serde_json::json!({
+                    "artifact_label": "patient-jane-image.png",
+                    "format": "image",
+                    "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+                    field: raw_media_value,
+                })
+                .to_string(),
+                field_policy_json: "{}".to_string(),
+                source_name: "local-media-metadata.json".to_string(),
+            };
+
+            let error = state.try_build_request().unwrap_err();
+            assert_eq!(error, DesktopWorkflowValidationError::MediaBytesNotAccepted);
+            let message = error.to_string();
+            assert_eq!(
+                message,
+                "metadata-only media review does not accept media bytes"
+            );
+            assert!(!message.contains(raw_media_value));
+            assert!(!message.contains("Jane Patient"));
+        }
     }
 
     #[test]
@@ -3532,6 +3625,9 @@ mod tests {
             request.body,
             json!({"workbook_base64":"UEsDBAo=","field_policies":[{"header":"patient_name","phi_type":"Name","action":"review"}]})
         );
+        let disclosure = state.mode.disclosure();
+        assert!(disclosure.contains("first non-empty worksheet"));
+        assert!(disclosure.contains("Sheet selection is not supported"));
     }
 
     #[test]
@@ -3694,6 +3790,15 @@ mod tests {
         assert!(message.contains("vault/decode/audit workflow"));
         assert!(message.contains("full review workflow"));
         assert!(!message.contains(&["control", "ler workflow"].concat()));
+    }
+
+    #[test]
+    fn dicom_workflow_scope_note_discloses_no_pixel_redaction() {
+        let disclosure = DesktopWorkflowMode::DicomBase64.disclosure();
+
+        assert!(disclosure.contains("tag-level DICOM de-identification"));
+        assert!(disclosure.contains("DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
+        assert!(!disclosure.contains("visual redaction is performed"));
     }
 
     #[test]

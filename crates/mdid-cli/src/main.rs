@@ -108,6 +108,7 @@ struct VaultAuditArgs {
     vault_path: PathBuf,
     passphrase: String,
     limit: Option<usize>,
+    offset: usize,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -450,6 +451,7 @@ fn parse_vault_audit_args(args: &[String]) -> Result<VaultAuditArgs, String> {
     let mut vault_path = None;
     let mut passphrase = None;
     let mut limit = None;
+    let mut offset = 0;
 
     let mut index = 0;
     while index < args.len() {
@@ -469,6 +471,11 @@ fn parse_vault_audit_args(args: &[String]) -> Result<VaultAuditArgs, String> {
                 }
                 limit = Some(parsed);
             }
+            "--offset" => {
+                offset = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid --offset".to_string())?;
+            }
             _ => return Err("unknown flag".to_string()),
         }
         index += 2;
@@ -478,6 +485,7 @@ fn parse_vault_audit_args(args: &[String]) -> Result<VaultAuditArgs, String> {
         vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
         passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
         limit,
+        offset,
     })
 }
 
@@ -845,6 +853,9 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "page_statuses": page_statuses,
         "review_queue_len": review_queue_len,
         "rewrite_available": false,
+        "rewrite_status": output.rewrite_status,
+        "no_rewritten_pdf": output.no_rewritten_pdf,
+        "review_only": output.review_only,
         "rewritten_pdf_bytes": serde_json::Value::Null,
     });
     fs::write(
@@ -859,6 +870,9 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "summary": report["summary"].clone(),
         "review_queue_len": report["review_queue_len"].clone(),
         "rewrite_available": false,
+        "rewrite_status": report["rewrite_status"].clone(),
+        "no_rewritten_pdf": report["no_rewritten_pdf"].clone(),
+        "review_only": report["review_only"].clone(),
     });
     println!(
         "{}",
@@ -870,7 +884,12 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
 #[derive(Debug, Serialize)]
 struct VaultAuditReport {
     event_count: usize,
+    total_matching_events: usize,
     returned_event_count: usize,
+    limit: usize,
+    offset: usize,
+    next_offset: Option<usize>,
+    has_more: bool,
     events: Vec<VaultAuditEventReport>,
 }
 
@@ -1066,7 +1085,7 @@ fn build_vault_decode_stdout(
 fn run_vault_audit(args: VaultAuditArgs) -> Result<(), String> {
     let vault = LocalVaultStore::unlock(&args.vault_path, &args.passphrase)
         .map_err(|err| format!("failed to open vault: {err}"))?;
-    let report = build_vault_audit_report(vault.audit_events(), args.limit);
+    let report = build_vault_audit_report(vault.audit_events(), args.limit, args.offset);
     println!(
         "{}",
         serde_json::to_string(&report)
@@ -1075,17 +1094,35 @@ fn run_vault_audit(args: VaultAuditArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn build_vault_audit_report(events: &[AuditEvent], limit: Option<usize>) -> VaultAuditReport {
+fn build_vault_audit_report(
+    events: &[AuditEvent],
+    limit: Option<usize>,
+    offset: usize,
+) -> VaultAuditReport {
     let event_count = events.len();
     let limit = limit
         .unwrap_or(DEFAULT_VAULT_AUDIT_LIMIT)
         .min(MAX_VAULT_AUDIT_LIMIT);
-    let selected = events.iter().rev().take(limit);
-    let events = selected.map(vault_audit_event_report).collect::<Vec<_>>();
+    let mut selected = events
+        .iter()
+        .rev()
+        .skip(offset)
+        .take(limit.saturating_add(1))
+        .map(vault_audit_event_report)
+        .collect::<Vec<_>>();
+    let has_more = selected.len() > limit;
+    if has_more {
+        selected.truncate(limit);
+    }
     VaultAuditReport {
         event_count,
-        returned_event_count: events.len(),
-        events,
+        total_matching_events: event_count,
+        returned_event_count: selected.len(),
+        limit,
+        offset,
+        next_offset: has_more.then_some(offset.saturating_add(limit)),
+        has_more,
+        events: selected,
     }
 }
 
@@ -1272,7 +1309,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]
@@ -1904,6 +1941,7 @@ mod tests {
                     vault_path: PathBuf::from("vault.mdid"),
                     passphrase: "secret-passphrase".to_string(),
                     limit: Some(10),
+                    offset: 0,
                 }))
         );
     }
@@ -2005,10 +2043,11 @@ mod tests {
     fn vault_audit_report_applies_default_and_max_limit_bounds() {
         let events = vault_audit_events(150, AuditEventKind::Encode);
 
-        let default_report = build_vault_audit_report(&events, None);
-        let clamped_report = build_vault_audit_report(&events, Some(150));
+        let default_report = build_vault_audit_report(&events, None, 0);
+        let clamped_report = build_vault_audit_report(&events, Some(150), 0);
 
         assert_eq!(default_report.event_count, 150);
+        assert_eq!(default_report.total_matching_events, 150);
         assert_eq!(default_report.returned_event_count, 100);
         assert_eq!(default_report.events.len(), 100);
         assert_eq!(clamped_report.returned_event_count, 100);
@@ -2019,12 +2058,73 @@ mod tests {
     fn vault_audit_report_returns_multiple_events_in_reverse_chronological_order() {
         let events = vault_audit_events(4, AuditEventKind::Encode);
 
-        let report = build_vault_audit_report(&events, Some(3));
+        let report = build_vault_audit_report(&events, Some(3), 0);
 
         assert_eq!(report.returned_event_count, 3);
         assert_eq!(report.events[0].recorded_at, "2026-04-29T00:03:00+00:00");
         assert_eq!(report.events[1].recorded_at, "2026-04-29T00:02:00+00:00");
         assert_eq!(report.events[2].recorded_at, "2026-04-29T00:01:00+00:00");
+    }
+
+    #[test]
+    fn vault_audit_report_applies_offset_and_next_metadata() {
+        let events = vault_audit_events(5, AuditEventKind::Encode);
+
+        let page = build_vault_audit_report(&events, Some(2), 1);
+        let final_page = build_vault_audit_report(&events, Some(2), 4);
+
+        assert_eq!(page.returned_event_count, 2);
+        assert_eq!(page.total_matching_events, 5);
+        assert_eq!(page.limit, 2);
+        assert_eq!(page.offset, 1);
+        assert_eq!(page.next_offset, Some(3));
+        assert!(page.has_more);
+        assert_eq!(page.events[0].recorded_at, "2026-04-29T00:03:00+00:00");
+        assert_eq!(page.events[1].recorded_at, "2026-04-29T00:02:00+00:00");
+
+        assert_eq!(final_page.returned_event_count, 1);
+        assert_eq!(final_page.total_matching_events, 5);
+        assert_eq!(final_page.offset, 4);
+        assert_eq!(final_page.next_offset, None);
+        assert!(!final_page.has_more);
+    }
+
+    #[test]
+    fn vault_audit_parser_accepts_offset_and_rejects_invalid_offset() {
+        let args = vec![
+            "vault-audit".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--limit".to_string(),
+            "2".to_string(),
+            "--offset".to_string(),
+            "3".to_string(),
+        ];
+
+        match parse_command(&args).unwrap() {
+            CliCommand::VaultAudit(parsed) => assert_eq!(parsed.offset, 3),
+            _ => panic!("expected vault audit command"),
+        }
+
+        let bad_args = vec![
+            "vault-audit".to_string(),
+            "--vault-path".to_string(),
+            "vault.mdid".to_string(),
+            "--passphrase".to_string(),
+            "secret-passphrase".to_string(),
+            "--offset".to_string(),
+            "not-a-number".to_string(),
+        ];
+        assert!(parse_command(&bad_args) == Err("invalid --offset".to_string()));
+    }
+
+    #[test]
+    fn usage_documents_vault_audit_offset() {
+        assert!(usage().contains(
+            "mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]"
+        ));
     }
 
     #[test]
@@ -2037,7 +2137,7 @@ mod tests {
         ]))
         .unwrap();
 
-        let report = build_vault_audit_report(&events, Some(4));
+        let report = build_vault_audit_report(&events, Some(4), 0);
         let rendered = serde_json::to_string(&report).unwrap();
 
         assert_eq!(

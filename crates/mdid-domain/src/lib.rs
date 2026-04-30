@@ -350,6 +350,18 @@ pub enum PdfScanStatus {
     OcrRequired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PdfRewriteStatus {
+    ReviewOnlyNoRewrittenPdf,
+}
+
+impl Default for PdfRewriteStatus {
+    fn default() -> Self {
+        Self::ReviewOnlyNoRewrittenPdf
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PdfPageRef {
     pub page_number: usize,
@@ -391,13 +403,38 @@ impl std::fmt::Debug for PdfPhiCandidate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PdfExtractionSummary {
     pub total_pages: usize,
     pub text_layer_pages: usize,
     pub ocr_required_pages: usize,
     pub extracted_candidates: usize,
     pub review_required_candidates: usize,
+    #[serde(default)]
+    pub rewrite_status: PdfRewriteStatus,
+    #[serde(default = "default_true")]
+    pub no_rewritten_pdf: bool,
+    #[serde(default = "default_true")]
+    pub review_only: bool,
+}
+
+impl Default for PdfExtractionSummary {
+    fn default() -> Self {
+        Self {
+            total_pages: 0,
+            text_layer_pages: 0,
+            ocr_required_pages: 0,
+            extracted_candidates: 0,
+            review_required_candidates: 0,
+            rewrite_status: PdfRewriteStatus::ReviewOnlyNoRewrittenPdf,
+            no_rewritten_pdf: true,
+            review_only: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl PdfExtractionSummary {
@@ -551,7 +588,7 @@ impl std::fmt::Debug for DicomPhiCandidate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DicomDeidentificationSummary {
     pub total_tags: usize,
     pub encoded_tags: usize,
@@ -559,12 +596,45 @@ pub struct DicomDeidentificationSummary {
     pub removed_private_tags: usize,
     pub remapped_uids: usize,
     pub burned_in_suspicions: usize,
+    #[serde(default)]
+    pub pixel_redaction_performed: bool,
+    #[serde(default)]
+    pub burned_in_review_required: bool,
+    #[serde(default = "default_dicom_burned_in_annotation_notice")]
+    pub burned_in_annotation_notice: String,
+    #[serde(default = "default_dicom_burned_in_annotation_notice")]
+    pub burned_in_disclosure: String,
+}
+
+impl Default for DicomDeidentificationSummary {
+    fn default() -> Self {
+        Self {
+            total_tags: 0,
+            encoded_tags: 0,
+            review_required_tags: 0,
+            removed_private_tags: 0,
+            remapped_uids: 0,
+            burned_in_suspicions: 0,
+            pixel_redaction_performed: false,
+            burned_in_review_required: false,
+            burned_in_annotation_notice: DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into(),
+            burned_in_disclosure: DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into(),
+        }
+    }
 }
 
 impl DicomDeidentificationSummary {
     pub fn requires_review(&self) -> bool {
-        self.review_required_tags > 0 || self.burned_in_suspicions > 0
+        self.review_required_tags > 0
+            || self.burned_in_review_required
+            || self.burned_in_suspicions > 0
     }
+}
+
+pub const DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE: &str = "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review.";
+
+fn default_dicom_burned_in_annotation_notice() -> String {
+    DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into()
 }
 
 #[derive(Clone, Serialize, Deserialize)]

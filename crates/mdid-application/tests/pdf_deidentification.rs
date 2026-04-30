@@ -1,6 +1,6 @@
 use mdid_adapters::PdfAdapterError;
 use mdid_application::{ApplicationError, PdfDeidentificationOutput, PdfDeidentificationService};
-use mdid_domain::{PdfScanStatus, ReviewDecision};
+use mdid_domain::{PdfRewriteStatus, PdfScanStatus, ReviewDecision};
 
 const TEXT_LAYER_PDF: &[u8] =
     include_bytes!("../../mdid-adapters/tests/fixtures/pdf/text-layer-minimal.pdf");
@@ -51,6 +51,12 @@ fn pdf_deidentification_routes_text_layer_candidates_to_review() {
     );
     assert_eq!(output.rewritten_pdf_bytes, None);
     assert_eq!(output.review_queue.len(), 1);
+    assert_eq!(
+        output.rewrite_status,
+        PdfRewriteStatus::ReviewOnlyNoRewrittenPdf
+    );
+    assert!(output.no_rewritten_pdf);
+    assert!(output.review_only);
     assert!(output
         .review_queue
         .iter()
