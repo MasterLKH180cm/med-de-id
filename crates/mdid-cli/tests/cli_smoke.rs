@@ -357,6 +357,43 @@ fn ocr_to_privacy_filter_corpus_writes_phi_safe_summary_output() {
 }
 
 #[test]
+fn ocr_to_privacy_filter_corpus_removes_stale_summary_on_prerequisite_failure() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-to-privacy-filter-corpus.json");
+    let summary_path = dir.path().join("ocr-to-privacy-filter-corpus-summary.json");
+    fs::write(&report_path, "stale raw Jane Example").unwrap();
+    fs::write(&summary_path, "stale raw Jane Example").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-to-privacy-filter-corpus",
+            "--fixture-dir",
+            dir.path().join("missing-fixtures").to_str().unwrap(),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_handoff_corpus.py"),
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--bridge-runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_to_privacy_filter_corpus.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stdout.contains("Jane Example"));
+    assert!(!stderr.contains("Jane Example"));
+}
+
+#[test]
 fn ocr_to_privacy_filter_corpus_missing_bridge_runner_removes_stale_report_generically() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("report.json");
