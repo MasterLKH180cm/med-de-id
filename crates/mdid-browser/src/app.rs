@@ -928,6 +928,53 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
     })
 }
 
+fn sanitized_pdf_visual_redaction_blockers(response: &serde_json::Value) -> serde_json::Value {
+    let mut ocr_required_pages = 0_u64;
+    let mut visual_review_pages = 0_u64;
+    let mut blocked_page_count = 0_u64;
+
+    if let Some(statuses) = response
+        .get("page_statuses")
+        .and_then(serde_json::Value::as_array)
+    {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            let requires_ocr = status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let visual_review_required = status
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+
+            if visual_review_required {
+                visual_review_pages += 1;
+            }
+            if requires_ocr {
+                ocr_required_pages += 1;
+            }
+            if visual_review_required || requires_ocr {
+                blocked_page_count += 1;
+            }
+        }
+    }
+
+    serde_json::json!({
+        "visual_review_pages": visual_review_pages,
+        "ocr_required_pages": ocr_required_pages,
+        "blocked_page_count": blocked_page_count,
+        "redaction_rewrite_available": response
+            .get("no_rewritten_pdf")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false),
+        "status": if blocked_page_count == 0 {
+            "no_visual_redaction_blockers_detected"
+        } else {
+            "blocked_pending_visual_redaction_or_ocr"
+        },
+    })
+}
+
 fn build_pdf_review_report_download(
     response_json: &str,
     imported_file_name: Option<&str>,
@@ -946,6 +993,7 @@ fn build_pdf_review_report_download(
         "review_queue": sanitized_pdf_review_queue(&response),
         "page_statuses": sanitized_pdf_page_statuses(&response),
         "ocr_blockers": sanitized_pdf_ocr_blockers(&response),
+        "visual_redaction_blockers": sanitized_pdf_visual_redaction_blockers(&response),
     });
 
     Ok(BrowserDownloadPayload {
@@ -3411,6 +3459,46 @@ mod tests {
             .unwrap()
             .get("file_name")
             .is_none());
+    }
+
+    #[test]
+    fn pdf_review_report_download_includes_visual_redaction_blockers_without_sensitive_payloads() {
+        let response = serde_json::json!({
+            "source": {"kind": "pdf", "status": "review_required"},
+            "page_statuses": [
+                {"page": 1, "status": "ok", "requires_ocr": false, "candidate_count": 2, "raw_text": "Patient Alice"},
+                {"page": 2, "status": "visual_review_required", "requires_ocr": false, "candidate_count": 0, "bbox": [1, 2, 3, 4]},
+                {"page": 2, "status": "VISUAL_REVIEW_REQUIRED", "requires_ocr": false, "candidate_count": 0, "bbox": [4, 3, 2, 1]},
+                {"page": 3, "status": "requires_ocr", "requires_ocr": true, "candidate_count": 0, "pdf_bytes_base64": "JVBERi0="}
+            ],
+            "review_queue": [{"page": 2, "kind": "visual", "status": "review_required", "raw_text": "Alice"}],
+            "no_rewritten_pdf": true,
+            "pdf_bytes_base64": "JVBERi0="
+        });
+
+        let payload =
+            build_pdf_review_report_download(&response.to_string(), Some("scan.pdf")).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert_eq!(
+            report["visual_redaction_blockers"]["visual_review_pages"],
+            2
+        );
+        assert_eq!(report["visual_redaction_blockers"]["ocr_required_pages"], 1);
+        assert_eq!(report["visual_redaction_blockers"]["blocked_page_count"], 3);
+        assert_eq!(
+            report["visual_redaction_blockers"]["redaction_rewrite_available"],
+            false
+        );
+        assert_eq!(
+            report["visual_redaction_blockers"]["status"],
+            "blocked_pending_visual_redaction_or_ocr"
+        );
+
+        let encoded = String::from_utf8(payload.bytes).unwrap();
+        assert!(!encoded.contains("Patient Alice"));
+        assert!(!encoded.contains("pdf_bytes_base64"));
+        assert!(!encoded.contains("bbox"));
     }
 
     #[test]
