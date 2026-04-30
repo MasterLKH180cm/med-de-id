@@ -16,6 +16,15 @@
 - bounded README with exact commands
 
 ## Verification run
+### OCR-to-Privacy-Filter chain evidence
+```bash
+cargo test -p mdid-cli cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks
+python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
+python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/ocr-privacy-filter.json
+python scripts/privacy_filter/validate_privacy_filter_output.py scripts/privacy_filter/fixtures/sample_text_expected_shape.json
+```
+Result: PASS in the bounded synthetic chain validators. This OCR-to-Privacy-Filter chain proves printed-text extraction only from the synthetic pre-cropped line fixture can be normalized and handed into the existing text-only Privacy Filter / text-only PII detection contract without PHI leaks in the wrapper output. It is not visual redaction, not final PDF rewrite/export, not handwriting recognition, not page detection/segmentation, not browser or desktop workflow capability, and not a complete OCR pipeline.
+
 ### CLI wrapper RED/GREEN evidence
 ```bash
 cargo test -p mdid-cli ocr_handoff -- --nocapture
@@ -58,6 +67,7 @@ The real PaddleOCR stack is not installed locally in this environment, so the re
 - The first bounded OCR spike now has a reproducible synthetic fixture set
 - The first honest OCR spike stays recognizer-first on a pre-cropped line image
 - OCR output can now be normalized and handed to a downstream text-PII stage shape
+- The OCR-to-Privacy-Filter chain proves printed-text extraction only into text-only Privacy Filter detection on synthetic normalized text
 - The handoff contract is explicitly validated rather than only written
 - The handoff metadata truthfully names PP-OCRv5 mobile as the bounded candidate while recording the current deterministic synthetic fallback status when PP-OCRv5 is not installed/wired
 - The downstream Privacy Filter check remains text-only and consumes normalized extracted text, not pixels/images
@@ -69,6 +79,7 @@ The real PaddleOCR stack is not installed locally in this environment, so the re
 - detector/cropping quality
 - visual redaction
 - final PDF rewrite/export
+- handwriting recognition, page detection/segmentation, browser workflow capability, or desktop workflow capability
 
 ## Verdict
 - **Go for next step:** YES, continue with real local OCR install/evaluation
