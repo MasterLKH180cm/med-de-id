@@ -1347,6 +1347,7 @@ async fn audit_events_endpoint_paginates_with_offset_and_next_metadata() {
         .contains("patient.field2"));
     assert_eq!(json["limit"], 2);
     assert_eq!(json["offset"], 1);
+    assert_eq!(json["total_matching_events"], 5);
     assert_eq!(json["next_offset"], 3);
     assert_eq!(json["has_more"], true);
 
@@ -1378,6 +1379,7 @@ async fn audit_events_endpoint_paginates_with_offset_and_next_metadata() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["events"].as_array().unwrap().len(), 1);
     assert_eq!(json["offset"], 4);
+    assert_eq!(json["total_matching_events"], 5);
     assert_eq!(json["next_offset"], Value::Null);
     assert_eq!(json["has_more"], false);
 }

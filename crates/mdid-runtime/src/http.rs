@@ -235,6 +235,7 @@ struct VaultAuditEventsResponse {
     events: Vec<AuditEvent>,
     limit: usize,
     offset: usize,
+    total_matching_events: usize,
     next_offset: Option<usize>,
     has_more: bool,
 }
@@ -580,15 +581,19 @@ async fn vault_audit_events(
     };
 
     let limit = payload.limit.unwrap_or(100).min(100);
-    let mut filtered_events = vault
+    let filtered = vault
         .audit_events()
         .iter()
         .rev()
         .filter(|event| payload.kind.is_none_or(|kind| event.kind == kind))
         .filter(|event| payload.actor.is_none_or(|actor| event.actor == actor))
+        .cloned()
+        .collect::<Vec<_>>();
+    let total_matching_events = filtered.len();
+    let mut filtered_events = filtered
+        .into_iter()
         .skip(payload.offset)
         .take(limit.saturating_add(1))
-        .cloned()
         .collect::<Vec<_>>();
     let has_more = filtered_events.len() > limit;
     if has_more {
@@ -602,6 +607,7 @@ async fn vault_audit_events(
             events: filtered_events,
             limit,
             offset: payload.offset,
+            total_matching_events,
             next_offset,
             has_more,
         }),

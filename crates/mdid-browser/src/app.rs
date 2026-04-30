@@ -290,7 +290,9 @@ fn build_vault_audit_request_payload(
             let parsed_offset = offset
                 .parse::<usize>()
                 .map_err(|_| "Vault audit offset must be a non-negative integer.".to_string())?;
-            object.insert("offset".to_string(), serde_json::json!(parsed_offset));
+            if parsed_offset > 0 {
+                object.insert("offset".to_string(), serde_json::json!(parsed_offset));
+            }
         }
     }
 
@@ -3690,6 +3692,22 @@ mod tests {
         assert!(payload.get("kind").is_none());
         assert!(payload.get("actor").is_none());
         assert!(payload.get("limit").is_none());
+        assert!(payload.get("offset").is_none());
+    }
+
+    #[test]
+    fn vault_audit_payload_omits_zero_offset() {
+        let payload = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "",
+            "",
+            "",
+            "0",
+        )
+        .expect("zero offset is the runtime default");
+
+        assert!(payload.get("offset").is_none());
     }
 
     #[test]
@@ -3720,6 +3738,21 @@ mod tests {
         .expect_err("zero limit must be rejected before localhost submission");
 
         assert!(error.contains("positive"));
+    }
+
+    #[test]
+    fn vault_audit_payload_rejects_invalid_offset() {
+        let error = build_vault_audit_request_payload(
+            "/tmp/local-vault",
+            "passphrase kept local",
+            "decode",
+            "browser",
+            "",
+            "not-a-number",
+        )
+        .expect_err("invalid offset must be rejected before localhost submission");
+
+        assert!(error.contains("offset"));
     }
 
     #[test]
