@@ -1,51 +1,39 @@
 {
   "summary": {
-    "input_char_count": 174,
-    "detected_span_count": 5,
+    "input_char_count": 137,
+    "detected_span_count": 4,
     "category_counts": {
-      "DATE": 1,
+      "PERSON": 1,
       "EMAIL": 1,
-      "MRN": 1,
-      "NAME": 1,
-      "PHONE": 1
+      "PHONE": 1,
+      "ID": 1
     }
   },
-  "masked_text": "Patient: [NAME]\nDOB: [DATE]\nMRN: [MRN]\nPhone: [PHONE]\nEmail: [EMAIL]\nVisit note: Synthetic fixture for privacy filter CLI spike only.\n",
+  "masked_text": "Patient <PERSON> visited on 2026-04-30. Contact <EMAIL> or <PHONE>. Medical record <ID> is synthetic test data.",
   "spans": [
     {
-      "label": "NAME",
-      "start": 9,
-      "end": 21,
-      "preview": "[NAME]"
-    },
-    {
-      "label": "DATE",
-      "start": 27,
-      "end": 37,
-      "preview": "[DATE]"
-    },
-    {
-      "label": "MRN",
-      "start": 43,
-      "end": 55,
-      "preview": "[MRN]"
-    },
-    {
-      "label": "PHONE",
-      "start": 63,
-      "end": 75,
-      "preview": "[PHONE]"
+      "label": "PERSON",
+      "start": 8,
+      "end": 20,
+      "preview": "<redacted>"
     },
     {
       "label": "EMAIL",
-      "start": 83,
-      "end": 108,
-      "preview": "[EMAIL]"
+      "start": 52,
+      "end": 68,
+      "preview": "<redacted>"
+    },
+    {
+      "label": "PHONE",
+      "start": 72,
+      "end": 87,
+      "preview": "<redacted>"
+    },
+    {
+      "label": "ID",
+      "start": 104,
+      "end": 113,
+      "preview": "<redacted>"
     }
-  ],
-  "metadata": {
-    "engine": "fallback_synthetic_patterns",
-    "network_api_called": false,
-    "preview_policy": "redacted_bracket_labels_only"
-  }
+  ]
 }

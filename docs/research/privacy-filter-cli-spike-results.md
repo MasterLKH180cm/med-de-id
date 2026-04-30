@@ -1,61 +1,52 @@
 # Privacy Filter CLI Spike Results
 
-Date: 2026-04-30
-Branch: `feat/privacy-filter-cli-spike-cron-2117`
+## Status
+- **Contract/plumbing status:** PASS
+- **Real-model status:** NOT YET VERIFIED on this machine
 
-## Goal
+## What was implemented
+- `scripts/privacy_filter/run_privacy_filter.py`
+- `scripts/privacy_filter/validate_privacy_filter_output.py`
+- synthetic input fixture
+- expected output contract fixture
+- bounded README with exact commands
 
-Evaluate a bounded CLI-first text-only PII detection/masking contract for possible future OpenAI Privacy Filter integration in `med-de-id`.
-
-## What landed in this spike
-
-- Synthetic text fixture with fake patient-style identifiers.
-- Bounded JSON output contract with summary counts, masked text, and redacted span previews.
-- Local validator that reads a JSON file or stdin via `-`.
-- Local runner that accepts a text file and emits the bounded contract.
-- Deterministic fallback engine named `fallback_synthetic_patterns` for local, no-network verification.
-
-## Verification evidence
-
-Controller-visible commands passed on `feat/privacy-filter-cli-spike-cron-2117`:
-
+## Verification run
+### Contract fixture validation
 ```bash
-python scripts/privacy_filter/run_privacy_filter.py scripts/privacy_filter/fixtures/sample_text_input.txt > /tmp/privacy-filter-output.json
-python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
 python scripts/privacy_filter/validate_privacy_filter_output.py scripts/privacy_filter/fixtures/sample_text_expected_shape.json
-python -m py_compile scripts/privacy_filter/run_privacy_filter.py scripts/privacy_filter/validate_privacy_filter_output.py
 ```
+Result: PASS
 
-The SDD spec review returned PASS. The SDD quality review returned APPROVED after fixing stdin validation support and removing import-time package probing side effects.
-
-The direct shell pipeline form below is the intended stdin validation command, but this environment's security scanner may block `python | python` pipelines:
-
+### Mock plumbing verification
 ```bash
-python scripts/privacy_filter/run_privacy_filter.py scripts/privacy_filter/fixtures/sample_text_input.txt | python scripts/privacy_filter/validate_privacy_filter_output.py -
+python scripts/privacy_filter/run_privacy_filter.py --mock scripts/privacy_filter/fixtures/sample_text_input.txt > /tmp/privacy-filter-output.json
+python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
 ```
+Result: PASS
 
-A subprocess-equivalent stdin verification was run by the implementer/reviewer and passed.
+Observed mock output summary:
+- `input_char_count`: 137
+- `detected_span_count`: 4
+- `category_counts`: `PERSON=1`, `EMAIL=1`, `PHONE=1`, `ID=1`
+
+## Current limitation
+The upstream `opf` CLI is not installed locally in this environment, so the real Privacy Filter model path currently exits with a truthful error instructing the operator to either install the upstream tool or use `--mock` for plumbing-only validation.
 
 ## Output usefulness
+The bounded output contract is now explicitly and strictly validated:
+- `summary.input_char_count`
+- `summary.detected_span_count`
+- `summary.category_counts`
+- `masked_text`
+- `spans[]` with `label`, `start`, `end`, `preview`
+- summary counts must match span labels
+- spans must be sorted and non-overlapping
+- placeholder masked text is rejected
 
-The output contract is useful as a handoff shape for future text PII detection evaluation because it separates:
-
-- aggregate counts in `summary`,
-- safe masked content in `masked_text`, and
-- span offsets/categories in `spans` without raw sensitive previews.
-
-The fallback engine is not production detection quality. It only proves the CLI shape, masking contract, validator behavior, and local verification loop on synthetic text.
-
-## Install/runtime friction
-
-No external runtime install is required for the fallback path. The runner uses only Python standard library modules. In `--engine auto`, it does not import or execute a Privacy Filter package; it only preserves a safe future extension point and returns the deterministic fallback engine.
-
-## Boundaries and non-goals
-
-This is text-only PII detection/masking evaluation. It is not OCR, visual redaction, image pixel redaction, handwriting recognition, PDF rewrite/export, browser UI, desktop UI, or an end-to-end production medical de-identification pipeline.
+This is sufficient to support a later CLI/runtime text-only spike once the real model is installed.
 
 ## Verdict
-
-More-Evidence.
-
-The bounded CLI contract and verification loop are useful enough to justify a later local Privacy Filter package integration experiment if a local package can be installed without network calls at runtime. The current fallback does not justify raising Browser/Web or Desktop app completion, and it should not be described as OCR or visual redaction progress.
+- **Go for next step:** YES, for bounded CLI/runtime integration plumbing
+- **Go for real model adoption right now:** MORE EVIDENCE NEEDED
+- **Reason:** real upstream model path still needs local install + real inference verification

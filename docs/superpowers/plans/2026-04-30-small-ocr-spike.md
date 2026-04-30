@@ -17,6 +17,7 @@
 - Create: `scripts/ocr_eval/run_small_ocr.py`
 - Create: `scripts/ocr_eval/validate_small_ocr_output.py`
 - Create: `scripts/ocr_eval/build_ocr_handoff.py`
+- Create: `scripts/ocr_eval/validate_ocr_handoff.py`
 - Create: `scripts/ocr_eval/fixtures/synthetic_printed_phi.txt`
 - Create: `scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png`
 - Create: `scripts/ocr_eval/fixtures/synthetic_printed_phi_expected.txt`
@@ -69,6 +70,7 @@ python scripts/ocr_eval/build_ocr_handoff.py \
   --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \
   --input /tmp/small-ocr-output.txt \
   --output /tmp/ocr-handoff.json
+python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
 ```
 - [ ] Add `scripts/ocr_eval/build_ocr_handoff.py` to File Structure if this helper is implemented.
 - [ ] Do not claim end-to-end medical PDF redaction is solved.

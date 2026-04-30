@@ -1,132 +1,93 @@
 #!/usr/bin/env python3
-"""Local Privacy Filter CLI spike runner.
-
-This script intentionally does not call network APIs. In --engine auto it may detect a
-future local Privacy Filter package, but this spike currently normalizes through the
-explicit deterministic synthetic-pattern fallback so local verification remains truthful.
-"""
-
-from __future__ import annotations
-
-import argparse
-import importlib.util
-import json
-import re
-import sys
-from collections import Counter
-from dataclasses import dataclass
+import argparse, json, re, shutil, subprocess, sys
 from pathlib import Path
-from typing import Iterable
 
-ENGINE_FALLBACK = "fallback_synthetic_patterns"
-ENGINE_AUTO = "auto"
-
-PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("EMAIL", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
-    ("PHONE", re.compile(r"\b(?:\d{3}[-.]?){2}\d{4}\b")),
-    ("MRN", re.compile(r"\bMRN[-: ]?[A-Z0-9-]+\b", re.IGNORECASE)),
-    ("DATE", re.compile(r"\b\d{4}-\d{2}-\d{2}\b")),
-    ("NAME", re.compile(r"(?m)^Patient:[ \t]*([A-Z][A-Za-z]+(?:[ \t]+[A-Z][A-Za-z]+)+)\b")),
-)
+EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
+ID_RE = re.compile(r'\b(?:MRN[- ]?\d+|ID[- ]?\d+)\b', re.I)
+PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 
 
-@dataclass(frozen=True)
-class Span:
-    label: str
-    start: int
-    end: int
-
-    @property
-    def preview(self) -> str:
-        return f"[{self.label}]"
-
-    def as_contract(self) -> dict[str, object]:
-        return {
-            "label": self.label,
-            "start": self.start,
-            "end": self.end,
-            "preview": self.preview,
-        }
+def add_span(spans, label, start, end):
+    spans.append({'label': label, 'start': start, 'end': end, 'preview': '<redacted>'})
 
 
-def _select_engine(requested_engine: str) -> str:
-    if requested_engine == ENGINE_FALLBACK:
-        return ENGINE_FALLBACK
-
-    # Do not import or call any service in this spike. This spec check documents the
-    # intended future extension point while preserving safe deterministic local behavior.
-    importlib.util.find_spec("openai_privacy_filter")
-    return ENGINE_FALLBACK
-
-
-def _overlaps_existing(start: int, end: int, spans: Iterable[Span]) -> bool:
-    return any(start < span.end and end > span.start for span in spans)
-
-
-def _detect_with_fallback(text: str) -> list[Span]:
-    spans: list[Span] = []
-    for label, pattern in PATTERNS:
-        for match in pattern.finditer(text):
-            if label == "NAME" and match.lastindex:
-                start, end = match.span(1)
-            else:
-                start, end = match.span(0)
-            if not _overlaps_existing(start, end, spans):
-                spans.append(Span(label=label, start=start, end=end))
-    return sorted(spans, key=lambda span: (span.start, span.end, span.label))
-
-
-def _masked_text(text: str, spans: list[Span]) -> str:
-    chunks: list[str] = []
-    cursor = 0
-    for span in spans:
-        chunks.append(text[cursor:span.start])
-        chunks.append(span.preview)
-        cursor = span.end
-    chunks.append(text[cursor:])
-    return "".join(chunks)
-
-
-def _build_contract(text: str, engine: str) -> dict[str, object]:
-    spans = _detect_with_fallback(text)
-    counts = Counter(span.label for span in spans)
+def heuristic_detect(text: str):
+    spans = []
+    for m in PERSON_RE.finditer(text):
+        add_span(spans, 'PERSON', m.start(1), m.end(1))
+    for m in EMAIL_RE.finditer(text):
+        add_span(spans, 'EMAIL', m.start(), m.end())
+    for m in PHONE_RE.finditer(text):
+        add_span(spans, 'PHONE', m.start(), m.end())
+    for m in ID_RE.finditer(text):
+        add_span(spans, 'ID', m.start(), m.end())
+    spans.sort(key=lambda s: (s['start'], s['end']))
+    counts = {}
+    masked_parts = []
+    pos = 0
+    for s in spans:
+        counts[s['label']] = counts.get(s['label'], 0) + 1
+        if s['start'] < pos:
+            continue
+        masked_parts.append(text[pos:s['start']])
+        masked_parts.append(f'<{s["label"]}>')
+        pos = s['end']
+    masked_parts.append(text[pos:])
     return {
-        "summary": {
-            "input_char_count": len(text),
-            "detected_span_count": len(spans),
-            "category_counts": dict(sorted(counts.items())),
+        'summary': {
+            'input_char_count': len(text),
+            'detected_span_count': len(spans),
+            'category_counts': counts,
         },
-        "masked_text": _masked_text(text, spans),
-        "spans": [span.as_contract() for span in spans],
-        "metadata": {
-            "engine": engine,
-            "network_api_called": False,
-            "preview_policy": "redacted_bracket_labels_only",
-        },
+        'masked_text': ''.join(masked_parts),
+        'spans': spans,
     }
 
 
-def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Run the local Privacy Filter CLI spike on a text file.")
-    parser.add_argument("input_path", help="UTF-8 text input file path")
-    parser.add_argument("--engine", choices=(ENGINE_AUTO, ENGINE_FALLBACK), default=ENGINE_AUTO)
-    args = parser.parse_args(argv[1:])
-
-    input_path = Path(args.input_path)
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('input_path')
+    ap.add_argument('--mock', action='store_true', help='Use bounded heuristic/mock detection for contract plumbing only')
+    args = ap.parse_args()
+    text = Path(args.input_path).read_text(encoding='utf-8')
+    if args.mock:
+        print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
+        return
+    opf = shutil.which('opf')
+    if opf is None:
+        print('OpenAI Privacy Filter CLI `opf` is not installed locally. Re-run with --mock for contract plumbing only, or install the upstream tool first.', file=sys.stderr)
+        raise SystemExit(2)
     try:
-        text = input_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        print(f"privacy-filter runner failed: file not found: {input_path}", file=sys.stderr)
-        return 1
-    except UnicodeDecodeError as exc:
-        print(f"privacy-filter runner failed: input must be UTF-8 text: {exc}", file=sys.stderr)
-        return 1
+        raw = subprocess.check_output([opf, '--format', 'json', text], text=True, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        print(e.output, file=sys.stderr)
+        raise SystemExit(e.returncode or 3)
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        print('opf returned non-JSON output; run with --mock or adapt parser to actual local opf version.', file=sys.stderr)
+        raise SystemExit(4)
+    print(json.dumps({
+        'summary': {
+            'input_char_count': len(text),
+            'detected_span_count': len(obj.get('spans', [])) if isinstance(obj, dict) else 0,
+            'category_counts': {
+                str(s.get('label', 'UNKNOWN')): sum(1 for x in obj.get('spans', []) if str(x.get('label', 'UNKNOWN')) == str(s.get('label', 'UNKNOWN')))
+                for s in obj.get('spans', [])
+            } if isinstance(obj, dict) else {},
+        },
+        'masked_text': obj.get('masked_text', '<missing>') if isinstance(obj, dict) else '<missing>',
+        'spans': [
+            {
+                'label': str(s.get('label', 'UNKNOWN')),
+                'start': int(s.get('start', 0)),
+                'end': int(s.get('end', 0)),
+                'preview': '<redacted>'
+            }
+            for s in obj.get('spans', [])
+        ] if isinstance(obj, dict) else []
+    }, ensure_ascii=False, indent=2))
 
-    engine = _select_engine(args.engine)
-    json.dump(_build_contract(text, engine), sys.stdout, indent=2)
-    sys.stdout.write("\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+if __name__ == '__main__':
+    main()
