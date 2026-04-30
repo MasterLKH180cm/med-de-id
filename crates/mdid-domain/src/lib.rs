@@ -559,8 +559,11 @@ pub struct DicomDeidentificationSummary {
     pub removed_private_tags: usize,
     pub remapped_uids: usize,
     pub burned_in_suspicions: usize,
+    #[serde(default)]
     pub pixel_redaction_performed: bool,
+    #[serde(default)]
     pub burned_in_review_required: bool,
+    #[serde(default = "default_dicom_burned_in_annotation_notice")]
     pub burned_in_annotation_notice: String,
 }
 
@@ -589,6 +592,10 @@ impl DicomDeidentificationSummary {
 }
 
 pub const DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE: &str = "Pixel redaction was not performed. DICOM tag-level de-identification does not inspect or redact pixels; burned-in annotations may contain PHI and require manual image review when indicated.";
+
+fn default_dicom_burned_in_annotation_notice() -> String {
+    DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into()
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PhiCandidate {

@@ -1,6 +1,6 @@
 use mdid_domain::{
     BurnedInAnnotationStatus, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, DicomTagRef, ReviewDecision,
+    DicomPrivateTagPolicy, DicomTagRef, ReviewDecision, DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
 };
 
 #[test]
@@ -63,6 +63,29 @@ fn dicom_summary_discloses_pixel_redaction_is_not_performed() {
     assert!(summary
         .burned_in_annotation_notice
         .contains("Pixel redaction was not performed"));
+}
+
+#[test]
+fn dicom_summary_deserializes_older_json_without_pixel_disclosure_fields() {
+    let summary: DicomDeidentificationSummary = serde_json::from_str(
+        r#"{
+            "total_tags": 5,
+            "encoded_tags": 2,
+            "review_required_tags": 1,
+            "removed_private_tags": 3,
+            "remapped_uids": 4,
+            "burned_in_suspicions": 0
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(summary.total_tags, 5);
+    assert!(!summary.pixel_redaction_performed);
+    assert!(!summary.burned_in_review_required);
+    assert_eq!(
+        summary.burned_in_annotation_notice,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
 }
 
 #[test]
