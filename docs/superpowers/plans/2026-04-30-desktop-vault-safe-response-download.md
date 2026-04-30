@@ -24,7 +24,7 @@
 - Modify: `crates/mdid-desktop/src/lib.rs`
 - Test: `crates/mdid-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add this test inside the existing `#[cfg(test)] mod tests` in `crates/mdid-desktop/src/lib.rs`, near the existing vault safe export tests:
 
@@ -64,15 +64,19 @@ Add this test inside the existing `#[cfg(test)] mod tests` in `crates/mdid-deskt
     }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p mdid-desktop safe_vault_response_json_writer_persists_allowlisted_audit_summary_only -- --nocapture`
 
 Expected: FAIL with an unresolved function error for `write_safe_vault_response_json`.
 
-- [ ] **Step 3: Write minimal implementation**
+Actual: the initial narrow audit writer test could not produce the planned unresolved-function RED because an earlier helper already existed. Follow-up default-state and mismatched-mode regression tests produced real RED before the validating helper contract was completed.
+
+- [x] **Step 3: Write minimal implementation**
 
 Add this public helper immediately after `write_portable_artifact_json()` in `crates/mdid-desktop/src/lib.rs`:
+
+Actual: implementation landed as a validating helper that writes only the allowlisted safe export JSON and rejects non-renderable/mismatched state; `main.rs` caller changes were also needed so the workspace compiled against the updated helper contract.
 
 ```rust
 pub fn write_safe_vault_response_json(
@@ -89,13 +93,13 @@ pub fn write_safe_vault_response_json(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p mdid-desktop safe_vault_response_json_writer_persists_allowlisted_audit_summary_only -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run focused package checks**
+- [x] **Step 5: Run focused package checks**
 
 Run: `cargo test -p mdid-desktop --lib`
 
@@ -109,7 +113,7 @@ Run: `git diff --check`
 
 Expected: no output and exit code 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-desktop/src/lib.rs
@@ -121,11 +125,11 @@ git commit -m "feat(desktop): add safe vault response report writer"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update completion snapshot text**
+- [x] **Step 1: Update completion snapshot text**
 
 Update the README completion snapshot to mention the landed desktop PHI-safe vault response report JSON writer. Keep percentages honest: CLI unchanged at 95%, Browser/web unchanged at 73%, Desktop app increases only if the verified helper materially improves the bounded desktop vault workflow, and Overall may remain 93% if no broader user-facing runtime workflow changed.
 
-- [ ] **Step 2: Verify docs diff**
+- [x] **Step 2: Verify docs diff**
 
 Run: `git diff -- README.md`
 
@@ -135,7 +139,7 @@ Run: `git diff --check`
 
 Expected: no output and exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-04-30-desktop-vault-safe-response-download.md

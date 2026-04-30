@@ -129,7 +129,7 @@ impl InputMode {
 
     fn safe_vault_report_mode_label(self) -> &'static str {
         match self {
-            Self::VaultAuditEvents => "vault_audit_events",
+            Self::VaultAuditEvents => "vault_audit",
             Self::VaultDecode => "vault_decode",
             Self::PortableArtifactInspect => "portable_artifact_inspect",
             Self::PortableArtifactImport => "portable_artifact_import",
@@ -188,12 +188,16 @@ impl InputMode {
         match self {
             Self::PdfBase64 => "PDF",
             Self::DicomBase64 => "DICOM base64",
+            Self::MediaMetadataJson => "media metadata JSON",
             _ => self.label(),
         }
     }
 
     fn requires_source_name(self) -> bool {
-        matches!(self, Self::PdfBase64 | Self::DicomBase64)
+        matches!(
+            self,
+            Self::PdfBase64 | Self::DicomBase64 | Self::MediaMetadataJson
+        )
     }
 
     fn requires_field_policy(self) -> bool {
@@ -688,7 +692,86 @@ fn sanitized_import_stem(file_name: &str) -> String {
     }
 }
 
+fn sanitized_source_stem_preserving_case(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('-');
+            }
+            sanitized.push(ch);
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('-') {
+            sanitized.pop();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-output".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn sanitized_vault_export_stem(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('_');
+            }
+            sanitized.push(ch);
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('_') {
+            sanitized.pop();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-output".to_string()
+    } else {
+        sanitized
+    }
+}
+
 impl BrowserFlowState {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn mode_for_imported_file(&self, detected_mode: InputMode) -> InputMode {
+        if self.input_mode == InputMode::PortableArtifactImport
+            && detected_mode == InputMode::PortableArtifactInspect
+        {
+            InputMode::PortableArtifactImport
+        } else {
+            detected_mode
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
         self.input_mode = mode;
@@ -709,6 +792,16 @@ impl BrowserFlowState {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn suggested_export_file_name(&self) -> String {
+        if self.input_mode == InputMode::MediaMetadataJson {
+            if !self.source_name.trim().is_empty() {
+                let stem = sanitized_import_stem(&self.source_name);
+                if stem != "mdid-browser-output" && stem != "local-review" {
+                    return format!("{stem}-media-review-report.json");
+                }
+            }
+            return "mdid-browser-media-review-report.json".to_string();
+        }
+
         if let Some(imported_file_name) = &self.imported_file_name {
             let stem = sanitized_import_stem(imported_file_name);
             match self.input_mode {
@@ -716,16 +809,41 @@ impl BrowserFlowState {
                 InputMode::XlsxBase64 => return format!("{stem}-deidentified.xlsx"),
                 InputMode::PdfBase64 => return format!("{stem}-review-report.json"),
                 InputMode::DicomBase64 => return format!("{stem}-deidentified.dcm"),
-                InputMode::MediaMetadataJson => {
-                    return format!("{stem}-media-review-report.json");
-                }
+                InputMode::MediaMetadataJson => unreachable!(
+                    "media metadata JSON filenames are handled before imported filename fallback"
+                ),
                 InputMode::PortableArtifactInspect => {
                     return format!("{stem}-portable-artifact-inspect.json");
                 }
                 InputMode::PortableArtifactImport => {
                     return format!("{stem}-portable-artifact-import.json");
                 }
-                InputMode::VaultAuditEvents | InputMode::VaultDecode | InputMode::VaultExport => {}
+                InputMode::VaultAuditEvents => {
+                    return format!("{stem}-vault-audit-events.json");
+                }
+                InputMode::VaultDecode => {
+                    return format!("{stem}-vault-decode-response.json");
+                }
+                InputMode::VaultExport => {
+                    let stem = sanitized_vault_export_stem(imported_file_name);
+                    if stem != "mdid-browser-output" && stem != "mdid_browser_output" {
+                        return format!("{stem}-portable-artifact.json");
+                    }
+                }
+            }
+        }
+
+        if self.input_mode == InputMode::PdfBase64 && !self.source_name.trim().is_empty() {
+            let stem = sanitized_import_stem(&self.source_name);
+            if stem != "mdid-browser-output" {
+                return format!("{stem}-review-report.json");
+            }
+        }
+
+        if self.input_mode == InputMode::DicomBase64 && !self.source_name.trim().is_empty() {
+            let stem = sanitized_source_stem_preserving_case(&self.source_name);
+            if stem != "mdid-browser-output" && stem != "local-review" {
+                return format!("{stem}-deidentified.dcm");
             }
         }
 
@@ -1880,7 +1998,8 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
 
         match payload {
             Some(payload) => load_state.update(|state| {
-                state.apply_imported_file(&load_file_name, &payload, input_mode);
+                let effective_mode = state.mode_for_imported_file(input_mode);
+                state.apply_imported_file(&load_file_name, &payload, effective_mode);
             }),
             None => load_state.update(|state| {
                 state.error_banner = Some("Failed to read browser import payload.".to_string());
@@ -2432,6 +2551,93 @@ mod tests {
     }
 
     #[test]
+    fn pdf_review_download_uses_safe_source_name_when_no_imported_file_exists() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            source_name: "C:/records/Patient Jane MRI Scan.pdf".to_string(),
+            result_output: "review only".to_string(),
+            summary: "PDF review summary".to_string(),
+            review_queue: "review queue".to_string(),
+            ..BrowserFlowState::default()
+        };
+        state.imported_file_name = None;
+
+        let payload = state.prepared_download_payload().expect("download payload");
+
+        assert_eq!(
+            payload.file_name,
+            "patient-jane-mri-scan-review-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+    }
+
+    #[test]
+    fn media_review_download_uses_safe_source_name_when_no_imported_file_exists() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::MediaMetadataJson,
+            source_name: "C:/incoming/Patient Face Photo.JPG".to_string(),
+            imported_file_name: None,
+            result_output: "metadata-only review".to_string(),
+            summary: "Media review summary".to_string(),
+            review_queue: "No review items returned.".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("media report download payload");
+
+        assert_eq!(
+            payload.file_name,
+            "patient-face-photo-media-review-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert!(payload.is_text);
+    }
+
+    #[test]
+    fn media_review_download_prefers_visible_source_name_over_stale_imported_file() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::MediaMetadataJson,
+            source_name: "Patient Face Photo.JPG".to_string(),
+            imported_file_name: Some("old-patient.csv".to_string()),
+            result_output: "metadata-only review".to_string(),
+            summary: "Media review summary".to_string(),
+            review_queue: "No review items returned.".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("media report download payload");
+
+        assert_eq!(
+            payload.file_name,
+            "patient-face-photo-media-review-report.json"
+        );
+    }
+
+    #[test]
+    fn media_review_download_ignores_stale_imported_file_for_placeholder_source_name() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::MediaMetadataJson,
+            source_name: "local-review.pdf".to_string(),
+            imported_file_name: Some("old-patient.csv".to_string()),
+            result_output: "metadata-only review".to_string(),
+            summary: "Media review summary".to_string(),
+            review_queue: "No review items returned.".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("media report download payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-media-review-report.json");
+    }
+
+    #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn media_review_download_is_structured_and_phi_safe() {
         let mut state = BrowserFlowState::default();
@@ -2591,6 +2797,95 @@ mod tests {
     }
 
     #[test]
+    fn browser_vault_export_download_uses_safe_source_filename() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "Clinic_Vault_Backup_2026-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    fn browser_vault_export_download_falls_back_when_source_stem_is_default() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("***.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    fn browser_vault_export_download_falls_back_when_source_stem_matches_default() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            imported_file_name: Some("mdid-browser-output.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    fn browser_vault_response_downloads_use_safe_source_filenames() {
+        let mut audit_state = BrowserFlowState {
+            input_mode: InputMode::VaultAuditEvents,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            ..BrowserFlowState::default()
+        };
+        audit_state.summary = "events returned: 2 / 2".to_string();
+        audit_state.review_queue = "audit event summaries available".to_string();
+        audit_state.result_output = "safe summary".to_string();
+
+        let audit_payload = audit_state
+            .prepared_download_payload()
+            .expect("vault audit payload should be prepared");
+        assert_eq!(
+            audit_payload.file_name,
+            "clinic-vault-backup-2026-vault-audit-events.json"
+        );
+        assert_eq!(audit_payload.mime_type, "application/json;charset=utf-8");
+        let audit_json = String::from_utf8(audit_payload.bytes).expect("audit json utf8");
+        assert!(audit_json.contains("\"mode\": \"vault_audit\""));
+        assert!(audit_json.contains("events returned: 2 / 2"));
+        assert!(!audit_json.contains("safe summary"));
+
+        let decode_state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            imported_file_name: Some("Clinic Vault Backup 2026.vault".to_string()),
+            summary: "decoded count: 1".to_string(),
+            review_queue: "decoded PHI is not included in the safe report".to_string(),
+            result_output: "Jane Doe".to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let decode_payload = decode_state
+            .prepared_download_payload()
+            .expect("vault decode payload should be prepared");
+        assert_eq!(
+            decode_payload.file_name,
+            "clinic-vault-backup-2026-vault-decode-response.json"
+        );
+        assert_eq!(decode_payload.mime_type, "application/json;charset=utf-8");
+        let decode_json = String::from_utf8(decode_payload.bytes).expect("decode json utf8");
+        assert!(decode_json.contains("\"mode\": \"vault_decode\""));
+        assert!(decode_json.contains("decoded count: 1"));
+        assert!(!decode_json.contains("Jane Doe"));
+    }
+
+    #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn binary_output_download_rejects_invalid_base64() {
         let mut state = BrowserFlowState::default();
@@ -2608,6 +2903,15 @@ mod tests {
     }
 
     #[test]
+    fn media_metadata_json_requires_source_name_with_media_specific_label() {
+        assert!(InputMode::MediaMetadataJson.requires_source_name());
+        assert_eq!(
+            InputMode::MediaMetadataJson.source_name_label(),
+            "media metadata JSON"
+        );
+    }
+
+    #[test]
     fn imported_csv_suggests_sanitized_deidentified_export_name() {
         let mut state = BrowserFlowState::default();
         state.apply_imported_file("Clinic Patient List.csv", "name\nAda", InputMode::CsvText);
@@ -2615,6 +2919,22 @@ mod tests {
         assert_eq!(
             state.suggested_export_file_name(),
             "clinic-patient-list-deidentified.csv"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn media_metadata_default_placeholder_source_name_uses_static_export_name() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::MediaMetadataJson;
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "mdid-browser-media-review-report.json"
+        );
+        assert_ne!(
+            state.suggested_export_file_name(),
+            "local-review-media-review-report.json"
         );
     }
 
@@ -2644,7 +2964,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_vault_export_keeps_static_portable_artifact_name() {
+    fn imported_vault_export_suggests_safe_source_portable_artifact_name() {
         let mut state = BrowserFlowState::default();
         state.apply_imported_file(
             "Patient Portable Artifact.json",
@@ -2654,7 +2974,21 @@ mod tests {
 
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-portable-artifact.json"
+            "Patient_Portable_Artifact-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn dicom_download_uses_safe_source_name_when_no_imported_file_exists() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::DicomBase64;
+        state.source_name = r"C:\incoming\CT Series 01.dcm".to_string();
+        state.imported_file_name = None;
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "CT-Series-01-deidentified.dcm"
         );
     }
 
@@ -2774,6 +3108,54 @@ mod tests {
         );
         assert!(!InputMode::PortableArtifactImport.requires_field_policy());
         assert!(!InputMode::PortableArtifactImport.requires_source_name());
+    }
+
+    #[test]
+    fn imported_portable_artifact_preserves_selected_import_mode() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactImport,
+            ..BrowserFlowState::default()
+        };
+
+        let detected_mode = InputMode::from_file_name("clinic-mapping.mdid-portable.json")
+            .expect("portable artifact filename should be recognized");
+        let resolved_mode = state.mode_for_imported_file(detected_mode);
+        state.apply_imported_file(
+            "clinic-mapping.mdid-portable.json",
+            r#"{\"version\":1}"#,
+            resolved_mode,
+        );
+
+        assert_eq!(state.input_mode, InputMode::PortableArtifactImport);
+        assert_eq!(state.payload, r#"{\"version\":1}"#);
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "clinic-mapping-mdid-portable-portable-artifact-import.json"
+        );
+    }
+
+    #[test]
+    fn imported_portable_artifact_defaults_to_inspect_outside_import_mode() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::CsvText,
+            ..BrowserFlowState::default()
+        };
+
+        let detected_mode = InputMode::from_file_name("clinic-mapping.mdid-portable.json")
+            .expect("portable artifact filename should be recognized");
+        let resolved_mode = state.mode_for_imported_file(detected_mode);
+        state.apply_imported_file(
+            "clinic-mapping.mdid-portable.json",
+            r#"{\"version\":1}"#,
+            resolved_mode,
+        );
+
+        assert_eq!(state.input_mode, InputMode::PortableArtifactInspect);
+        assert_eq!(state.payload, r#"{\"version\":1}"#);
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "clinic-mapping-mdid-portable-portable-artifact-inspect.json"
+        );
     }
 
     #[test]
@@ -3652,7 +4034,7 @@ mod tests {
         state.input_mode = InputMode::VaultExport;
         assert_eq!(
             state.suggested_export_file_name(),
-            "mdid-browser-portable-artifact.json"
+            "scan-portable-artifact.json"
         );
     }
 

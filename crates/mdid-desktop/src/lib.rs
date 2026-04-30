@@ -140,12 +140,12 @@ impl DesktopFileImportPayload {
                 payload: std::str::from_utf8(bytes)
                     .map_err(|_| DesktopFileImportError::InvalidCsvUtf8)?
                     .to_string(),
-                source_name: None,
+                source_name: Some(source_name),
             }),
             "xlsx" => Ok(Self {
                 mode: DesktopWorkflowMode::XlsxBase64,
                 payload: encode_base64(bytes),
-                source_name: None,
+                source_name: Some(source_name),
             }),
             "pdf" => Ok(Self {
                 mode: DesktopWorkflowMode::PdfBase64Review,
@@ -760,7 +760,7 @@ impl std::fmt::Display for DesktopPortableArtifactSaveError {
             ),
             Self::MissingArtifact => write!(
                 f,
-                "vault export response did not include a portable artifact object"
+                "safe response report or portable artifact is unavailable"
             ),
             Self::Io(_) => write!(f, "portable artifact JSON could not be written"),
             Self::InvalidJson(_) => write!(f, "portable artifact JSON could not be prepared"),
@@ -813,6 +813,11 @@ impl DesktopVaultResponseState {
                 || self.error.is_some())
     }
 
+    pub fn safe_response_report_mode(&self) -> Option<DesktopVaultResponseMode> {
+        self.has_safe_response_report()
+            .then_some(self.rendered_mode?)
+    }
+
     pub fn safe_response_report_json(
         &self,
     ) -> Result<serde_json::Value, DesktopPortableArtifactSaveError> {
@@ -829,24 +834,17 @@ impl DesktopVaultResponseState {
         &self,
         source_name: Option<&str>,
     ) -> Result<DesktopVaultResponseReportDownload, DesktopPortableArtifactSaveError> {
-        if !matches!(
-            self.rendered_mode,
-            Some(
-                DesktopVaultResponseMode::InspectArtifact
-                    | DesktopVaultResponseMode::ImportArtifact
-            )
-        ) {
-            return Err(DesktopPortableArtifactSaveError::NotVaultExport);
-        }
-
-        let json = serde_json::to_string_pretty(&self.safe_response_report_json()?)
+        let mode = self
+            .safe_response_report_mode()
+            .ok_or(DesktopPortableArtifactSaveError::MissingArtifact)?;
+        let json = serde_json::to_string_pretty(&self.safe_export_json(mode))
             .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
         let stem = source_name
             .and_then(safe_source_file_stem)
             .unwrap_or_else(|| "desktop".to_string());
 
         Ok(DesktopVaultResponseReportDownload {
-            file_name: format!("{stem}-portable-response-report.json"),
+            file_name: format!("{stem}-response-report.json"),
             bytes: json.into_bytes(),
         })
     }
@@ -899,9 +897,14 @@ pub fn write_portable_artifact_json(
 
 pub fn write_safe_vault_response_json(
     state: &DesktopVaultResponseState,
+    mode: DesktopVaultResponseMode,
     path: impl AsRef<std::path::Path>,
 ) -> Result<std::path::PathBuf, DesktopPortableArtifactSaveError> {
-    let report_json = serde_json::to_string_pretty(&state.safe_response_report_json()?)
+    if state.safe_response_report_mode() != Some(mode) {
+        return Err(DesktopPortableArtifactSaveError::MissingArtifact);
+    }
+
+    let report_json = serde_json::to_string_pretty(&state.safe_export_json(mode))
         .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))?;
     let path = path.as_ref();
     std::fs::write(path, report_json)
@@ -1629,7 +1632,7 @@ fn is_allowed_review_report_action(text: &str) -> bool {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowOutputDownload {
-    pub file_name: &'static str,
+    pub file_name: String,
     pub bytes: Vec<u8>,
 }
 
@@ -1704,26 +1707,47 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::CsvText => {
                 let csv = response.get("csv")?.as_str()?;
                 Some(DesktopWorkflowOutputDownload {
-                    file_name: "desktop-deidentified.csv",
+                    file_name: "desktop-deidentified.csv".to_string(),
                     bytes: csv.as_bytes().to_vec(),
                 })
             }
             DesktopWorkflowMode::XlsxBase64 => {
                 let encoded = response.get("rewritten_workbook_base64")?.as_str()?;
                 Some(DesktopWorkflowOutputDownload {
-                    file_name: "desktop-deidentified.xlsx",
+                    file_name: "desktop-deidentified.xlsx".to_string(),
                     bytes: decode_base64(encoded)?,
                 })
             }
             DesktopWorkflowMode::DicomBase64 => {
                 let encoded = response.get("rewritten_dicom_bytes_base64")?.as_str()?;
                 Some(DesktopWorkflowOutputDownload {
-                    file_name: "desktop-deidentified.dcm",
+                    file_name: "desktop-deidentified.dcm".to_string(),
                     bytes: decode_base64(encoded)?,
                 })
             }
             DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => None,
         }
+    }
+
+    pub fn workflow_output_download_for_source(
+        &self,
+        mode: DesktopWorkflowMode,
+        source_name: Option<&str>,
+    ) -> Option<DesktopWorkflowOutputDownload> {
+        let mut download = self.workflow_output_download(mode)?;
+        let stem = source_name
+            .filter(|name| name.trim() != "local-workstation-review.pdf")
+            .and_then(safe_source_file_stem)?;
+        let extension = match mode {
+            DesktopWorkflowMode::CsvText => "csv",
+            DesktopWorkflowMode::XlsxBase64 => "xlsx",
+            DesktopWorkflowMode::DicomBase64 => "dcm",
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => {
+                return None;
+            }
+        };
+        download.file_name = format!("{stem}-deidentified.{extension}");
+        Some(download)
     }
 
     pub fn review_report_download(
@@ -1908,7 +1932,10 @@ fn safe_source_file_stem(source_name: &str) -> Option<String> {
         }
 
         if ch.is_ascii_alphanumeric()
-            || (ch == '.' && !safe.is_empty() && !safe.ends_with('.') && !last_was_dash)
+            || ((ch == '.' || ch == '-')
+                && !safe.is_empty()
+                && !safe.ends_with(['.', '-'])
+                && !last_was_dash)
         {
             safe.push(ch);
             last_was_dash = false;
@@ -2092,7 +2119,7 @@ mod tests {
             .expect("portable inspect response should create a safe report download");
         assert_eq!(
             inspect_report.file_name,
-            "Clinic-Batch.mdid-portable-portable-response-report.json"
+            "Clinic-Batch.mdid-portable-response-report.json"
         );
         let inspect_text = std::str::from_utf8(&inspect_report.bytes).expect("report is utf8 json");
         assert!(inspect_text.contains("bounded portable artifact response rendered locally"));
@@ -2129,7 +2156,7 @@ mod tests {
             .expect("portable import response should create a safe report download");
         assert_eq!(
             import_report.file_name,
-            "Partner-Export.mdid-portable-portable-response-report.json"
+            "Partner-Export.mdid-portable-response-report.json"
         );
         let import_text = std::str::from_utf8(&import_report.bytes).expect("report is utf8 json");
         assert!(import_text.contains("bounded portable artifact response rendered locally"));
@@ -2141,29 +2168,80 @@ mod tests {
     }
 
     #[test]
-    fn desktop_portable_response_report_for_source_rejects_non_portable_modes() {
-        for mode in [
+    fn safe_response_report_download_uses_source_stem_for_vault_decode() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
             DesktopVaultResponseMode::VaultDecode,
-            DesktopVaultResponseMode::VaultAudit,
-            DesktopVaultResponseMode::VaultExport,
-        ] {
-            let mut state = DesktopVaultResponseState::default();
-            state.apply_success(
-                mode,
-                &serde_json::json!({
-                    "decoded_value_count": 1,
-                    "returned_event_count": 1,
-                    "event_count": 1,
-                    "record_count": 1,
-                    "artifact_path": "/tmp/non-portable-source.json"
-                }),
-            );
+            &serde_json::json!({ "decoded_value_count": 2 }),
+        );
 
-            assert_eq!(
-                state.safe_response_report_download_for_source(Some("source.mdid-portable.json")),
-                Err(DesktopPortableArtifactSaveError::NotVaultExport)
-            );
-        }
+        let download = state
+            .safe_response_report_download_for_source(Some(
+                "C:/Vault Exports/Patient Alpha.mdid-vault.json",
+            ))
+            .expect("decode report download should be available");
+
+        assert_eq!(
+            download.file_name,
+            "Patient-Alpha.mdid-vault-response-report.json"
+        );
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["summary"], "decoded values: 2");
+    }
+
+    #[test]
+    fn safe_response_report_download_uses_source_stem_for_vault_audit() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({ "returned_event_count": 3, "event_count": 8 }),
+        );
+
+        let download = state
+            .safe_response_report_download_for_source(Some("audit export.json"))
+            .expect("audit report download should be available");
+
+        assert_eq!(download.file_name, "audit-export-response-report.json");
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+        assert_eq!(report["mode"], "vault_audit");
+        assert_eq!(report["summary"], "events returned: 3 / 8");
+    }
+
+    #[test]
+    fn safe_response_report_download_uses_source_stem_for_vault_export() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultExport,
+            &serde_json::json!({ "record_count": 4, "artifact_path": "/sensitive/path/export.json" }),
+        );
+
+        let download = state
+            .safe_response_report_download_for_source(Some("portable subset.mdid-portable.json"))
+            .expect("export report download should be available");
+
+        assert_eq!(
+            download.file_name,
+            "portable-subset.mdid-portable-response-report.json"
+        );
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+        assert_eq!(report["mode"], "vault_export");
+        assert_eq!(report["summary"], "records: 4");
+        assert_eq!(
+            report["artifact_notice"],
+            "artifact path returned; full path hidden"
+        );
+        assert!(report.get("artifact_path").is_none());
+    }
+
+    #[test]
+    fn desktop_response_report_for_source_rejects_missing_rendered_report() {
+        let state = DesktopVaultResponseState::default();
+
+        assert_eq!(
+            state.safe_response_report_download_for_source(Some("source.mdid-portable.json")),
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        );
     }
 
     #[test]
@@ -2224,6 +2302,47 @@ mod tests {
     }
 
     #[test]
+    fn safe_vault_response_json_writer_rejects_default_state_without_creating_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let target = temp_dir.path().join("synthetic-vault-audit-report.json");
+        let state = DesktopVaultResponseState::default();
+
+        let result =
+            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target);
+
+        assert!(matches!(
+            result,
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        ));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn safe_vault_response_json_writer_rejects_mismatched_rendered_mode_without_creating_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let target = temp_dir.path().join("mismatched-vault-audit-report.json");
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_value_count": 1,
+            "decoded_values": [
+                {"record_id": "patient-1", "field": "name", "value": "Alice Example"}
+            ],
+            "vault_path": "C:/vaults/alice.mdid",
+            "audit_event": {"kind": "decode", "detail": "released Alice Example"}
+        });
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let result =
+            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target);
+
+        assert!(matches!(
+            result,
+            Err(DesktopPortableArtifactSaveError::MissingArtifact)
+        ));
+        assert!(!target.exists());
+    }
+
+    #[test]
     fn safe_vault_response_json_writer_persists_allowlisted_audit_summary_only() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let target = temp_dir.path().join("vault-audit-report.json");
@@ -2240,8 +2359,9 @@ mod tests {
         });
         state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
 
-        let written_path = write_safe_vault_response_json(&state, &target)
-            .expect("safe vault response report should be written");
+        let written_path =
+            write_safe_vault_response_json(&state, DesktopVaultResponseMode::VaultAudit, &target)
+                .expect("safe vault response report should be written");
 
         assert_eq!(written_path, target);
         let persisted = std::fs::read_to_string(&written_path).expect("read report");
@@ -3036,7 +3156,16 @@ mod tests {
 
         assert_eq!(imported.mode, DesktopWorkflowMode::CsvText);
         assert_eq!(imported.payload, "name\nAlice");
-        assert_eq!(imported.source_name, None);
+        assert_eq!(imported.source_name.as_deref(), Some("patients.csv"));
+    }
+
+    #[test]
+    fn desktop_csv_file_import_preserves_source_name_for_save_suggestions() {
+        let payload = DesktopFileImportPayload::from_bytes("clinic-export.csv", b"name\nAda\n")
+            .expect("csv import should be accepted");
+
+        assert_eq!(payload.mode, DesktopWorkflowMode::CsvText);
+        assert_eq!(payload.source_name.as_deref(), Some("clinic-export.csv"));
     }
 
     #[test]
@@ -3046,7 +3175,16 @@ mod tests {
 
         assert_eq!(imported.mode, DesktopWorkflowMode::XlsxBase64);
         assert_eq!(imported.payload, "UEsDBA==");
-        assert_eq!(imported.source_name, None);
+        assert_eq!(imported.source_name.as_deref(), Some("patients.xlsx"));
+    }
+
+    #[test]
+    fn desktop_xlsx_file_import_preserves_source_name_for_save_suggestions() {
+        let payload = DesktopFileImportPayload::from_bytes("clinic-export.xlsx", b"not-real-xlsx")
+            .expect("xlsx helper import should accept bytes before runtime validation");
+
+        assert_eq!(payload.mode, DesktopWorkflowMode::XlsxBase64);
+        assert_eq!(payload.source_name.as_deref(), Some("clinic-export.xlsx"));
     }
 
     #[test]
@@ -3247,7 +3385,7 @@ mod tests {
 
         assert_eq!(state.mode, DesktopWorkflowMode::CsvText);
         assert_eq!(state.payload, "name\nAlice");
-        assert_eq!(state.source_name, "chart.pdf");
+        assert_eq!(state.source_name, "patients.csv");
         assert_eq!(
             state.field_policy_json,
             r#"[{"header":"keep","phi_type":"Name","action":"review"}]"#
@@ -4079,7 +4217,7 @@ mod tests {
             .path()
             .join("patient-jane-doe-mrn-12345-deidentified.csv");
         let download = DesktopWorkflowOutputDownload {
-            file_name: "desktop-deidentified.csv",
+            file_name: "desktop-deidentified.csv".to_string(),
             bytes: b"patient_name\n<NAME-1>\n".to_vec(),
         };
 
@@ -4097,7 +4235,7 @@ mod tests {
             .join("missing-parent-jane-doe-mrn-12345")
             .join("output.csv");
         let download = DesktopWorkflowOutputDownload {
-            file_name: "desktop-deidentified.csv",
+            file_name: "desktop-deidentified.csv".to_string(),
             bytes: b"patient_name\n<NAME-1>\n".to_vec(),
         };
 

@@ -663,11 +663,18 @@ struct VerifyArtifactEntryReport {
 fn run_verify_artifacts(args: VerifyArtifactsArgs) -> Result<(), String> {
     let paths = parse_artifact_paths_json(&args.artifact_paths_json)?;
     let report = build_verify_artifacts_report(&paths, args.max_bytes)?;
+    let missing_count = report.missing_count;
+    let oversized_count = report.oversized_count;
     println!(
         "{}",
         serde_json::to_string(&report)
             .map_err(|err| format!("failed to render artifact verification report: {err}"))?
     );
+    if missing_count > 0 || oversized_count > 0 {
+        return Err(format!(
+            "artifact verification failed: {missing_count} missing, {oversized_count} oversized"
+        ));
+    }
     Ok(())
 }
 
@@ -677,6 +684,13 @@ fn build_verify_artifacts_report(
 ) -> Result<VerifyArtifactsReport, String> {
     if paths.is_empty() || paths.iter().any(|path| path.trim().is_empty()) {
         return Err("artifact path list must include at least one non-blank path".to_string());
+    }
+
+    let mut seen_paths = std::collections::HashSet::with_capacity(paths.len());
+    for path in paths {
+        if !seen_paths.insert(path.trim()) {
+            return Err("artifact path list must not contain duplicate paths".to_string());
+        }
     }
 
     let mut existing_count = 0;
@@ -1393,6 +1407,22 @@ mod tests {
         assert!(parse_artifact_paths_json("[]").is_err());
         assert!(parse_positive_max_bytes("0").is_err());
         assert!(parse_positive_max_bytes("not-a-number").is_err());
+    }
+
+    #[test]
+    fn verify_artifacts_report_rejects_duplicate_paths_without_echoing_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let phi_path = temp_dir.path().join("Jane-Doe-MRN-123-output.csv");
+        std::fs::write(&phi_path, "name\nJane Doe\n").expect("write fixture");
+        let path = phi_path.to_string_lossy().to_string();
+
+        let error = build_verify_artifacts_report(&[path.clone(), path], Some(1024))
+            .expect_err("duplicate artifact path should be rejected");
+
+        assert_eq!(error, "artifact path list must not contain duplicate paths");
+        assert!(!error.contains("Jane"));
+        assert!(!error.contains("MRN"));
+        assert!(!error.contains("output.csv"));
     }
 
     #[test]
