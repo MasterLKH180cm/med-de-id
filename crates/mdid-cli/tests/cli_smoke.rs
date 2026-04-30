@@ -1557,6 +1557,49 @@ with open(args.output, "w", encoding="utf-8") as handle:
 }
 
 #[test]
+fn privacy_filter_text_redacts_report_path_in_stdout_summary() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("privacy-filter-report.json");
+    let input_path = repo_path("scripts/privacy_filter/fixtures/sample_text_input.txt");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("privacy-filter-text"));
+    assert!(stdout.contains("<redacted>"));
+    assert!(stdout.contains("\"report_written\":true"));
+    assert!(!stdout.contains(report_path.to_str().unwrap()));
+    assert!(!stdout.contains("Jane-Example-MRN-12345"));
+    assert!(!stderr.contains(report_path.to_str().unwrap()));
+    assert!(!stderr.contains("Jane-Example-MRN-12345"));
+    assert!(stderr.is_empty());
+    assert!(report_path.exists());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(report_text.contains("fallback_synthetic_patterns"));
+    assert!(!report_text.contains("Jane-Example-MRN-12345"));
+}
+
+#[test]
 fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-report.json");
