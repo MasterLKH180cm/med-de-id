@@ -1102,7 +1102,7 @@ fn has_duplicate_record_id(record_ids: &[uuid::Uuid]) -> bool {
 
 fn invalid_audit_events_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         Json(ErrorEnvelope {
             error: ErrorBody {
                 code: "invalid_audit_events_request",
