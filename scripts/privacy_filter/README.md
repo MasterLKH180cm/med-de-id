@@ -12,9 +12,11 @@ This directory is only for a bounded local text-only PII detection/masking spike
 - not production Privacy Filter integration
 
 ## Bootstrap
-Normal invocation intentionally uses the deterministic local `fallback_synthetic_patterns` engine so contract verification remains offline and reproducible. The runner only invokes upstream OpenAI Privacy Filter tooling (`opf`) when `--use-opf` is explicitly supplied, and then normalizes its JSON into this repo's bounded contract.
+Normal invocation intentionally uses the deterministic local `fallback_synthetic_patterns` engine so contract verification remains offline and reproducible. A locally installed `opf` command is never auto-used. The runner only invokes upstream OpenAI Privacy Filter tooling (`opf`) with explicit `--use-opf`, and then normalizes its JSON into this repo's bounded text-only contract.
 
-The fallback is a synthetic plumbing/evaluation aid only. It proves output shape and downstream wiring, not real model quality.
+When explicit --use-opf is selected, PHI-bearing input text is sent to the local `opf` subprocess via stdin only, not by command-line argument or temporary input file. Both canonical span output and alternate entities-style output are normalized into the bounded text-only contract used here: `summary`, `masked_text`, redacted `spans`, and metadata with `network_api_called: false`. Span previews are redacted previews only and must not expose raw PHI.
+
+The fallback is a synthetic plumbing/evaluation aid only. It proves output shape and downstream wiring, not real model quality. The OPF path is still a bounded CLI/runtime Privacy Filter POC and is not OCR, not visual redaction, not image/pixel redaction, not final PDF rewrite/export, not browser integration, and not desktop integration.
 
 All successful single-text runner outputs must include:
 - `summary.input_char_count`
