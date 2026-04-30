@@ -534,6 +534,63 @@ fn cli_privacy_filter_corpus_writes_phi_safe_aggregate_summary() {
 }
 
 #[test]
+fn cli_privacy_filter_corpus_rejects_fake_canonical_report_with_single_fixture() {
+    let dir = tempdir().unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "fixtures": [
+        {
+            "fixture": "fake.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 0, "PHONE": 1},
+        }
+    ],
+    "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 0, "PHONE": 1},
+    "non_goals": ["visual_redaction"],
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(repo_path("scripts/privacy_filter/fixtures/corpus"))
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    assert!(!report_path.exists(), "invalid report should be removed");
+}
+
+#[test]
 fn cli_privacy_filter_corpus_sanitizes_phi_bearing_fixture_names() {
     let dir = tempdir().unwrap();
     let fixture_dir = dir.path().join("fixtures");

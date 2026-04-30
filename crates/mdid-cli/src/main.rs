@@ -1099,6 +1099,7 @@ fn run_privacy_filter_corpus(args: PrivacyFilterCorpusArgs) -> Result<(), String
 }
 
 fn run_privacy_filter_corpus_inner(args: &PrivacyFilterCorpusArgs) -> Result<(), String> {
+    let is_canonical_fixture_dir = is_canonical_privacy_filter_corpus_dir(&args.fixture_dir);
     let mut child = std::process::Command::new(&args.python_command)
         .arg(&args.runner_path)
         .arg("--fixture-dir")
@@ -1125,7 +1126,8 @@ fn run_privacy_filter_corpus_inner(args: &PrivacyFilterCorpusArgs) -> Result<(),
         .map_err(|err| format!("failed to render privacy filter corpus report: {err}"))?;
     fs::write(&args.report_path, format!("{report_text}\n"))
         .map_err(|err| format!("failed to write privacy filter corpus report: {err}"))?;
-    validate_privacy_filter_corpus_report(&value, &report_text)?;
+    validate_privacy_filter_corpus_report(&value, &report_text, is_canonical_fixture_dir)
+        .map_err(|err| format!("invalid privacy filter corpus report: {err}"))?;
 
     let summary = json!({
         "command": "privacy-filter-corpus",
@@ -1168,7 +1170,24 @@ fn require_directory(path: &Path, message: &str) -> Result<(), String> {
     }
 }
 
-fn validate_privacy_filter_corpus_report(value: &Value, report_text: &str) -> Result<(), String> {
+fn is_canonical_privacy_filter_corpus_dir(fixture_dir: &Path) -> bool {
+    let canonical_fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts/privacy_filter/fixtures/corpus");
+    match (
+        fs::canonicalize(fixture_dir),
+        fs::canonicalize(canonical_fixture_dir),
+    ) {
+        (Ok(requested), Ok(canonical)) => requested == canonical,
+        _ => false,
+    }
+}
+
+fn validate_privacy_filter_corpus_report(
+    value: &Value,
+    report_text: &str,
+    require_canonical_counts: bool,
+) -> Result<(), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "privacy filter corpus report must be a JSON object".to_string())?;
@@ -1202,8 +1221,9 @@ fn validate_privacy_filter_corpus_report(value: &Value, report_text: &str) -> Re
     {
         return Err("privacy filter corpus report has invalid required field shape".to_string());
     }
-    if fixture_count == 2 {
+    if fixture_count == 2 || require_canonical_counts {
         if total_detected_span_count < 4
+            || fixture_count != 2
             || value["category_counts"]["NAME"].as_u64().unwrap_or(0) != 2
             || value["category_counts"]["MRN"].as_u64().unwrap_or(0) != 2
             || value["category_counts"]["EMAIL"].as_u64().unwrap_or(0) != 1
