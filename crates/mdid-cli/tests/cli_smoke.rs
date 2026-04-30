@@ -645,6 +645,203 @@ fn cli_privacy_filter_corpus_sanitizes_phi_bearing_fixture_names() {
 }
 
 #[test]
+fn cli_privacy_filter_corpus_rejects_unexpected_phi_bearing_fields() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+            "preview": "Alice Example",
+        }
+    ],
+    "non_goals": ["visual_redaction"],
+    "raw_text": "Alice Example MRN-99999",
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for raw_phi in ["Alice Example", "MRN-99999"] {
+        assert!(
+            !stdout.contains(raw_phi),
+            "stdout leaked raw PHI: {raw_phi}"
+        );
+        assert!(
+            !stderr.contains(raw_phi),
+            "stderr leaked raw PHI: {raw_phi}"
+        );
+    }
+    assert!(!report_path.exists(), "invalid report should be removed");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_network_api_called_true() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+        }
+    ],
+    "non_goals": ["visual_redaction"],
+    "network_api_called": True,
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "invalid privacy filter corpus report",
+        ));
+
+    assert!(!report_path.exists(), "networked report should be removed");
+}
+
+#[test]
+fn cli_privacy_filter_corpus_rejects_oversized_report_before_read() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic fixture").unwrap();
+    let runner_path = dir.path().join("fake_corpus_runner.py");
+    let report_path = dir.path().join("privacy-filter-corpus.json");
+    fs::write(
+        &runner_path,
+        r#"
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--fixture-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+report = {
+    "engine": "fallback_synthetic_patterns",
+    "scope": "text_only_synthetic_corpus",
+    "fixture_count": 1,
+    "total_detected_span_count": 3,
+    "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+    "fixtures": [
+        {
+            "fixture": "one.txt",
+            "detected_span_count": 3,
+            "category_counts": {"NAME": 1, "MRN": 1, "PHONE": 1},
+        }
+    ],
+    "non_goals": ["visual_redaction"],
+    "padding": "x" * (1024 * 1024 + 1),
+}
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(report, handle)
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(&fixture_dir)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "privacy filter corpus report exceeded limit",
+        ));
+
+    assert!(!report_path.exists(), "oversized report should be removed");
+}
+
+#[test]
 fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-report.json");

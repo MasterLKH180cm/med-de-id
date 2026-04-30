@@ -1117,6 +1117,11 @@ fn run_privacy_filter_corpus_inner(args: &PrivacyFilterCorpusArgs) -> Result<(),
         return Err("privacy filter corpus runner failed".to_string());
     }
 
+    let report_metadata = fs::metadata(&args.report_path)
+        .map_err(|err| format!("failed to inspect privacy filter corpus report: {err}"))?;
+    if report_metadata.len() > PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES as u64 {
+        return Err("privacy filter corpus report exceeded limit".to_string());
+    }
     let report_text = fs::read_to_string(&args.report_path)
         .map_err(|err| format!("failed to read privacy filter corpus report: {err}"))?;
     let mut value: Value = serde_json::from_str(&report_text)
@@ -1191,7 +1196,7 @@ fn validate_privacy_filter_corpus_report(
     let object = value
         .as_object()
         .ok_or_else(|| "privacy filter corpus report must be a JSON object".to_string())?;
-    for key in [
+    let required_keys = [
         "engine",
         "scope",
         "fixture_count",
@@ -1199,10 +1204,32 @@ fn validate_privacy_filter_corpus_report(
         "fixtures",
         "category_counts",
         "non_goals",
-    ] {
+    ];
+    let allowed_keys = [
+        "engine",
+        "scope",
+        "fixture_count",
+        "total_detected_span_count",
+        "fixtures",
+        "category_counts",
+        "non_goals",
+        "network_api_called",
+    ];
+    for key in required_keys {
         if !object.contains_key(key) {
             return Err("privacy filter corpus report missing required field".to_string());
         }
+    }
+    for key in object.keys() {
+        if !allowed_keys.contains(&key.as_str()) {
+            return Err("privacy filter corpus report has unexpected field".to_string());
+        }
+    }
+    if object
+        .get("network_api_called")
+        .is_some_and(|network_api_called| network_api_called != false)
+    {
+        return Err("privacy filter corpus report cannot call network APIs".to_string());
     }
     if value["engine"] != "fallback_synthetic_patterns"
         || value["scope"] != "text_only_synthetic_corpus"
@@ -1242,6 +1269,29 @@ fn validate_privacy_filter_corpus_report(
         .any(|item| item == "visual_redaction")
     {
         return Err("privacy filter corpus report missing required non-goal".to_string());
+    }
+    let fixture_allowed_keys = ["fixture", "detected_span_count", "category_counts"];
+    for fixture in value["fixtures"].as_array().unwrap() {
+        let fixture_object = fixture
+            .as_object()
+            .ok_or_else(|| "privacy filter corpus report has invalid fixture shape".to_string())?;
+        for key in fixture_object.keys() {
+            if !fixture_allowed_keys.contains(&key.as_str()) {
+                return Err("privacy filter corpus report fixture has unexpected field".to_string());
+            }
+        }
+        if !fixture_object
+            .get("fixture")
+            .is_some_and(|fixture| fixture.is_string())
+            || !fixture_object
+                .get("detected_span_count")
+                .is_some_and(|count| count.is_u64())
+            || !fixture_object
+                .get("category_counts")
+                .is_some_and(|counts| counts.is_object())
+        {
+            return Err("privacy filter corpus report has invalid fixture shape".to_string());
+        }
     }
     for raw_phi in [
         "Jane Example",
