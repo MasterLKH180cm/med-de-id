@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -922,7 +923,7 @@ fn parse_record_ids_json(record_ids_json: &str) -> Result<Vec<Uuid>, String> {
     if record_ids.is_empty() {
         return Err("decode scope must include at least one record id".to_string());
     }
-    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
+    let mut seen_record_ids = HashSet::with_capacity(record_ids.len());
     for record_id in &record_ids {
         if !seen_record_ids.insert(*record_id) {
             return Err("duplicate record id is not allowed".to_string());

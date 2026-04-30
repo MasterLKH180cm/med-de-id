@@ -23,7 +23,7 @@
 **Files:**
 - Modify: `crates/mdid-cli/src/main.rs`
 
-- [ ] **Step 1: Write failing CLI parser/unit tests**
+- [x] **Step 1: Write failing CLI parser/unit tests**
 
 Add tests near existing vault decode/export parser tests:
 
@@ -51,24 +51,30 @@ fn rejects_duplicate_record_ids_json_for_vault_export() {
 }
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
-Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode rejects_duplicate_record_ids_json_for_vault_export -- --exact`
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode`
 Expected: FAIL because duplicate IDs are currently accepted or helper is missing duplicate checks.
 
-- [ ] **Step 3: Implement minimal CLI validation**
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_export`
+Expected: FAIL because duplicate IDs are currently accepted or helper is missing duplicate checks.
+
+- [x] **Step 3: Implement minimal CLI validation**
 
 Inside the existing record ID parser, track a `HashSet<Uuid>` or `HashSet<String>` of normalized IDs. If insert fails, return the same CLI error type with exactly `duplicate record id is not allowed` and do not include the ID value.
 
-- [ ] **Step 4: Run GREEN and regression tests**
+- [x] **Step 4: Run GREEN and regression tests**
 
-Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode rejects_duplicate_record_ids_json_for_vault_export -- --exact`
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode`
+Expected: PASS.
+
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_export`
 Expected: PASS.
 
 Run: `cargo test -p mdid-cli`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/mdid-cli/src/main.rs
