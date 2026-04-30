@@ -3132,6 +3132,84 @@ mod tests {
     }
 
     #[test]
+    fn desktop_decode_values_export_uses_decoded_values_len_when_count_missing() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_values": {
+                "record-1": {"name": "Jane Doe"},
+                "record-2": {"mrn": "12345"},
+                "record-3": {"dob": "1970-01-01"}
+            }
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let json = state
+            .decode_values_export_json()
+            .expect("decode values export");
+
+        assert_eq!(json["decoded_value_count"], 3);
+        assert_eq!(json["decoded_values"]["record-3"]["dob"], "1970-01-01");
+    }
+
+    #[test]
+    fn write_desktop_decode_values_export_json_persists_successful_decode_export() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_value_count": 1,
+            "decoded_values": {
+                "record-1": {"diagnosis": "asthma"}
+            }
+        });
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+        let path = std::env::temp_dir().join(format!(
+            "mdid-desktop-decode-values-export-{}-persisted.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let returned_path = write_desktop_decode_values_json(&state, &path).expect("write export");
+        let persisted = std::fs::read_to_string(&path).expect("read persisted export");
+        let persisted_json: serde_json::Value =
+            serde_json::from_str(&persisted).expect("persisted JSON parses");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(returned_path, path);
+        assert_eq!(persisted_json["mode"], "vault_decode_values");
+        assert_eq!(persisted_json["decoded_value_count"], 1);
+        assert_eq!(
+            persisted_json["decoded_values"]["record-1"]["diagnosis"],
+            "asthma"
+        );
+    }
+
+    #[test]
+    fn desktop_decode_values_export_is_cleared_after_decode_error() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultDecode,
+            &serde_json::json!({
+                "decoded_value_count": 1,
+                "decoded_values": {"record-1": {"name": "Jane Doe"}}
+            }),
+        );
+        assert!(state.decode_values_export_json().is_ok());
+
+        state.apply_error(
+            DesktopVaultResponseMode::VaultDecode,
+            "decode failed for Jane Doe",
+        );
+
+        let error = state
+            .decode_values_export_json()
+            .expect_err("stale decode values export cleared");
+        assert_eq!(
+            error.to_string(),
+            "decoded values export is only available for successful vault decode responses"
+        );
+    }
+
+    #[test]
     fn desktop_decode_values_export_rejects_non_decode_response() {
         let mut state = DesktopVaultResponseState::default();
         state.apply_success(
