@@ -1128,10 +1128,20 @@ fn sanitized_privacy_filter_summary(response: &serde_json::Value) -> serde_json:
         serde_json::json!("privacy_filter_summary"),
     );
 
-    for key in ["engine", "network_api_called", "preview_policy"] {
-        if let Some(value) = response.get(key).and_then(pdf_review_report_primitive) {
-            report.insert(key.to_string(), value);
+    for key in ["engine", "preview_policy"] {
+        if let Some(value) = response
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| is_safe_privacy_filter_metadata_string(value))
+        {
+            report.insert(key.to_string(), serde_json::json!(value));
         }
+    }
+    if let Some(value) = response
+        .get("network_api_called")
+        .and_then(serde_json::Value::as_bool)
+    {
+        report.insert("network_api_called".to_string(), serde_json::json!(value));
     }
     for key in ["input_char_count", "detected_span_count"] {
         if let Some(value) = response.get(key).filter(|value| value.is_number()) {
@@ -1152,7 +1162,7 @@ fn sanitized_privacy_filter_category_counts(
     let mut counts = serde_json::Map::new();
     if let Some(object) = value.and_then(serde_json::Value::as_object) {
         for (label, count) in object {
-            if is_safe_privacy_filter_category_label(label) && count.is_number() {
+            if is_safe_privacy_filter_category_label(label) && count.as_u64().is_some() {
                 counts.insert(label.to_string(), count.clone());
             }
         }
@@ -1161,7 +1171,30 @@ fn sanitized_privacy_filter_category_counts(
 }
 
 fn is_safe_privacy_filter_category_label(label: &str) -> bool {
-    matches!(label, "NAME" | "MRN" | "EMAIL" | "PHONE")
+    !contains_synthetic_phi_sentinel(label)
+        && label.chars().any(|ch| ch.is_ascii_uppercase())
+        && label
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
+    !contains_synthetic_phi_sentinel(value)
+        && !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+fn contains_synthetic_phi_sentinel(value: &str) -> bool {
+    [
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ]
+    .iter()
+    .any(|sentinel| value.contains(sentinel))
 }
 
 fn build_ocr_handoff_summary_download(
@@ -3777,6 +3810,108 @@ mod tests {
         assert!(!serde_json::to_string(&report)
             .unwrap()
             .contains("Patient Jane Example"));
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_rejects_phi_sentinels_in_allowed_metadata_fields() {
+        let response = json!({
+            "engine": "Patient Jane Example",
+            "preview_policy": "MRN-12345 jane@example.com 555-123-4567",
+            "network_api_called": "jane@example.com",
+            "input_char_count": 100,
+            "detected_span_count": 1,
+            "category_counts": {
+                "SAFE_LABEL": 1,
+                "PHONE": "555-123-4567"
+            }
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let serialized = serde_json::to_string(&report).unwrap();
+
+        assert!(report.get("engine").is_none());
+        assert!(report.get("preview_policy").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert_eq!(report["category_counts"]["SAFE_LABEL"], 1);
+        assert!(report["category_counts"].get("PHONE").is_none());
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_enforces_metadata_field_types() {
+        let response = json!({
+            "engine": true,
+            "network_api_called": "false",
+            "preview_policy": 7,
+            "category_counts": {}
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+
+        assert!(report.get("engine").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("preview_policy").is_none());
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_accepts_general_safe_uppercase_category_counts() {
+        let response = json!({
+            "category_counts": {
+                "ADDRESS": 3,
+                "ZIP_CODE_5": 4,
+                "DX2": 0,
+                "123": 1,
+                "lowercase": 1,
+                "BAD LABEL": 1,
+                "BAD-LABEL": 1,
+                "jane@example.com": 1,
+                "Patient Jane Example": 1,
+                "NEGATIVE": -1,
+                "FRACTIONAL": 1.5,
+                "TOO_BIG": 18446744073709551616.0,
+                "STRING_COUNT": "1"
+            }
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let counts = report["category_counts"].as_object().unwrap();
+
+        assert_eq!(counts.get("ADDRESS"), Some(&json!(3)));
+        assert_eq!(counts.get("ZIP_CODE_5"), Some(&json!(4)));
+        assert_eq!(counts.get("DX2"), Some(&json!(0)));
+        for rejected in [
+            "123",
+            "lowercase",
+            "BAD LABEL",
+            "BAD-LABEL",
+            "jane@example.com",
+            "Patient Jane Example",
+            "NEGATIVE",
+            "FRACTIONAL",
+            "TOO_BIG",
+            "STRING_COUNT",
+        ] {
+            assert!(counts.get(rejected).is_none(), "accepted {rejected}");
+        }
     }
 
     #[test]
