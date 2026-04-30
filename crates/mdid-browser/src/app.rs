@@ -692,6 +692,40 @@ fn sanitized_import_stem(file_name: &str) -> String {
     }
 }
 
+fn sanitized_source_stem_preserving_case(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('-');
+            }
+            sanitized.push(ch);
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('-') {
+            sanitized.pop();
+        }
+    }
+
+    if sanitized.is_empty() {
+        "mdid-browser-output".to_string()
+    } else {
+        sanitized
+    }
+}
+
 fn sanitized_vault_export_stem(file_name: &str) -> String {
     let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
     let stem = file_name
@@ -803,6 +837,13 @@ impl BrowserFlowState {
             let stem = sanitized_import_stem(&self.source_name);
             if stem != "mdid-browser-output" {
                 return format!("{stem}-review-report.json");
+            }
+        }
+
+        if self.input_mode == InputMode::DicomBase64 && !self.source_name.trim().is_empty() {
+            let stem = sanitized_source_stem_preserving_case(&self.source_name);
+            if stem != "mdid-browser-output" && stem != "local-review" {
+                return format!("{stem}-deidentified.dcm");
             }
         }
 
@@ -2934,6 +2975,20 @@ mod tests {
         assert_eq!(
             state.suggested_export_file_name(),
             "Patient_Portable_Artifact-portable-artifact.json"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn dicom_download_uses_safe_source_name_when_no_imported_file_exists() {
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::DicomBase64;
+        state.source_name = r"C:\incoming\CT Series 01.dcm".to_string();
+        state.imported_file_name = None;
+
+        assert_eq!(
+            state.suggested_export_file_name(),
+            "CT-Series-01-deidentified.dcm"
         );
     }
 
