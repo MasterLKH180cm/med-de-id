@@ -27,6 +27,7 @@ use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
+    collections::BTreeMap,
     io::{Cursor, Read, Write},
     path::PathBuf,
 };
@@ -308,7 +309,7 @@ struct PrivacyFilterSummaryResponse {
     preview_policy: String,
     input_char_count: u64,
     detected_span_count: u64,
-    category_counts: Map<String, Value>,
+    category_counts: BTreeMap<String, u64>,
     non_goals: Vec<String>,
 }
 
@@ -385,21 +386,26 @@ fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryRe
         .get("category_counts")?
         .as_object()?
         .iter()
-        .map(|(category, count)| Some((category.clone(), Value::from(count.as_u64()?))))
-        .collect::<Option<Map<String, Value>>>()?;
+        .map(|(category, count)| {
+            Some((
+                safe_category_identifier(category)?.to_owned(),
+                count.as_u64()?,
+            ))
+        })
+        .collect::<Option<BTreeMap<String, u64>>>()?;
     let non_goals = report
         .get("non_goals")?
         .as_array()?
         .iter()
-        .map(|non_goal| non_goal.as_str().map(ToOwned::to_owned))
+        .map(|non_goal| safe_non_goal(non_goal.as_str()?).map(ToOwned::to_owned))
         .collect::<Option<Vec<_>>>()?;
 
     Some(PrivacyFilterSummaryResponse {
         artifact: "privacy_filter_summary",
-        mode: report.get("mode")?.as_str()?.to_owned(),
-        engine: report.get("engine")?.as_str()?.to_owned(),
+        mode: safe_mode(report.get("mode")?.as_str()?)?.to_owned(),
+        engine: safe_identifier(report.get("engine")?.as_str()?)?.to_owned(),
         network_api_called: report.get("network_api_called")?.as_bool()?,
-        preview_policy: report.get("preview_policy")?.as_str()?.to_owned(),
+        preview_policy: safe_preview_policy(report.get("preview_policy")?.as_str()?)?.to_owned(),
         input_char_count,
         detected_span_count,
         category_counts,
@@ -409,6 +415,50 @@ fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryRe
 
 fn required_u64(report: &Map<String, Value>, field: &str) -> Option<u64> {
     report.get(field)?.as_u64()
+}
+
+fn safe_mode(mode: &str) -> Option<&str> {
+    matches!(mode, "text" | "mock" | "summary_only").then_some(mode)
+}
+
+fn safe_preview_policy(preview_policy: &str) -> Option<&str> {
+    matches!(
+        preview_policy,
+        "redacted_preview_only" | "masked-only" | "masked_only"
+    )
+    .then_some(preview_policy)
+}
+
+fn safe_identifier(identifier: &str) -> Option<&str> {
+    (!identifier.is_empty()
+        && identifier.len() <= 128
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')))
+    .then_some(identifier)
+}
+
+fn safe_category_identifier(category: &str) -> Option<&str> {
+    safe_identifier(category)
+}
+
+fn safe_non_goal(non_goal: &str) -> Option<&str> {
+    (!non_goal.is_empty()
+        && non_goal.len() <= 160
+        && !contains_phi_sentinel(non_goal)
+        && non_goal.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b' ' | b'-' | b'_' | b':' | b'/' | b'.' | b',' | b'(' | b')'
+                )
+        }))
+    .then_some(non_goal)
+}
+
+fn contains_phi_sentinel(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("mrn-") || lower.contains("alice smith")
 }
 
 async fn tabular_deidentify(

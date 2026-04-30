@@ -156,6 +156,89 @@ async fn privacy_filter_summary_endpoint_rejects_non_object_report() {
 }
 
 #[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_phi_in_allowlisted_fields() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "Alice Smith",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "Alice Smith": 1},
+            "non_goals": ["No OCR", "No MRN-001 disclosure"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("Alice Smith"), "{body_text}");
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_invalid_category_counts() {
+    let app = build_router(RuntimeState::default());
+
+    for category_counts in [json!({"NAME": -1}), json!({"NAME": "1"})] {
+        let request = json!({
+            "report": {
+                "artifact": "privacy_filter_report",
+                "mode": "summary_only",
+                "engine": "safe-rule-engine",
+                "network_api_called": false,
+                "preview_policy": "masked-only",
+                "input_char_count": 45,
+                "detected_span_count": 2,
+                "category_counts": category_counts,
+                "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+            }
+        });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["error"]["code"],
+            "invalid_privacy_filter_summary_request"
+        );
+    }
+}
+
+#[tokio::test]
 async fn tabular_deidentify_endpoint_returns_rewritten_csv_and_summary() {
     let app = build_router(RuntimeState::default());
     let request = json!({
