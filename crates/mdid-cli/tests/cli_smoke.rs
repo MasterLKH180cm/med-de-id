@@ -461,6 +461,84 @@ fn cli_review_media_rejects_blank_artifact_label() {
 }
 
 #[test]
+fn privacy_filter_text_writes_verbatim_runner_json_report() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(
+        &runner_path,
+        r#"import json, pathlib, sys
+pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
+print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PERSON> has <ID>","spans":[{"label":"PERSON","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"network_api_called":False}}, indent=2))
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("privacy-filter-text"))
+        .stdout(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("Jane Example").not());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(report_text.contains("\"network_api_called\": false"));
+    assert!(report_text.contains("Patient <PERSON> has <ID>"));
+    assert!(!report_text.contains("Jane Example"));
+}
+
+#[test]
+fn privacy_filter_text_rejects_missing_runner_and_invalid_json_without_raw_text() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let missing_runner_path = dir.path().join("missing-runner.py");
+    let bad_runner_path = dir.path().join("bad-runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&missing_runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing runner file"))
+        .stderr(predicate::str::contains("Jane Example").not());
+
+    fs::write(&bad_runner_path, "print('not json')\n").unwrap();
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&bad_runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("runner returned non-JSON output"))
+        .stderr(predicate::str::contains("Jane Example").not());
+
+    assert!(!report_path.exists());
+}
+
+#[test]
 fn cli_usage_stays_deidentification_scoped() {
     let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 

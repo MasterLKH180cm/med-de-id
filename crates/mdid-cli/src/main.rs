@@ -21,7 +21,7 @@ use mdid_domain::{
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact};
 use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
@@ -47,6 +47,7 @@ enum CliCommand {
     DeidentifyDicom(DeidentifyDicomArgs),
     DeidentifyPdf(DeidentifyPdfArgs),
     ReviewMedia(ReviewMediaArgs),
+    PrivacyFilterText(PrivacyFilterTextArgs),
     VaultAudit(VaultAuditArgs),
     VaultDecode(VaultDecodeArgs),
     VaultExport(VaultExportArgs),
@@ -101,6 +102,13 @@ struct ReviewMediaArgs {
     metadata_json: String,
     requires_visual_review: bool,
     unsupported_payload: bool,
+    report_path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PrivacyFilterTextArgs {
+    input_path: PathBuf,
+    runner_path: PathBuf,
     report_path: PathBuf,
 }
 
@@ -189,6 +197,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "review-media" => {
             parse_review_media_args(rest).map(CliCommand::ReviewMedia)
+        }
+        [command, rest @ ..] if command == "privacy-filter-text" => {
+            parse_privacy_filter_text_args(rest).map(CliCommand::PrivacyFilterText)
         }
         [command, rest @ ..] if command == "vault-audit" => {
             parse_vault_audit_args(rest).map(CliCommand::VaultAudit)
@@ -431,6 +442,40 @@ fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
     })
 }
 
+fn parse_privacy_filter_text_args(args: &[String]) -> Result<PrivacyFilterTextArgs, String> {
+    let mut input_path = None;
+    let mut runner_path = None;
+    let mut report_path = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--input-path" => input_path = Some(non_blank_path(value, "--input-path")?),
+            "--runner-path" => runner_path = Some(non_blank_path(value, "--runner-path")?),
+            "--report-path" => report_path = Some(non_blank_path(value, "--report-path")?),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(PrivacyFilterTextArgs {
+        input_path: input_path.ok_or_else(|| "missing --input-path".to_string())?,
+        runner_path: runner_path.ok_or_else(|| "missing --runner-path".to_string())?,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+    })
+}
+
+fn non_blank_path(value: &str, flag: &str) -> Result<PathBuf, String> {
+    if value.trim().is_empty() {
+        return Err(format!("missing {flag}"));
+    }
+    Ok(PathBuf::from(value))
+}
+
 fn parse_conservative_media_format(value: &str) -> Result<ConservativeMediaFormat, String> {
     match value {
         "image" => Ok(ConservativeMediaFormat::Image),
@@ -653,12 +698,78 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::DeidentifyDicom(args) => run_deidentify_dicom(args),
         CliCommand::DeidentifyPdf(args) => run_deidentify_pdf(args),
         CliCommand::ReviewMedia(args) => run_review_media(args),
+        CliCommand::PrivacyFilterText(args) => run_privacy_filter_text(args),
         CliCommand::VaultAudit(args) => run_vault_audit(args),
         CliCommand::VaultDecode(args) => run_vault_decode(args),
         CliCommand::VaultExport(args) => run_vault_export(args),
         CliCommand::VaultImport(args) => run_vault_import(args),
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
     }
+}
+
+fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
+    require_regular_file(&args.input_path, "missing input file")?;
+    require_regular_file(&args.runner_path, "missing runner file")?;
+
+    let output = std::process::Command::new("python3")
+        .arg(&args.runner_path)
+        .arg(&args.input_path)
+        .output()
+        .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
+    if !output.status.success() {
+        return Err("privacy filter runner failed".to_string());
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "runner returned non-UTF-8 output".to_string())?;
+    let value: Value =
+        serde_json::from_str(&stdout).map_err(|_| "runner returned non-JSON output".to_string())?;
+    validate_privacy_filter_output(&value)?;
+    fs::write(&args.report_path, stdout)
+        .map_err(|err| format!("failed to write privacy filter report: {err}"))?;
+
+    let summary = json!({
+        "command": "privacy-filter-text",
+        "report_path": args.report_path,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn require_regular_file(path: &Path, message: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(_) => Err(message.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(message.to_string()),
+        Err(error) => Err(format!("failed to inspect privacy filter path: {error}")),
+    }
+}
+
+fn validate_privacy_filter_output(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "privacy filter output must be a JSON object".to_string())?;
+    for key in ["summary", "masked_text", "spans", "metadata"] {
+        if !object.contains_key(key) {
+            return Err("privacy filter output missing required field".to_string());
+        }
+    }
+    if !value["summary"].is_object()
+        || !value["masked_text"].is_string()
+        || !value["spans"].is_array()
+        || !value["metadata"].is_object()
+    {
+        return Err("privacy filter output has invalid required field shape".to_string());
+    }
+    if let Some(called) = value["metadata"].get("network_api_called") {
+        if called != false {
+            return Err("privacy filter output indicates network API use".to_string());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -1320,7 +1431,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text --input-path <path> --runner-path <path> --report-path <report.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]
