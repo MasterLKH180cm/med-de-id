@@ -9,7 +9,7 @@ Windows-first, local-first medical de-identification system with a pure Rust cor
 The product has three formal surfaces:
 
 1. **CLI** — automation, batch, integration, headless execution
-2. **Browser tool** — local-first browser surface, currently limited to bounded tabular de-identification and PDF review pages served on localhost
+2. **Browser tool** — local-first browser surface with bounded localhost workflows for tabular de-identification, PDF review, DICOM helper output, conservative media metadata review, vault audit/decode/export, and portable artifact inspect/import
 3. **Desktop app** — sensitive workstation for review, vault operations, decode flows, and audit investigation
 
 ## Core workflow
@@ -37,7 +37,7 @@ ingest -> extract -> detect -> review -> encode -> export -> decode -> audit
 | Excel (XLSX, bounded) | L2 | schema-aware reversible mapping on only the first non-empty worksheet; runtime XLSX output is bounded to that route's rewritten workbook behavior, while CLI XLSX output is a normalized single-sheet workbook generated from de-identified tabular rows and does not preserve original workbook metadata, formatting, formulas, sheet names, or multiple sheets |
 | PDF / scanned records | L1/L2 foundation | text-layer extraction, OCR-needed suspicion routing, mixed multi-page summary/reporting, and invalid-PDF rejection as parse failure; no full OCR, visual redaction, handwriting handling, or final PDF rewrite/export yet |
 | FCS | L2/L3 metadata-first | TEXT/metadata identifier handling |
-| Images | L1 | filename/path/metadata cleanup, OCR-assisted suspicion |
+| Images | L1 | filename/path/metadata cleanup and metadata-only suspicion routing; no OCR or visual redaction yet |
 | Videos | L1 | filename/path/container metadata and sidecar handling |
 
 ## Architecture overview
