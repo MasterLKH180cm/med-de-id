@@ -791,6 +791,11 @@ impl BrowserFlowState {
         );
     }
 
+    fn apply_import_read_error(&mut self, message: &str) {
+        self.invalidate_generated_state();
+        self.error_banner = Some(message.to_string());
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn suggested_export_file_name(&self) -> String {
         if self.input_mode == InputMode::MediaMetadataJson {
@@ -1485,10 +1490,14 @@ struct VaultDecodeRuntimeSuccessResponse {
 
 #[derive(Deserialize, Serialize)]
 struct VaultDecodeValueResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    record_id: Option<String>,
     #[allow(dead_code)]
     original_value: String,
     #[allow(dead_code)]
     token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2200,7 +2209,7 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
                 state.apply_imported_file(&load_file_name, &payload, effective_mode);
             }),
             None => load_state.update(|state| {
-                state.error_banner = Some("Failed to read browser import payload.".to_string());
+                state.apply_import_read_error("Failed to read browser import payload.");
             }),
         }
 
@@ -2216,7 +2225,7 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
         error_cleanup_reader.set_onload(None);
         error_cleanup_reader.set_onerror(None);
         error_state.update(|state| {
-            state.error_banner = Some("Failed to read selected browser import file.".to_string());
+            state.apply_import_read_error("Failed to read selected browser import file.");
         });
         error_onload_slot.borrow_mut().take();
         error_onerror_slot.borrow_mut().take();
@@ -2238,7 +2247,7 @@ fn read_browser_import_file(event: leptos::ev::Event, state: RwSignal<BrowserFlo
         onload_slot.borrow_mut().take();
         onerror_slot.borrow_mut().take();
         state.update(|state| {
-            state.error_banner = Some("Failed to start browser import file read.".to_string());
+            state.apply_import_read_error("Failed to start browser import file read.");
         });
     }
 }
@@ -2398,11 +2407,29 @@ pub fn App() -> impl IntoView {
 
     let export_file_name = move || state.get().suggested_export_file_name();
     let can_export_output = move || state.get().can_export_output();
+    let can_export_decoded_values = move || state.get().can_export_decoded_values();
 
     let on_export = move |_| {
         let export = state.with_untracked(|state| {
             if state.can_export_output() {
                 Some(state.prepared_download_payload())
+            } else {
+                None
+            }
+        });
+
+        if let Some(export) = export {
+            match export.and_then(|payload| trigger_browser_download(&payload)) {
+                Ok(()) => {}
+                Err(message) => state.update(|state| state.error_banner = Some(message)),
+            }
+        }
+    };
+
+    let on_export_decoded_values = move |_| {
+        let export = state.with_untracked(|state| {
+            if state.can_export_decoded_values() {
+                Some(state.prepared_decoded_values_download_payload())
             } else {
                 None
             }
@@ -2650,6 +2677,16 @@ pub fn App() -> impl IntoView {
                 <button disabled=move || !can_export_output() on:click=on_export type="button">
                     "Export current result output text"
                 </button>
+                <Show when=move || state.get().input_mode == InputMode::VaultDecode>
+                    <div class="decoded-values-export-warning">
+                        <p>
+                            "Decoded values contain high-risk PHI. Download only on a trusted local workstation and handle the JSON according to your vault access controls."
+                        </p>
+                        <button disabled=move || !can_export_decoded_values() on:click=on_export_decoded_values type="button">
+                            "Download decoded values JSON"
+                        </button>
+                    </div>
+                </Show>
                 <pre>{move || state.get().result_output}</pre>
             </section>
 
@@ -2735,7 +2772,7 @@ mod tests {
         };
         let response = parse_runtime_success(
             InputMode::VaultDecode,
-            r#"{"values":[{"original_value":"Alice Example","token":"tok_patient_1"}],"audit_event":{"kind":"vault.decode"}}"#,
+            "{\"values\":[{\"record_id\":\"patient-1\",\"original_value\":\"Alice Example\",\"token\":\"tok_patient_1\",\"scope\":\"demographics\"}],\"audit_event\":{\"kind\":\"vault.decode\"}}",
         )
         .expect("runtime response");
 
@@ -2762,9 +2799,54 @@ mod tests {
             "Alice Example"
         );
         assert_eq!(decoded_json["decoded_values"][0]["token"], "tok_patient_1");
+        assert_eq!(decoded_json["decoded_values"][0]["record_id"], "patient-1");
+        assert_eq!(decoded_json["decoded_values"][0]["scope"], "demographics");
         assert!(decoded_json.get("audit_event").is_none());
         assert!(decoded_json.get("passphrase").is_none());
         assert!(decoded_json.get("vault_path").is_none());
+    }
+
+    #[test]
+    fn decoded_values_download_filename_falls_back_without_source_file() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            decoded_values_output: Some(
+                serde_json::json!({
+                    "decoded_values": [{"original_value":"Alice Example","token":"tok_patient_1"}]
+                })
+                .to_string(),
+            ),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_decoded_values_download_payload()
+            .expect("decoded values payload");
+
+        assert_eq!(payload.file_name, "mdid-browser-decoded-values.json");
+    }
+
+    #[test]
+    fn browser_import_read_error_clears_decoded_values_export_state() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultDecode,
+            decoded_values_output: Some(
+                serde_json::json!({
+                    "decoded_values": [{"original_value":"Alice Example","token":"tok_patient_1"}]
+                })
+                .to_string(),
+            ),
+            ..BrowserFlowState::default()
+        };
+        assert!(state.can_export_decoded_values());
+
+        state.apply_import_read_error("Failed to read browser import payload.");
+
+        assert!(!state.can_export_decoded_values());
+        assert_eq!(
+            state.error_banner.as_deref(),
+            Some("Failed to read browser import payload.")
+        );
     }
 
     #[test]
