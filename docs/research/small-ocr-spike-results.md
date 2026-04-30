@@ -16,6 +16,26 @@
 - bounded README with exact commands
 
 ## Verification run
+### OCR handoff builder PHI-safe failure hardening
+
+Task 1 landed OCR handoff builder PHI-safe failure hardening for CLI/runtime synthetic OCR handoff failures. The builder now rejects a missing OCR input file and empty OCR input text with generic PHI-safe stderr, removes stale outputs before failure, and preserves stale handoff report cleanup so callers do not accidentally consume old JSON reports after a failed build.
+
+Evidence:
+
+```bash
+pytest tests/test_ocr_handoff_builder_failures.py -q
+
+# OCR validator pipeline
+python scripts/ocr_eval/run_small_ocr.py --mock scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png > /tmp/small-ocr-output.txt
+python scripts/ocr_eval/validate_small_ocr_output.py /tmp/small-ocr-output.txt scripts/ocr_eval/fixtures/synthetic_printed_phi_expected.txt
+python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --input /tmp/small-ocr-output.txt --output /tmp/ocr-handoff.json
+python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
+python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/small-ocr-output.txt > /tmp/privacy-filter-output.json
+python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
+```
+
+Scope: this only hardens CLI/runtime synthetic OCR handoff failures. It is not visual redaction, browser/desktop integration, handwriting recognition, or final PDF rewrite/export.
+
 ### OCR-to-Privacy-Filter chain evidence
 
 This standalone synthetic chain can be reproduced from a clean checkout without depending on prior `/tmp` files. It creates the OCR text output, builds and validates the OCR handoff JSON, extracts `normalized_text` as the text-only Privacy Filter input, runs the Privacy Filter, and validates both JSON outputs:
