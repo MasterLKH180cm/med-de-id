@@ -1479,6 +1479,7 @@ impl BrowserFlowState {
 
         self.result_output.clear();
         self.decoded_values_output = None;
+        self.safe_response_metadata = serde_json::json!({});
         self.summary = "Submitting to runtime...".to_string();
         self.review_queue = IDLE_REVIEW_QUEUE.to_string();
         self.error_banner = None;
@@ -5460,6 +5461,32 @@ mod tests {
 
         state.result_output = "   ".to_string();
         assert!(!state.can_export_output());
+    }
+
+    #[test]
+    fn begin_submit_clears_previous_safe_response_metadata() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::VaultExport,
+            vault_path: "vault.json".to_string(),
+            vault_passphrase: "secret".to_string(),
+            portable_record_ids_json: "[\"11111111-1111-1111-1111-111111111111\"]".to_string(),
+            portable_passphrase: "portable-secret".to_string(),
+            portable_context: "care".to_string(),
+            result_output: "{\"artifact\":{}}".to_string(),
+            safe_response_metadata: json!({
+                "artifact_record_count": 7,
+                "stale_marker": "previous response"
+            }),
+            ..BrowserFlowState::default()
+        };
+        assert!(state.safe_vault_response_metadata()["stale_marker"].is_string());
+
+        let submission = state.begin_submit().unwrap();
+
+        assert_eq!(submission.request.endpoint, "/vault/export");
+        assert!(!state.can_export_output());
+        assert_eq!(state.safe_vault_response_metadata(), json!({}));
+        assert!(state.safe_response_metadata.as_object().unwrap().is_empty());
     }
 
     #[test]
