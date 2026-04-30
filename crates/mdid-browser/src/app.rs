@@ -798,7 +798,6 @@ fn build_portable_response_report_download(
         "Portable response report download requires a valid portable response JSON object.";
 
     let mode_label = match mode {
-        InputMode::VaultExport => "vault_export",
         InputMode::PortableArtifactInspect => "portable_artifact_inspect",
         InputMode::PortableArtifactImport => "portable_artifact_import",
         _ => return Err(UNAVAILABLE.to_string()),
