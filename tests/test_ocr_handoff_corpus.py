@@ -77,6 +77,77 @@ def test_corpus_report_contains_only_aggregate_phi_safe_fields(tmp_path):
     assert [fixture["char_count"] for fixture in report["fixtures"]] == [111, 108]
 
 
+def test_corpus_summary_output_contains_only_downstream_readiness_fields(tmp_path):
+    output = tmp_path / "report.json"
+    summary_output = tmp_path / "summary.json"
+
+    result = run_corpus(
+        "--fixture-dir",
+        FIXTURE_DIR,
+        "--output",
+        output,
+        "--summary-output",
+        summary_output,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report_text = output.read_text(encoding="utf-8")
+    summary_text = summary_output.read_text(encoding="utf-8")
+    for forbidden in [
+        *FORBIDDEN_SYNTHETIC_PHI,
+        "fixture_001",
+        "fixture_002",
+        "sample_patient_a.txt",
+        "sample_patient_b.txt",
+        '"fixtures"',
+        '"id"',
+        "bbox",
+        "base64",
+        str(FIXTURE_DIR),
+    ]:
+        assert forbidden not in summary_text
+    summary = json.loads(summary_text)
+    assert summary == {
+        "artifact": "ocr_handoff_corpus_readiness_summary",
+        "candidate": "PP-OCRv5_mobile_rec",
+        "engine": "PP-OCRv5-mobile-bounded-spike",
+        "scope": "printed_text_line_extraction_only",
+        "privacy_filter_contract": "text_only_normalized_input",
+        "fixture_count": 2,
+        "ready_fixture_count": 2,
+        "all_fixtures_ready_for_text_pii_eval": True,
+        "total_char_count": 219,
+        "non_goals": [
+            "complete_ocr_pipeline",
+            "final_pdf_rewrite_export",
+            "full_page_detection_or_segmentation",
+            "handwriting_recognition",
+            "visual_redaction",
+        ],
+    }
+    assert "fixtures" in report_text
+
+
+def test_missing_fixture_dir_fails_without_leaving_summary_output(tmp_path):
+    output = tmp_path / "report.json"
+    summary_output = tmp_path / "summary.json"
+    output.write_text("stale report Jane Example", encoding="utf-8")
+    summary_output.write_text("stale summary MRN-12345", encoding="utf-8")
+
+    result = run_corpus(
+        "--fixture-dir",
+        tmp_path / "missing",
+        "--output",
+        output,
+        "--summary-output",
+        summary_output,
+    )
+
+    assert result.returncode != 0
+    assert not output.exists()
+    assert not summary_output.exists()
+
+
 def test_missing_fixture_dir_fails_without_leaving_report(tmp_path):
     output = tmp_path / "report.json"
     output.write_text("stale", encoding="utf-8")
