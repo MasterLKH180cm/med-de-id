@@ -1129,14 +1129,18 @@ fn run_privacy_filter_corpus_inner(args: &PrivacyFilterCorpusArgs) -> Result<(),
     sanitize_privacy_filter_corpus_fixture_ids(&mut value)?;
     let report_text = serde_json::to_string_pretty(&value)
         .map_err(|err| format!("failed to render privacy filter corpus report: {err}"))?;
-    fs::write(&args.report_path, format!("{report_text}\n"))
+    let report_text_with_newline = format!("{report_text}\n");
+    if report_text_with_newline.len() > PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES {
+        return Err("privacy filter corpus report exceeded limit".to_string());
+    }
+    fs::write(&args.report_path, report_text_with_newline)
         .map_err(|err| format!("failed to write privacy filter corpus report: {err}"))?;
     validate_privacy_filter_corpus_report(&value, &report_text, is_canonical_fixture_dir)
         .map_err(|err| format!("invalid privacy filter corpus report: {err}"))?;
 
     let summary = json!({
         "command": "privacy-filter-corpus",
-        "report_path": args.report_path,
+        "report_path": "<redacted>",
         "engine": value["engine"],
         "scope": value["scope"],
         "fixture_count": value["fixture_count"],
@@ -1243,7 +1247,7 @@ fn validate_privacy_filter_corpus_report(
         || fixtures.is_none()
         || fixtures.unwrap().len() as u64 != fixture_count
         || total_detected_span_count == 0
-        || !value["category_counts"].is_object()
+        || !validate_privacy_filter_category_counts(&value["category_counts"])
         || !value["non_goals"].is_array()
     {
         return Err("privacy filter corpus report has invalid required field shape".to_string());
@@ -1262,12 +1266,22 @@ fn validate_privacy_filter_corpus_report(
             );
         }
     }
-    if !value["non_goals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item == "visual_redaction")
-    {
+    let non_goals = value["non_goals"].as_array().unwrap();
+    let allowed_non_goals = [
+        "ocr",
+        "visual_redaction",
+        "image_pixel_redaction",
+        "final_pdf_rewrite_export",
+        "browser_ui",
+        "desktop_ui",
+    ];
+    if !non_goals.iter().all(|item| {
+        item.as_str()
+            .is_some_and(|non_goal| allowed_non_goals.contains(&non_goal))
+    }) {
+        return Err("privacy filter corpus report has invalid non-goal".to_string());
+    }
+    if !non_goals.iter().any(|item| item == "visual_redaction") {
         return Err("privacy filter corpus report missing required non-goal".to_string());
     }
     let fixture_allowed_keys = ["fixture", "detected_span_count", "category_counts"];
@@ -1288,7 +1302,7 @@ fn validate_privacy_filter_corpus_report(
                 .is_some_and(|count| count.is_u64())
             || !fixture_object
                 .get("category_counts")
-                .is_some_and(|counts| counts.is_object())
+                .is_some_and(validate_privacy_filter_category_counts)
         {
             return Err("privacy filter corpus report has invalid fixture shape".to_string());
         }
@@ -1304,6 +1318,16 @@ fn validate_privacy_filter_corpus_report(
         }
     }
     Ok(())
+}
+
+fn validate_privacy_filter_category_counts(value: &Value) -> bool {
+    let Some(counts) = value.as_object() else {
+        return false;
+    };
+    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE"];
+    counts
+        .iter()
+        .all(|(label, count)| allowed_labels.contains(&label.as_str()) && count.as_u64().is_some())
 }
 
 fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
