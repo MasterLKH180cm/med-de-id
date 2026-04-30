@@ -910,6 +910,7 @@ pub fn build_desktop_pdf_review_report_save(
         "summary": sanitize_desktop_pdf_review_report_summary(object.get("summary")),
         "review_queue": sanitize_desktop_pdf_review_report_queue(object.get("review_queue")),
         "page_statuses": sanitize_desktop_pdf_page_statuses(object.get("page_statuses")),
+        "ocr_blockers": sanitize_desktop_pdf_ocr_blockers(&response),
     });
     let contents = serde_json::to_string_pretty(&report)
         .map_err(|_| "PDF review report could not be prepared".to_string())?;
@@ -1003,6 +1004,43 @@ fn sanitize_desktop_pdf_page_statuses(value: Option<&serde_json::Value>) -> serd
             })
             .collect(),
     )
+}
+
+fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value {
+    let mut requires_ocr_pages = 0_u64;
+    let mut visual_review_pages = 0_u64;
+
+    if let Some(statuses) = response
+        .get("page_statuses")
+        .and_then(serde_json::Value::as_array)
+    {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            if status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                requires_ocr_pages += 1;
+            }
+            if status
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"))
+            {
+                visual_review_pages += 1;
+            }
+        }
+    }
+
+    serde_json::json!({
+        "requires_ocr_pages": requires_ocr_pages,
+        "visual_review_pages": visual_review_pages,
+        "blocked_page_count": requires_ocr_pages + visual_review_pages,
+        "rewrite_available": response
+            .get("no_rewritten_pdf")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false),
+    })
 }
 
 fn is_json_primitive(value: &serde_json::Value) -> bool {
@@ -2310,7 +2348,7 @@ impl DesktopWorkflowResponseState {
         }
 
         let response = self.last_success_response.as_ref()?;
-        let report = serde_json::json!({
+        let mut report = serde_json::json!({
             "mode": match mode {
                 DesktopWorkflowMode::PdfBase64Review => "pdf_review",
                 DesktopWorkflowMode::MediaMetadataJson => "media_metadata_json",
@@ -2321,6 +2359,9 @@ impl DesktopWorkflowResponseState {
             "summary": sanitize_review_report_summary(response.get("summary")),
             "review_queue": sanitize_review_report_queue(response.get("review_queue")),
         });
+        if matches!(mode, DesktopWorkflowMode::PdfBase64Review) {
+            report["ocr_blockers"] = sanitize_desktop_pdf_ocr_blockers(response);
+        }
         let json = serde_json::to_string_pretty(&report).ok()?;
 
         Some(DesktopWorkflowReviewReportDownload {
@@ -5154,6 +5195,69 @@ mod tests {
         assert!(report.get("rewritten_pdf_bytes_base64").is_none());
         assert!(report.get("debug_raw_text").is_none());
         assert!(!text.contains("Alice Patient"));
+    }
+
+    #[test]
+    fn pdf_review_report_ocr_blockers_download_includes_phi_safe_counts() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {"pages": 3, "ocr_required": true},
+                "page_statuses": [
+                    {
+                        "page": 1,
+                        "status": "text_layer_ready",
+                        "requires_ocr": false,
+                        "candidate_count": 1,
+                        "raw_text": "Alice Patient MRN 12345"
+                    },
+                    {
+                        "page": 2,
+                        "status": "ocr_required",
+                        "requires_ocr": true,
+                        "candidate_count": 0,
+                        "bbox": [1, 2, 3, 4]
+                    },
+                    {
+                        "page": 3,
+                        "status": "visual_review_required",
+                        "requires_ocr": false,
+                        "candidate_count": 2,
+                        "nested_payload": {"text": "Bob Patient"}
+                    }
+                ],
+                "review_queue": [{"page": 3, "reason": "contains face/photo"}],
+                "no_rewritten_pdf": true,
+                "rewritten_pdf_bytes_base64": "JVBERi0xLjQ=",
+                "filename": "patient-intake.pdf",
+                "passphrase": "secret"
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+
+        assert_eq!(
+            report["ocr_blockers"],
+            json!({
+                "requires_ocr_pages": 1,
+                "visual_review_pages": 1,
+                "blocked_page_count": 2,
+                "rewrite_available": false
+            })
+        );
+        assert!(!text.contains("Alice Patient"));
+        assert!(!text.contains("Bob Patient"));
+        assert!(!text.contains("JVBERi0xLjQ="));
+        assert!(!text.contains("patient-intake.pdf"));
+        assert!(!text.contains("secret"));
+        assert!(report.get("rewritten_pdf_bytes_base64").is_none());
+        assert!(report.get("filename").is_none());
+        assert!(report.get("passphrase").is_none());
     }
 
     #[test]
