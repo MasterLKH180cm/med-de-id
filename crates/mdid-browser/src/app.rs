@@ -1182,15 +1182,15 @@ fn sanitized_privacy_filter_category_counts(
 }
 
 fn is_safe_privacy_filter_category_label(label: &str) -> bool {
-    matches!(label, "NAME" | "MRN" | "EMAIL" | "PHONE")
+    matches!(label, "NAME" | "MRN" | "ID" | "EMAIL" | "PHONE")
 }
 
 fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
     !contains_synthetic_phi_sentinel(value)
         && !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == ':'
+        })
 }
 
 fn contains_synthetic_phi_sentinel(value: &str) -> bool {
@@ -3932,6 +3932,7 @@ mod tests {
             "summary": {"category_counts": {
                 "NAME": 3,
                 "MRN": 4,
+                "ID": 5,
                 "EMAIL": 0,
                 "PHONE": 1,
                 "ADDRESS": 3,
@@ -3958,6 +3959,7 @@ mod tests {
 
         assert_eq!(counts.get("NAME"), Some(&json!(3)));
         assert_eq!(counts.get("MRN"), Some(&json!(4)));
+        assert_eq!(counts.get("ID"), Some(&json!(5)));
         assert_eq!(counts.get("EMAIL"), Some(&json!(0)));
         assert_eq!(counts.get("PHONE"), Some(&json!(1)));
         for rejected in [
@@ -3977,6 +3979,28 @@ mod tests {
         ] {
             assert!(counts.get(rejected).is_none(), "accepted {rejected}");
         }
+    }
+
+    #[test]
+    fn privacy_filter_summary_download_preserves_runtime_safe_engine_id() {
+        let response = json!({
+            "metadata": {
+                "engine": "safe.rule:engine-v1",
+                "preview_policy": "redacted.bracket:labels-v1"
+            },
+            "summary": {"category_counts": {"ID": 2, "UNSAFE-LABEL": 1}}
+        });
+
+        let payload =
+            build_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let counts = report["category_counts"].as_object().unwrap();
+
+        assert_eq!(report["engine"], "safe.rule:engine-v1");
+        assert_eq!(report["preview_policy"], "redacted.bracket:labels-v1");
+        assert_eq!(counts.get("ID"), Some(&json!(2)));
+        assert!(counts.get("UNSAFE-LABEL").is_none());
     }
 
     #[test]

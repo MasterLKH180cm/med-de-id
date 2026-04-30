@@ -976,7 +976,7 @@ fn desktop_privacy_filter_category_counts(value: Option<&serde_json::Value>) -> 
     let mut counts = serde_json::Map::new();
     if let Some(object) = value.and_then(serde_json::Value::as_object) {
         for (label, count) in object {
-            if matches!(label.as_str(), "NAME" | "MRN" | "EMAIL" | "PHONE")
+            if matches!(label.as_str(), "NAME" | "MRN" | "ID" | "EMAIL" | "PHONE")
                 && count.as_u64().is_some()
             {
                 counts.insert(label.to_string(), count.clone());
@@ -996,9 +996,9 @@ fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
     .iter()
     .any(|sentinel| value.contains(sentinel))
         && !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == ':'
+        })
 }
 
 fn desktop_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value {
@@ -3036,6 +3036,30 @@ mod tests {
         assert!(!payload.contents.contains("MRN-12345"));
         assert!(!payload.contents.contains("SSN"));
         assert!(!payload.contents.contains("ADDRESS"));
+    }
+
+    #[test]
+    fn privacy_filter_summary_save_preserves_runtime_safe_engine_and_id_category() {
+        let response = json!({
+            "metadata": {
+                "engine": "safe.rule:engine-v1",
+                "preview_policy": "redacted.bracket:labels-v1"
+            },
+            "summary": {
+                "category_counts": {"ID": 7, "BAD-LABEL": 2, "Patient Jane Example": 3}
+            }
+        });
+
+        let payload =
+            build_desktop_privacy_filter_summary_save(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["engine"], "safe.rule:engine-v1");
+        assert_eq!(report["preview_policy"], "redacted.bracket:labels-v1");
+        assert_eq!(report["category_counts"], json!({"ID": 7}));
+        assert!(!payload.contents.contains("BAD-LABEL"));
+        assert!(!payload.contents.contains("Patient Jane Example"));
     }
 
     #[test]
