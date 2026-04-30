@@ -564,6 +564,7 @@ pub struct DesktopVaultRequestState {
     pub audit_kind: Option<String>,
     pub audit_actor: Option<String>,
     pub audit_limit: Option<String>,
+    pub audit_offset: Option<String>,
 }
 
 impl std::fmt::Debug for DesktopVaultRequestState {
@@ -579,6 +580,7 @@ impl std::fmt::Debug for DesktopVaultRequestState {
             .field("audit_kind", &self.audit_kind)
             .field("audit_actor", &self.audit_actor)
             .field("audit_limit", &self.audit_limit)
+            .field("audit_offset", &self.audit_offset)
             .finish()
     }
 }
@@ -596,6 +598,7 @@ impl Default for DesktopVaultRequestState {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         }
     }
 }
@@ -655,6 +658,10 @@ impl DesktopVaultRequestState {
                     DesktopVaultValidationError::InvalidAuditLimit,
                     DesktopVaultValidationError::ZeroAuditLimit,
                 )?;
+                let offset = parse_optional_non_negative_usize(
+                    self.audit_offset.as_deref(),
+                    DesktopVaultValidationError::InvalidAuditOffset,
+                )?;
                 let mut body = serde_json::json!({
                     "vault_path": vault_path,
                     "vault_passphrase": self.vault_passphrase.clone(),
@@ -663,6 +670,9 @@ impl DesktopVaultRequestState {
                 });
                 if let Some(limit) = limit {
                     body["limit"] = serde_json::json!(limit);
+                }
+                if let Some(offset) = offset.filter(|offset| *offset > 0) {
+                    body["offset"] = serde_json::json!(offset);
                 }
                 body
             }
@@ -699,6 +709,22 @@ fn parse_optional_positive_usize<E>(
     Ok(Some(parsed))
 }
 
+fn parse_optional_non_negative_usize<E>(
+    value: Option<&str>,
+    invalid: fn(String) -> E,
+) -> Result<Option<usize>, E> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.starts_with('-') {
+        return Err(invalid("negative values are not allowed".to_string()));
+    }
+    value
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|_| invalid("expected non-negative integer".to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopVaultValidationError {
     BlankVaultPath,
@@ -709,6 +735,7 @@ pub enum DesktopVaultValidationError {
     InvalidRecordIdsJson(String),
     InvalidAuditLimit(String),
     ZeroAuditLimit,
+    InvalidAuditOffset(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3062,6 +3089,7 @@ mod tests {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         };
 
         let request = state
@@ -3096,6 +3124,7 @@ mod tests {
             audit_kind: Some("Decode".to_string()),
             audit_actor: Some("Desktop".to_string()),
             audit_limit: None,
+            audit_offset: None,
         };
 
         let request = state
@@ -3181,6 +3210,74 @@ mod tests {
     }
 
     #[test]
+    fn vault_audit_request_includes_positive_offset() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("25".to_string()),
+            audit_offset: Some("50".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("audit request should build");
+
+        assert_eq!(request.route, "/vault/audit/events");
+        assert_eq!(request.body["limit"], serde_json::json!(25));
+        assert_eq!(request.body["offset"], serde_json::json!(50));
+    }
+
+    #[test]
+    fn vault_audit_request_omits_blank_and_zero_offset() {
+        let blank_state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_offset: Some("   ".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+        let blank_request = blank_state
+            .try_build_request()
+            .expect("blank offset is omitted");
+        assert!(blank_request.body.get("offset").is_none());
+
+        let zero_state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_offset: Some("0".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+        let zero_request = zero_state
+            .try_build_request()
+            .expect("zero offset is omitted");
+        assert!(zero_request.body.get("offset").is_none());
+    }
+
+    #[test]
+    fn vault_audit_request_rejects_negative_offset_without_echoing_input() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_offset: Some("-10".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let error = state
+            .try_build_request()
+            .expect_err("negative offset must fail");
+
+        assert!(matches!(
+            error,
+            DesktopVaultValidationError::InvalidAuditOffset(_)
+        ));
+        assert!(!format!("{error:?}").contains("-10"));
+    }
+
+    #[test]
     fn desktop_vault_request_state_debug_redacts_passphrase() {
         let state = DesktopVaultRequestState {
             vault_passphrase: "correct horse battery staple".to_string(),
@@ -3206,6 +3303,7 @@ mod tests {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         };
 
         let request = state
@@ -3285,6 +3383,7 @@ mod tests {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         };
 
         assert_eq!(
