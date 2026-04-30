@@ -68,3 +68,27 @@ def test_fake_paddleocr_result_is_normalized_to_plain_stdout(monkeypatch, capsys
     assert code == 0
     assert captured.out == "Patient Jane Doe\nDOB 1970-01-02\n"
     assert captured.err == ""
+
+
+def test_fake_paddleocr_dict_rec_texts_result_is_normalized(monkeypatch, capsys):
+    runner = load_runner()
+
+    class FakePaddleOCR:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def ocr(self, image_path, **kwargs):
+            assert image_path == str(FIXTURE_IMAGE)
+            return [{"rec_texts": ["Patient Jane Example", "MRN MRN-12345"]}]
+
+    class FakePaddleModule:
+        PaddleOCR = FakePaddleOCR
+
+    monkeypatch.setitem(sys.modules, "paddleocr", FakePaddleModule)
+
+    code = runner.main([str(FIXTURE_IMAGE)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == "Patient Jane Example\nMRN MRN-12345\n"
+    assert captured.err == ""

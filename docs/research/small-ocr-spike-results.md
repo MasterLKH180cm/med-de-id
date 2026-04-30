@@ -61,6 +61,7 @@ The real PaddleOCR stack is not installed locally in this environment, so the re
 - The handoff contract is explicitly validated rather than only written
 - The handoff metadata truthfully names PP-OCRv5 mobile as the bounded candidate while recording the current deterministic synthetic fallback status when PP-OCRv5 is not installed/wired
 - The downstream Privacy Filter check remains text-only and consumes normalized extracted text, not pixels/images
+- Dict-style OCR output normalization: `tests/test_ocr_runner_contract.py::test_fake_paddleocr_dict_rec_texts_result_is_normalized` covers newer PaddleOCR-like `{"rec_texts": [...]}` outputs and confirms they normalize to plain UTF-8 lines for downstream text-only PII evaluation. This is parser compatibility evidence only; it does not verify real PP-OCRv5 model weights, page detection, visual redaction, or PDF rewrite/export.
 
 ## What this does NOT prove
 - real OCR quality on this machine

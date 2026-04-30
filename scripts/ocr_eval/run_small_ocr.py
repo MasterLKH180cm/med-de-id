@@ -81,6 +81,11 @@ def iter_text_fragments(node) -> Iterable[str]:
             value = node.get(key)
             if isinstance(value, str):
                 yield value
+        rec_texts = node.get("rec_texts")
+        if isinstance(rec_texts, list):
+            for value in rec_texts:
+                if isinstance(value, str):
+                    yield value
         return
     if isinstance(node, (list, tuple)):
         for item in node:
