@@ -483,15 +483,6 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
     let input_path = repo_path("scripts/privacy_filter/fixtures/sample_text_input.txt");
     let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
     let validator_path = repo_path("scripts/privacy_filter/validate_privacy_filter_output.py");
-    let mock_runner_path = dir.path().join("run_privacy_filter_mock.py");
-    fs::write(
-        &mock_runner_path,
-        format!(
-            "import runpy, sys\nsys.argv = [{runner:?}, sys.argv[1], '--mock']\nrunpy.run_path({runner:?}, run_name='__main__')\n",
-            runner = runner_path
-        ),
-    )
-    .unwrap();
 
     let assert = Command::cargo_bin("mdid-cli")
         .unwrap()
@@ -499,11 +490,12 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
         .arg("--input-path")
         .arg(&input_path)
         .arg("--runner-path")
-        .arg(&mock_runner_path)
+        .arg(&runner_path)
         .arg("--report-path")
         .arg(&report_path)
         .arg("--python-command")
         .arg(default_python_command())
+        .arg("--mock")
         .assert()
         .success();
 
@@ -634,6 +626,44 @@ fn privacy_filter_text_uses_explicit_python_command_when_provided() {
     let argv = fs::read_to_string(argv_path).unwrap();
     assert!(argv.contains(runner_path.to_str().unwrap()));
     assert!(argv.contains(input_path.to_str().unwrap()));
+}
+
+#[test]
+fn privacy_filter_text_mock_flag_forwards_mock_to_runner() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    let argv_path = dir.path().join("argv.txt");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(
+        &runner_path,
+        format!(
+            r#"import json, pathlib, sys
+pathlib.Path({argv_path:?}).write_text('\n'.join(sys.argv[1:]), encoding='utf-8')
+print(json.dumps({{"summary":{{}},"masked_text":"Patient <PERSON>","spans":[],"metadata":{{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}}}))
+"#,
+            argv_path = argv_path
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--mock")
+        .assert()
+        .success();
+
+    let argv = fs::read_to_string(argv_path).unwrap();
+    assert!(argv.lines().any(|arg| arg == "--mock"));
+    assert!(argv.lines().any(|arg| arg == input_path.to_str().unwrap()));
 }
 
 #[test]

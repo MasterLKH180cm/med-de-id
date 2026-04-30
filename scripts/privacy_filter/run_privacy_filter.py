@@ -7,6 +7,7 @@ PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
 MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
 ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
+OPF_TIMEOUT_SECONDS = 15
 
 
 def add_span(spans, label, start, end):
@@ -79,10 +80,24 @@ def main():
         print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
         return
     try:
-        raw = subprocess.check_output([opf, '--format', 'json', text], text=True, stderr=subprocess.STDOUT)
+        completed = subprocess.run(
+            [opf, '--format', 'json', text],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=OPF_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if completed.returncode != 0:
+            print('opf failed; run with --mock or inspect local opf configuration.', file=sys.stderr)
+            raise SystemExit(completed.returncode or 3)
+        raw = completed.stdout
     except subprocess.CalledProcessError as e:
-        print(e.output, file=sys.stderr)
+        print('opf failed; run with --mock or inspect local opf configuration.', file=sys.stderr)
         raise SystemExit(e.returncode or 3)
+    except subprocess.TimeoutExpired:
+        print('opf timed out; run with --mock or inspect local opf configuration.', file=sys.stderr)
+        raise SystemExit(3)
     try:
         obj = json.loads(raw)
     except Exception:
