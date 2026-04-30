@@ -196,6 +196,88 @@ async fn privacy_filter_summary_endpoint_accepts_nested_runner_report_without_ph
 }
 
 #[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_nested_network_api_called_true() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": true,
+                "preview_policy": "redacted_placeholders_only"
+            }
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_incompatible_feature_markers() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_placeholders_only"
+            },
+            "ocr_output": "not supported in bounded local privacy filter summary",
+            "visual_redaction": true,
+            "pdf_rewrite": {"status": "complete"},
+            "agent_id": "agent-1"
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
 async fn privacy_filter_summary_endpoint_rejects_non_object_report() {
     let app = build_router(RuntimeState::default());
     let request = json!({"report": "not an object"});

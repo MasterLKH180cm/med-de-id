@@ -380,6 +380,9 @@ async fn privacy_filter_summary(
 
 fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryResponse> {
     let report = report.as_object()?;
+    if contains_incompatible_privacy_filter_marker(report) {
+        return None;
+    }
     if let Some(artifact) = report.get("artifact") {
         let artifact = artifact.as_str()?;
         if artifact != "privacy_filter_report" {
@@ -400,17 +403,48 @@ fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryRe
     let detected_span_count = required_u64(summary, "detected_span_count")?;
     let category_counts = extract_category_counts(summary)?;
     let non_goals = extract_non_goals(report)?;
+    let network_api_called = metadata.get("network_api_called")?.as_bool()?;
+    if network_api_called {
+        return None;
+    }
 
     Some(PrivacyFilterSummaryResponse {
         artifact: "privacy_filter_summary",
         mode: safe_mode(report.get("mode").and_then(Value::as_str).unwrap_or("text"))?.to_owned(),
         engine: safe_identifier(metadata.get("engine")?.as_str()?)?.to_owned(),
-        network_api_called: metadata.get("network_api_called")?.as_bool()?,
+        network_api_called,
         preview_policy: safe_preview_policy(metadata.get("preview_policy")?.as_str()?)?.to_owned(),
         input_char_count,
         detected_span_count,
         category_counts,
         non_goals,
+    })
+}
+
+fn contains_incompatible_privacy_filter_marker(report: &Map<String, Value>) -> bool {
+    const INCOMPATIBLE_MARKERS: &[&str] = &[
+        "ocr_output",
+        "image_bytes",
+        "visual_redaction",
+        "pixel_redaction",
+        "pdf_rewrite",
+        "pdf_export",
+        "agent_id",
+        "controller_step",
+        "complete_command",
+        "claim",
+    ];
+
+    report.iter().any(|(key, value)| {
+        INCOMPATIBLE_MARKERS.contains(&key.as_str())
+            || match value {
+                Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
+                Value::Array(values) => values.iter().any(|value| match value {
+                    Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
+                    _ => false,
+                }),
+                _ => false,
+            }
     })
 }
 
