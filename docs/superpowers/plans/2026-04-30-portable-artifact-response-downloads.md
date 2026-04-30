@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add bounded, PHI-safe portable artifact response report/download helpers to both browser/web and desktop surfaces so portable inspect/import/export responses can be saved separately from high-risk artifact JSON.
+**Goal:** Add bounded, PHI-safe portable artifact response report/download helpers to both browser/web and desktop surfaces so browser portable inspect/import responses and desktop portable export/inspect/import responses can be saved separately from high-risk artifact JSON; browser vault export remains the explicit encrypted artifact download path.
 
-**Architecture:** Keep this as a local-first surface UX slice only: browser and desktop build sanitized JSON report payloads from existing runtime-shaped portable responses and suggest source-derived safe filenames. Do not add agent/controller/workflow orchestration semantics, vault browsing, decoded value display, auth/session, or background coordination.
+**Architecture:** Keep this as a local-first surface UX slice only: browser builds sanitized JSON report payloads from existing runtime-shaped portable inspect/import responses, while desktop builds sanitized JSON report payloads from portable export/inspect/import responses; both suggest source-derived safe filenames. Do not add agent/controller/workflow orchestration semantics, vault browsing, decoded value display, auth/session, or background coordination.
 
 **Tech Stack:** Rust workspace, Leptos browser crate helpers, desktop Rust helper library, serde_json, cargo test.
 
@@ -70,7 +70,7 @@ Expected: FAIL because `build_portable_response_report_download` is not defined.
 
 - [ ] **Step 3: Implement minimal browser helper and wire action**
 
-Implement `build_portable_response_report_download(mode, imported_file_name, response_json)` returning `BrowserDownloadPayload` only for `VaultExport`, `PortableArtifactInspect`, and `PortableArtifactImport`. Parse response JSON object, replace any `artifact`, `decoded_values`, `records`, or `vault_passphrase` fields with string `"redacted"`, add `mode`, and use sanitized source stem plus `-portable-artifact-<mode>-report.json`. Wire the successful browser portable response area to expose this structured report download separately from any artifact/decoded-value export.
+Implement `build_portable_response_report_download(mode, imported_file_name, response_json)` returning `BrowserDownloadPayload` only for `PortableArtifactInspect` and `PortableArtifactImport`; do not route `VaultExport` through this helper because browser vault export is the intentional encrypted portable artifact download. Parse response JSON object, replace any `artifact`, `decoded_values`, `records`, or `vault_passphrase` fields with string `"redacted"`, add `mode`, and use sanitized source stem plus `-portable-artifact-<mode>-report.json`. Wire the successful browser portable response area to expose this structured report download separately from any artifact/decoded-value export.
 
 - [ ] **Step 4: Run browser GREEN and broader tests**
 
