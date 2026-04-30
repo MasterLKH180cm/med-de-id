@@ -534,7 +534,7 @@ cargo test -p mdid-desktop --lib pdf -- --nocapture
 - Modify: `crates/mdid-browser/src/app.rs`
 - Modify: `crates/mdid-desktop/src/lib.rs` only if desktop exposes vault audit request helpers
 
-- [ ] **Step 1: Define pagination contract**
+- [x] **Step 1: Define pagination contract**
 
 Use offset pagination first because current `/vault/audit/events` already accepts JSON body filters and uses reverse chronological order:
 
@@ -553,7 +553,7 @@ Response additions to `VaultAuditEventsResponse`:
 
 Filtering order must remain: unlock vault -> reverse chronological -> apply kind/actor filters -> count total matching -> skip offset -> take limit.
 
-- [ ] **Step 2: Write failing runtime pagination tests**
+- [x] **Step 2: Write failing runtime pagination tests**
 
 In `crates/mdid-runtime/tests/runtime_http.rs`, add:
 
@@ -574,7 +574,7 @@ Run: `cargo test -p mdid-runtime --test runtime_http vault_audit_events_endpoint
 
 Expected RED because current route ignores offset and response lacks pagination metadata.
 
-- [ ] **Step 3: Implement runtime pagination**
+- [x] **Step 3: Implement runtime pagination**
 
 In `crates/mdid-runtime/src/http.rs`:
 
@@ -601,7 +601,7 @@ Use `saturating_add` for comparisons; do not panic for very large offsets.
 
 Run all three runtime tests until GREEN.
 
-- [ ] **Step 4: Add CLI audit pagination flags/output if CLI exposes vault audit**
+- [x] **Step 4: Add CLI audit pagination flags/output if CLI exposes vault audit**
 
 In `crates/mdid-cli/src/main.rs`:
 
@@ -621,7 +621,7 @@ cargo test -p mdid-cli --bin mdid-cli vault_audit_report -- --nocapture
 
 If CLI smoke coverage has a vault audit command fixture, add a smoke test in `crates/mdid-cli/tests/cli_smoke.rs` using `--limit 1 --offset 1` and assert JSON `offset` and `has_more`.
 
-- [ ] **Step 5: Add browser audit request pagination controls/state**
+- [x] **Step 5: Add browser audit request pagination controls/state**
 
 In `crates/mdid-browser/src/app.rs`:
 
@@ -642,7 +642,7 @@ cargo test -p mdid-browser --lib vault_audit_request_rejects_invalid_offset -- -
 cargo test -p mdid-browser --lib vault_audit_events_report_includes_pagination_metadata -- --nocapture
 ```
 
-- [ ] **Step 6: Broader verification for Task 5**
+- [x] **Step 6: Broader verification for Task 5**
 
 Run:
 
