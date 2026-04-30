@@ -1310,78 +1310,54 @@ async fn audit_events_endpoint_paginates_with_offset_and_next_metadata() {
     }
 
     let app = build_router(RuntimeState::default());
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/vault/audit/events")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "vault_path": vault_path,
-                        "vault_passphrase": "correct horse battery staple",
-                        "kind": "encode",
-                        "limit": 2,
-                        "offset": 1
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    for (offset, expected_fields, expected_next_offset, expected_has_more) in [
+        (
+            0usize,
+            vec!["patient.field4", "patient.field3"],
+            Some(2usize),
+            true,
+        ),
+        (2, vec!["patient.field2", "patient.field1"], Some(4), true),
+        (4, vec!["patient.field0"], None, false),
+    ] {
+        let mut request = json!({
+            "vault_path": vault_path,
+            "vault_passphrase": "correct horse battery staple",
+            "kind": "encode",
+            "limit": 2,
+        });
+        if offset > 0 {
+            request["offset"] = json!(offset);
+        }
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    let events = json["events"].as_array().unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vault/audit/events")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-    assert_eq!(events.len(), 2);
-    assert!(events[0]["detail"]
-        .as_str()
-        .unwrap()
-        .contains("patient.field3"));
-    assert!(events[1]["detail"]
-        .as_str()
-        .unwrap()
-        .contains("patient.field2"));
-    assert_eq!(json["limit"], 2);
-    assert_eq!(json["offset"], 1);
-    assert_eq!(json["total_matching_events"], 5);
-    assert_eq!(json["next_offset"], 3);
-    assert_eq!(json["has_more"], true);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let events = json["events"].as_array().unwrap();
 
-    let final_page_response = build_router(RuntimeState::default())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/vault/audit/events")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "vault_path": vault_path,
-                        "vault_passphrase": "correct horse battery staple",
-                        "kind": "encode",
-                        "limit": 2,
-                        "offset": 4
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(final_page_response.status(), StatusCode::OK);
-    let body = to_bytes(final_page_response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["events"].as_array().unwrap().len(), 1);
-    assert_eq!(json["offset"], 4);
-    assert_eq!(json["total_matching_events"], 5);
-    assert_eq!(json["next_offset"], Value::Null);
-    assert_eq!(json["has_more"], false);
+        assert_eq!(events.len(), expected_fields.len());
+        for (event, expected_field) in events.iter().zip(expected_fields) {
+            assert!(event["detail"].as_str().unwrap().contains(expected_field));
+        }
+        assert_eq!(json["limit"], 2);
+        assert_eq!(json["offset"], offset);
+        assert_eq!(json["total_matching_events"], 5);
+        assert_eq!(json["next_offset"], json!(expected_next_offset));
+        assert_eq!(json["has_more"], expected_has_more);
+    }
 }
 
 #[tokio::test]
@@ -1492,6 +1468,27 @@ async fn audit_events_endpoint_rejects_invalid_filter_payload() {
         .await
         .unwrap();
     assert_invalid_audit_events_request_response(blank_passphrase_response).await;
+
+    let bad_offset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "offset": "2"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_audit_events_request_response(bad_offset_response).await;
 
     let bad_enum_response = app
         .oneshot(

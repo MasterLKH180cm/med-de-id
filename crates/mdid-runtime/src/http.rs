@@ -85,7 +85,7 @@ struct VaultAuditEventsRequest {
     #[serde(default, deserialize_with = "deserialize_optional_limit")]
     limit: Option<usize>,
     #[serde(default)]
-    offset: usize,
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -581,6 +581,7 @@ async fn vault_audit_events(
     };
 
     let limit = payload.limit.unwrap_or(100).min(100);
+    let offset = payload.offset.unwrap_or(0);
     let filtered = vault
         .audit_events()
         .iter()
@@ -592,21 +593,22 @@ async fn vault_audit_events(
     let total_matching_events = filtered.len();
     let mut filtered_events = filtered
         .into_iter()
-        .skip(payload.offset)
+        .skip(offset)
         .take(limit.saturating_add(1))
         .collect::<Vec<_>>();
     let has_more = filtered_events.len() > limit;
     if has_more {
         filtered_events.truncate(limit);
     }
-    let next_offset = has_more.then_some(payload.offset.saturating_add(limit));
+    let returned_events = filtered_events.len();
+    let next_offset = has_more.then_some(offset.saturating_add(returned_events));
 
     (
         StatusCode::OK,
         Json(VaultAuditEventsResponse {
             events: filtered_events,
             limit,
-            offset: payload.offset,
+            offset,
             total_matching_events,
             next_offset,
             has_more,
