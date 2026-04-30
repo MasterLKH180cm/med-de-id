@@ -878,6 +878,13 @@ pub enum DesktopPortableReportSaveError {
     InvalidResponseJson,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopPdfReviewReportSave {
+    pub file_name: String,
+    pub contents: String,
+    pub status: String,
+}
+
 impl std::fmt::Display for DesktopPortableReportSaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -887,6 +894,104 @@ impl std::fmt::Display for DesktopPortableReportSaveError {
 }
 
 impl std::error::Error for DesktopPortableReportSaveError {}
+
+pub fn build_desktop_pdf_review_report_save(
+    response_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "PDF review report requires a JSON object response".to_string())?;
+    let object = response
+        .as_object()
+        .ok_or_else(|| "PDF review report requires a JSON object response".to_string())?;
+
+    let report = serde_json::json!({
+        "mode": "pdf_review_report",
+        "summary": sanitize_desktop_pdf_review_report_summary(object.get("summary")),
+        "review_queue": sanitize_desktop_pdf_review_report_queue(object.get("review_queue")),
+    });
+    let contents = serde_json::to_string_pretty(&report)
+        .map_err(|_| "PDF review report could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-pdf".to_string());
+
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-pdf-review-report.json"),
+        contents,
+        status: "PDF review report ready to save; text content and PDF bytes are redacted from this report.".to_string(),
+    })
+}
+
+fn sanitize_desktop_pdf_review_report_summary(
+    value: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(serde_json::Value::Object(object)) = value else {
+        return serde_json::json!({});
+    };
+    let mut sanitized = serde_json::Map::new();
+    for key in [
+        "total_pages",
+        "pages_with_text",
+        "ocr_required_pages",
+        "candidate_count",
+        "requires_ocr",
+        "status",
+    ] {
+        if let Some(value) = object.get(key).filter(|value| {
+            matches!(
+                value,
+                serde_json::Value::Null
+                    | serde_json::Value::Bool(_)
+                    | serde_json::Value::Number(_)
+                    | serde_json::Value::String(_)
+            )
+        }) {
+            sanitized.insert(key.to_string(), value.clone());
+        }
+    }
+    serde_json::Value::Object(sanitized)
+}
+
+fn sanitize_desktop_pdf_review_report_queue(
+    value: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(serde_json::Value::Array(items)) = value else {
+        return serde_json::json!([]);
+    };
+    serde_json::Value::Array(
+        items
+            .iter()
+            .filter_map(|item| {
+                let object = item.as_object()?;
+                let mut sanitized = serde_json::Map::new();
+                if let Some(page) = object.get("page").filter(|value| is_json_primitive(value)) {
+                    sanitized.insert("page".to_string(), page.clone());
+                }
+                if let Some(kind) = object.get("kind").filter(|value| is_json_primitive(value)) {
+                    sanitized.insert("kind".to_string(), kind.clone());
+                }
+                if let Some(status) = object
+                    .get("status")
+                    .filter(|value| is_json_primitive(value))
+                {
+                    sanitized.insert("status".to_string(), status.clone());
+                }
+                Some(serde_json::Value::Object(sanitized))
+            })
+            .collect(),
+    )
+}
+
+fn is_json_primitive(value: &serde_json::Value) -> bool {
+    matches!(
+        value,
+        serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_)
+    )
+}
 
 impl std::fmt::Debug for DesktopVaultResponseReportDownload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2604,6 +2709,127 @@ mod tests {
         assert_eq!(
             payload.suggested_file_name,
             "desktop-portable-artifact-inspect-report.json"
+        );
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_redacts_text_and_uses_source_stem() {
+        let response = serde_json::json!({
+            "summary": {
+                "total_pages": 3,
+                "pages_with_text": 2,
+                "ocr_required_pages": 1,
+                "sensitive_text": "Jane Roe DOB 1970"
+            },
+            "review_queue": [
+                {
+                    "page": 2,
+                    "kind": "ocr_required",
+                    "status": "needs_review",
+                    "text": "Jane Roe DOB 1970"
+                }
+            ],
+            "pdf_bytes_base64": "SHOULD_NOT_LEAK"
+        });
+
+        let save = build_desktop_pdf_review_report_save(
+            &response.to_string(),
+            Some("workstation scan.pdf"),
+        )
+        .expect("desktop pdf report save");
+
+        assert_eq!(save.file_name, "workstation_scan-pdf-review-report.json");
+        assert_eq!(save.status, "PDF review report ready to save; text content and PDF bytes are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+        assert_eq!(report["mode"], "pdf_review_report");
+        assert_eq!(report["summary"]["total_pages"], 3);
+        assert_eq!(report["review_queue"][0]["page"], 2);
+        assert_eq!(report["review_queue"][0]["kind"], "ocr_required");
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("Jane"));
+        assert!(!serialized.contains("DOB"));
+        assert!(!serialized.contains("SHOULD_NOT_LEAK"));
+        assert!(!serialized.contains("pdf_bytes_base64"));
+        assert!(!serialized.contains("\"text\""));
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_rejects_non_object_runtime_response() {
+        let error = build_desktop_pdf_review_report_save("null", Some("scan.pdf")).unwrap_err();
+        assert!(error.contains("PDF review report requires a JSON object response"));
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_defaults_missing_containers_and_preserves_primitive_queue_fields(
+    ) {
+        let missing_containers = build_desktop_pdf_review_report_save("{}", Some("scan.pdf"))
+            .expect("missing summary and queue should still save");
+        let missing_report: serde_json::Value =
+            serde_json::from_str(&missing_containers.contents).unwrap();
+        assert_eq!(missing_report["summary"], serde_json::json!({}));
+        assert_eq!(missing_report["review_queue"], serde_json::json!([]));
+
+        let non_container_response = serde_json::json!({
+            "summary": "not an object",
+            "review_queue": {"not": "an array"}
+        });
+        let non_containers = build_desktop_pdf_review_report_save(
+            &non_container_response.to_string(),
+            Some("scan.pdf"),
+        )
+        .expect("non-object summary and non-array queue should still save");
+        let non_container_report: serde_json::Value =
+            serde_json::from_str(&non_containers.contents).unwrap();
+        assert_eq!(non_container_report["summary"], serde_json::json!({}));
+        assert_eq!(non_container_report["review_queue"], serde_json::json!([]));
+
+        let primitive_queue_response = serde_json::json!({
+            "review_queue": [
+                {
+                    "page": null,
+                    "kind": 42,
+                    "status": false,
+                    "text": "Jane Roe should not leak",
+                    "details": {"text": "nested PHI"}
+                },
+                {
+                    "page": "front matter",
+                    "kind": null,
+                    "status": 7
+                }
+            ]
+        });
+        let primitive_queue = build_desktop_pdf_review_report_save(
+            &primitive_queue_response.to_string(),
+            Some("scan.pdf"),
+        )
+        .expect("primitive/null queue field values should still save");
+        let primitive_queue_report: serde_json::Value =
+            serde_json::from_str(&primitive_queue.contents).unwrap();
+        assert_eq!(
+            primitive_queue_report["review_queue"],
+            serde_json::json!([
+                {"page": null, "kind": 42, "status": false},
+                {"page": "front matter", "kind": null, "status": 7}
+            ])
+        );
+        let serialized = serde_json::to_string(&primitive_queue_report).unwrap();
+        assert!(!serialized.contains("Jane Roe"));
+        assert!(!serialized.contains("nested PHI"));
+
+        let mixed_queue_response = serde_json::json!({
+            "review_queue": [42, "x", null, {"page": 1}]
+        });
+        let mixed_queue = build_desktop_pdf_review_report_save(
+            &mixed_queue_response.to_string(),
+            Some("scan.pdf"),
+        )
+        .expect("non-object queue entries should be skipped");
+        let mixed_queue_report: serde_json::Value =
+            serde_json::from_str(&mixed_queue.contents).unwrap();
+        assert_eq!(
+            mixed_queue_report["review_queue"],
+            serde_json::json!([{ "page": 1 }])
         );
     }
 
