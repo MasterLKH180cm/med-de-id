@@ -35,5 +35,10 @@
       "end": 113,
       "preview": "<redacted>"
     }
-  ]
+  ],
+  "metadata": {
+    "engine": "fallback_synthetic_patterns",
+    "network_api_called": false,
+    "preview_policy": "redacted_placeholders_only"
+  }
 }

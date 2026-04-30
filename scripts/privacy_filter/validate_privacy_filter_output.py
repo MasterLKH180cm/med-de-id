@@ -15,11 +15,22 @@ def fail(msg: str):
 obj = load(sys.argv[1] if len(sys.argv) > 1 else '-')
 if not isinstance(obj, dict):
     fail('top-level JSON must be an object')
-for key in ['summary', 'masked_text', 'spans']:
+for key in ['summary', 'masked_text', 'spans', 'metadata']:
     if key not in obj:
         fail(f'missing top-level key: {key}')
 if not isinstance(obj['summary'], dict):
     fail('summary must be an object')
+if not isinstance(obj['metadata'], dict):
+    fail('metadata must be an object')
+for key in ['engine', 'network_api_called', 'preview_policy']:
+    if key not in obj['metadata']:
+        fail(f'missing metadata key: {key}')
+if not isinstance(obj['metadata']['engine'], str) or not obj['metadata']['engine']:
+    fail('metadata.engine must be a non-empty string')
+if obj['metadata']['network_api_called'] is not False:
+    fail('metadata.network_api_called must be false for local POC')
+if not isinstance(obj['metadata']['preview_policy'], str) or not obj['metadata']['preview_policy']:
+    fail('metadata.preview_policy must be a non-empty string')
 for key in ['input_char_count', 'detected_span_count', 'category_counts']:
     if key not in obj['summary']:
         fail(f'missing summary key: {key}')

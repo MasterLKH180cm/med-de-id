@@ -806,10 +806,17 @@ fn validate_privacy_filter_output(value: &Value) -> Result<(), String> {
     {
         return Err("privacy filter output has invalid required field shape".to_string());
     }
-    if let Some(called) = value["metadata"].get("network_api_called") {
-        if called != false {
-            return Err("privacy filter output indicates network API use".to_string());
+    for key in ["engine", "network_api_called", "preview_policy"] {
+        if value["metadata"].get(key).is_none() {
+            return Err("privacy filter output missing required metadata field".to_string());
         }
+    }
+    if !value["metadata"]["engine"].is_string() || !value["metadata"]["preview_policy"].is_string()
+    {
+        return Err("privacy filter output has invalid metadata field shape".to_string());
+    }
+    if value["metadata"]["network_api_called"] != false {
+        return Err("privacy filter output indicates network API use".to_string());
     }
     Ok(())
 }

@@ -42,6 +42,23 @@ def heuristic_detect(text: str):
         },
         'masked_text': ''.join(masked_parts),
         'spans': spans,
+        'metadata': fallback_metadata(),
+    }
+
+
+def fallback_metadata():
+    return {
+        'engine': 'fallback_synthetic_patterns',
+        'network_api_called': False,
+        'preview_policy': 'redacted_placeholders_only',
+    }
+
+
+def real_opf_metadata():
+    return {
+        'engine': 'openai_privacy_filter_opf',
+        'network_api_called': False,
+        'preview_policy': 'redacted_placeholders_only',
     }
 
 
@@ -56,8 +73,8 @@ def main():
         return
     opf = shutil.which('opf')
     if opf is None:
-        print('OpenAI Privacy Filter CLI `opf` is not installed locally. Re-run with --mock for contract plumbing only, or install the upstream tool first.', file=sys.stderr)
-        raise SystemExit(2)
+        print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
+        return
     try:
         raw = subprocess.check_output([opf, '--format', 'json', text], text=True, stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError as e:
@@ -86,7 +103,8 @@ def main():
                 'preview': '<redacted>'
             }
             for s in obj.get('spans', [])
-        ] if isinstance(obj, dict) else []
+        ] if isinstance(obj, dict) else [],
+        'metadata': real_opf_metadata(),
     }, ensure_ascii=False, indent=2))
 
 if __name__ == '__main__':

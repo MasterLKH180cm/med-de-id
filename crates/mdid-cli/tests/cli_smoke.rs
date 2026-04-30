@@ -471,7 +471,7 @@ fn privacy_filter_text_writes_verbatim_runner_json_report() {
         &runner_path,
         r#"import json, pathlib, sys
 pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
-print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PERSON> has <ID>","spans":[{"label":"PERSON","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"network_api_called":False}}, indent=2))
+print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PERSON> has <ID>","spans":[{"label":"PERSON","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
 "#,
     )
     .unwrap();
@@ -514,7 +514,7 @@ fn privacy_filter_text_uses_explicit_python_command_when_provided() {
     fs::write(
         &python_command,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nprintf '%s\\n' '{{\"summary\":{{}},\"masked_text\":\"Patient <PERSON>\",\"spans\":[],\"metadata\":{{\"network_api_called\":false}}}}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nprintf '%s\\n' '{{\"summary\":{{}},\"masked_text\":\"Patient <PERSON>\",\"spans\":[],\"metadata\":{{\"engine\":\"fallback_synthetic_patterns\",\"network_api_called\":false,\"preview_policy\":\"redacted_placeholders_only\"}}}}'\n",
             argv_path.display()
         ),
     )
@@ -741,18 +741,18 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
     let report_path = dir.path().join("privacy-report.json");
     fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
 
-    let valid_payload = r#"{"summary":{},"masked_text":"Patient <PERSON>","spans":[],"metadata":{"network_api_called":false}}"#;
+    let valid_payload = r#"{"summary":{},"masked_text":"Patient <PERSON>","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#;
     for (payload, expected_error) in [
         (
-            r#"{"masked_text":"x","spans":[],"metadata":{"network_api_called":false}}"#,
+            r#"{"masked_text":"x","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
             "privacy filter output missing required field",
         ),
         (
-            r#"{"summary":{},"spans":[],"metadata":{"network_api_called":false}}"#,
+            r#"{"summary":{},"spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
             "privacy filter output missing required field",
         ),
         (
-            r#"{"summary":{},"masked_text":"x","metadata":{"network_api_called":false}}"#,
+            r#"{"summary":{},"masked_text":"x","metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
             "privacy filter output missing required field",
         ),
         (
@@ -760,20 +760,20 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
             "privacy filter output missing required field",
         ),
         (
-            r#"{"summary":{},"masked_text":"x","spans":[],"metadata":{"network_api_called":true}}"#,
+            r#"{"summary":{},"masked_text":"x","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":true,"preview_policy":"redacted_placeholders_only"}}"#,
             "privacy filter output indicates network API use",
         ),
         (r#"[]"#, "privacy filter output must be a JSON object"),
         (
-            r#"{"summary":[],"masked_text":"x","spans":[],"metadata":{"network_api_called":false}}"#,
+            r#"{"summary":[],"masked_text":"x","spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
             "privacy filter output has invalid required field shape",
         ),
         (
-            r#"{"summary":{},"masked_text":[],"spans":[],"metadata":{"network_api_called":false}}"#,
+            r#"{"summary":{},"masked_text":[],"spans":[],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
             "privacy filter output has invalid required field shape",
         ),
         (
-            r#"{"summary":{},"masked_text":"x","spans":{},"metadata":{"network_api_called":false}}"#,
+            r#"{"summary":{},"masked_text":"x","spans":{},"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
             "privacy filter output has invalid required field shape",
         ),
         (
