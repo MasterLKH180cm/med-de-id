@@ -1291,7 +1291,7 @@ async fn audit_events_endpoint_returns_filtered_events_in_reverse_chronological_
 }
 
 #[tokio::test]
-async fn audit_events_endpoint_paginates_with_offset_and_next_metadata() {
+async fn vault_audit_events_endpoint_paginates_with_offset() {
     let dir = tempdir().unwrap();
     let vault_path = dir.path().join("runtime-vault.mdid");
     let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
@@ -1358,6 +1358,121 @@ async fn audit_events_endpoint_paginates_with_offset_and_next_metadata() {
         assert_eq!(json["next_offset"], json!(expected_next_offset));
         assert_eq!(json["has_more"], expected_has_more);
     }
+}
+
+#[tokio::test]
+async fn vault_audit_events_endpoint_applies_offset_after_filters() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let first_encode = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.encode_oldest"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    vault
+        .decode(
+            mdid_domain::DecodeRequest::new(
+                vec![first_encode.id],
+                "clinician".into(),
+                "decode interleave".into(),
+                SurfaceKind::Desktop,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.encode_middle"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-002".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.encode_newest"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-003".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "kind": "encode",
+                        "limit": 1,
+                        "offset": 1
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let events = json["events"].as_array().unwrap();
+    assert_eq!(json["total_matching_events"], 3);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["kind"], "encode");
+    assert!(events[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("patient.encode_middle"));
+}
+
+#[tokio::test]
+async fn vault_audit_events_endpoint_rejects_invalid_offset_type() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "offset": "1"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_audit_events_request");
+    assert!(json.get("events").is_none());
 }
 
 #[tokio::test]
@@ -2634,7 +2749,7 @@ fn cell_to_string(cell: &Data) -> String {
 }
 
 async fn assert_invalid_audit_events_request_response(response: axum::response::Response) {
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
