@@ -4,7 +4,7 @@
 
 **Goal:** Add PHI-safe OCR/visual-review blocker evidence to Browser/Web and Desktop PDF review report artifacts so users can see why PDF review remains review-only without exposing raw PDF text or payloads.
 
-**Architecture:** Build a small allowlisted `ocr_blockers` report object from existing PDF runtime response fields and already-sanitized page statuses. Browser and Desktop keep separate helper implementations in their existing report builders, but use the same JSON shape: `ocr_blockers: { requires_ocr_pages, visual_review_pages, blocked_page_count, rewrite_available }`. The slice only enriches already-successful PDF review reports; it does not add OCR, visual redaction, PDF rewrite/export, or platform workflow behavior.
+**Architecture:** Build a small allowlisted `ocr_blockers` report object from existing PDF runtime response fields and already-sanitized page statuses. Browser and Desktop keep separate helper implementations in their existing report builders, but use the same JSON shape: `ocr_blockers: { requires_ocr_pages, visual_review_pages, blocked_page_count, rewrite_available }`. The slice only enriches already-successful PDF review reports; it does not add OCR, visual redaction, PDF rewrite/export, or broader workflow behavior.
 
 **Tech Stack:** Rust workspace; `serde_json`; existing `mdid-browser` and `mdid-desktop` crate unit tests; Cargo test/clippy verification.
 
@@ -28,7 +28,7 @@
 **Files:**
 - Modify: `crates/mdid-browser/src/app.rs`
 
-- [ ] **Step 1: Write the failing browser tests**
+- [x] **Step 1: Write the failing browser tests**
 
 Add tests that create a successful PDF review response containing `page_statuses`, `summary`, raw sensitive fields, and `no_rewritten_pdf: true`, then call the existing PDF review report download path. The expected report must include:
 
@@ -43,13 +43,13 @@ Add tests that create a successful PDF review response containing `page_statuses
 
 Also assert the serialized report does not contain raw text, bounding boxes, PDF bytes, filenames, or arbitrary nested sensitive fields.
 
-- [ ] **Step 2: Run browser RED verification**
+- [x] **Step 2: Run browser RED verification**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-browser pdf_review_report_ocr_blockers -- --nocapture`
 
 Expected: FAIL because `ocr_blockers` is not present in the generated PDF review report JSON.
 
-- [ ] **Step 3: Implement minimal browser helper and report field**
+- [x] **Step 3: Implement minimal browser helper and report field**
 
 Add a helper with this behavior:
 
@@ -76,7 +76,7 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
     serde_json::json!({
         "requires_ocr_pages": requires_ocr_pages,
         "visual_review_pages": visual_review_pages,
-        "blocked_page_count": requires_ocr_pages + visual_review_pages,
+        "blocked_page_count": distinct_blocked_page_count(page_statuses),
         "rewrite_available": response.get("no_rewritten_pdf").and_then(serde_json::Value::as_bool) == Some(false),
     })
 }
@@ -84,19 +84,19 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
 
 Then add `"ocr_blockers": sanitized_pdf_ocr_blockers(&response)` to the PDF review report JSON.
 
-- [ ] **Step 4: Run browser GREEN verification**
+- [x] **Step 4: Run browser GREEN verification**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-browser pdf_review_report_ocr_blockers -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run browser broader verification**
+- [x] **Step 5: Run browser broader verification**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-browser pdf_review_report -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit browser slice**
+- [x] **Step 6: Commit browser slice**
 
 Run:
 
@@ -110,33 +110,33 @@ git commit -m "feat(browser): add pdf ocr blocker report evidence"
 **Files:**
 - Modify: `crates/mdid-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write the failing desktop tests**
+- [x] **Step 1: Write the failing desktop tests**
 
 Add tests that apply a successful `DesktopWorkflowMode::PdfBase64Review` response containing `page_statuses`, `summary`, raw sensitive fields, and `no_rewritten_pdf: true`, then call the existing review report download/save helper. The expected report must include the same PHI-safe `ocr_blockers` object as Browser/Web and must omit raw text, bounding boxes, PDF bytes, filenames, passphrases, and arbitrary nested sensitive fields.
 
-- [ ] **Step 2: Run desktop RED verification**
+- [x] **Step 2: Run desktop RED verification**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop pdf_review_report_ocr_blockers -- --nocapture`
 
 Expected: FAIL because `ocr_blockers` is not present in the generated PDF review report JSON.
 
-- [ ] **Step 3: Implement minimal desktop helper and report field**
+- [x] **Step 3: Implement minimal desktop helper and report field**
 
 Add a helper near `sanitize_desktop_pdf_page_statuses` that derives the exact same JSON shape and values as the browser helper from the response object. Then add `"ocr_blockers": sanitize_desktop_pdf_ocr_blockers(Some(response))` to the desktop PDF review report JSON.
 
-- [ ] **Step 4: Run desktop GREEN verification**
+- [x] **Step 4: Run desktop GREEN verification**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop pdf_review_report_ocr_blockers -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run desktop broader verification**
+- [x] **Step 5: Run desktop broader verification**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-desktop review_report_download -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit desktop slice**
+- [x] **Step 6: Commit desktop slice**
 
 Run:
 
@@ -151,15 +151,15 @@ git commit -m "feat(desktop): add pdf ocr blocker report evidence"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-30-cross-surface-pdf-ocr-blocker-evidence.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Update the current repository status to state that Browser/Web and Desktop PDF review report artifacts now include `ocr_blockers` evidence. Keep completion honest: Browser/Web was already at 100%, so it remains 100%; Desktop moves from 97% to 100% if the desktop slice and verification land; Overall moves from 98% to 99% because PDF review artifact evidence is improved but full OCR, visual redaction, and rewritten PDF export remain missing. Keep CLI at 95%.
 
-- [ ] **Step 2: Mark this plan's completed checkboxes**
+- [x] **Step 2: Mark this plan's completed checkboxes**
 
-Change completed task checkboxes from `- [ ]` to `- [x]` only for steps actually completed and verified.
+Change completed task checkboxes from `- [x]` to `- [x]` only for steps actually completed and verified.
 
-- [ ] **Step 3: Run final verification**
+- [x] **Step 3: Run final verification**
 
 Run:
 
@@ -174,7 +174,7 @@ git diff --check
 
 Expected: all commands PASS.
 
-- [ ] **Step 4: Commit docs truth-sync**
+- [x] **Step 4: Commit docs truth-sync**
 
 Run:
 
