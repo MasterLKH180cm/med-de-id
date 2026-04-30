@@ -903,6 +903,12 @@ fn parse_record_ids_json(record_ids_json: &str) -> Result<Vec<Uuid>, String> {
     if record_ids.is_empty() {
         return Err("decode scope must include at least one record id".to_string());
     }
+    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
+    for record_id in &record_ids {
+        if !seen_record_ids.insert(*record_id) {
+            return Err("duplicate record id is not allowed".to_string());
+        }
+    }
     Ok(record_ids)
 }
 
@@ -1920,6 +1926,28 @@ mod tests {
             parse_record_ids_json("[]"),
             Err("decode scope must include at least one record id".to_string())
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_record_ids_json_for_vault_decode() {
+        let err = parse_record_ids_json(
+            r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#,
+        )
+        .expect_err("duplicate record ids must be rejected before decode");
+        let message = err.to_string();
+        assert!(message.contains("duplicate record id"));
+        assert!(!message.contains("550e8400"));
+    }
+
+    #[test]
+    fn rejects_duplicate_record_ids_json_for_vault_export() {
+        let err = parse_record_ids_json(
+            r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#,
+        )
+        .expect_err("duplicate record ids must be rejected before export");
+        let message = err.to_string();
+        assert!(message.contains("duplicate record id"));
+        assert!(!message.contains("550e8400"));
     }
 
     #[test]
