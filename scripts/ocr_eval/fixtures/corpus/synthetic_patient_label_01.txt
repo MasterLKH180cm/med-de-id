@@ -1,0 +1,4 @@
+Patient: Jane Example
+MRN: MRN-12345
+Email: jane@example.com
+Label: printed synthetic OCR handoff fixture only.

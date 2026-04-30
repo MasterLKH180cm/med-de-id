@@ -1,0 +1,3 @@
+Patient: John Sample
+MRN: MRN-67890
+Visit type: synthetic printed label for text-only OCR handoff readiness.
