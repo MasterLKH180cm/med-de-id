@@ -565,6 +565,8 @@ pub struct DicomDeidentificationSummary {
     pub burned_in_review_required: bool,
     #[serde(default = "default_dicom_burned_in_annotation_notice")]
     pub burned_in_annotation_notice: String,
+    #[serde(default = "default_dicom_burned_in_annotation_notice")]
+    pub burned_in_disclosure: String,
 }
 
 impl Default for DicomDeidentificationSummary {
@@ -579,6 +581,7 @@ impl Default for DicomDeidentificationSummary {
             pixel_redaction_performed: false,
             burned_in_review_required: false,
             burned_in_annotation_notice: DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into(),
+            burned_in_disclosure: DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into(),
         }
     }
 }
@@ -591,7 +594,7 @@ impl DicomDeidentificationSummary {
     }
 }
 
-pub const DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE: &str = "Pixel redaction was not performed. DICOM tag-level de-identification does not inspect or redact pixels; burned-in annotations may contain PHI and require manual image review when indicated.";
+pub const DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE: &str = "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review.";
 
 fn default_dicom_burned_in_annotation_notice() -> String {
     DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into()

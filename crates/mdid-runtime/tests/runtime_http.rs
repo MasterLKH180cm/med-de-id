@@ -775,10 +775,14 @@ async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
     assert_eq!(json["summary"]["burned_in_suspicions"], 1);
     assert_eq!(json["summary"]["pixel_redaction_performed"], false);
     assert_eq!(json["summary"]["burned_in_review_required"], true);
-    assert!(json["summary"]["burned_in_annotation_notice"]
-        .as_str()
-        .unwrap()
-        .contains("Pixel redaction was not performed"));
+    assert_eq!(
+        json["summary"]["burned_in_annotation_notice"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+    assert_eq!(
+        json["summary"]["burned_in_disclosure"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
     assert!(json["review_queue"].is_array());
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
 

@@ -6,7 +6,10 @@ use dicom_object::{
     OpenFileOptions,
 };
 use mdid_application::{DicomDeidentificationOutput, DicomDeidentificationService};
-use mdid_domain::{DicomPrivateTagPolicy, DicomTagRef, ReviewDecision, SurfaceKind};
+use mdid_domain::{
+    DicomPrivateTagPolicy, DicomTagRef, ReviewDecision, SurfaceKind,
+    DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
+};
 use mdid_vault::LocalVaultStore;
 use tempfile::tempdir;
 
@@ -42,10 +45,14 @@ fn dicom_deidentification_reuses_vault_tokens_for_repeated_phi_values() {
     assert_eq!(output.summary.burned_in_suspicions, 0);
     assert!(!output.summary.pixel_redaction_performed);
     assert!(!output.summary.burned_in_review_required);
-    assert!(output
-        .summary
-        .burned_in_annotation_notice
-        .contains("Pixel redaction was not performed"));
+    assert_eq!(
+        output.summary.burned_in_annotation_notice,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
+    assert_eq!(
+        output.summary.burned_in_disclosure,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
     assert!(!output.summary.requires_review());
     assert!(output.review_queue.is_empty());
     assert_eq!(vault.audit_events().len(), 7);
@@ -89,10 +96,14 @@ fn dicom_deidentification_routes_private_tags_and_burned_in_suspicion_to_review(
     assert_eq!(output.summary.burned_in_suspicions, 1);
     assert!(!output.summary.pixel_redaction_performed);
     assert!(output.summary.burned_in_review_required);
-    assert!(output
-        .summary
-        .burned_in_annotation_notice
-        .contains("burned-in annotation review is required"));
+    assert_eq!(
+        output.summary.burned_in_annotation_notice,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
+    assert_eq!(
+        output.summary.burned_in_disclosure,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
     assert!(output.summary.requires_review());
     assert_eq!(output.review_queue.len(), 2);
     assert_eq!(vault.audit_events().len(), 7);

@@ -260,7 +260,7 @@ impl DesktopWorkflowMode {
             Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; it stays limited to this local de-identification request surface.",
             Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it processes the first non-empty worksheet only. Sheet selection is not supported in this desktop flow; it stays limited to this local de-identification request surface.",
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
-            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; pixel redaction is not performed, so burned-in annotations may require manual image review. It stays limited to this local de-identification request surface.",
+            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
         }
     }
@@ -3797,8 +3797,7 @@ mod tests {
         let disclosure = DesktopWorkflowMode::DicomBase64.disclosure();
 
         assert!(disclosure.contains("tag-level DICOM de-identification"));
-        assert!(disclosure.contains("pixel redaction"));
-        assert!(disclosure.contains("not performed"));
+        assert!(disclosure.contains("DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
         assert!(!disclosure.contains("visual redaction is performed"));
     }
 

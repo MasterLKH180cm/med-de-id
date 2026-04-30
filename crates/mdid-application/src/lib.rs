@@ -237,6 +237,7 @@ impl DicomDeidentificationService {
             burned_in_review_required,
             burned_in_annotation_notice: burned_in_annotation_notice(burned_in_review_required)
                 .into(),
+            burned_in_disclosure: DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE.into(),
             ..DicomDeidentificationSummary::default()
         };
         let mut review_queue = Vec::new();
@@ -406,7 +407,7 @@ fn write_csv(columns: &[TabularColumn], rows: &[Vec<String>]) -> Result<String, 
 
 fn burned_in_annotation_notice(review_required: bool) -> &'static str {
     if review_required {
-        "Pixel redaction was not performed. Suspicious DICOM burned-in annotation metadata was detected; burned-in annotation review is required before relying on the de-identified image."
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
     } else {
         DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
     }

@@ -161,7 +161,7 @@ impl InputMode {
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
             Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
-            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
+            Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
             Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
@@ -1276,6 +1276,12 @@ struct DicomRuntimeSummary {
     pixel_redaction_performed: bool,
     burned_in_review_required: bool,
     burned_in_annotation_notice: String,
+    #[serde(default = "default_dicom_burned_in_disclosure")]
+    burned_in_disclosure: String,
+}
+
+fn default_dicom_burned_in_disclosure() -> String {
+    "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review.".to_string()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1724,7 +1730,7 @@ fn format_review_queue(review_queue: &[RuntimeReviewCandidate]) -> String {
 
 fn format_dicom_summary(summary: &DicomRuntimeSummary) -> String {
     format!(
-        "total_tags: {}\nencoded_tags: {}\nreview_required_tags: {}\nremoved_private_tags: {}\nremapped_uids: {}\nburned_in_suspicions: {}\npixel_redaction_performed: {}\nburned_in_review_required: {}\nburned_in_annotation_notice: {}",
+        "total_tags: {}\nencoded_tags: {}\nreview_required_tags: {}\nremoved_private_tags: {}\nremapped_uids: {}\nburned_in_suspicions: {}\npixel_redaction_performed: {}\nburned_in_review_required: {}\nburned_in_annotation_notice: {}\nburned_in_disclosure: {}",
         summary.total_tags,
         summary.encoded_tags,
         summary.review_required_tags,
@@ -1733,7 +1739,8 @@ fn format_dicom_summary(summary: &DicomRuntimeSummary) -> String {
         summary.burned_in_suspicions,
         summary.pixel_redaction_performed,
         summary.burned_in_review_required,
-        summary.burned_in_annotation_notice
+        summary.burned_in_annotation_notice,
+        summary.burned_in_disclosure
     )
 }
 
@@ -3849,7 +3856,8 @@ mod tests {
                 "burned_in_suspicions": 1,
                 "pixel_redaction_performed": false,
                 "burned_in_review_required": true,
-                "burned_in_annotation_notice": "Pixel redaction was not performed. Suspicious DICOM burned-in annotation metadata was detected; burned-in annotation review is required before relying on the de-identified image."
+                "burned_in_annotation_notice": "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review.",
+                "burned_in_disclosure": "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
             },
             "review_queue": [
                 {"tag": {"group": 16, "element": 16, "keyword": "PatientName"}, "phi_type": "patient_name", "value": "Jane Patient", "decision": "Review"}
@@ -3873,7 +3881,8 @@ mod tests {
         assert!(rendered.summary.contains("burned_in_review_required: true"));
         assert!(rendered
             .summary
-            .contains("burned-in annotation review is required"));
+            .contains("DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
+        assert!(rendered.summary.contains("burned_in_disclosure: DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
         assert_eq!(
             rendered.review_queue,
             "- tag (0010,0010) PatientName / patient_name / Review / value: <redacted>"
@@ -3887,6 +3896,10 @@ mod tests {
         assert!(InputMode::DicomBase64.disclosure_copy().unwrap().contains(
             "DICOM mode uses the existing local runtime tag-level de-identification route"
         ));
+        assert!(InputMode::DicomBase64
+            .disclosure_copy()
+            .unwrap()
+            .contains("DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
         assert!(InputMode::DicomBase64
             .disclosure_copy()
             .unwrap()

@@ -60,9 +60,28 @@ fn dicom_summary_discloses_pixel_redaction_is_not_performed() {
     let summary = DicomDeidentificationSummary::default();
 
     assert!(!summary.pixel_redaction_performed);
-    assert!(summary
-        .burned_in_annotation_notice
-        .contains("Pixel redaction was not performed"));
+    assert_eq!(
+        summary.burned_in_annotation_notice,
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+    assert_eq!(
+        summary.burned_in_disclosure,
+        summary.burned_in_annotation_notice
+    );
+}
+
+#[test]
+fn dicom_summary_serializes_exact_burned_in_disclosure_alias() {
+    let json = serde_json::to_value(DicomDeidentificationSummary::default()).unwrap();
+
+    assert_eq!(
+        json["burned_in_annotation_notice"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+    assert_eq!(
+        json["burned_in_disclosure"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
 }
 
 #[test]
@@ -84,6 +103,10 @@ fn dicom_summary_deserializes_older_json_without_pixel_disclosure_fields() {
     assert!(!summary.burned_in_review_required);
     assert_eq!(
         summary.burned_in_annotation_notice,
+        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
+    );
+    assert_eq!(
+        summary.burned_in_disclosure,
         DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
     );
 }
