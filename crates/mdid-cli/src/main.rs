@@ -663,11 +663,18 @@ struct VerifyArtifactEntryReport {
 fn run_verify_artifacts(args: VerifyArtifactsArgs) -> Result<(), String> {
     let paths = parse_artifact_paths_json(&args.artifact_paths_json)?;
     let report = build_verify_artifacts_report(&paths, args.max_bytes)?;
+    let missing_count = report.missing_count;
+    let oversized_count = report.oversized_count;
     println!(
         "{}",
         serde_json::to_string(&report)
             .map_err(|err| format!("failed to render artifact verification report: {err}"))?
     );
+    if missing_count > 0 || oversized_count > 0 {
+        return Err(format!(
+            "artifact verification failed: {missing_count} missing, {oversized_count} oversized"
+        ));
+    }
     Ok(())
 }
 

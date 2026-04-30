@@ -335,6 +335,66 @@ fn cli_deidentify_dicom_rejects_invalid_dicom_without_scope_drift_terms() {
 }
 
 #[test]
+fn verify_artifacts_exits_nonzero_when_artifact_is_missing() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let missing_path = temp_dir.path().join("missing-output.json");
+    let paths_json = serde_json::to_string(&vec![missing_path.to_string_lossy().to_string()])
+        .expect("paths json");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args(["verify-artifacts", "--artifact-paths-json", &paths_json])
+        .assert()
+        .failure();
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8(output.stdout.clone()).expect("stdout utf8");
+    let report: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json report");
+
+    assert_eq!(report["artifact_count"], 1);
+    assert_eq!(report["existing_count"], 0);
+    assert_eq!(report["missing_count"], 1);
+    assert_eq!(report["oversized_count"], 0);
+    assert_eq!(report["artifacts"][0]["index"], 0);
+    assert_eq!(report["artifacts"][0]["exists"], false);
+    assert!(!stdout.contains("missing-output.json"));
+}
+
+#[test]
+fn verify_artifacts_exits_nonzero_when_artifact_exceeds_max_bytes() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let artifact_path = temp_dir.path().join("large-output.json");
+    std::fs::write(&artifact_path, b"abcdef").expect("write artifact");
+    let paths_json = serde_json::to_string(&vec![artifact_path.to_string_lossy().to_string()])
+        .expect("paths json");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args([
+            "verify-artifacts",
+            "--artifact-paths-json",
+            &paths_json,
+            "--max-bytes",
+            "3",
+        ])
+        .assert()
+        .failure();
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8(output.stdout.clone()).expect("stdout utf8");
+    let report: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json report");
+
+    assert_eq!(report["artifact_count"], 1);
+    assert_eq!(report["existing_count"], 1);
+    assert_eq!(report["missing_count"], 0);
+    assert_eq!(report["oversized_count"], 1);
+    assert_eq!(report["max_bytes"], 3);
+    assert_eq!(report["artifacts"][0]["byte_len"], 6);
+    assert_eq!(report["artifacts"][0]["within_max_bytes"], false);
+    assert!(!stdout.contains("large-output.json"));
+}
+
+#[test]
 fn cli_review_media_writes_phi_safe_report() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("media-review.json");
