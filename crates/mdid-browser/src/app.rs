@@ -727,6 +727,116 @@ fn sanitized_source_stem_preserving_case(file_name: &str) -> String {
     }
 }
 
+fn portable_report_source_stem(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = if let Some(stem) = file_name.strip_suffix(".mdid-portable.json") {
+        stem
+    } else if let Some(stem) = file_name.strip_suffix("-mdid-portable.json") {
+        stem
+    } else {
+        file_name
+            .rsplit_once('.')
+            .map_or(file_name, |(stem, _)| stem)
+    };
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('_');
+            }
+            sanitized.push(ch);
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('_') {
+            sanitized.pop();
+        }
+    }
+
+    sanitized
+}
+
+fn redact_portable_report_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for field in ["artifact", "decoded_values", "records", "vault_passphrase"] {
+                if object.contains_key(field) {
+                    object.insert(
+                        field.to_string(),
+                        serde_json::Value::String("redacted".to_string()),
+                    );
+                }
+            }
+            for value in object.values_mut() {
+                redact_portable_report_value(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_portable_report_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_portable_response_report_download(
+    mode: InputMode,
+    imported_file_name: Option<&str>,
+    response_json: &str,
+) -> Result<BrowserDownloadPayload, String> {
+    const UNAVAILABLE: &str =
+        "Portable response report download is only available for portable artifact modes.";
+    const INVALID_RESPONSE: &str =
+        "Portable response report download requires a valid portable response JSON object.";
+
+    let mode_label = match mode {
+        InputMode::PortableArtifactInspect => "portable_artifact_inspect",
+        InputMode::PortableArtifactImport => "portable_artifact_import",
+        _ => return Err(UNAVAILABLE.to_string()),
+    };
+
+    let mut report = serde_json::from_str::<serde_json::Value>(response_json)
+        .map_err(|_| INVALID_RESPONSE.to_string())?;
+    if !report.is_object() {
+        return Err(INVALID_RESPONSE.to_string());
+    }
+
+    redact_portable_report_value(&mut report);
+    let object = report
+        .as_object_mut()
+        .ok_or_else(|| INVALID_RESPONSE.to_string())?;
+    object.insert(
+        "mode".to_string(),
+        serde_json::Value::String(mode_label.to_string()),
+    );
+
+    let report_kind = mode_label
+        .strip_prefix("portable_artifact_")
+        .unwrap_or(mode_label)
+        .replace('_', "-");
+    let file_name = imported_file_name
+        .map(portable_report_source_stem)
+        .filter(|stem| !stem.is_empty() && stem != "mdid_browser_portable_artifact")
+        .map(|stem| format!("{stem}-portable-artifact-{report_kind}-report.json"))
+        .unwrap_or_else(|| "mdid-browser-portable-artifact-report.json".to_string());
+
+    Ok(BrowserDownloadPayload {
+        file_name,
+        mime_type: "application/json",
+        bytes: serde_json::to_vec_pretty(&report)
+            .map_err(|_| "Portable response report download could not encode JSON.".to_string())?,
+        is_text: true,
+    })
+}
+
 fn sanitized_vault_export_stem(file_name: &str) -> String {
     let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
     let stem = file_name
@@ -1132,15 +1242,31 @@ impl BrowserFlowState {
                 bytes: self.review_report_download_json()?,
                 is_text: true,
             }),
-            InputMode::VaultAuditEvents
-            | InputMode::VaultDecode
-            | InputMode::PortableArtifactInspect
-            | InputMode::PortableArtifactImport => Ok(BrowserDownloadPayload {
+            InputMode::VaultAuditEvents | InputMode::VaultDecode => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "application/json;charset=utf-8",
                 bytes: self.safe_vault_response_download_json()?,
                 is_text: true,
             }),
+            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport
+                if self.result_output.trim_start().starts_with('{') =>
+            {
+                let mut payload = build_portable_response_report_download(
+                    self.input_mode,
+                    self.imported_file_name.as_deref(),
+                    &self.result_output,
+                )?;
+                payload.mime_type = "application/json;charset=utf-8";
+                Ok(payload)
+            }
+            InputMode::PortableArtifactInspect | InputMode::PortableArtifactImport => {
+                Ok(BrowserDownloadPayload {
+                    file_name,
+                    mime_type: "application/json;charset=utf-8",
+                    bytes: self.safe_vault_response_download_json()?,
+                    is_text: true,
+                })
+            }
             _ => Ok(BrowserDownloadPayload {
                 file_name,
                 mime_type: "text/plain;charset=utf-8",
@@ -2822,10 +2948,11 @@ mod tests {
 
     use super::{
         build_portable_artifact_import_request_payload,
-        build_portable_artifact_inspect_request_payload, build_submit_request,
-        build_vault_audit_request_payload, build_vault_decode_request_payload,
-        build_vault_export_request_payload, file_import_payload_from_data_url, format_review_queue,
-        format_summary, parse_runtime_error, parse_runtime_success, render_runtime_response,
+        build_portable_artifact_inspect_request_payload, build_portable_response_report_download,
+        build_submit_request, build_vault_audit_request_payload,
+        build_vault_decode_request_payload, build_vault_export_request_payload,
+        file_import_payload_from_data_url, format_review_queue, format_summary,
+        parse_runtime_error, parse_runtime_success, render_runtime_response,
         validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
         RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
         DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY, FETCH_UNAVAILABLE_MESSAGE,
@@ -2834,6 +2961,72 @@ mod tests {
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn portable_response_report_download_uses_safe_source_name_and_redacts_artifact() {
+        let payload = build_portable_response_report_download(
+            InputMode::PortableArtifactImport,
+            Some("Patient Alice bundle.mdid-portable.json"),
+            r#"{"artifact":{"records":[{"id":"phi-1"}]},"nested":{"decoded_values":{"patient":"Alice"}},"imported_record_count":1,"audit_event_count":2}"#,
+        )
+        .expect("portable import response should produce report download");
+
+        assert_eq!(
+            payload.file_name,
+            "Patient_Alice_bundle-portable-artifact-import-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json");
+        assert!(payload.is_text);
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(report["mode"], "portable_artifact_import");
+        assert_eq!(report["imported_record_count"], 1);
+        assert_eq!(report["audit_event_count"], 2);
+        assert_eq!(report["artifact"], "redacted");
+        assert_eq!(report["nested"]["decoded_values"], "redacted");
+        let text = String::from_utf8(payload.bytes).unwrap();
+        assert!(!text.contains("phi-1"));
+        assert!(!text.contains("Alice"));
+    }
+
+    #[test]
+    fn portable_response_report_download_rejects_non_portable_modes() {
+        let error = build_portable_response_report_download(
+            InputMode::CsvText,
+            Some("rows.csv"),
+            r#"{\"summary\":\"ok\"}"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Portable response report download is only available for portable artifact modes."
+        );
+    }
+
+    #[test]
+    fn portable_import_prepared_download_uses_portable_report_payload() {
+        let state = BrowserFlowState {
+            input_mode: InputMode::PortableArtifactImport,
+            imported_file_name: Some("Patient Alice bundle.mdid-portable.json".to_string()),
+            result_output: r#"{"artifact":{"records":[{"id":"phi-1"}]},"imported_record_count":1,"audit_event_count":2}"#.to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let payload = state
+            .prepared_download_payload()
+            .expect("portable response report");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let text = String::from_utf8(payload.bytes).unwrap();
+
+        assert_eq!(
+            payload.file_name,
+            "Patient_Alice_bundle-portable-artifact-import-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json;charset=utf-8");
+        assert_eq!(report["mode"], "portable_artifact_import");
+        assert_eq!(report["artifact"], "redacted");
+        assert!(!text.contains("phi-1"));
+    }
 
     #[test]
     fn tabular_report_download_payload_uses_safe_source_name_for_csv() {
