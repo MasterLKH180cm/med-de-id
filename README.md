@@ -99,7 +99,7 @@ Truth-synced 2026-04-30 from the current completion rubric, the still-open plan 
    - Preserve browser vault export as the explicit high-risk encrypted artifact download path instead of routing it through a safe response-report path.
    - Only increase Browser/Web, Desktop, or Overall completion after controller-visible verification and README truth-sync actually land.
 
-3. **Close the remaining Browser/Web workflow depth gaps that still block 100%.**
+3. **Close the remaining Browser/Web workflow depth gaps that still block the 99% target threshold.**
    - Full OCR for PDFs.
    - Actual visual redaction and rewritten PDF export instead of blocker/report-only evidence.
    - Richer upload/download and file-picker UX beyond the current bounded helper/download set.
@@ -107,7 +107,7 @@ Truth-synced 2026-04-30 from the current completion rubric, the still-open plan 
    - Any auth/session decision work only where a real browser workflow truly needs it.
    - Final browser governance/review polish after the core workflow gaps above are no longer blocking.
 
-4. **Close the remaining Desktop workstation gaps that still block 100%.**
+4. **Close the remaining Desktop workstation gaps that still block the 99% target threshold.**
    - Full OCR, actual visual redaction, and rewritten PDF export instead of review/report-only saves.
    - Full desktop execution/file-picker/save UX depth beyond bounded helpers.
    - Deeper vault decode/audit investigation workflows and richer workstation browsing/inspection.
