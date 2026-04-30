@@ -122,7 +122,7 @@ struct VaultDecodeArgs {
     report_path: PathBuf,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VaultExportArgs {
     vault_path: PathBuf,
     passphrase: String,
@@ -132,7 +132,7 @@ struct VaultExportArgs {
     artifact_path: PathBuf,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VaultImportArgs {
     vault_path: PathBuf,
     passphrase: String,
@@ -561,13 +561,18 @@ fn parse_vault_export_args(args: &[String]) -> Result<VaultExportArgs, String> {
         index += 2;
     }
 
+    let context = context.ok_or_else(|| "missing --context".to_string())?;
+    if context.trim().is_empty() {
+        return Err("missing --context".to_string());
+    }
+
     Ok(VaultExportArgs {
         vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
         passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
         record_ids_json: record_ids_json.ok_or_else(|| "missing --record-ids-json".to_string())?,
         export_passphrase: export_passphrase
             .ok_or_else(|| "missing --export-passphrase".to_string())?,
-        context: context.ok_or_else(|| "missing --context".to_string())?,
+        context,
         artifact_path: artifact_path.ok_or_else(|| "missing --artifact-path".to_string())?,
     })
 }
@@ -596,13 +601,18 @@ fn parse_vault_import_args(args: &[String]) -> Result<VaultImportArgs, String> {
         index += 2;
     }
 
+    let context = context.ok_or_else(|| "missing --context".to_string())?;
+    if context.trim().is_empty() {
+        return Err("missing --context".to_string());
+    }
+
     Ok(VaultImportArgs {
         vault_path: vault_path.ok_or_else(|| "missing --vault-path".to_string())?,
         passphrase: passphrase.ok_or_else(|| "missing --passphrase".to_string())?,
         artifact_path: artifact_path.ok_or_else(|| "missing --artifact-path".to_string())?,
         portable_passphrase: portable_passphrase
             .ok_or_else(|| "missing --portable-passphrase".to_string())?,
-        context: context.ok_or_else(|| "missing --context".to_string())?,
+        context,
     })
 }
 
@@ -1611,6 +1621,50 @@ mod tests {
                     artifact_path: PathBuf::from("portable-export.json"),
                 }))
         );
+    }
+
+    #[test]
+    fn parse_vault_export_rejects_blank_context_without_echoing_value() {
+        let error = parse_vault_export_args(&[
+            "--vault-path".to_string(),
+            "vault.json".to_string(),
+            "--passphrase".to_string(),
+            "secret".to_string(),
+            "--record-ids-json".to_string(),
+            "[\"record-1\"]".to_string(),
+            "--export-passphrase".to_string(),
+            "portable-secret".to_string(),
+            "--context".to_string(),
+            "   ".to_string(),
+            "--artifact-path".to_string(),
+            "artifact.json".to_string(),
+        ])
+        .expect_err("blank export context should be rejected");
+
+        assert_eq!(error, "missing --context");
+        assert!(!error.contains("record-1"));
+        assert!(!error.contains("portable-secret"));
+    }
+
+    #[test]
+    fn parse_vault_import_rejects_blank_context_without_echoing_value() {
+        let error = parse_vault_import_args(&[
+            "--vault-path".to_string(),
+            "vault.json".to_string(),
+            "--passphrase".to_string(),
+            "secret".to_string(),
+            "--artifact-path".to_string(),
+            "artifact.json".to_string(),
+            "--portable-passphrase".to_string(),
+            "portable-secret".to_string(),
+            "--context".to_string(),
+            "\t".to_string(),
+        ])
+        .expect_err("blank import context should be rejected");
+
+        assert_eq!(error, "missing --context");
+        assert!(!error.contains("artifact.json"));
+        assert!(!error.contains("portable-secret"));
     }
 
     #[test]
