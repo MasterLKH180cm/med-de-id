@@ -727,6 +727,92 @@ fn sanitized_source_stem_preserving_case(file_name: &str) -> String {
     }
 }
 
+fn portable_report_source_stem(file_name: &str) -> String {
+    let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = if let Some(stem) = file_name.strip_suffix(".mdid-portable.json") {
+        stem
+    } else if let Some(stem) = file_name.strip_suffix("-mdid-portable.json") {
+        stem
+    } else {
+        file_name.rsplit_once('.').map_or(file_name, |(stem, _)| stem)
+    };
+
+    let mut sanitized = String::new();
+    let mut needs_separator = false;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if needs_separator && !sanitized.is_empty() {
+                sanitized.push('_');
+            }
+            sanitized.push(ch);
+            needs_separator = false;
+        } else {
+            needs_separator = !sanitized.is_empty();
+        }
+    }
+
+    if sanitized.len() > MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS {
+        sanitized.truncate(MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS);
+        while sanitized.ends_with('_') {
+            sanitized.pop();
+        }
+    }
+
+    sanitized
+}
+
+fn build_portable_response_report_download(
+    mode: InputMode,
+    imported_file_name: Option<&str>,
+    response_json: &str,
+) -> Result<BrowserDownloadPayload, String> {
+    const UNAVAILABLE: &str =
+        "Portable response report download is only available for portable artifact modes.";
+    const INVALID_RESPONSE: &str =
+        "Portable response report download requires a valid portable response JSON object.";
+
+    let mode_label = match mode {
+        InputMode::VaultExport => "vault_export",
+        InputMode::PortableArtifactInspect => "portable_artifact_inspect",
+        InputMode::PortableArtifactImport => "portable_artifact_import",
+        _ => return Err(UNAVAILABLE.to_string()),
+    };
+
+    let mut report = serde_json::from_str::<serde_json::Value>(response_json)
+        .map_err(|_| INVALID_RESPONSE.to_string())?;
+    let object = report
+        .as_object_mut()
+        .ok_or_else(|| INVALID_RESPONSE.to_string())?;
+
+    for field in ["artifact", "decoded_values", "records", "vault_passphrase"] {
+        if object.contains_key(field) {
+            object.insert(field.to_string(), serde_json::Value::String("redacted".to_string()));
+        }
+    }
+    object.insert(
+        "mode".to_string(),
+        serde_json::Value::String(mode_label.to_string()),
+    );
+
+    let report_kind = mode_label
+        .strip_prefix("portable_artifact_")
+        .unwrap_or(mode_label)
+        .replace('_', "-");
+    let file_name = imported_file_name
+        .map(portable_report_source_stem)
+        .filter(|stem| !stem.is_empty() && stem != "mdid_browser_portable_artifact")
+        .map(|stem| format!("{stem}-portable-artifact-{report_kind}-report.json"))
+        .unwrap_or_else(|| "mdid-browser-portable-artifact-report.json".to_string());
+
+    Ok(BrowserDownloadPayload {
+        file_name,
+        mime_type: "application/json",
+        bytes: serde_json::to_vec_pretty(&report)
+            .map_err(|_| "Portable response report download could not encode JSON.".to_string())?,
+        is_text: true,
+    })
+}
+
 fn sanitized_vault_export_stem(file_name: &str) -> String {
     let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
     let stem = file_name
@@ -2821,7 +2907,7 @@ mod tests {
     use base64::Engine;
 
     use super::{
-        build_portable_artifact_import_request_payload,
+        build_portable_artifact_import_request_payload, build_portable_response_report_download,
         build_portable_artifact_inspect_request_payload, build_submit_request,
         build_vault_audit_request_payload, build_vault_decode_request_payload,
         build_vault_export_request_payload, file_import_payload_from_data_url, format_review_queue,
@@ -2834,6 +2920,41 @@ mod tests {
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn portable_response_report_download_uses_safe_source_name_and_redacts_artifact() {
+        let payload = build_portable_response_report_download(
+            InputMode::PortableArtifactImport,
+            Some("Patient Alice bundle.mdid-portable.json"),
+            r#"{"artifact":{"records":[{"id":"phi-1"}]},"imported_record_count":1,"audit_event_count":2}"#,
+        )
+        .expect("portable import response should produce report download");
+
+        assert_eq!(
+            payload.file_name,
+            "Patient_Alice_bundle-portable-artifact-import-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json");
+        assert!(payload.is_text);
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(report["mode"], "portable_artifact_import");
+        assert_eq!(report["imported_record_count"], 1);
+        assert_eq!(report["audit_event_count"], 2);
+        assert_eq!(report["artifact"], "redacted");
+        assert!(!String::from_utf8(payload.bytes).unwrap().contains("phi-1"));
+    }
+
+    #[test]
+    fn portable_response_report_download_rejects_non_portable_modes() {
+        let error = build_portable_response_report_download(
+            InputMode::CsvText,
+            Some("rows.csv"),
+            r#"{"summary":"ok"}"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Portable response report download is only available for portable artifact modes.");
+    }
 
     #[test]
     fn tabular_report_download_payload_uses_safe_source_name_for_csv() {
