@@ -1291,6 +1291,98 @@ async fn audit_events_endpoint_returns_filtered_events_in_reverse_chronological_
 }
 
 #[tokio::test]
+async fn audit_events_endpoint_paginates_with_offset_and_next_metadata() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    for index in 0..5 {
+        vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: sample_scope(&format!("patient.field{index}")),
+                    phi_type: "patient_id".into(),
+                    original_value: format!("MRN-{index:03}"),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+    }
+
+    let app = build_router(RuntimeState::default());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "kind": "encode",
+                        "limit": 2,
+                        "offset": 1
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let events = json["events"].as_array().unwrap();
+
+    assert_eq!(events.len(), 2);
+    assert!(events[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("patient.field3"));
+    assert!(events[1]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("patient.field2"));
+    assert_eq!(json["limit"], 2);
+    assert_eq!(json["offset"], 1);
+    assert_eq!(json["next_offset"], 3);
+    assert_eq!(json["has_more"], true);
+
+    let final_page_response = build_router(RuntimeState::default())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "kind": "encode",
+                        "limit": 2,
+                        "offset": 4
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(final_page_response.status(), StatusCode::OK);
+    let body = to_bytes(final_page_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["events"].as_array().unwrap().len(), 1);
+    assert_eq!(json["offset"], 4);
+    assert_eq!(json["next_offset"], Value::Null);
+    assert_eq!(json["has_more"], false);
+}
+
+#[tokio::test]
 async fn audit_events_endpoint_rejects_wrong_passphrase() {
     let dir = tempdir().unwrap();
     let vault_path = dir.path().join("runtime-vault.mdid");

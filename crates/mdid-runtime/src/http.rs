@@ -84,6 +84,8 @@ struct VaultAuditEventsRequest {
     actor: Option<SurfaceKind>,
     #[serde(default, deserialize_with = "deserialize_optional_limit")]
     limit: Option<usize>,
+    #[serde(default)]
+    offset: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,6 +233,10 @@ struct VaultExportResponse {
 #[derive(Debug, Serialize)]
 struct VaultAuditEventsResponse {
     events: Vec<AuditEvent>,
+    limit: usize,
+    offset: usize,
+    next_offset: Option<usize>,
+    has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -574,17 +580,33 @@ async fn vault_audit_events(
     };
 
     let limit = payload.limit.unwrap_or(100).min(100);
-    let events = vault
+    let mut filtered_events = vault
         .audit_events()
         .iter()
         .rev()
         .filter(|event| payload.kind.is_none_or(|kind| event.kind == kind))
         .filter(|event| payload.actor.is_none_or(|actor| event.actor == actor))
-        .take(limit)
+        .skip(payload.offset)
+        .take(limit.saturating_add(1))
         .cloned()
         .collect::<Vec<_>>();
+    let has_more = filtered_events.len() > limit;
+    if has_more {
+        filtered_events.truncate(limit);
+    }
+    let next_offset = has_more.then_some(payload.offset.saturating_add(limit));
 
-    (StatusCode::OK, Json(VaultAuditEventsResponse { events })).into_response()
+    (
+        StatusCode::OK,
+        Json(VaultAuditEventsResponse {
+            events: filtered_events,
+            limit,
+            offset: payload.offset,
+            next_offset,
+            has_more,
+        }),
+    )
+        .into_response()
 }
 
 async fn portable_artifact_inspect(

@@ -246,6 +246,7 @@ fn build_vault_audit_request_payload(
     kind: &str,
     actor: &str,
     limit: &str,
+    offset: &str,
 ) -> Result<serde_json::Value, String> {
     let vault_path = vault_path.trim();
     if vault_path.is_empty() {
@@ -282,6 +283,14 @@ fn build_vault_audit_request_payload(
                 return Err("Vault audit limit must be a positive integer.".to_string());
             }
             object.insert("limit".to_string(), serde_json::json!(parsed_limit));
+        }
+
+        let offset = offset.trim();
+        if !offset.is_empty() {
+            let parsed_offset = offset
+                .parse::<usize>()
+                .map_err(|_| "Vault audit offset must be a non-negative integer.".to_string())?;
+            object.insert("offset".to_string(), serde_json::json!(parsed_offset));
         }
     }
 
@@ -463,6 +472,7 @@ struct BrowserFlowState {
     vault_audit_kind: String,
     vault_audit_actor: String,
     vault_audit_limit: String,
+    vault_audit_offset: String,
     vault_decode_record_ids_json: String,
     vault_decode_output_target: String,
     vault_decode_justification: String,
@@ -495,6 +505,7 @@ impl fmt::Debug for BrowserFlowState {
             .field("vault_audit_kind", &"<redacted>")
             .field("vault_audit_actor", &"<redacted>")
             .field("vault_audit_limit", &"<redacted>")
+            .field("vault_audit_offset", &"<redacted>")
             .field("vault_decode_record_ids_json", &"<redacted>")
             .field("vault_decode_output_target", &"<redacted>")
             .field("vault_decode_justification", &"<redacted>")
@@ -619,6 +630,7 @@ impl Default for BrowserFlowState {
             vault_audit_kind: String::new(),
             vault_audit_actor: String::new(),
             vault_audit_limit: String::new(),
+            vault_audit_offset: String::new(),
             vault_decode_record_ids_json: "[]".to_string(),
             vault_decode_output_target: String::new(),
             vault_decode_justification: String::new(),
@@ -961,6 +973,7 @@ impl BrowserFlowState {
                 &self.vault_audit_kind,
                 &self.vault_audit_actor,
                 &self.vault_audit_limit,
+                &self.vault_audit_offset,
             )?)
             .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -2192,6 +2205,14 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let on_vault_offset_input = move |event| {
+        let next_value = event_target_value(&event);
+        state.update(|state| {
+            state.vault_audit_offset = next_value;
+            state.invalidate_generated_state();
+        });
+    };
+
     let on_vault_decode_record_ids_input = move |event| {
         let next_value = event_target_value(&event);
         state.update(|state| {
@@ -2370,6 +2391,10 @@ pub fn App() -> impl IntoView {
                         <label>
                             "Limit (optional)"
                             <input on:input=on_vault_limit_input prop:value=move || state.get().vault_audit_limit type="text" />
+                        </label>
+                        <label>
+                            "Offset (optional)"
+                            <input on:input=on_vault_offset_input prop:value=move || state.get().vault_audit_offset type="text" />
                         </label>
                     </div>
                 </Show>
@@ -3636,6 +3661,7 @@ mod tests {
             "decode",
             "browser",
             "25",
+            "10",
         )
         .expect("valid bounded audit payload");
 
@@ -3644,6 +3670,7 @@ mod tests {
         assert_eq!(payload["kind"], "decode");
         assert_eq!(payload["actor"], "browser");
         assert_eq!(payload["limit"], 25);
+        assert_eq!(payload["offset"], 10);
     }
 
     #[test]
@@ -3652,6 +3679,7 @@ mod tests {
             "/tmp/local-vault",
             "passphrase kept local",
             " ",
+            "",
             "",
             "",
         )
@@ -3672,6 +3700,7 @@ mod tests {
             "decode",
             "browser",
             "not-a-number",
+            "",
         )
         .expect_err("invalid limit must be rejected before localhost submission");
 
@@ -3686,6 +3715,7 @@ mod tests {
             "decode",
             "browser",
             "0",
+            "",
         )
         .expect_err("zero limit must be rejected before localhost submission");
 
