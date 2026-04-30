@@ -863,6 +863,29 @@ fn sanitized_pdf_review_queue(response: &serde_json::Value) -> serde_json::Value
     serde_json::Value::Array(queue)
 }
 
+fn sanitized_pdf_page_statuses(response: &serde_json::Value) -> serde_json::Value {
+    let statuses = response
+        .get("page_statuses")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let object = item.as_object()?;
+                    let mut sanitized = serde_json::Map::new();
+                    for key in ["page", "status", "requires_ocr", "candidate_count"] {
+                        if let Some(value) = object.get(key).and_then(pdf_review_report_primitive) {
+                            sanitized.insert(key.to_string(), value);
+                        }
+                    }
+                    Some(serde_json::Value::Object(sanitized))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::Value::Array(statuses)
+}
+
 fn build_pdf_review_report_download(
     response_json: &str,
     imported_file_name: Option<&str>,
@@ -879,6 +902,7 @@ fn build_pdf_review_report_download(
         "mode": "pdf_review_report",
         "summary": sanitized_pdf_review_summary(&response),
         "review_queue": sanitized_pdf_review_queue(&response),
+        "page_statuses": sanitized_pdf_page_statuses(&response),
     });
 
     Ok(BrowserDownloadPayload {
@@ -3247,6 +3271,45 @@ mod tests {
         assert!(!serialized.contains("SHOULD_NOT_LEAK"));
         assert!(!serialized.contains("pdf_bytes_base64"));
         assert!(!serialized.contains("\"text\""));
+    }
+
+    #[test]
+    fn pdf_review_report_download_includes_sanitized_page_statuses() {
+        let response = serde_json::json!({
+            "summary": {"total_pages": 2},
+            "page_statuses": [
+                {
+                    "page": 1,
+                    "status": "text_layer_reviewed",
+                    "requires_ocr": false,
+                    "candidate_count": 2,
+                    "raw_text": "Patient Alice",
+                    "bbox": [1, 2, 3, 4]
+                },
+                {
+                    "page": 2,
+                    "status": "ocr_required",
+                    "requires_ocr": true,
+                    "candidate_count": 0,
+                    "nested": {"patient": "Alice"}
+                },
+                "skip-me"
+            ]
+        });
+
+        let download =
+            build_pdf_review_report_download(&response.to_string(), Some("scan.pdf")).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+
+        assert_eq!(report["page_statuses"][0]["page"], 1);
+        assert_eq!(report["page_statuses"][0]["status"], "text_layer_reviewed");
+        assert_eq!(report["page_statuses"][0]["requires_ocr"], false);
+        assert_eq!(report["page_statuses"][0]["candidate_count"], 2);
+        assert!(report["page_statuses"][0].get("raw_text").is_none());
+        assert!(report["page_statuses"][0].get("bbox").is_none());
+        assert_eq!(report["page_statuses"][1]["page"], 2);
+        assert!(report["page_statuses"][1].get("nested").is_none());
+        assert_eq!(report["page_statuses"].as_array().unwrap().len(), 2);
     }
 
     #[test]
