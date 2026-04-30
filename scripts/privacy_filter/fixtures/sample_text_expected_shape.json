@@ -1,0 +1,51 @@
+{
+  "summary": {
+    "input_char_count": 174,
+    "detected_span_count": 5,
+    "category_counts": {
+      "DATE": 1,
+      "EMAIL": 1,
+      "MRN": 1,
+      "NAME": 1,
+      "PHONE": 1
+    }
+  },
+  "masked_text": "Patient: [NAME]\nDOB: [DATE]\nMRN: [MRN]\nPhone: [PHONE]\nEmail: [EMAIL]\nVisit note: Synthetic fixture for privacy filter CLI spike only.\n",
+  "spans": [
+    {
+      "label": "NAME",
+      "start": 9,
+      "end": 21,
+      "preview": "[NAME]"
+    },
+    {
+      "label": "DATE",
+      "start": 27,
+      "end": 37,
+      "preview": "[DATE]"
+    },
+    {
+      "label": "MRN",
+      "start": 43,
+      "end": 55,
+      "preview": "[MRN]"
+    },
+    {
+      "label": "PHONE",
+      "start": 63,
+      "end": 75,
+      "preview": "[PHONE]"
+    },
+    {
+      "label": "EMAIL",
+      "start": 83,
+      "end": 108,
+      "preview": "[EMAIL]"
+    }
+  ],
+  "metadata": {
+    "engine": "fallback_synthetic_patterns",
+    "network_api_called": false,
+    "preview_policy": "redacted_bracket_labels_only"
+  }
+}

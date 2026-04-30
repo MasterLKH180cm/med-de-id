@@ -1,0 +1,6 @@
+Patient: Jane Example
+DOB: 1978-04-12
+MRN: MRN-00012345
+Phone: 555-010-2345
+Email: jane.example@example.test
+Visit note: Synthetic fixture for privacy filter CLI spike only.
