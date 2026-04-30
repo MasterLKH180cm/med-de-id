@@ -380,32 +380,33 @@ async fn privacy_filter_summary(
 
 fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryResponse> {
     let report = report.as_object()?;
-    let input_char_count = required_u64(report, "input_char_count")?;
-    let detected_span_count = required_u64(report, "detected_span_count")?;
-    let category_counts = report
-        .get("category_counts")?
-        .as_object()?
-        .iter()
-        .map(|(category, count)| {
-            Some((
-                safe_category_identifier(category)?.to_owned(),
-                count.as_u64()?,
-            ))
-        })
-        .collect::<Option<BTreeMap<String, u64>>>()?;
-    let non_goals = report
-        .get("non_goals")?
-        .as_array()?
-        .iter()
-        .map(|non_goal| safe_non_goal(non_goal.as_str()?).map(ToOwned::to_owned))
-        .collect::<Option<Vec<_>>>()?;
+    if let Some(artifact) = report.get("artifact") {
+        let artifact = artifact.as_str()?;
+        if artifact != "privacy_filter_report" {
+            return None;
+        }
+    }
+
+    let summary = report
+        .get("summary")
+        .and_then(Value::as_object)
+        .unwrap_or(report);
+    let metadata = report
+        .get("metadata")
+        .and_then(Value::as_object)
+        .unwrap_or(report);
+
+    let input_char_count = required_u64(summary, "input_char_count")?;
+    let detected_span_count = required_u64(summary, "detected_span_count")?;
+    let category_counts = extract_category_counts(summary)?;
+    let non_goals = extract_non_goals(report)?;
 
     Some(PrivacyFilterSummaryResponse {
         artifact: "privacy_filter_summary",
-        mode: safe_mode(report.get("mode")?.as_str()?)?.to_owned(),
-        engine: safe_identifier(report.get("engine")?.as_str()?)?.to_owned(),
-        network_api_called: report.get("network_api_called")?.as_bool()?,
-        preview_policy: safe_preview_policy(report.get("preview_policy")?.as_str()?)?.to_owned(),
+        mode: safe_mode(report.get("mode").and_then(Value::as_str).unwrap_or("text"))?.to_owned(),
+        engine: safe_identifier(metadata.get("engine")?.as_str()?)?.to_owned(),
+        network_api_called: metadata.get("network_api_called")?.as_bool()?,
+        preview_policy: safe_preview_policy(metadata.get("preview_policy")?.as_str()?)?.to_owned(),
         input_char_count,
         detected_span_count,
         category_counts,
@@ -417,6 +418,39 @@ fn required_u64(report: &Map<String, Value>, field: &str) -> Option<u64> {
     report.get(field)?.as_u64()
 }
 
+fn extract_category_counts(report: &Map<String, Value>) -> Option<BTreeMap<String, u64>> {
+    report
+        .get("category_counts")?
+        .as_object()?
+        .iter()
+        .map(|(category, count)| {
+            Some((
+                safe_category_identifier(category)?.to_owned(),
+                count.as_u64()?,
+            ))
+        })
+        .collect::<Option<BTreeMap<String, u64>>>()
+}
+
+fn extract_non_goals(report: &Map<String, Value>) -> Option<Vec<String>> {
+    match report.get("non_goals") {
+        Some(non_goals) => non_goals
+            .as_array()?
+            .iter()
+            .map(|non_goal| safe_non_goal(non_goal.as_str()?).map(ToOwned::to_owned))
+            .collect::<Option<Vec<_>>>(),
+        None => Some(default_privacy_filter_non_goals()),
+    }
+}
+
+fn default_privacy_filter_non_goals() -> Vec<String> {
+    vec![
+        "No OCR".to_owned(),
+        "No image pixel redaction".to_owned(),
+        "No PDF rewrite/export".to_owned(),
+    ]
+}
+
 fn safe_mode(mode: &str) -> Option<&str> {
     matches!(mode, "text" | "mock" | "summary_only").then_some(mode)
 }
@@ -424,7 +458,7 @@ fn safe_mode(mode: &str) -> Option<&str> {
 fn safe_preview_policy(preview_policy: &str) -> Option<&str> {
     matches!(
         preview_policy,
-        "redacted_preview_only" | "masked-only" | "masked_only"
+        "redacted_preview_only" | "masked-only" | "masked_only" | "redacted_placeholders_only"
     )
     .then_some(preview_policy)
 }

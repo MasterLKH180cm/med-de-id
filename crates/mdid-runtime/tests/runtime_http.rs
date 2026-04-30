@@ -130,6 +130,72 @@ async fn privacy_filter_summary_endpoint_returns_phi_safe_summary() {
 }
 
 #[tokio::test]
+async fn privacy_filter_summary_endpoint_accepts_nested_runner_report_without_phi_leakage() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1}
+            },
+            "masked_text": "Patient [NAME] has [MRN].",
+            "spans": [
+                {"label": "NAME", "start": 8, "end": 13, "preview": "<redacted>", "text": "Alice"},
+                {"label": "MRN", "start": 18, "end": 25, "preview": "<redacted>", "value": "MRN-001"}
+            ],
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_placeholders_only"
+            }
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("masked_text"), "{body_text}");
+    assert!(!body_text.contains("spans"), "{body_text}");
+    assert!(!body_text.contains("Alice"), "{body_text}");
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["artifact"], "privacy_filter_summary");
+    assert_eq!(json["mode"], "text");
+    assert_eq!(json["engine"], "fallback_synthetic_patterns");
+    assert_eq!(json["network_api_called"], false);
+    assert_eq!(json["preview_policy"], "redacted_placeholders_only");
+    assert_eq!(json["input_char_count"], 39);
+    assert_eq!(json["detected_span_count"], 2);
+    assert_eq!(json["category_counts"]["NAME"], 1);
+    assert_eq!(json["category_counts"]["MRN"], 1);
+    assert_eq!(
+        json["non_goals"],
+        json!([
+            "No OCR",
+            "No image pixel redaction",
+            "No PDF rewrite/export"
+        ])
+    );
+    assert!(json.get("masked_text").is_none());
+    assert!(json.get("spans").is_none());
+}
+
+#[tokio::test]
 async fn privacy_filter_summary_endpoint_rejects_non_object_report() {
     let app = build_router(RuntimeState::default());
     let request = json!({"report": "not an object"});
