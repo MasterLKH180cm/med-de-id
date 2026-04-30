@@ -869,9 +869,15 @@ impl BrowserFlowState {
             self.vault_audit_offset.trim().parse::<u64>().ok()?
         };
 
-        let summary: serde_json::Value = serde_json::from_str(&self.summary)
-            .or_else(|_| serde_json::from_str(&self.result_output))
-            .ok()?;
+        let summary = [&self.summary, &self.result_output]
+            .into_iter()
+            .filter_map(|candidate| serde_json::from_str::<serde_json::Value>(candidate).ok())
+            .find(|candidate| {
+                candidate
+                    .get("event_count")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some()
+            })?;
         let total_event_count = summary.get("event_count")?.as_u64()?;
         let returned_event_count = summary
             .get("returned_event_count")
@@ -2685,6 +2691,25 @@ mod tests {
         .unwrap();
         state.result_output = response.rewritten_output;
         state.summary = response.summary;
+
+        assert_eq!(
+            state.vault_audit_pagination_status(),
+            Some(
+                "Showing audit events 101-150 of 150. More events may be available from offset 150."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn vault_audit_pagination_status_uses_runtime_output_when_summary_json_lacks_counts() {
+        let mut state = BrowserAppState::default();
+        state.input_mode = InputMode::VaultAuditEvents;
+        state.vault_audit_offset = "100".to_string();
+        state.summary = r#"{"status":"ok"}"#.to_string();
+        state.result_output =
+            r#"{"event_count":150,"returned_event_count":50,"next_offset":150,"events":[]}"#
+                .to_string();
 
         assert_eq!(
             state.vault_audit_pagination_status(),
