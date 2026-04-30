@@ -835,6 +835,30 @@ impl std::fmt::Display for DesktopDecodedValuesExportError {
 
 impl std::error::Error for DesktopDecodedValuesExportError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopAuditEventsExportError {
+    NotVaultAudit,
+    MissingAuditEvents,
+    Io(String),
+    InvalidJson(String),
+}
+
+impl std::fmt::Display for DesktopAuditEventsExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVaultAudit => write!(
+                f,
+                "audit events export is only available for successful vault audit responses"
+            ),
+            Self::MissingAuditEvents => write!(f, "audit events are unavailable"),
+            Self::Io(_) => write!(f, "audit events JSON could not be written"),
+            Self::InvalidJson(_) => write!(f, "audit events JSON could not be prepared"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopAuditEventsExportError {}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopVaultResponseReportDownload {
     pub file_name: String,
@@ -1109,6 +1133,45 @@ impl DesktopVaultResponseState {
         }))
     }
 
+    pub fn audit_events_export_json(
+        &self,
+    ) -> Result<serde_json::Value, DesktopAuditEventsExportError> {
+        if self.last_success_mode != Some(DesktopVaultResponseMode::VaultAudit) {
+            return Err(DesktopAuditEventsExportError::NotVaultAudit);
+        }
+
+        let response = self
+            .last_success_response
+            .as_ref()
+            .ok_or(DesktopAuditEventsExportError::NotVaultAudit)?;
+        let events = response
+            .get("events")
+            .filter(|events| events.is_array())
+            .ok_or(DesktopAuditEventsExportError::MissingAuditEvents)?;
+        let returned_event_count = response
+            .get("returned_event_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| events.as_array().map_or(0, |events| events.len() as u64));
+        let event_count = response
+            .get("event_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(returned_event_count);
+
+        let mut export = serde_json::json!({
+            "mode": "vault_audit_events",
+            "event_count": event_count,
+            "returned_event_count": returned_event_count,
+            "events": events,
+        });
+        if let Some(next_offset) = response
+            .get("next_offset")
+            .and_then(serde_json::Value::as_u64)
+        {
+            export["next_offset"] = serde_json::Value::from(next_offset);
+        }
+        Ok(export)
+    }
+
     pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
         serde_json::json!({
             "mode": mode.safe_export_label(),
@@ -1141,6 +1204,18 @@ pub fn write_desktop_decode_values_json(
     let path = path.as_ref();
     std::fs::write(path, decode_values_json)
         .map_err(|error| DesktopDecodedValuesExportError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
+pub fn write_desktop_audit_events_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopAuditEventsExportError> {
+    let audit_events_json = serde_json::to_string_pretty(&state.audit_events_export_json()?)
+        .map_err(|error| DesktopAuditEventsExportError::InvalidJson(error.to_string()))?;
+    let path = path.as_ref();
+    std::fs::write(path, audit_events_json)
+        .map_err(|error| DesktopAuditEventsExportError::Io(error.to_string()))?;
     Ok(path.to_path_buf())
 }
 
@@ -3430,6 +3505,75 @@ mod tests {
             .expect_err("missing values");
 
         assert_eq!(error.to_string(), "decoded values are unavailable");
+    }
+
+    #[test]
+    fn audit_events_export_json_contains_events_and_metadata_without_request_secrets() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 200,
+                "returned_event_count": 2,
+                "next_offset": 2,
+                "events": [
+                    {"event_id": "evt-1", "kind": "decode", "record_id": "record-1"},
+                    {"event_id": "evt-2", "kind": "encode", "record_id": "record-2"}
+                ],
+                "vault_path": "/secret/Alice.vault",
+                "vault_passphrase": "do-not-save",
+                "passphrase": "also-secret",
+                "request": {"vault_path": "/secret/request.vault"}
+            }),
+        );
+
+        let json = state
+            .audit_events_export_json()
+            .expect("audit events export");
+        let serialized = serde_json::to_string(&json).expect("serialize export");
+
+        assert_eq!(json["mode"], "vault_audit_events");
+        assert_eq!(json["event_count"], 200);
+        assert_eq!(json["returned_event_count"], 2);
+        assert_eq!(json["next_offset"], 2);
+        assert_eq!(json["events"][0]["event_id"], "evt-1");
+        assert_eq!(json["events"][1]["kind"], "encode");
+        assert!(!serialized.contains("passphrase"));
+        assert!(!serialized.contains("vault_path"));
+        assert!(!serialized.contains("request"));
+        assert!(!serialized.contains("/secret"));
+        assert!(!serialized.contains("do-not-save"));
+    }
+
+    #[test]
+    fn write_desktop_audit_events_json_persists_successful_audit_export() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 1,
+                "returned_event_count": 1,
+                "events": [{"event_id": "evt-1", "kind": "decode"}],
+                "vault_path": "/secret/Alice.vault"
+            }),
+        );
+        let path = std::env::temp_dir().join(format!(
+            "mdid-desktop-audit-events-export-{}-persisted.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let returned_path = write_desktop_audit_events_json(&state, &path).expect("write export");
+        let persisted = std::fs::read_to_string(&path).expect("read persisted export");
+        let persisted_json: serde_json::Value =
+            serde_json::from_str(&persisted).expect("persisted JSON parses");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(returned_path, path);
+        assert_eq!(persisted_json["mode"], "vault_audit_events");
+        assert_eq!(persisted_json["event_count"], 1);
+        assert_eq!(persisted_json["events"][0]["event_id"], "evt-1");
+        assert!(!persisted.contains("/secret"));
     }
 
     #[test]
