@@ -12,6 +12,8 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = REPO_ROOT / 'scripts' / 'privacy_filter' / 'run_privacy_filter.py'
+CORPUS_RUNNER = REPO_ROOT / 'scripts' / 'privacy_filter' / 'run_synthetic_corpus.py'
+CORPUS_FIXTURE_DIR = REPO_ROOT / 'scripts' / 'privacy_filter' / 'fixtures' / 'corpus'
 
 
 def load_runner_module():
@@ -80,6 +82,58 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
         self.assertNotIn(phi, argv)
         self.assertEqual(argv, ['/tmp/opf', '--format', 'json'])
         self.assertEqual(popen.call_args.kwargs['stdin'], module.subprocess.PIPE)
+
+
+class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):
+    def test_synthetic_corpus_report_is_aggregate_and_phi_safe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / 'corpus-report.json'
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(CORPUS_RUNNER),
+                    '--fixture-dir',
+                    str(CORPUS_FIXTURE_DIR),
+                    '--output',
+                    str(output_path),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, '')
+            report = json.loads(output_path.read_text(encoding='utf-8'))
+
+        self.assertEqual(report['engine'], 'fallback_synthetic_patterns')
+        self.assertEqual(report['scope'], 'text_only_synthetic_corpus')
+        self.assertEqual(report['fixture_count'], 2)
+        for category in ('NAME', 'MRN', 'EMAIL', 'PHONE'):
+            self.assertGreaterEqual(report['category_counts'].get(category, 0), 1)
+
+        raw_report = json.dumps(report, sort_keys=True)
+        for phi in ('Jane Example', 'MRN-12345', 'jane@example.test', '555-111-2222'):
+            self.assertNotIn(phi, raw_report)
+
+        self.assertEqual(
+            sorted(report['non_goals']),
+            sorted([
+                'ocr',
+                'visual_redaction',
+                'image_pixel_redaction',
+                'final_pdf_rewrite_export',
+                'browser_ui',
+                'desktop_ui',
+            ]),
+        )
+        self.assertEqual([entry['fixture'] for entry in report['fixtures']], ['clinic_note.txt', 'contact_card.txt'])
+        for entry in report['fixtures']:
+            self.assertEqual(set(entry.keys()), {'fixture', 'detected_span_count', 'category_counts'})
+            self.assertIsInstance(entry['detected_span_count'], int)
+            self.assertIsInstance(entry['category_counts'], dict)
 
 
 if __name__ == '__main__':

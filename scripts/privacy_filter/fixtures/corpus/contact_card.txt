@@ -1,0 +1,1 @@
+Patient John Sample contact card: john.sample@example.test and 555-333-4444. MRN 67890.
