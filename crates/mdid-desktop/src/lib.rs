@@ -1632,7 +1632,7 @@ fn is_allowed_review_report_action(text: &str) -> bool {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopWorkflowOutputDownload {
-    pub file_name: &'static str,
+    pub file_name: String,
     pub bytes: Vec<u8>,
 }
 
@@ -1707,26 +1707,47 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::CsvText => {
                 let csv = response.get("csv")?.as_str()?;
                 Some(DesktopWorkflowOutputDownload {
-                    file_name: "desktop-deidentified.csv",
+                    file_name: "desktop-deidentified.csv".to_string(),
                     bytes: csv.as_bytes().to_vec(),
                 })
             }
             DesktopWorkflowMode::XlsxBase64 => {
                 let encoded = response.get("rewritten_workbook_base64")?.as_str()?;
                 Some(DesktopWorkflowOutputDownload {
-                    file_name: "desktop-deidentified.xlsx",
+                    file_name: "desktop-deidentified.xlsx".to_string(),
                     bytes: decode_base64(encoded)?,
                 })
             }
             DesktopWorkflowMode::DicomBase64 => {
                 let encoded = response.get("rewritten_dicom_bytes_base64")?.as_str()?;
                 Some(DesktopWorkflowOutputDownload {
-                    file_name: "desktop-deidentified.dcm",
+                    file_name: "desktop-deidentified.dcm".to_string(),
                     bytes: decode_base64(encoded)?,
                 })
             }
             DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => None,
         }
+    }
+
+    pub fn workflow_output_download_for_source(
+        &self,
+        mode: DesktopWorkflowMode,
+        source_name: Option<&str>,
+    ) -> Option<DesktopWorkflowOutputDownload> {
+        let mut download = self.workflow_output_download(mode)?;
+        let stem = source_name
+            .filter(|name| name.trim() != "local-workstation-review.pdf")
+            .and_then(safe_source_file_stem)?;
+        let extension = match mode {
+            DesktopWorkflowMode::CsvText => "csv",
+            DesktopWorkflowMode::XlsxBase64 => "xlsx",
+            DesktopWorkflowMode::DicomBase64 => "dcm",
+            DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => {
+                return None;
+            }
+        };
+        download.file_name = format!("{stem}-deidentified.{extension}");
+        Some(download)
     }
 
     pub fn review_report_download(
@@ -4196,7 +4217,7 @@ mod tests {
             .path()
             .join("patient-jane-doe-mrn-12345-deidentified.csv");
         let download = DesktopWorkflowOutputDownload {
-            file_name: "desktop-deidentified.csv",
+            file_name: "desktop-deidentified.csv".to_string(),
             bytes: b"patient_name\n<NAME-1>\n".to_vec(),
         };
 
@@ -4214,7 +4235,7 @@ mod tests {
             .join("missing-parent-jane-doe-mrn-12345")
             .join("output.csv");
         let download = DesktopWorkflowOutputDownload {
-            file_name: "desktop-deidentified.csv",
+            file_name: "desktop-deidentified.csv".to_string(),
             bytes: b"patient_name\n<NAME-1>\n".to_vec(),
         };
 

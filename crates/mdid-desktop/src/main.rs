@@ -283,7 +283,8 @@ impl DesktopApp {
 
         let next_path = self
             .response_state
-            .workflow_output_download(mode)
+            .workflow_output_download_for_source(mode, Some(self.request_state.source_name.trim()))
+            .or_else(|| self.response_state.workflow_output_download(mode))
             .map(|download| download.file_name.to_string())
             .unwrap_or_else(|| DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH.to_string());
         let next_generated_path =
@@ -775,6 +776,31 @@ mod tests {
         assert_eq!(
             app.generated_workflow_output_save_path.as_deref(),
             Some("desktop-deidentified.csv")
+        );
+    }
+
+    #[test]
+    fn workflow_output_save_path_uses_import_source_stem_after_dicom_success() {
+        let mut app = DesktopApp::default();
+        app.request_state.mode = DesktopWorkflowMode::DicomBase64;
+        app.request_state.source_name = "C:\\scanner exports\\Patient One Scan.dcm".to_string();
+        app.response_state.apply_success_json(
+            DesktopWorkflowMode::DicomBase64,
+            serde_json::json!({
+                "rewritten_dicom_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"dicom"),
+                "summary": {}
+            }),
+        );
+
+        app.refresh_workflow_output_save_path(DesktopWorkflowMode::DicomBase64);
+
+        assert_eq!(
+            app.workflow_output_save_path,
+            "Patient-One-Scan-deidentified.dcm"
+        );
+        assert_eq!(
+            app.generated_workflow_output_save_path.as_deref(),
+            Some("Patient-One-Scan-deidentified.dcm")
         );
     }
 
