@@ -503,11 +503,16 @@ fn parse_portable_record_ids_json(
     if record_ids.is_empty() {
         return Err(DesktopPortableValidationError::EmptyRecordIds);
     }
+    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
     for record_id in &record_ids {
         if record_id.trim().is_empty() {
             return Err(error("record id must not be blank".to_string()));
         }
-        uuid::Uuid::parse_str(record_id).map_err(|parse_error| error(parse_error.to_string()))?;
+        let record_id = uuid::Uuid::parse_str(record_id)
+            .map_err(|parse_error| error(parse_error.to_string()))?;
+        if !seen_record_ids.insert(record_id) {
+            return Err(error("duplicate record id is not allowed".to_string()));
+        }
     }
     Ok(serde_json::json!(record_ids))
 }
@@ -624,6 +629,15 @@ impl DesktopVaultRequestState {
                     })?;
                 if record_ids.is_empty() {
                     return Err(DesktopVaultValidationError::EmptyRecordIds);
+                }
+                let mut seen_record_ids =
+                    std::collections::HashSet::with_capacity(record_ids.len());
+                for record_id in &record_ids {
+                    if !seen_record_ids.insert(*record_id) {
+                        return Err(DesktopVaultValidationError::InvalidRecordIdsJson(
+                            "duplicate record id is not allowed".to_string(),
+                        ));
+                    }
                 }
 
                 serde_json::json!({
@@ -2534,6 +2548,31 @@ mod tests {
     }
 
     #[test]
+    fn desktop_portable_export_request_rejects_duplicate_record_ids() {
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::VaultExport,
+            vault_path: "/safe/local.vault".to_string(),
+            vault_passphrase: "vault-secret".to_string(),
+            record_ids_json: "[\"550e8400-e29b-41d4-a716-446655440000\",\"550e8400-e29b-41d4-a716-446655440000\"]".to_string(),
+            export_passphrase: "portable-secret".to_string(),
+            export_context: "handoff to privacy office".to_string(),
+            artifact_json: String::new(),
+            portable_passphrase: String::new(),
+            destination_vault_path: String::new(),
+            destination_vault_passphrase: String::new(),
+            import_context: String::new(),
+            requested_by: "desktop".to_string(),
+        };
+
+        let err = state
+            .try_build_request()
+            .expect_err("desktop must reject duplicate export record ids");
+        let message = format!("{err:?}");
+        assert!(message.contains("duplicate record id"));
+        assert!(!message.contains("550e8400"));
+    }
+
+    #[test]
     fn portable_inspect_request_builds_runtime_envelope() {
         let state = DesktopPortableRequestState {
             mode: DesktopPortableMode::InspectArtifact,
@@ -3085,6 +3124,25 @@ mod tests {
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("super secret passphrase"));
         assert_eq!(request.body["vault_passphrase"], "super secret passphrase");
+    }
+
+    #[test]
+    fn desktop_vault_decode_request_rejects_duplicate_record_ids() {
+        let mut state = DesktopVaultRequestState::default();
+        state.vault_path = "C:/vaults/local.mdid".to_string();
+        state.vault_passphrase = "correct horse battery staple".to_string();
+        state.record_ids_json =
+            r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#
+                .to_string();
+        state.output_target = "review-workbench".to_string();
+        state.justification = "case review".to_string();
+
+        let err = state
+            .try_build_request()
+            .expect_err("desktop must reject duplicate decode record ids");
+        let message = format!("{err:?}");
+        assert!(message.contains("duplicate record id"));
+        assert!(!message.contains("550e8400"));
     }
 
     #[test]
