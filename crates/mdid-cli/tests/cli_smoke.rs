@@ -933,6 +933,38 @@ fn ocr_handoff_rejects_invalid_builder_contract_and_removes_report() {
 }
 
 #[test]
+fn ocr_handoff_rejects_malformed_builder_report_and_removes_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Doe')\n").unwrap();
+    fs::write(&builder_path, "import pathlib, sys\npathlib.Path(sys.argv[sys.argv.index('--output')+1]).write_text('not json')\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "OCR handoff report is not valid JSON",
+        ));
+    assert!(!report_path.exists());
+}
+
+#[test]
 fn ocr_handoff_rejects_oversized_ocr_stdout_without_writing_report() {
     let dir = tempdir().unwrap();
     let image_path = dir.path().join("image.png");

@@ -844,8 +844,10 @@ fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
 
     let report_text = fs::read_to_string(&args.report_path)
         .map_err(|err| format!("failed to read OCR handoff report: {err}"))?;
-    let value: Value = serde_json::from_str(&report_text)
-        .map_err(|_| "OCR handoff report is not valid JSON".to_string())?;
+    let value: Value = serde_json::from_str(&report_text).map_err(|_| {
+        let _ = fs::remove_file(&args.report_path);
+        "OCR handoff report is not valid JSON".to_string()
+    })?;
     if let Err(error) = validate_ocr_handoff(&value) {
         let _ = fs::remove_file(&args.report_path);
         return Err(error);
