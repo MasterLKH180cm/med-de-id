@@ -55,4 +55,16 @@ python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-t
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
 ```
 
+### OCR-to-Privacy-Filter corpus wrapper evidence
+```bash
+cargo run -p mdid-cli -- ocr-to-privacy-filter-corpus \
+  --fixture-dir scripts/ocr_eval/fixtures/corpus \
+  --ocr-runner-path scripts/ocr_eval/run_ocr_handoff_corpus.py \
+  --privacy-runner-path scripts/privacy_filter/run_privacy_filter.py \
+  --bridge-runner-path scripts/ocr_eval/run_ocr_to_privacy_filter_corpus.py \
+  --report-path /tmp/ocr-to-privacy-filter-corpus.json
+```
+
+The CLI wrapper delegates to the local bridge runner, validates its PHI-safe aggregate output, and writes the wrapper contract with `artifact: ocr_to_privacy_filter_corpus`, `ocr_scope: printed_text_line_extraction_only`, `privacy_scope: text_only_pii_detection`, `total_detected_span_count`, and `network_api_called: false`. The stdout summary redacts the report path and includes only aggregate fields. This is CLI/runtime evidence only; Browser/Web and Desktop remain unchanged at 99% and do not run OCR or Privacy Filter from this wrapper.
+
 The Privacy Filter remains a downstream **text-only** PII detection/masking check. This OCR spike and CLI wrapper do not perform visual redaction, image/pixel redaction, final PDF rewrite/export, handwriting recognition, page detection/segmentation, browser UI, desktop UI, or a complete OCR pipeline.
