@@ -892,17 +892,14 @@ pub fn build_desktop_portable_response_report_save(
     let contents = serde_json::to_string_pretty(&report)
         .map_err(|_| DesktopPortableReportSaveError::InvalidResponseJson)?;
     let operation = portable_report_operation(mode);
-    let stem = imported_file_name
+    let suggested_file_name = imported_file_name
         .and_then(portable_report_source_stem)
         .filter(|stem| !stem.is_empty())
-        .unwrap_or_else(|| "desktop".to_string());
+        .map(|stem| format!("{stem}-portable-artifact-{operation}-report.json"))
+        .unwrap_or_else(|| "desktop-portable-artifact-report.json".to_string());
 
     Ok(DesktopPortableReportSavePayload {
-        suggested_file_name: if stem == "desktop" {
-            "desktop-portable-artifact-report.json".to_string()
-        } else {
-            format!("{stem}-portable-artifact-{operation}-report.json")
-        },
+        suggested_file_name,
         mime_type: "application/json;charset=utf-8",
         contents,
         status: portable_report_status(mode).to_string(),
@@ -2468,7 +2465,22 @@ mod tests {
     }
 
     #[test]
-    fn desktop_portable_response_report_for_source_uses_safe_imported_artifact_filename() {
+    fn desktop_portable_response_report_save_preserves_desktop_source_stem() {
+        let payload = build_desktop_portable_response_report_save(
+            DesktopPortableMode::InspectArtifact,
+            Some("desktop.mdid-portable.json"),
+            r#"{"artifact":{"records":[{"id":"phi-1"}]}}"#,
+        )
+        .expect("portable inspect response should produce report save payload");
+
+        assert_eq!(
+            payload.suggested_file_name,
+            "desktop-portable-artifact-inspect-report.json"
+        );
+    }
+
+    #[test]
+    fn desktop_state_defaults_are_phi_safe() {
         let inspect_response = serde_json::json!({
             "record_count": 2,
             "records": [{
