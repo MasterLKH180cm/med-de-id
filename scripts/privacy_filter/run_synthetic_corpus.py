@@ -56,7 +56,11 @@ def merge_counts(total: dict, counts: dict) -> None:
 
 
 def build_report(fixture_dir: Path, python_command: str, runner_path: Path) -> dict:
+    if not fixture_dir.is_dir():
+        raise ValueError('fixture directory is not a directory')
     fixtures = sorted(fixture_dir.glob('*.txt'))
+    if not fixtures:
+        raise ValueError('no .txt fixtures found')
     category_counts = {}
     fixture_reports = []
     engine = None
@@ -92,10 +96,15 @@ def main():
     fixture_dir = Path(args.fixture_dir)
     runner_path = Path(args.runner_path)
     output_path = Path(args.output)
-    report = build_report(fixture_dir, args.python_command, runner_path)
+    try:
+        report = build_report(fixture_dir, args.python_command, runner_path)
+    except ValueError as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

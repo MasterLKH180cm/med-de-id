@@ -85,6 +85,59 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
 
 
 class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):
+    def test_missing_fixture_dir_fails_without_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_path = tmp_path / 'corpus-report.json'
+            missing_dir = tmp_path / 'missing-fixtures'
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(CORPUS_RUNNER),
+                    '--fixture-dir',
+                    str(missing_dir),
+                    '--output',
+                    str(output_path),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertIn('fixture directory is not a directory', result.stderr)
+            self.assertFalse(output_path.exists())
+
+    def test_empty_fixture_dir_fails_without_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fixture_dir = tmp_path / 'empty-fixtures'
+            fixture_dir.mkdir()
+            output_path = tmp_path / 'corpus-report.json'
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(CORPUS_RUNNER),
+                    '--fixture-dir',
+                    str(fixture_dir),
+                    '--output',
+                    str(output_path),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertIn('no .txt fixtures found', result.stderr)
+            self.assertFalse(output_path.exists())
+
     def test_synthetic_corpus_report_is_aggregate_and_phi_safe(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / 'corpus-report.json'
@@ -115,7 +168,16 @@ class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):
             self.assertGreaterEqual(report['category_counts'].get(category, 0), 1)
 
         raw_report = json.dumps(report, sort_keys=True)
-        for phi in ('Jane Example', 'MRN-12345', 'jane@example.test', '555-111-2222'):
+        for phi in (
+            'Jane Example',
+            'MRN-12345',
+            'jane@example.test',
+            '555-111-2222',
+            'John Sample',
+            'john.sample@example.test',
+            '555-333-4444',
+            'MRN 67890',
+        ):
             self.assertNotIn(phi, raw_report)
 
         self.assertEqual(
