@@ -175,6 +175,34 @@ fn ocr_handoff_corpus_removes_stale_report_when_runner_fails() {
 }
 
 #[test]
+fn ocr_handoff_corpus_removes_stale_report_when_runner_path_missing() {
+    let dir = tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    fs::create_dir(&fixture_dir).unwrap();
+    fs::write(fixture_dir.join("one.txt"), "synthetic printed line").unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+    fs::write(&report_path, "stale raw Jane Example").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            fixture_dir.to_str().unwrap(),
+            "--runner-path",
+            dir.path().join("missing_runner.py").to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .failure();
+
+    assert!(!report_path.exists());
+}
+
+#[test]
 fn cli_deidentify_csv_writes_rewritten_csv_and_phi_safe_summary() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("input.csv");
