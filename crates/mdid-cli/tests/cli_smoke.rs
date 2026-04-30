@@ -501,6 +501,68 @@ fn write_privacy_runner(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
 }
 
+#[test]
+fn privacy_filter_text_uses_explicit_python_command_when_provided() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    let python_command = dir.path().join("fake-python");
+    let argv_path = dir.path().join("argv.txt");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    fs::write(&runner_path, "not executed by a real python in this test\n").unwrap();
+    fs::write(
+        &python_command,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nprintf '%s\\n' '{{\"summary\":{{}},\"masked_text\":\"Patient <PERSON>\",\"spans\":[],\"metadata\":{{\"network_api_called\":false}}}}'\n",
+            argv_path.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&python_command).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&python_command, perms).unwrap();
+    }
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(&python_command)
+        .assert()
+        .success();
+
+    let argv = fs::read_to_string(argv_path).unwrap();
+    assert!(argv.contains(runner_path.to_str().unwrap()));
+    assert!(argv.contains(input_path.to_str().unwrap()));
+}
+
+#[test]
+fn privacy_filter_text_rejects_oversized_runner_stdout_without_writing_report() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let runner_path = dir.path().join("privacy_runner.py");
+    let report_path = dir.path().join("privacy-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+    write_privacy_runner(&runner_path, "print('x' * (1024 * 1024 + 1))\n");
+
+    assert_privacy_filter_rejects(
+        &input_path,
+        &runner_path,
+        &report_path,
+        "runner output exceeded limit",
+    );
+}
+
 fn assert_privacy_filter_rejects(
     input_path: &Path,
     runner_path: &Path,
@@ -737,6 +799,7 @@ fn cli_usage_stays_deidentification_scoped() {
             "local de-identification automation",
         ))
         .stderr(predicate::str::contains("review-media"))
+        .stderr(predicate::str::contains("privacy-filter-text"))
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());
