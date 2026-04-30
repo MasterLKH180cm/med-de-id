@@ -909,6 +909,7 @@ pub fn build_desktop_pdf_review_report_save(
         "mode": "pdf_review_report",
         "summary": sanitize_desktop_pdf_review_report_summary(object.get("summary")),
         "review_queue": sanitize_desktop_pdf_review_report_queue(object.get("review_queue")),
+        "page_statuses": sanitize_desktop_pdf_page_statuses(object.get("page_statuses")),
     });
     let contents = serde_json::to_string_pretty(&report)
         .map_err(|_| "PDF review report could not be prepared".to_string())?;
@@ -976,6 +977,27 @@ fn sanitize_desktop_pdf_review_report_queue(
                     .filter(|value| is_json_primitive(value))
                 {
                     sanitized.insert("status".to_string(), status.clone());
+                }
+                Some(serde_json::Value::Object(sanitized))
+            })
+            .collect(),
+    )
+}
+
+fn sanitize_desktop_pdf_page_statuses(value: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(serde_json::Value::Array(items)) = value else {
+        return serde_json::json!([]);
+    };
+    serde_json::Value::Array(
+        items
+            .iter()
+            .filter_map(|item| {
+                let object = item.as_object()?;
+                let mut sanitized = serde_json::Map::new();
+                for key in ["page", "status", "requires_ocr", "candidate_count"] {
+                    if let Some(value) = object.get(key).filter(|value| is_json_primitive(value)) {
+                        sanitized.insert(key.to_string(), value.clone());
+                    }
                 }
                 Some(serde_json::Value::Object(sanitized))
             })
@@ -2751,6 +2773,45 @@ mod tests {
         assert!(!serialized.contains("SHOULD_NOT_LEAK"));
         assert!(!serialized.contains("pdf_bytes_base64"));
         assert!(!serialized.contains("\"text\""));
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_includes_sanitized_page_statuses() {
+        let response = serde_json::json!({
+            "summary": {"total_pages": 2},
+            "page_statuses": [
+                {
+                    "page": 1,
+                    "status": "text_layer_reviewed",
+                    "requires_ocr": false,
+                    "candidate_count": 3,
+                    "raw_text": "Patient Alice",
+                    "bbox": [1, 2, 3, 4]
+                },
+                {
+                    "page": 2,
+                    "status": "ocr_required",
+                    "requires_ocr": true,
+                    "candidate_count": 0,
+                    "nested": {"patient": "Alice"}
+                },
+                42
+            ]
+        });
+
+        let save =
+            build_desktop_pdf_review_report_save(&response.to_string(), Some("scan.pdf")).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["page_statuses"][0]["page"], 1);
+        assert_eq!(report["page_statuses"][0]["status"], "text_layer_reviewed");
+        assert_eq!(report["page_statuses"][0]["requires_ocr"], false);
+        assert_eq!(report["page_statuses"][0]["candidate_count"], 3);
+        assert!(report["page_statuses"][0].get("raw_text").is_none());
+        assert!(report["page_statuses"][0].get("bbox").is_none());
+        assert_eq!(report["page_statuses"][1]["page"], 2);
+        assert!(report["page_statuses"][1].get("nested").is_none());
+        assert_eq!(report["page_statuses"].as_array().unwrap().len(), 2);
     }
 
     #[test]
