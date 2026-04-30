@@ -906,9 +906,13 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let visual_review_required = status
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+                .get("requires_visual_review")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || status
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
 
             if requires_ocr {
                 requires_ocr_pages += 1;
@@ -945,9 +949,13 @@ fn sanitized_pdf_visual_redaction_blockers(response: &serde_json::Value) -> serd
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let visual_review_required = status
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+                .get("requires_visual_review")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || status
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
 
             if visual_review_required {
                 visual_review_pages += 1;
@@ -977,18 +985,27 @@ fn sanitized_pdf_visual_redaction_blockers(response: &serde_json::Value) -> serd
     })
 }
 
+fn pdf_redaction_rewrite_available(response: &serde_json::Value) -> bool {
+    response
+        .pointer("/metadata/redaction_rewrite_available")
+        .or_else(|| response.get("redaction_rewrite_available"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            response
+                .get("no_rewritten_pdf")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        })
+}
+
 fn sanitized_pdf_review_actionability(response: &serde_json::Value) -> serde_json::Value {
     let ocr_blockers = sanitized_pdf_ocr_blockers(response);
     let visual_blockers = sanitized_pdf_visual_redaction_blockers(response);
     let ocr_required_pages = ocr_blockers["requires_ocr_pages"].as_u64().unwrap_or(0);
     let visual_review_pages = visual_blockers["visual_review_pages"].as_u64().unwrap_or(0);
-    let blocked_page_count = ocr_required_pages + visual_review_pages;
-    let automatic_rewrite_ready = response
-        .pointer("/metadata/redaction_rewrite_available")
-        .or_else(|| response.get("redaction_rewrite_available"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-        && blocked_page_count == 0;
+    let blocked_page_count = visual_blockers["blocked_page_count"].as_u64().unwrap_or(0);
+    let automatic_rewrite_ready =
+        pdf_redaction_rewrite_available(response) && blocked_page_count == 0;
 
     let mut next_steps = Vec::new();
     if ocr_required_pages > 0 {
@@ -3602,6 +3619,58 @@ mod tests {
                 "PDF review metadata indicates rewrite readiness; verify output before release."
             ])
         );
+    }
+
+    #[test]
+    fn pdf_review_report_download_marks_rewrite_ready_from_top_level_no_rewritten_pdf_false() {
+        let response = serde_json::json!({
+            "ok": true,
+            "command": "pdf-review",
+            "source": {"path": "/tmp/forms/runtime-ready.pdf"},
+            "no_rewritten_pdf": false,
+            "metadata": {
+                "page_statuses": [
+                    {"page": 1, "status": "rewrite_ready", "requires_ocr": false, "requires_visual_review": false, "can_rewrite": true}
+                ]
+            }
+        });
+
+        let download =
+            build_pdf_review_report_download(&response.to_string(), Some("runtime-ready.pdf")).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], true);
+        assert_eq!(report["actionability"]["blocked_page_count"], 0);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "PDF review metadata indicates rewrite readiness; verify output before release."
+            ])
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_download_counts_distinct_pages_with_multiple_blockers_once() {
+        let response = serde_json::json!({
+            "ok": true,
+            "command": "pdf-review",
+            "source": {"path": "/tmp/forms/overlap.pdf"},
+            "metadata": {
+                "page_statuses": [
+                    {"page": 1, "status": "visual_review_required", "requires_ocr": true, "requires_visual_review": true, "can_rewrite": false}
+                ],
+                "redaction_rewrite_available": true
+            }
+        });
+
+        let download =
+            build_pdf_review_report_download(&response.to_string(), Some("overlap.pdf")).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], false);
+        assert_eq!(report["actionability"]["blocked_page_count"], 1);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 1);
+        assert_eq!(report["actionability"]["visual_review_pages"], 1);
     }
 
     #[test]
