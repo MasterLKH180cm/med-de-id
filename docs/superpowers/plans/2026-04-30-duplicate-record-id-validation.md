@@ -53,7 +53,10 @@ fn rejects_duplicate_record_ids_json_for_vault_export() {
 
 - [x] **Step 2: Run RED**
 
-Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode rejects_duplicate_record_ids_json_for_vault_export -- --exact`
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode`
+Expected: FAIL because duplicate IDs are currently accepted or helper is missing duplicate checks.
+
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_export`
 Expected: FAIL because duplicate IDs are currently accepted or helper is missing duplicate checks.
 
 - [x] **Step 3: Implement minimal CLI validation**
@@ -62,7 +65,10 @@ Inside the existing record ID parser, track a `HashSet<Uuid>` or `HashSet<String
 
 - [x] **Step 4: Run GREEN and regression tests**
 
-Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode rejects_duplicate_record_ids_json_for_vault_export -- --exact`
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_decode`
+Expected: PASS.
+
+Run: `cargo test -p mdid-cli rejects_duplicate_record_ids_json_for_vault_export`
 Expected: PASS.
 
 Run: `cargo test -p mdid-cli`
