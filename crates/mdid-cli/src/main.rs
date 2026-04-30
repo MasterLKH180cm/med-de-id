@@ -121,6 +121,7 @@ struct PrivacyFilterTextArgs {
 const PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
 const PRIVACY_FILTER_RUNNER_TIMEOUT: Duration = Duration::from_secs(2);
 const OCR_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
+const OCR_RUNNER_TIMEOUT: Duration = PRIVACY_FILTER_RUNNER_TIMEOUT;
 
 #[derive(Clone, PartialEq, Eq)]
 struct OcrHandoffArgs {
@@ -813,24 +814,14 @@ fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|err| format!("failed to run OCR runner: {err}"))?;
-    let mut stdout_bytes = Vec::new();
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to read OCR runner output".to_string())?;
-    stdout
-        .take((OCR_RUNNER_STDOUT_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut stdout_bytes)
-        .map_err(|err| format!("failed to read OCR runner output: {err}"))?;
-    if stdout_bytes.len() > OCR_RUNNER_STDOUT_MAX_BYTES {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = fs::remove_file(&args.report_path);
-        return Err("OCR runner output exceeded limit".to_string());
-    }
-    let status = child
-        .wait()
-        .map_err(|err| format!("failed to wait for OCR runner: {err}"))?;
+    let (status, stdout_bytes) =
+        wait_for_ocr_runner(&mut child, OCR_RUNNER_TIMEOUT, OCR_RUNNER_STDOUT_MAX_BYTES).map_err(
+            |err| {
+                let _ = fs::remove_file(&args.report_path);
+                let _ = fs::remove_file(&temp_path);
+                err
+            },
+        )?;
     if !status.success() {
         let _ = fs::remove_file(&args.report_path);
         let _ = fs::remove_file(&temp_path);
@@ -951,6 +942,66 @@ fn validate_ocr_handoff(value: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn wait_for_ocr_runner(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    max_stdout_bytes: usize,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to read OCR runner output".to_string())?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout_bytes = Vec::new();
+        let result = stdout
+            .take((max_stdout_bytes + 1) as u64)
+            .read_to_end(&mut stdout_bytes)
+            .map(|_| stdout_bytes)
+            .map_err(|err| format!("failed to read OCR runner output: {err}"));
+        let _ = tx.send(result);
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut captured_stdout: Option<Vec<u8>> = None;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to wait for OCR runner: {err}"))?
+        {
+            break status;
+        }
+        if captured_stdout.is_none() {
+            if let Ok(read_result) = rx.try_recv() {
+                let stdout_bytes = read_result?;
+                if stdout_bytes.len() > max_stdout_bytes {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("OCR runner output exceeded limit".to_string());
+                }
+                captured_stdout = Some(stdout_bytes);
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("OCR runner timed out".to_string());
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    let stdout_bytes = match captured_stdout {
+        Some(stdout_bytes) => stdout_bytes,
+        None => rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| "failed to read OCR runner output".to_string())??,
+    };
+    if stdout_bytes.len() > max_stdout_bytes {
+        return Err("OCR runner output exceeded limit".to_string());
+    }
+    Ok((status, stdout_bytes))
 }
 
 fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {

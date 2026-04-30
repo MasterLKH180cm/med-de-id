@@ -45,7 +45,13 @@ Use of `--mock` proves only extraction/handoff plumbing, not real model quality.
 python scripts/ocr_eval/run_small_ocr.py --mock scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png > /tmp/small-ocr-output.txt
 python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --input /tmp/small-ocr-output.txt --output /tmp/ocr-handoff.json
 python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
-python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/small-ocr-output.txt > /tmp/privacy-filter-output.json
+python - <<'PY'
+import json
+from pathlib import Path
+handoff = json.loads(Path('/tmp/ocr-handoff.json').read_text(encoding='utf-8'))
+Path('/tmp/ocr-normalized-text.txt').write_text(handoff['normalized_text'], encoding='utf-8')
+PY
+python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-text.txt > /tmp/privacy-filter-output.json
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
 ```
 

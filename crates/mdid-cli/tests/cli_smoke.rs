@@ -1316,6 +1316,53 @@ fn ocr_handoff_rejects_oversized_ocr_stdout_without_writing_report() {
 }
 
 #[test]
+fn ocr_handoff_times_out_silent_hanging_runner_and_removes_stale_report() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "import time\ntime.sleep(30)\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale report must be removed").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("OCR runner timed out"));
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn docs_ocr_privacy_chain_uses_handoff_normalized_text_file() {
+    let repo_readme = fs::read_to_string(repo_path("README.md")).unwrap();
+    let ocr_readme = fs::read_to_string(repo_path("scripts/ocr_eval/README.md")).unwrap();
+
+    for docs in [&repo_readme, &ocr_readme] {
+        assert!(docs.contains("/tmp/ocr-normalized-text.txt"));
+        assert!(docs.contains("Path('/tmp/ocr-handoff.json')"));
+        assert!(docs.contains("['normalized_text']"));
+        assert!(docs.contains("python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-text.txt"));
+    }
+    assert!(!repo_readme.contains("run_privacy_filter.py --mock /tmp/small-ocr-output.txt"));
+    assert!(!ocr_readme.contains("run_privacy_filter.py --mock /tmp/small-ocr-output.txt"));
+}
+
+#[test]
 fn cli_usage_stays_deidentification_scoped() {
     let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
