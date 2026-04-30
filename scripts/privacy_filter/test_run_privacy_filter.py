@@ -138,6 +138,45 @@ class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):
             self.assertIn('no .txt fixtures found', result.stderr)
             self.assertFalse(output_path.exists())
 
+    def test_invalid_fixture_output_fails_without_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fixture_dir = tmp_path / 'fixtures'
+            fixture_dir.mkdir()
+            (fixture_dir / 'sample.txt').write_text('synthetic fixture text\n', encoding='utf-8')
+            output_path = tmp_path / 'corpus-report.json'
+            fake_runner = tmp_path / 'fake_runner.py'
+            fake_runner.write_text(
+                'import json, sys\n'
+                'json.dump({"summary": {"detected_span_count": 0}}, sys.stdout)\n',
+                encoding='utf-8',
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(CORPUS_RUNNER),
+                    '--fixture-dir',
+                    str(fixture_dir),
+                    '--output',
+                    str(output_path),
+                    '--runner-path',
+                    str(fake_runner),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertIn('invalid privacy filter output for sample.txt', result.stderr)
+            self.assertIn('missing top-level key: masked_text', result.stderr)
+            self.assertNotIn('synthetic fixture text', result.stderr)
+            self.assertFalse(output_path.exists())
+
     def test_synthetic_corpus_report_is_aggregate_and_phi_safe(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / 'corpus-report.json'
@@ -164,6 +203,7 @@ class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):
         self.assertEqual(report['engine'], 'fallback_synthetic_patterns')
         self.assertEqual(report['scope'], 'text_only_synthetic_corpus')
         self.assertEqual(report['fixture_count'], 2)
+        self.assertEqual(report['total_detected_span_count'], sum(report['category_counts'].values()))
         for category in ('NAME', 'MRN', 'EMAIL', 'PHONE'):
             self.assertGreaterEqual(report['category_counts'].get(category, 0), 1)
 

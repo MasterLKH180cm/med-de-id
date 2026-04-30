@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from validate_privacy_filter_output import PrivacyFilterOutputValidationError, validate_privacy_filter_output
+
 
 NON_GOALS = [
     'ocr',
@@ -47,7 +49,12 @@ def run_fixture(python_command: str, runner_path: Path, fixture_path: Path) -> d
         raise RuntimeError(f'privacy filter runner failed for {fixture_path.name} with exit {result.returncode}')
     if result.stderr:
         raise RuntimeError(f'privacy filter runner wrote stderr for {fixture_path.name}')
-    return json.loads(result.stdout)
+    try:
+        payload = json.loads(result.stdout)
+        validate_privacy_filter_output(payload)
+    except (json.JSONDecodeError, PrivacyFilterOutputValidationError) as exc:
+        raise ValueError(f'invalid privacy filter output for {fixture_path.name}: {exc}') from exc
+    return payload
 
 
 def merge_counts(total: dict, counts: dict) -> None:
@@ -63,6 +70,7 @@ def build_report(fixture_dir: Path, python_command: str, runner_path: Path) -> d
         raise ValueError('no .txt fixtures found')
     category_counts = {}
     fixture_reports = []
+    total_detected_span_count = 0
     engine = None
 
     for fixture in fixtures:
@@ -72,11 +80,13 @@ def build_report(fixture_dir: Path, python_command: str, runner_path: Path) -> d
             engine = metadata.get('engine')
         summary = payload.get('summary', {}) if isinstance(payload, dict) else {}
         counts = summary.get('category_counts', {}) if isinstance(summary, dict) else {}
+        detected_span_count = int(summary.get('detected_span_count', 0))
+        total_detected_span_count += detected_span_count
         merge_counts(category_counts, counts)
         fixture_reports.append(
             {
                 'fixture': fixture.name,
-                'detected_span_count': int(summary.get('detected_span_count', 0)),
+                'detected_span_count': detected_span_count,
                 'category_counts': {str(k): int(v) for k, v in sorted(counts.items())},
             }
         )
@@ -85,6 +95,7 @@ def build_report(fixture_dir: Path, python_command: str, runner_path: Path) -> d
         'engine': engine or 'fallback_synthetic_patterns',
         'scope': 'text_only_synthetic_corpus',
         'fixture_count': len(fixtures),
+        'total_detected_span_count': total_detected_span_count,
         'category_counts': {str(k): int(v) for k, v in sorted(category_counts.items())},
         'fixtures': fixture_reports,
         'non_goals': NON_GOALS,
