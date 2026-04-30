@@ -127,11 +127,11 @@ Expected: format/diff checks PASS and commit is created.
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-04-30-desktop-workflow-output-source-filenames.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Edit `README.md` Current repository status so it says this round truth-synced after SDD-reviewed desktop workflow output source-name save suggestions. Keep CLI at 95%, Browser/web at 76%, Desktop app at 70%, and Overall at 93% unless a broader blocker is actually closed. Mention that the desktop app now uses sanitized imported source stems for rewritten CSV/XLSX/DICOM save suggestions when available and still falls back to static PHI-safe defaults.
 
-- [ ] **Step 2: Run docs/format verification**
+- [x] **Step 2: Run docs/format verification**
 
 Run:
 
@@ -143,7 +143,7 @@ git diff --check
 
 Expected: all commands PASS.
 
-- [ ] **Step 3: Commit README truth-sync**
+- [x] **Step 3: Commit README truth-sync**
 
 Run:
 
