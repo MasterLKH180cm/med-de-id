@@ -1,10 +1,11 @@
 use mdid_desktop::{
-    write_portable_artifact_json, write_safe_vault_response_json, DesktopFileImportPayload,
-    DesktopFileImportTarget, DesktopPortableFileImportPayload, DesktopPortableMode,
-    DesktopPortableRequestState, DesktopRuntimeSettings, DesktopRuntimeSubmissionMode,
-    DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError, DesktopVaultMode,
-    DesktopVaultRequestState, DesktopVaultResponseMode, DesktopVaultResponseState,
-    DesktopWorkflowMode, DesktopWorkflowRequestState, DesktopWorkflowResponseState,
+    write_desktop_decode_values_json, write_portable_artifact_json, write_safe_vault_response_json,
+    DesktopFileImportPayload, DesktopFileImportTarget, DesktopPortableFileImportPayload,
+    DesktopPortableMode, DesktopPortableRequestState, DesktopRuntimeSettings,
+    DesktopRuntimeSubmissionMode, DesktopRuntimeSubmissionSnapshot, DesktopRuntimeSubmitError,
+    DesktopVaultMode, DesktopVaultRequestState, DesktopVaultResponseMode,
+    DesktopVaultResponseState, DesktopWorkflowMode, DesktopWorkflowRequestState,
+    DesktopWorkflowResponseState,
 };
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -15,6 +16,7 @@ type RuntimeSubmissionResult = Result<serde_json::Value, DesktopRuntimeSubmitErr
 const DROPPED_FILE_READ_ERROR: &str = "file import failed: unable to read dropped file";
 const DEFAULT_WORKFLOW_OUTPUT_SAVE_PATH: &str = "desktop-deidentified-output.bin";
 const DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH: &str = "desktop-vault-response-report.json";
+const DEFAULT_DECODE_VALUES_SAVE_PATH: &str = "desktop-decoded-values.json";
 
 fn is_replaceable_workflow_output_save_path(path: &str, generated_path: Option<&str>) -> bool {
     let path = path.trim();
@@ -49,6 +51,61 @@ fn next_vault_response_report_save_path(
         .unwrap_or_else(|_| DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string());
     let next_generated_path =
         (next_path != DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH).then(|| next_path.clone());
+    (next_path, next_generated_path)
+}
+
+fn is_replaceable_decode_values_save_path(path: &str, generated_path: Option<&str>) -> bool {
+    let path = path.trim();
+    path.is_empty()
+        || path == DEFAULT_DECODE_VALUES_SAVE_PATH
+        || generated_path.is_some_and(|generated| path == generated.trim())
+}
+
+fn safe_desktop_source_stem(source_name: Option<&str>) -> Option<String> {
+    let filename = source_name?.rsplit(['/', '\\']).next().unwrap_or_default();
+    let stem = filename
+        .rsplit_once('.')
+        .map_or(filename, |(stem, _)| stem)
+        .trim();
+    let mut safe = String::new();
+    let mut last_was_dash = false;
+    for ch in stem.chars() {
+        if safe.len() >= 64 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric()
+            || ((ch == '.' || ch == '-')
+                && !safe.is_empty()
+                && !safe.ends_with(['.', '-'])
+                && !last_was_dash)
+        {
+            safe.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !safe.is_empty() {
+            safe.push('-');
+            last_was_dash = true;
+        }
+    }
+    while safe.ends_with(['-', '.']) {
+        safe.pop();
+    }
+    (!safe.is_empty()).then_some(safe)
+}
+
+fn next_decode_values_save_path(
+    current_path: &str,
+    generated_path: Option<&str>,
+    source_name: Option<&str>,
+) -> (String, Option<String>) {
+    if !is_replaceable_decode_values_save_path(current_path, generated_path) {
+        return (current_path.to_string(), None);
+    }
+
+    let next_path = safe_desktop_source_stem(source_name)
+        .map(|stem| format!("{stem}-decoded-values.json"))
+        .unwrap_or_else(|| DEFAULT_DECODE_VALUES_SAVE_PATH.to_string());
+    let next_generated_path =
+        (next_path != DEFAULT_DECODE_VALUES_SAVE_PATH).then(|| next_path.clone());
     (next_path, next_generated_path)
 }
 
@@ -121,6 +178,9 @@ struct DesktopApp {
     vault_response_report_save_path: String,
     generated_vault_response_report_save_path: Option<String>,
     vault_response_report_save_status: String,
+    decode_values_save_path: String,
+    generated_decode_values_save_path: Option<String>,
+    decode_values_save_status: String,
     portable_response_report_source_name: Option<String>,
 }
 
@@ -143,6 +203,9 @@ impl Default for DesktopApp {
             vault_response_report_save_path: DEFAULT_VAULT_RESPONSE_REPORT_SAVE_PATH.to_string(),
             generated_vault_response_report_save_path: None,
             vault_response_report_save_status: String::new(),
+            decode_values_save_path: DEFAULT_DECODE_VALUES_SAVE_PATH.to_string(),
+            generated_decode_values_save_path: None,
+            decode_values_save_status: String::new(),
             portable_response_report_source_name: None,
         }
     }
@@ -185,6 +248,19 @@ impl DesktopApp {
                     );
                     self.vault_response_report_save_path = next_path;
                     self.generated_vault_response_report_save_path = generated_path;
+                    if self
+                        .vault_response_state
+                        .decode_values_export_json()
+                        .is_ok()
+                    {
+                        let (next_path, generated_path) = next_decode_values_save_path(
+                            &self.decode_values_save_path,
+                            self.generated_decode_values_save_path.as_deref(),
+                            source_name,
+                        );
+                        self.decode_values_save_path = next_path;
+                        self.generated_decode_values_save_path = generated_path;
+                    }
                 } else if let DesktopRuntimeSubmissionMode::Workflow(workflow_mode) = mode {
                     self.response_state
                         .apply_success_json(workflow_mode, envelope);
@@ -312,6 +388,24 @@ impl DesktopApp {
             }
             Err(error) => {
                 self.vault_response_report_save_status = error;
+            }
+        }
+    }
+
+    fn save_decode_values(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        write_desktop_decode_values_json(&self.vault_response_state, path)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn save_decode_values_response(&mut self) {
+        match self.save_decode_values(self.decode_values_save_path.trim()) {
+            Ok(()) => {
+                self.decode_values_save_status = "Decoded values JSON saved.".to_string();
+            }
+            Err(_) => {
+                self.decode_values_save_status =
+                    "decoded values JSON could not be saved".to_string();
             }
         }
     }
@@ -658,6 +752,16 @@ impl eframe::App for DesktopApp {
                 }
                 if !self.vault_response_report_save_status.is_empty() {
                     ui.label(&self.vault_response_report_save_status);
+                }
+            }
+            if self.vault_response_state.decode_values_export_json().is_ok() {
+                ui.label("Save decoded values JSON");
+                ui.text_edit_singleline(&mut self.decode_values_save_path);
+                if ui.button("Save decoded values JSON").clicked() {
+                    self.save_decode_values_response();
+                }
+                if !self.decode_values_save_status.is_empty() {
+                    ui.label(&self.decode_values_save_status);
                 }
             }
             ui.separator();
@@ -1209,6 +1313,44 @@ mod tests {
             .contains(path.to_string_lossy().as_ref()));
         assert!(!app.vault_response_report_save_status.contains("jane-doe"));
         assert!(!app.vault_response_report_save_status.contains("12345"));
+        std::fs::remove_dir_all(dir).expect("remove tempdir");
+    }
+
+    #[test]
+    fn app_save_decode_values_writes_values_json_with_phi_safe_status() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdid-desktop-decode-values-ui-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&dir).expect("tempdir");
+        let path = dir.join("patient-jane-doe-mrn-12345-decoded-values.json");
+        let mut app = DesktopApp::default();
+        app.vault_response_state.apply_success(
+            DesktopVaultResponseMode::VaultDecode,
+            &serde_json::json!({
+                "decoded_value_count": 1,
+                "decoded_values": {
+                    "record-1": {"name": "Jane Doe"}
+                },
+                "audit_event_id": "audit-1"
+            }),
+        );
+        app.decode_values_save_path = path.to_string_lossy().to_string();
+
+        app.save_decode_values_response();
+
+        let saved = std::fs::read_to_string(&path).expect("decode values JSON saved");
+        let saved_json: serde_json::Value =
+            serde_json::from_str(&saved).expect("saved JSON parses");
+        assert_eq!(saved_json["mode"], "vault_decode_values");
+        assert_eq!(saved_json["decoded_values"]["record-1"]["name"], "Jane Doe");
+        assert_eq!(app.decode_values_save_status, "Decoded values JSON saved.");
+        assert!(!app.decode_values_save_status.contains("Jane Doe"));
+        assert!(!app
+            .decode_values_save_status
+            .contains(path.to_string_lossy().as_ref()));
+        assert!(!app.decode_values_save_status.contains("jane-doe"));
+        assert!(!app.decode_values_save_status.contains("12345"));
         std::fs::remove_dir_all(dir).expect("remove tempdir");
     }
 
