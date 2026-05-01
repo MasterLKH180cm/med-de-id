@@ -10,6 +10,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -28,6 +29,9 @@ NON_GOALS = [
     "visual_redaction",
 ]
 EXPECTED_CATEGORIES = {"EMAIL", "MRN", "NAME", "PHONE"}
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_OCR_VALIDATOR = SCRIPT_DIR / "validate_ocr_handoff.py"
+DEFAULT_PRIVACY_VALIDATOR = SCRIPT_DIR.parent / "privacy_filter" / "validate_privacy_filter_output.py"
 
 
 class EvidenceError(Exception):
@@ -87,12 +91,26 @@ def parse_json(raw: str) -> dict:
     return value
 
 
+def validate_json_stdout(python: str, validator: Path, raw: str) -> None:
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=True) as tmp:
+            tmp.write(raw)
+            tmp.flush()
+            run_child([python, str(validator), tmp.name])
+    except EvidenceError:
+        raise
+    except Exception as exc:  # keep validator/temp details out of user-visible errors
+        raise EvidenceError() from exc
+
+
 def load_ocr_contract(python: str, runner: Path, image: Path, mock: bool) -> dict:
     args = [python, str(runner), "--json"]
     if mock:
         args.append("--mock")
     args.append(str(image))
-    ocr = parse_json(run_child(args))
+    raw = run_child(args)
+    validate_json_stdout(python, DEFAULT_OCR_VALIDATOR, raw)
+    ocr = parse_json(raw)
     expected = {
         "candidate": "PP-OCRv5_mobile_rec",
         "engine": "PP-OCRv5-mobile-bounded-spike",
@@ -117,7 +135,9 @@ def load_privacy_contract(python: str, runner: Path, normalized_text: str, mock:
     args = [python, str(runner), "--stdin"]
     if mock:
         args.append("--mock")
-    privacy = parse_json(run_child(args, input_text=normalized_text))
+    raw = run_child(args, input_text=normalized_text)
+    validate_json_stdout(python, DEFAULT_PRIVACY_VALIDATOR, raw)
+    privacy = parse_json(raw)
     metadata = privacy.get("metadata")
     summary = privacy.get("summary")
     if not isinstance(metadata, dict) or not isinstance(summary, dict):
@@ -193,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 4
         print(GENERIC_ERROR, file=sys.stderr)
         return 3
-    print(json.dumps({"report_path": "<redacted>"}, indent=2))
+    print(json.dumps({"artifact": "ocr_privacy_evidence", "report_path": "<redacted>", "report_written": True}, indent=2))
     return 0
 
 

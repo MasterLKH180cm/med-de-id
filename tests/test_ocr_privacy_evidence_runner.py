@@ -43,7 +43,7 @@ EXPECTED = {
 }
 
 
-def run_evidence(output: Path, image_path: Path = IMAGE):
+def run_evidence(output: Path, image_path: Path = IMAGE, privacy_runner: Path = PRIVACY_RUNNER):
     return subprocess.run(
         [
             sys.executable,
@@ -53,7 +53,7 @@ def run_evidence(output: Path, image_path: Path = IMAGE):
             "--ocr-runner-path",
             str(OCR_RUNNER),
             "--privacy-runner-path",
-            str(PRIVACY_RUNNER),
+            str(privacy_runner),
             "--output",
             str(output),
             "--mock",
@@ -61,6 +61,7 @@ def run_evidence(output: Path, image_path: Path = IMAGE):
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
+        timeout=15,
     )
 
 
@@ -81,9 +82,38 @@ def test_ocr_privacy_evidence_success_path_writes_aggregate_only_report(tmp_path
     report = json.loads(output.read_text(encoding="utf-8"))
     assert "ID" not in report["category_counts"]
     assert report["detected_span_count"] == sum(report["category_counts"].values())
-    assert json.loads(proc.stdout) == {"report_path": "<redacted>"}
+    assert json.loads(proc.stdout) == {
+        "artifact": "ocr_privacy_evidence",
+        "report_path": "<redacted>",
+        "report_written": True,
+    }
     assert '"report_path": "<redacted>"' in proc.stdout
     assert_no_phi(proc.stdout, proc.stderr, output.read_text(encoding="utf-8"))
+
+
+def test_privacy_filter_canonical_validator_failure_is_generic_and_phi_safe(tmp_path):
+    bad_privacy_runner = tmp_path / "bad_privacy_runner.py"
+    bad_privacy_runner.write_text(
+        """
+import json
+print(json.dumps({
+    "metadata": {"engine": "fallback_synthetic_patterns", "network_api_called": False},
+    "summary": {"detected_span_count": 4, "category_counts": {"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1}},
+    "masked_text": "<masked-text>",
+    "spans": [],
+}))
+""".lstrip(),
+        encoding="utf-8",
+    )
+    output = tmp_path / "Jane Example MRN-12345 evidence.json"
+
+    proc = run_evidence(output, privacy_runner=bad_privacy_runner)
+
+    assert proc.returncode == 3
+    assert proc.stdout == ""
+    assert proc.stderr == "OCR Privacy evidence runner failed\n"
+    assert not output.exists()
+    assert_no_phi(proc.stdout, proc.stderr)
 
 
 def test_missing_image_removes_stale_output_without_echoing_phi_path(tmp_path):
