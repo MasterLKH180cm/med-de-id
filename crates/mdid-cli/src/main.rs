@@ -213,6 +213,7 @@ struct OcrHandoffArgs {
     ocr_runner_path: PathBuf,
     handoff_builder_path: PathBuf,
     report_path: PathBuf,
+    summary_output: Option<PathBuf>,
     python_command: String,
 }
 
@@ -836,6 +837,7 @@ fn parse_ocr_handoff_args(args: &[String]) -> Result<OcrHandoffArgs, String> {
     let mut ocr_runner_path = None;
     let mut handoff_builder_path = None;
     let mut report_path = None;
+    let mut summary_output = None;
     let mut python_command = None;
 
     let mut index = 0;
@@ -853,6 +855,7 @@ fn parse_ocr_handoff_args(args: &[String]) -> Result<OcrHandoffArgs, String> {
                 handoff_builder_path = Some(non_blank_path(value, "--handoff-builder-path")?)
             }
             "--report-path" => report_path = Some(non_blank_path(value, "--report-path")?),
+            "--summary-output" => summary_output = Some(non_blank_path(value, "--summary-output")?),
             "--python-command" => {
                 if value.trim().is_empty() {
                     return Err("missing --python-command".to_string());
@@ -870,6 +873,7 @@ fn parse_ocr_handoff_args(args: &[String]) -> Result<OcrHandoffArgs, String> {
         handoff_builder_path: handoff_builder_path
             .ok_or_else(|| "missing --handoff-builder-path".to_string())?,
         report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+        summary_output,
         python_command: python_command.unwrap_or_else(default_python_command),
     })
 }
@@ -2480,97 +2484,155 @@ fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
 }
 
 fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
-    require_regular_file(&args.image_path, "missing image file")?;
-    require_regular_file(&args.ocr_runner_path, "missing OCR runner file")?;
-    require_regular_file(&args.handoff_builder_path, "missing handoff builder file")?;
-
-    let _ = fs::remove_file(&args.report_path);
-    let temp_path = ocr_temp_path(&args.report_path);
-    let _ = fs::remove_file(&temp_path);
-
-    let mut child = std::process::Command::new(&args.python_command)
-        .arg(&args.ocr_runner_path)
-        .arg("--mock")
-        .arg(&args.image_path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|err| format!("failed to run OCR runner: {err}"))?;
-    let (status, stdout_bytes) =
-        wait_for_ocr_runner(&mut child, OCR_RUNNER_TIMEOUT, OCR_RUNNER_STDOUT_MAX_BYTES)
-            .inspect_err(|_err| {
-                let _ = fs::remove_file(&args.report_path);
-                let _ = fs::remove_file(&temp_path);
-            })?;
-    if !status.success() {
-        let _ = fs::remove_file(&args.report_path);
-        let _ = fs::remove_file(&temp_path);
-        return Err("OCR runner failed".to_string());
+    if let Some(summary_output) = &args.summary_output {
+        if paths_are_same_existing_or_lexical(&args.report_path, summary_output) {
+            return Err("OCR handoff summary path must differ from report path".to_string());
+        }
     }
-    let ocr_text = String::from_utf8(stdout_bytes).map_err(|_| {
+    let temp_path = ocr_temp_path(&args.report_path);
+    let cleanup_outputs = || {
         let _ = fs::remove_file(&args.report_path);
         let _ = fs::remove_file(&temp_path);
-        "OCR runner returned non-UTF-8 output".to_string()
-    })?;
+        if let Some(summary_output) = &args.summary_output {
+            let _ = fs::remove_file(summary_output);
+        }
+    };
 
-    fs::write(&temp_path, ocr_text).map_err(|err| {
-        let _ = fs::remove_file(&args.report_path);
-        let _ = fs::remove_file(&temp_path);
-        format!("failed to write OCR temp text: {err}")
-    })?;
-    let mut builder_child = std::process::Command::new(&args.python_command)
-        .arg(&args.handoff_builder_path)
-        .arg("--source")
-        .arg(&args.image_path)
-        .arg("--input")
-        .arg(&temp_path)
-        .arg("--output")
-        .arg(&args.report_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|err| {
+    let result = (|| {
+        cleanup_outputs();
+        require_regular_file(&args.image_path, "missing image file")?;
+        require_regular_file(&args.ocr_runner_path, "missing OCR runner file")?;
+        require_regular_file(&args.handoff_builder_path, "missing handoff builder file")?;
+
+        let mut child = std::process::Command::new(&args.python_command)
+            .arg(&args.ocr_runner_path)
+            .arg("--mock")
+            .arg(&args.image_path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|err| format!("failed to run OCR runner: {err}"))?;
+        let (status, stdout_bytes) =
+            wait_for_ocr_runner(&mut child, OCR_RUNNER_TIMEOUT, OCR_RUNNER_STDOUT_MAX_BYTES)
+                .inspect_err(|_err| {
+                    let _ = fs::remove_file(&args.report_path);
+                    let _ = fs::remove_file(&temp_path);
+                })?;
+        if !status.success() {
             let _ = fs::remove_file(&args.report_path);
             let _ = fs::remove_file(&temp_path);
-            format!("failed to run OCR handoff builder: {err}")
+            return Err("OCR runner failed".to_string());
+        }
+        let ocr_text = String::from_utf8(stdout_bytes).map_err(|_| {
+            let _ = fs::remove_file(&args.report_path);
+            let _ = fs::remove_file(&temp_path);
+            "OCR runner returned non-UTF-8 output".to_string()
         })?;
-    let builder_status =
-        wait_for_ocr_handoff_builder(&mut builder_child, OCR_HANDOFF_BUILDER_TIMEOUT).inspect_err(
-            |_err| {
+
+        fs::write(&temp_path, ocr_text).map_err(|err| {
+            let _ = fs::remove_file(&args.report_path);
+            let _ = fs::remove_file(&temp_path);
+            format!("failed to write OCR temp text: {err}")
+        })?;
+        let mut builder_child = std::process::Command::new(&args.python_command)
+            .arg(&args.handoff_builder_path)
+            .arg("--source")
+            .arg(&args.image_path)
+            .arg("--input")
+            .arg(&temp_path)
+            .arg("--output")
+            .arg(&args.report_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|err| {
                 let _ = fs::remove_file(&args.report_path);
                 let _ = fs::remove_file(&temp_path);
-            },
-        )?;
-    let _ = fs::remove_file(&temp_path);
-    if !builder_status.success() {
-        let _ = fs::remove_file(&args.report_path);
-        return Err("OCR handoff builder failed".to_string());
-    }
+                format!("failed to run OCR handoff builder: {err}")
+            })?;
+        let builder_status =
+            wait_for_ocr_handoff_builder(&mut builder_child, OCR_HANDOFF_BUILDER_TIMEOUT)
+                .inspect_err(|_err| {
+                    let _ = fs::remove_file(&args.report_path);
+                    let _ = fs::remove_file(&temp_path);
+                })?;
+        let _ = fs::remove_file(&temp_path);
+        if !builder_status.success() {
+            let _ = fs::remove_file(&args.report_path);
+            return Err("OCR handoff builder failed".to_string());
+        }
 
-    let report_text = fs::read_to_string(&args.report_path).map_err(|err| {
-        let _ = fs::remove_file(&args.report_path);
-        format!("failed to read OCR handoff report: {err}")
-    })?;
-    let value: Value = serde_json::from_str(&report_text).map_err(|_| {
-        let _ = fs::remove_file(&args.report_path);
-        "OCR handoff report is not valid JSON".to_string()
-    })?;
-    if let Err(error) = validate_ocr_handoff(&value) {
-        let _ = fs::remove_file(&args.report_path);
-        return Err(error);
+        let report_text = fs::read_to_string(&args.report_path).map_err(|err| {
+            let _ = fs::remove_file(&args.report_path);
+            format!("failed to read OCR handoff report: {err}")
+        })?;
+        let value: Value = serde_json::from_str(&report_text).map_err(|_| {
+            let _ = fs::remove_file(&args.report_path);
+            "OCR handoff report is not valid JSON".to_string()
+        })?;
+        if let Err(error) = validate_ocr_handoff(&value) {
+            let _ = fs::remove_file(&args.report_path);
+            return Err(error);
+        }
+
+        if let Some(summary_output) = &args.summary_output {
+            let summary_artifact = build_ocr_handoff_summary(&value);
+            let summary_text = format!(
+                "{}\n",
+                serde_json::to_string_pretty(&summary_artifact)
+                    .map_err(|err| format!("failed to render OCR handoff summary: {err}"))?
+            );
+            fs::write(summary_output, summary_text)
+                .map_err(|_| "OCR handoff summary write failed".to_string())?;
+        }
+
+        let report_path = if args.summary_output.is_some() {
+            json!("<redacted>")
+        } else {
+            json!(args.report_path)
+        };
+        let summary = json!({
+            "command": "ocr-handoff",
+            "report_path": report_path,
+            "ready_for_text_pii_eval": value["ready_for_text_pii_eval"],
+            "privacy_filter_contract": value["privacy_filter_contract"],
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&summary)
+                .map_err(|err| format!("failed to render summary: {err}"))?
+        );
+        Ok(())
+    })();
+    if result.is_err() {
+        cleanup_outputs();
     }
-    let summary = json!({
-        "command": "ocr-handoff",
-        "report_path": args.report_path,
-        "ready_for_text_pii_eval": value["ready_for_text_pii_eval"],
-        "privacy_filter_contract": value["privacy_filter_contract"],
-    });
-    println!(
-        "{}",
-        serde_json::to_string(&summary)
-            .map_err(|err| format!("failed to render summary: {err}"))?
-    );
-    Ok(())
+    result
+}
+
+fn build_ocr_handoff_summary(report: &Value) -> Value {
+    let normalized_text = report["normalized_text"].as_str().unwrap_or_default();
+    json!({
+        "artifact": "ocr_handoff_summary",
+        "schema_version": 1,
+        "candidate": "PP-OCRv5_mobile_rec",
+        "engine": "PP-OCRv5-mobile-bounded-spike",
+        "scope": "printed_text_line_extraction_only",
+        "privacy_filter_contract": "text_only_normalized_input",
+        "ready_for_text_pii_eval": report["ready_for_text_pii_eval"],
+        "line_count": normalized_text.lines().count(),
+        "char_count": normalized_text.chars().count(),
+        "network_api_called": false,
+        "non_goals": [
+            "ocr_model_quality_proof",
+            "visual_redaction",
+            "image_pixel_redaction",
+            "handwriting_recognition",
+            "final_pdf_rewrite_export",
+            "browser_ui",
+            "desktop_ui",
+        ],
+    })
 }
 
 fn ocr_temp_path(report_path: &Path) -> PathBuf {

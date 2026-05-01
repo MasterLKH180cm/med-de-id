@@ -4609,6 +4609,118 @@ fn ocr_handoff_success_with_synthetic_fixture() {
 }
 
 #[test]
+fn ocr_handoff_writes_phi_safe_summary_output() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-handoff-report.json");
+    let summary_path = dir.path().join("ocr-handoff-summary.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--handoff-builder-path",
+            &repo_path("scripts/ocr_eval/build_ocr_handoff.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stdout.contains(summary_path.to_str().unwrap()));
+    assert!(!stderr.contains(summary_path.to_str().unwrap()));
+
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "ocr_handoff_summary");
+    assert_eq!(summary["schema_version"], 1);
+    assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
+    assert_eq!(summary["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        summary["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    assert_eq!(summary["ready_for_text_pii_eval"], true);
+    assert!(summary["line_count"].as_u64().unwrap() >= 1);
+    assert!(summary["char_count"].as_u64().unwrap() >= 1);
+    assert_eq!(summary["network_api_called"], false);
+    assert!(summary["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::Value::String("visual_redaction".to_string())));
+    assert!(summary["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::Value::String(
+            "image_pixel_redaction".to_string()
+        )));
+    assert!(summary["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::Value::String(
+            "final_pdf_rewrite_export".to_string()
+        )));
+
+    let keys: std::collections::BTreeSet<_> =
+        summary.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        keys,
+        [
+            "artifact",
+            "candidate",
+            "char_count",
+            "engine",
+            "line_count",
+            "network_api_called",
+            "non_goals",
+            "privacy_filter_contract",
+            "ready_for_text_pii_eval",
+            "schema_version",
+            "scope",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    );
+
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "synthetic_printed_phi_line.png",
+        "extracted_text",
+        "normalized_text",
+        "bbox",
+        "image_bytes",
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+    ] {
+        assert!(
+            !summary_text.contains(forbidden),
+            "summary leaked {forbidden}"
+        );
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+}
+
+#[test]
 fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let handoff_report = dir.path().join("ocr-handoff.json");
