@@ -751,6 +751,7 @@ fn sanitized_source_stem_preserving_case(file_name: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn portable_report_source_stem(file_name: &str) -> String {
     let file_name = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
     let stem = if let Some(stem) = file_name.strip_suffix(".mdid-portable.json") {
@@ -1286,6 +1287,7 @@ fn contains_synthetic_phi_sentinel(value: &str) -> bool {
     .any(|sentinel| value.contains(sentinel))
 }
 
+#[allow(dead_code)]
 fn build_ocr_handoff_summary_download(
     handoff_json: &str,
     imported_file_name: Option<&str>,
@@ -1309,6 +1311,7 @@ fn build_ocr_handoff_summary_download(
     })
 }
 
+#[allow(dead_code)]
 fn sanitized_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value {
     let mut report = serde_json::Map::new();
     report.insert("mode".to_string(), serde_json::json!("ocr_handoff_summary"));
@@ -1344,6 +1347,7 @@ fn sanitized_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Val
     serde_json::Value::Object(report)
 }
 
+#[allow(dead_code)]
 fn sanitized_ocr_handoff_non_goals(value: Option<&serde_json::Value>) -> serde_json::Value {
     serde_json::Value::Array(
         value
@@ -1358,6 +1362,7 @@ fn sanitized_ocr_handoff_non_goals(value: Option<&serde_json::Value>) -> serde_j
     )
 }
 
+#[allow(dead_code)]
 fn redact_portable_report_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
@@ -1382,6 +1387,7 @@ fn redact_portable_report_value(value: &mut serde_json::Value) {
     }
 }
 
+#[allow(dead_code)]
 fn build_portable_response_report_download(
     mode: InputMode,
     imported_file_name: Option<&str>,
@@ -1732,6 +1738,7 @@ impl BrowserFlowState {
         })
     }
 
+    #[allow(dead_code)]
     fn suggested_audit_events_file_name(&self) -> String {
         self.imported_file_name
             .as_deref()
@@ -1745,6 +1752,7 @@ impl BrowserFlowState {
             .unwrap_or_else(|| "mdid-browser-vault-audit-events.json".to_string())
     }
 
+    #[allow(dead_code)]
     fn audit_events_payload(&self) -> Result<serde_json::Value, String> {
         const ERROR: &str = "Audit events download is only available after a successful vault audit events response.";
 
@@ -1780,10 +1788,12 @@ impl BrowserFlowState {
         Ok(serde_json::Value::Object(payload))
     }
 
+    #[allow(dead_code)]
     fn can_export_audit_events(&self) -> bool {
         self.audit_events_payload().is_ok()
     }
 
+    #[allow(dead_code)]
     fn prepared_audit_events_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
         let bytes = serde_json::to_vec_pretty(&self.audit_events_payload()?)
             .map_err(|_| "Browser audit events download could not encode JSON.".to_string())?;
@@ -4931,6 +4941,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn tabular_report_download_rejects_non_tabular_or_empty_output() {
         let mut state = BrowserFlowState::default();
         state.input_mode = InputMode::PdfBase64;
@@ -5258,6 +5269,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn vault_audit_pagination_status_reports_requested_window_and_next_page() {
         let mut state = BrowserAppState::default();
         state.input_mode = InputMode::VaultAuditEvents;
@@ -5275,6 +5287,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn vault_audit_pagination_status_omits_next_page_when_response_has_no_next_offset() {
         let mut state = BrowserAppState::default();
         state.input_mode = InputMode::VaultAuditEvents;
@@ -5289,6 +5302,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn vault_audit_pagination_status_uses_returned_event_count_for_page_window() {
         let mut state = BrowserAppState::default();
         state.input_mode = InputMode::VaultAuditEvents;
@@ -5306,6 +5320,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn vault_audit_pagination_status_reports_empty_page_without_invalid_range() {
         let mut state = BrowserAppState::default();
         state.input_mode = InputMode::VaultAuditEvents;
@@ -5322,6 +5337,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn vault_audit_pagination_status_reads_actual_runtime_output_after_success() {
         let mut state = BrowserAppState::default();
         state.input_mode = InputMode::VaultAuditEvents;
@@ -5344,6 +5360,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn vault_audit_pagination_status_uses_runtime_output_when_summary_json_lacks_counts() {
         let mut state = BrowserAppState::default();
         state.input_mode = InputMode::VaultAuditEvents;
@@ -5363,6 +5380,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn vault_audit_pagination_status_is_absent_outside_vault_audit_mode() {
         let mut state = BrowserAppState::default();
         state.input_mode = InputMode::CsvText;

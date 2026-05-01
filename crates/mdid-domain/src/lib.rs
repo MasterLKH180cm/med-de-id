@@ -350,16 +350,11 @@ pub enum PdfScanStatus {
     OcrRequired,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PdfRewriteStatus {
+    #[default]
     ReviewOnlyNoRewrittenPdf,
-}
-
-impl Default for PdfRewriteStatus {
-    fn default() -> Self {
-        Self::ReviewOnlyNoRewrittenPdf
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

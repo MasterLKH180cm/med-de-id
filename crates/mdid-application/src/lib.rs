@@ -415,12 +415,8 @@ fn write_csv(columns: &[TabularColumn], rows: &[Vec<String>]) -> Result<String, 
     Ok(String::from_utf8(bytes)?)
 }
 
-fn burned_in_annotation_notice(review_required: bool) -> &'static str {
-    if review_required {
-        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
-    } else {
-        DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
-    }
+fn burned_in_annotation_notice(_review_required: bool) -> &'static str {
+    DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE
 }
 
 const DICOM_COMMON_PHI_MAPPING_TYPE: &str = "dicom_common_phi";

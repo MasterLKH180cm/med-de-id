@@ -1883,10 +1883,7 @@ fn is_allowed_non_goal_token(text: &str) -> bool {
 }
 
 fn has_relative_filename_path_segment(text: &str) -> bool {
-    text.contains('/')
-        && text
-            .split('/')
-            .any(|segment| has_filename_like_extension(segment))
+    text.contains('/') && text.split('/').any(has_filename_like_extension)
 }
 
 fn has_filename_like_extension(segment: &str) -> bool {
@@ -2381,13 +2378,11 @@ fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
         .spawn()
         .map_err(|err| format!("failed to run OCR runner: {err}"))?;
     let (status, stdout_bytes) =
-        wait_for_ocr_runner(&mut child, OCR_RUNNER_TIMEOUT, OCR_RUNNER_STDOUT_MAX_BYTES).map_err(
-            |err| {
+        wait_for_ocr_runner(&mut child, OCR_RUNNER_TIMEOUT, OCR_RUNNER_STDOUT_MAX_BYTES)
+            .inspect_err(|_err| {
                 let _ = fs::remove_file(&args.report_path);
                 let _ = fs::remove_file(&temp_path);
-                err
-            },
-        )?;
+            })?;
     if !status.success() {
         let _ = fs::remove_file(&args.report_path);
         let _ = fs::remove_file(&temp_path);
@@ -2421,11 +2416,10 @@ fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
             format!("failed to run OCR handoff builder: {err}")
         })?;
     let builder_status =
-        wait_for_ocr_handoff_builder(&mut builder_child, OCR_HANDOFF_BUILDER_TIMEOUT).map_err(
-            |err| {
+        wait_for_ocr_handoff_builder(&mut builder_child, OCR_HANDOFF_BUILDER_TIMEOUT).inspect_err(
+            |_err| {
                 let _ = fs::remove_file(&args.report_path);
                 let _ = fs::remove_file(&temp_path);
-                err
             },
         )?;
     let _ = fs::remove_file(&temp_path);
@@ -2809,19 +2803,17 @@ fn validate_privacy_filter_corpus_report(
     {
         return Err("privacy filter corpus report has invalid required field shape".to_string());
     }
-    if fixture_count == 2 || require_canonical_counts {
-        if total_detected_span_count < 4
+    if (fixture_count == 2 || require_canonical_counts)
+        && (total_detected_span_count < 4
             || fixture_count != 2
             || value["category_counts"]["NAME"].as_u64().unwrap_or(0) != 2
             || value["category_counts"]["MRN"].as_u64().unwrap_or(0) != 2
             || value["category_counts"]["EMAIL"].as_u64().unwrap_or(0) != 1
-            || value["category_counts"]["PHONE"].as_u64().unwrap_or(0) != 2
-        {
-            return Err(
-                "privacy filter corpus report aggregate counts did not match requirements"
-                    .to_string(),
-            );
-        }
+            || value["category_counts"]["PHONE"].as_u64().unwrap_or(0) != 2)
+    {
+        return Err(
+            "privacy filter corpus report aggregate counts did not match requirements".to_string(),
+        );
     }
     let non_goals = value["non_goals"].as_array().unwrap();
     let allowed_non_goals = [
@@ -2911,12 +2903,12 @@ fn validate_privacy_filter_text_summary_artifact_fields(value: &Value) -> Result
     if metadata.get("network_api_called") != Some(&Value::Bool(false)) {
         return Err("privacy filter summary has invalid required field shape".to_string());
     }
-    if !summary
+    if summary
         .get("input_char_count")
-        .is_some_and(|count| count.as_u64().is_some())
-        || !summary
+        .is_none_or(|count| count.as_u64().is_none())
+        || summary
             .get("detected_span_count")
-            .is_some_and(|count| count.as_u64().is_some())
+            .is_none_or(|count| count.as_u64().is_none())
         || !summary
             .get("category_counts")
             .is_some_and(validate_privacy_filter_category_counts)
@@ -3084,7 +3076,7 @@ fn emit_privacy_filter_text_success(
         .map_err(|err| format!("failed to write privacy filter report: {err}"))?;
 
     if let Some(summary_output) = &args.summary_output {
-        let artifact_summary = privacy_filter_text_summary_artifact(&value);
+        let artifact_summary = privacy_filter_text_summary_artifact(value);
         fs::write(
             summary_output,
             format!(

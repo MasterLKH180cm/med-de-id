@@ -459,7 +459,7 @@ fn build_ocr_handoff_summary(handoff: &Value) -> Option<OcrHandoffSummaryRespons
         return None;
     }
 
-    if handoff.get("ready_for_text_pii_eval")?.as_bool()? != true {
+    if !handoff.get("ready_for_text_pii_eval")?.as_bool()? {
         return None;
     }
     if handoff.get("privacy_filter_contract")?.as_str()? != "text_only_normalized_input" {
