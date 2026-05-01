@@ -3360,6 +3360,62 @@ with open(args.output, "w", encoding="utf-8") as handle:
 }
 
 #[test]
+fn privacy_filter_text_detects_ip_address_from_stdin_without_raw_ip_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-192.168.10.42");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("privacy-filter-report.json");
+    let text = "Patient Jane Example remote login from 192.168.10.42 for MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(text)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+
+    assert_eq!(report["summary"]["category_counts"]["IP_ADDRESS"], 1);
+    assert!(report["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[IP_ADDRESS]"));
+    assert!(report["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|span| { span["label"] == "IP_ADDRESS" && span["preview"] == "<redacted>" }));
+    for unsafe_text in [
+        "192.168.10.42",
+        "Jane Example",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn privacy_filter_text_redacts_report_path_in_stdout_summary() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
