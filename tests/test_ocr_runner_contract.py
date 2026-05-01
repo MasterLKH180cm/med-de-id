@@ -153,6 +153,36 @@ def test_fake_paddleocr_result_is_normalized_to_plain_stdout(monkeypatch, capsys
     assert captured.err == ""
 
 
+def test_fake_paddleocr_valueerror_kwargs_retry_is_normalized_to_plain_stdout(monkeypatch, capsys):
+    runner = load_runner()
+
+    class FakePaddleOCR:
+        def __init__(self, **kwargs):
+            if kwargs:
+                raise ValueError('Unknown argument: rec_model_name')
+            self.kwargs = kwargs
+
+        def ocr(self, image_path, **kwargs):
+            assert image_path == str(FIXTURE_IMAGE)
+            return [
+                [
+                    [None, ("Patient Jane Doe", 0.99)],
+                    [None, ("DOB 1970-01-02", 0.98)],
+                ]
+            ]
+
+    class FakePaddleModule:
+        PaddleOCR = FakePaddleOCR
+
+    monkeypatch.setitem(sys.modules, "paddleocr", FakePaddleModule)
+
+    code = runner.main([str(FIXTURE_IMAGE)])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == "Patient Jane Doe\nDOB 1970-01-02\n"
+    assert captured.err == ""
+
+
 def test_subprocess_local_paddleocr_adapter_path_emits_json_without_mock_or_source_leak(tmp_path):
     adapter_dir = tmp_path / "adapter"
     adapter_dir.mkdir()
