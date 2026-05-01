@@ -92,7 +92,7 @@ Run:
 
 ```bash
 python scripts/privacy_filter/test_run_privacy_filter.py -v
-cargo test -p mdid-cli privacy_filter_text_detects_address_category -- --nocapture
+cargo test -p mdid-cli privacy_filter_text_detects_addresses_from_stdin_without_raw_address_leaks -- --nocapture
 ```
 
 Expected: Python runner tests PASS; existing CLI category validation smoke remains PASS with the expanded runner category behavior.

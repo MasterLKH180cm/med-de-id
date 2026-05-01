@@ -5,7 +5,7 @@ from pathlib import Path
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
 DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
-SSN_RE = re.compile(r'(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)')
+SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
 ADDRESS_RE = re.compile(r'\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Ct|Court)\b')
 MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
 ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
