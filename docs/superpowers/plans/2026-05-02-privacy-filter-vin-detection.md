@@ -201,8 +201,30 @@ git add README.md
 git commit -m "docs: truth-sync privacy filter VIN detection"
 ```
 
+### Task 3: Rust CLI validation accepts VIN reports
+
+**Files:**
+- Modify: `crates/mdid-cli/tests/cli_smoke.rs`
+- Modify: `crates/mdid-cli/src/main.rs`
+
+- [x] **Step 1: Add failing CLI smoke coverage for VIN category acceptance**
+
+Added `cli_privacy_filter_text_accepts_vin_without_phi_or_path_leaks` to prove `mdid-cli privacy-filter-text --stdin` accepts a runner report containing category label `VIN`, masks the VIN, and does not leak raw VIN, patient name, MRN, report path, or PHI temp dir in stdout/stderr/report output.
+
+- [x] **Step 2: Verify RED before production change**
+
+`cargo test -p mdid-cli --test cli_smoke cli_privacy_filter_text_accepts_vin_without_phi_or_path_leaks -- --nocapture` failed with `privacy filter output has invalid category label`.
+
+- [x] **Step 3: Add minimal Rust CLI label allowlist fix**
+
+Added `VIN` to `is_allowed_privacy_filter_label()` in `crates/mdid-cli/src/main.rs`.
+
+- [x] **Step 4: Verify GREEN and broader relevant suites**
+
+Targeted CLI VIN smoke test passed, broader `privacy_filter_text` CLI smoke tests passed, and Python privacy filter tests passed.
+
 ## Self-Review
 
-- Spec coverage: Task 1 adds bounded, text-only VIN detection with raw-value non-leakage and validator compatibility. Task 2 truth-syncs README completion narrative without claiming browser/desktop progress or forbidden OCR/visual/PDF capabilities.
+- Spec coverage: Task 1 adds bounded, text-only VIN detection with raw-value non-leakage and validator compatibility. Task 2 truth-syncs README completion narrative without claiming browser/desktop progress or forbidden OCR/visual/PDF capabilities. Task 3 keeps Rust CLI validation aligned with the Privacy Filter runner/validator label contract for `VIN`.
 - Placeholder scan: no TBD/TODO/fill-in/similar placeholders remain.
 - Type consistency: label name is consistently `VIN`, detector variable is `VIN_RE`, and output uses the existing span contract.

@@ -4128,6 +4128,69 @@ fn privacy_filter_text_detects_ssns_from_stdin_without_raw_ssn_leaks() {
 }
 
 #[test]
+fn cli_privacy_filter_text_accepts_vin_without_phi_or_path_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-vin");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("vin-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let raw_vin = "1HGCM82633A004352";
+    let stdin_phi = format!("Patient Jane Example MRN-12345 vehicle VIN {raw_vin}\n");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report_json: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report_json["summary"]["category_counts"]["VIN"], 1);
+    assert_eq!(report_json["summary"]["category_counts"]["NAME"], 1);
+    assert_eq!(report_json["summary"]["category_counts"]["MRN"], 1);
+    assert!(report_json["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[VIN]"));
+    let vin_spans: Vec<_> = report_json["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|span| span["label"] == "VIN")
+        .collect();
+    assert_eq!(vin_spans.len(), 1);
+    assert_eq!(vin_spans[0]["preview"], "<redacted>");
+    for unsafe_text in [
+        raw_vin,
+        "Jane Example",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn cli_privacy_filter_text_detects_fax_without_phi_or_path_leaks() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-fax");
