@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fs::{self, OpenOptions},
+    fs,
     io::{Read, Write},
     path::{Path, PathBuf},
     process,
@@ -26,9 +26,6 @@ use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
 const MAX_VAULT_AUDIT_LIMIT: usize = 100;
@@ -2448,15 +2445,8 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
         }
         PrivacyFilterTextInput::Stdin => {
             require_regular_file(&args.runner_path, "missing runner file")?;
-            let temp_path = write_privacy_filter_stdin_temp_file()?;
-            let run_result = run_privacy_filter_text_inner(&args, &temp_path);
-            let cleanup_result = fs::remove_file(&temp_path)
-                .map_err(|err| format!("failed to remove temporary stdin input file: {err}"));
-            match (run_result, cleanup_result) {
-                (Err(run_err), _) => Err(run_err),
-                (Ok(()), Err(cleanup_err)) => Err(cleanup_err),
-                (Ok(()), Ok(())) => Ok(()),
-            }
+            let stdin_bytes = read_privacy_filter_stdin_bytes()?;
+            run_privacy_filter_text_stdin_inner(&args, stdin_bytes)
         }
     })();
     if result.is_err() {
@@ -2468,17 +2458,7 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
     result
 }
 
-trait PrivacyFilterStdinTempFile: Write {
-    fn sync_all(&self) -> std::io::Result<()>;
-}
-
-impl PrivacyFilterStdinTempFile for fs::File {
-    fn sync_all(&self) -> std::io::Result<()> {
-        fs::File::sync_all(self)
-    }
-}
-
-fn write_privacy_filter_stdin_temp_file() -> Result<PathBuf, String> {
+fn read_privacy_filter_stdin_bytes() -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     let limit = PRIVACY_FILTER_STDIN_MAX_BYTES + 1;
     std::io::stdin()
@@ -2491,39 +2471,7 @@ fn write_privacy_filter_stdin_temp_file() -> Result<PathBuf, String> {
     if bytes.len() > PRIVACY_FILTER_STDIN_MAX_BYTES {
         return Err("stdin input exceeds 1048576 byte limit".to_string());
     }
-    let temp_dir = std::env::temp_dir();
-    for _ in 0..16 {
-        let path = temp_dir.join(format!("mdid-privacy-filter-stdin-{}.txt", Uuid::new_v4()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        match options.open(&path) {
-            Ok(file) => {
-                write_privacy_filter_stdin_bytes_to_temp_file(file, &path, &bytes)?;
-                return Ok(path);
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(format!("failed to write stdin input: {err}")),
-        }
-    }
-    Err("failed to create unique stdin input file".to_string())
-}
-
-fn write_privacy_filter_stdin_bytes_to_temp_file<W: PrivacyFilterStdinTempFile>(
-    mut file: W,
-    path: &Path,
-    bytes: &[u8],
-) -> Result<(), String> {
-    if let Err(err) = file.write_all(bytes) {
-        let _ = fs::remove_file(path);
-        return Err(format!("failed to write stdin input: {err}"));
-    }
-    if let Err(err) = file.sync_all() {
-        let _ = fs::remove_file(path);
-        return Err(format!("failed to write stdin input: {err}"));
-    }
-    Ok(())
+    Ok(bytes)
 }
 
 fn run_privacy_filter_text_inner(
@@ -2542,8 +2490,41 @@ fn run_privacy_filter_text_inner(
         .spawn()
         .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
 
+    finish_privacy_filter_text_child(args, &mut child)
+}
+
+fn run_privacy_filter_text_stdin_inner(
+    args: &PrivacyFilterTextArgs,
+    stdin_bytes: Vec<u8>,
+) -> Result<(), String> {
+    let mut command = std::process::Command::new(&args.python_command);
+    command.arg(&args.runner_path);
+    if args.mock {
+        command.arg("--mock");
+    }
+    let mut child = command
+        .arg("--stdin")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to write privacy filter runner stdin".to_string())?
+        .write_all(&stdin_bytes)
+        .map_err(|err| format!("failed to write privacy filter runner stdin: {err}"))?;
+
+    finish_privacy_filter_text_child(args, &mut child)
+}
+
+fn finish_privacy_filter_text_child(
+    args: &PrivacyFilterTextArgs,
+    child: &mut std::process::Child,
+) -> Result<(), String> {
     let (status, stdout_bytes) = wait_for_privacy_filter_runner(
-        &mut child,
+        child,
         PRIVACY_FILTER_RUNNER_TIMEOUT,
         PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES,
     )?;
