@@ -93,6 +93,20 @@ python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-t
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-output.json
 ```
 
+### Aggregate-only OCR Privacy evidence runner
+```bash
+python scripts/ocr_eval/run_ocr_privacy_evidence.py \
+  --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \
+  --ocr-runner-path scripts/ocr_eval/run_small_ocr.py \
+  --privacy-runner-path scripts/privacy_filter/run_privacy_filter.py \
+  --output /tmp/ocr-privacy-evidence.json \
+  --mock
+```
+
+This runner composes the existing PP-OCRv5 mobile bounded printed-text OCR runner with the existing text-only Privacy Filter runner, validates their JSON contracts internally, and writes only an aggregate PHI-safe evidence artifact with safe OCR/Privacy Filter metadata, readiness, network status, detected-span counts, category counts, and explicit non-goals. It suppresses child process output from the terminal and redacts the report path in stdout.
+
+Non-goals: `browser_ui`, `desktop_ui`, `complete_ocr_pipeline`, `visual_redaction`, `image_pixel_redaction`, `handwriting_recognition`, and `final_pdf_rewrite_export`. This is CLI/runtime evidence only; it does not claim Browser/Desktop execution, visual/image pixel redaction, final PDF rewrite/export, handwriting recognition, or full OCR pipeline behavior.
+
 ### OCR-to-Privacy-Filter corpus wrapper evidence
 ```bash
 cargo run -p mdid-cli -- ocr-to-privacy-filter-corpus \
