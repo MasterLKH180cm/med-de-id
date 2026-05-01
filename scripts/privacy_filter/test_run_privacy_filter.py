@@ -46,6 +46,41 @@ def run_privacy_filter_payload(text):
 
 
 class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_use_opf_without_local_command_fails_instead_of_fallback_success(self):
+        module = load_runner_module()
+        stdin = io.StringIO('Patient Jane Example MRN MRN-12345')
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with mock.patch.object(module.shutil, 'which', return_value=None), \
+            mock.patch.object(sys, 'argv', ['run_privacy_filter.py', '--stdin', '--use-opf']), \
+            mock.patch.object(sys, 'stdin', stdin), \
+            mock.patch.object(sys, 'stdout', stdout), \
+            mock.patch.object(sys, 'stderr', stderr), \
+            self.assertRaises(SystemExit) as raised:
+            module.main()
+
+        self.assertEqual(raised.exception.code, 3)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('opf/privacy-filter command not found', stderr.getvalue())
+        self.assertNotIn('MRN-12345', stderr.getvalue())
+
+    def test_privacy_filter_runtime_without_model_dir_fails_without_phi_leak(self):
+        module = load_runner_module()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with mock.patch.dict(os.environ, {'MED_DE_ID_OPF_MODEL_DIR': '', 'OPF_MODEL_DIR': ''}, clear=False), \
+            mock.patch.object(sys, 'stdout', stdout), \
+            mock.patch.object(sys, 'stderr', stderr), \
+            self.assertRaises(SystemExit) as raised:
+            module.run_opf_with_stdin('/usr/local/bin/privacy-filter', 'Patient Jane Example MRN MRN-12345')
+
+        self.assertEqual(raised.exception.code, 3)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('requires MED_DE_ID_OPF_MODEL_DIR', stderr.getvalue())
+        self.assertNotIn('MRN-12345', stderr.getvalue())
+
     def test_fallback_detects_context_required_fax_numbers(self):
         text = 'Patient Jane Example fax 555-222-3333 and fax: (555) 444-5555.'
         payload = run_privacy_filter_payload(text)

@@ -137,7 +137,12 @@ def create_engine(paddleocr_class):
     }
     try:
         return paddleocr_class(**kwargs)
-    except TypeError:
+    except (TypeError, ValueError):
+        # PaddleOCR 3.x rejects legacy/metadata-only kwargs such as
+        # rec_model_name with ValueError rather than TypeError. Falling back to
+        # the package defaults keeps the real local runtime path honest: it may
+        # download/use PaddleOCR's configured local models, but it must not
+        # silently switch to fixture text.
         return paddleocr_class()
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, json, re, shutil, subprocess, sys
+import argparse, json, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
@@ -271,8 +271,18 @@ def normalize_opf_json(raw: str, input_char_count: int):
 
 
 def run_opf_with_stdin(opf: str, text: str) -> str:
+    argv = [opf, '--format', 'json']
+    if Path(opf).name == 'privacy-filter':
+        model_dir = os.environ.get('MED_DE_ID_OPF_MODEL_DIR') or os.environ.get('OPF_MODEL_DIR')
+        if not model_dir:
+            print('privacy-filter OPF runtime requires MED_DE_ID_OPF_MODEL_DIR or OPF_MODEL_DIR; install/download model weights before using --use-opf.', file=sys.stderr)
+            raise SystemExit(3)
+        if not Path(model_dir).is_dir():
+            print('privacy-filter OPF model directory not found; verify local model weights before using --use-opf.', file=sys.stderr)
+            raise SystemExit(3)
+        argv = [opf, '--model-dir', model_dir, '--format', 'spans']
     proc = subprocess.Popen(
-        [opf, '--format', 'json'],
+        argv,
         text=True,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -330,10 +340,10 @@ def main():
     if args.mock or not args.use_opf:
         print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
         return
-    opf = shutil.which('opf')
+    opf = shutil.which('opf') or shutil.which('privacy-filter')
     if opf is None:
-        print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
-        return
+        print('opf/privacy-filter command not found; install/configure local OPF before using --use-opf, or run without --use-opf for deterministic fallback mode.', file=sys.stderr)
+        raise SystemExit(3)
     raw = run_opf_with_stdin(opf, text)
     try:
         output = normalize_opf_json(raw, len(text))
