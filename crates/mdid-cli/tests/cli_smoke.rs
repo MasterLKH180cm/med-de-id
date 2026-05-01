@@ -1600,6 +1600,143 @@ fn privacy_filter_text_redacts_report_path_in_stdout_summary() {
 }
 
 #[test]
+fn cli_privacy_filter_text_summary_output_is_phi_safe() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir
+        .path()
+        .join("Jane-Example-MRN-12345-jane@example.com-555-123-4567");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("privacy-filter-report.json");
+    let summary_path = phi_named_dir.join("privacy-filter-summary.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(repo_path(
+            "scripts/privacy_filter/fixtures/sample_text_input.txt",
+        ))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--summary-output")
+        .arg(&summary_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert!(summary_path.exists());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    let keys: Vec<&str> = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for expected in [
+        "artifact",
+        "scope",
+        "engine",
+        "network_api_called",
+        "preview_policy",
+        "input_char_count",
+        "detected_span_count",
+        "category_counts",
+        "non_goals",
+    ] {
+        assert!(keys.contains(&expected), "summary missing {expected}");
+    }
+    assert_eq!(keys.len(), 9);
+    assert_eq!(summary["artifact"], "privacy_filter_text_summary");
+    assert_eq!(summary["scope"], "text_only_single_report_summary");
+    assert_eq!(summary["engine"], "fallback_synthetic_patterns");
+    assert_eq!(summary["network_api_called"], false);
+    assert_eq!(summary["preview_policy"], "redacted_placeholders_only");
+    assert_eq!(summary["input_char_count"], 137);
+    assert_eq!(summary["detected_span_count"], 4);
+    assert_eq!(summary["category_counts"]["NAME"], 1);
+    for non_goal in [
+        "ocr",
+        "visual_redaction",
+        "image_pixel_redaction",
+        "final_pdf_rewrite_export",
+        "browser_ui",
+        "desktop_ui",
+    ] {
+        assert!(summary["non_goals"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String(non_goal.to_string())));
+    }
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("<redacted>"));
+    assert!(!stdout.contains(summary_path.to_str().unwrap()));
+    for unsafe_text in [
+        "Jane Example",
+        "jane@example.com",
+        "+1-555-123-4567",
+        "555-123-4567",
+        "MRN-12345",
+        "masked_text",
+        "spans",
+        "\"preview\"",
+        phi_named_dir.to_str().unwrap(),
+    ] {
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+}
+
+#[test]
+fn cli_privacy_filter_text_summary_output_removes_stale_file_on_prerequisite_failure() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir
+        .path()
+        .join("Jane-Example-MRN-12345-jane@example.com-555-123-4567");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("privacy-filter-report.json");
+    let summary_path = phi_named_dir.join("privacy-filter-summary.json");
+    fs::write(&summary_path, "stale Jane Example").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(phi_named_dir.join("missing-input.txt"))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--summary-output")
+        .arg(&summary_path)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!summary_path.exists());
+    assert!(!report_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in ["Jane Example", phi_named_dir.to_str().unwrap()] {
+        assert!(!stdout.contains(unsafe_text));
+        assert!(!stderr.contains(unsafe_text));
+    }
+}
+
+#[test]
 fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-report.json");
