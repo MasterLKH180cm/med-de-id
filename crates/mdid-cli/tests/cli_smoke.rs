@@ -86,6 +86,11 @@ fn cli_prints_status_banner() {
 
 #[test]
 fn offline_readiness_reports_cli_opf_and_ocr_without_phi_paths_or_network_claims() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-readiness");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let packaging_output = phi_named_dir.join("package-manifest.json");
+    let governance_output = phi_named_dir.join("governance-summary.json");
     let output = Command::cargo_bin("mdid-cli")
         .unwrap()
         .args([
@@ -98,6 +103,10 @@ fn offline_readiness_reports_cli_opf_and_ocr_without_phi_paths_or_network_claims
             &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
             "--python-command",
             default_python_command(),
+            "--packaging-output",
+            packaging_output.to_str().unwrap(),
+            "--governance-output",
+            governance_output.to_str().unwrap(),
         ])
         .output()
         .unwrap();
@@ -113,11 +122,40 @@ fn offline_readiness_reports_cli_opf_and_ocr_without_phi_paths_or_network_claims
     assert_eq!(report["privacy_filter"]["network_api_called"], false);
     assert_eq!(report["ocr"]["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(report["ocr"]["fallback_fixture_available"], true);
-    assert!(!stdout.contains("synthetic_printed_phi_line.png"));
-    assert!(!stdout.contains("run_small_ocr.py"));
-    assert!(!stdout.contains("run_privacy_filter.py"));
-    assert!(!stdout.contains("Jane Example"));
-    assert!(!stdout.contains("MRN-12345"));
+    assert_eq!(
+        report["packaging_hardening"]["manifest_output_requested"],
+        true
+    );
+    assert_eq!(report["packaging_hardening"]["raw_paths_included"], false);
+    assert_eq!(report["audit_governance"]["summary_output_requested"], true);
+    assert_eq!(report["audit_governance"]["raw_values_included"], false);
+    let packaging_text = fs::read_to_string(&packaging_output).unwrap();
+    let governance_text = fs::read_to_string(&governance_output).unwrap();
+    assert!(packaging_text.contains("local_cli_usage_evidence"));
+    assert!(governance_text.contains("aggregate_local_cli_governance_evidence"));
+    for unsafe_text in [
+        "synthetic_printed_phi_line.png",
+        "run_small_ocr.py",
+        "run_privacy_filter.py",
+        "Jane Example",
+        "MRN-12345",
+        phi_named_dir.to_str().unwrap(),
+        packaging_output.to_str().unwrap(),
+        governance_output.to_str().unwrap(),
+    ] {
+        assert!(
+            !stdout.contains(unsafe_text),
+            "stdout leaked {unsafe_text}: {stdout}"
+        );
+        assert!(
+            !packaging_text.contains(unsafe_text),
+            "packaging leaked {unsafe_text}: {packaging_text}"
+        );
+        assert!(
+            !governance_text.contains(unsafe_text),
+            "governance leaked {unsafe_text}: {governance_text}"
+        );
+    }
 }
 
 #[test]
