@@ -4779,7 +4779,7 @@ fn cli_rejects_scope_drift_controller_commands() {
 fn ocr_privacy_evidence_docs_include_exact_wrapper_command_and_scope_limits() {
     let ocr_readme = fs::read_to_string(repo_path("scripts/ocr_eval/README.md")).unwrap();
     let repo_readme = fs::read_to_string(repo_path("README.md")).unwrap();
-    assert!(ocr_readme.contains(r#"mdid-cli ocr-privacy-evidence \"#));
+    assert!(ocr_readme.contains(r#"cargo run -p mdid-cli -- ocr-privacy-evidence \"#));
     assert!(ocr_readme
         .contains(r#"  --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \"#));
     assert!(

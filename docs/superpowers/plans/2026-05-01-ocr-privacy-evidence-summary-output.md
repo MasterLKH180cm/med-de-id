@@ -259,7 +259,7 @@ Expected: FAIL until docs mention the new summary artifact.
 Update `scripts/ocr_eval/README.md` with the command:
 
 ```bash
-mdid-cli ocr-privacy-evidence \
+cargo run -p mdid-cli -- ocr-privacy-evidence \
   --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \
   --runner-path scripts/ocr_eval/run_ocr_privacy_evidence.py \
   --output /tmp/ocr-privacy-evidence.json \

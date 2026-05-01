@@ -109,7 +109,7 @@ Non-goals: `browser_ui`, `desktop_ui`, `complete_ocr_pipeline`, `visual_redactio
 
 ### CLI aggregate-only OCR Privacy evidence wrapper
 ```bash
-mdid-cli ocr-privacy-evidence \
+cargo run -p mdid-cli -- ocr-privacy-evidence \
   --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \
   --runner-path scripts/ocr_eval/run_ocr_privacy_evidence.py \
   --output /tmp/ocr-privacy-evidence.json \
