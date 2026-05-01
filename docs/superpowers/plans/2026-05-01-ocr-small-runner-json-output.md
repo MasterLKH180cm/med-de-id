@@ -167,7 +167,7 @@ git commit -m "feat(ocr): add bounded small runner json output"
 
 - [x] **Step 1: Update README completion evidence**
 
-Update the current repository status text to mention that the PP-OCRv5 mobile small OCR runner now has a bounded JSON output mode for printed-text-line extraction evidence and downstream text-only Privacy Filter input. Keep completion percentages honest: CLI remains 95%, Browser/Web remains 99%, Desktop remains 99%, Overall remains 97% unless controller-visible facts justify a new integer change.
+Update the current repository status text to mention that the PP-OCRv5 mobile small OCR runner now has a bounded JSON output mode for printed-text-line extraction evidence and downstream text-only Privacy Filter input. Keep completion percentages honest: CLI remains 95%, Browser/Web remains 99%, Desktop remains 99%, Overall remains 97% unless repository-visible landed facts justify a new integer change.
 
 - [x] **Step 2: Verify README and tests**
 
