@@ -2046,6 +2046,94 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
 }
 
 #[test]
+fn privacy_filter_text_accepts_stdin_without_leaking_input_path() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example MRN-12345 phone 555-123-4567\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("privacy-filter-text"));
+    assert!(stdout.contains("<redacted>"));
+    assert!(stdout.contains("\"report_written\":true"));
+    for unsafe_text in [
+        "Jane Example",
+        "MRN-12345",
+        "555-123-4567",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+        "stdin",
+        "input_path",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+    assert!(report_path.exists());
+}
+
+#[test]
+fn privacy_filter_text_rejects_missing_input_source() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-report.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "missing input source: provide exactly one of --input-path or --stdin",
+        ));
+}
+
+#[test]
+fn privacy_filter_text_rejects_both_input_path_and_stdin() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("synthetic-input.txt");
+    let report_path = dir.path().join("privacy-filter-report.json");
+    fs::write(&input_path, "Patient Jane Example has MRN-123\n").unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--input-path")
+        .arg(&input_path)
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .write_stdin("Patient Jane Example MRN-12345\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "conflicting input sources: provide exactly one of --input-path or --stdin",
+        ));
+}
+
+#[test]
 fn privacy_filter_text_writes_verbatim_runner_json_report() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("synthetic-input.txt");
@@ -2271,7 +2359,7 @@ fn privacy_filter_text_rejects_missing_required_flags_and_blank_paths() {
                 "--report-path",
                 report_path.to_str().unwrap(),
             ],
-            "missing --input-path",
+            "missing input source: provide exactly one of --input-path or --stdin",
         ),
         (
             vec![

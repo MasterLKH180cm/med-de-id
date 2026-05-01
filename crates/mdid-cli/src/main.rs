@@ -113,8 +113,14 @@ struct ReviewMediaArgs {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+enum PrivacyFilterTextInput {
+    Path(PathBuf),
+    Stdin,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct PrivacyFilterTextArgs {
-    input_path: PathBuf,
+    input: PrivacyFilterTextInput,
     runner_path: PathBuf,
     report_path: PathBuf,
     summary_output: Option<PathBuf>,
@@ -510,6 +516,7 @@ fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
 
 fn parse_privacy_filter_text_args(args: &[String]) -> Result<PrivacyFilterTextArgs, String> {
     let mut input_path = None;
+    let mut stdin = false;
     let mut runner_path = None;
     let mut report_path = None;
     let mut summary_output = None;
@@ -521,6 +528,11 @@ fn parse_privacy_filter_text_args(args: &[String]) -> Result<PrivacyFilterTextAr
         let flag = args[index].as_str();
         if flag == "--mock" {
             mock = true;
+            index += 1;
+            continue;
+        }
+        if flag == "--stdin" {
+            stdin = true;
             index += 1;
             continue;
         }
@@ -543,8 +555,24 @@ fn parse_privacy_filter_text_args(args: &[String]) -> Result<PrivacyFilterTextAr
         index += 2;
     }
 
+    let input = match (input_path, stdin) {
+        (Some(path), false) => PrivacyFilterTextInput::Path(path),
+        (None, true) => PrivacyFilterTextInput::Stdin,
+        (None, false) => {
+            return Err(
+                "missing input source: provide exactly one of --input-path or --stdin".to_string(),
+            )
+        }
+        (Some(_), true) => {
+            return Err(
+                "conflicting input sources: provide exactly one of --input-path or --stdin"
+                    .to_string(),
+            )
+        }
+    };
+
     Ok(PrivacyFilterTextArgs {
-        input_path: input_path.ok_or_else(|| "missing --input-path".to_string())?,
+        input,
         runner_path: runner_path.ok_or_else(|| "missing --runner-path".to_string())?,
         report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
         summary_output,
@@ -2104,16 +2132,31 @@ fn is_safe_summary_identifier(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+const PRIVACY_FILTER_STDIN_MAX_BYTES: usize = 1024 * 1024;
+
 fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
     let _ = fs::remove_file(&args.report_path);
     if let Some(summary_output) = &args.summary_output {
         let _ = fs::remove_file(summary_output);
     }
 
-    let result = (|| {
-        require_regular_file(&args.input_path, "missing input file")?;
-        require_regular_file(&args.runner_path, "missing runner file")?;
-        run_privacy_filter_text_inner(&args)
+    let result = (|| match &args.input {
+        PrivacyFilterTextInput::Path(input_path) => {
+            require_regular_file(input_path, "missing input file")?;
+            require_regular_file(&args.runner_path, "missing runner file")?;
+            run_privacy_filter_text_inner(&args, input_path)
+        }
+        PrivacyFilterTextInput::Stdin => {
+            require_regular_file(&args.runner_path, "missing runner file")?;
+            let temp_path = write_privacy_filter_stdin_temp_file()?;
+            let run_result = run_privacy_filter_text_inner(&args, &temp_path);
+            let remove_result = fs::remove_file(&temp_path);
+            if run_result.is_ok() {
+                remove_result
+                    .map_err(|err| format!("failed to remove temporary stdin input file: {err}"))?;
+            }
+            run_result
+        }
     })();
     if result.is_err() {
         let _ = fs::remove_file(&args.report_path);
@@ -2124,14 +2167,36 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
     result
 }
 
-fn run_privacy_filter_text_inner(args: &PrivacyFilterTextArgs) -> Result<(), String> {
+fn write_privacy_filter_stdin_temp_file() -> Result<PathBuf, String> {
+    let mut bytes = Vec::new();
+    let limit = PRIVACY_FILTER_STDIN_MAX_BYTES + 1;
+    std::io::stdin()
+        .take(limit as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("failed to read stdin input: {err}"))?;
+    if bytes.is_empty() {
+        return Err("missing stdin input".to_string());
+    }
+    if bytes.len() > PRIVACY_FILTER_STDIN_MAX_BYTES {
+        return Err("stdin input exceeds 1048576 byte limit".to_string());
+    }
+    let path =
+        std::env::temp_dir().join(format!("mdid-privacy-filter-stdin-{}.txt", Uuid::new_v4()));
+    fs::write(&path, bytes).map_err(|err| format!("failed to write stdin input: {err}"))?;
+    Ok(path)
+}
+
+fn run_privacy_filter_text_inner(
+    args: &PrivacyFilterTextArgs,
+    input_path: &Path,
+) -> Result<(), String> {
     let mut command = std::process::Command::new(&args.python_command);
     command.arg(&args.runner_path);
     if args.mock {
         command.arg("--mock");
     }
     let mut child = command
-        .arg(&args.input_path)
+        .arg(input_path)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -2966,7 +3031,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text --input-path <path> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-handoff --image-path <image> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-handoff --image-path <image> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]
