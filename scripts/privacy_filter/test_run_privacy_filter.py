@@ -13,12 +13,20 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = REPO_ROOT / 'scripts' / 'privacy_filter' / 'run_privacy_filter.py'
+VALIDATOR = REPO_ROOT / 'scripts' / 'privacy_filter' / 'validate_privacy_filter_output.py'
 CORPUS_RUNNER = REPO_ROOT / 'scripts' / 'privacy_filter' / 'run_synthetic_corpus.py'
 CORPUS_FIXTURE_DIR = REPO_ROOT / 'scripts' / 'privacy_filter' / 'fixtures' / 'corpus'
 
 
 def load_runner_module():
     spec = importlib.util.spec_from_file_location('run_privacy_filter_under_test', RUNNER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_validator_module():
+    spec = importlib.util.spec_from_file_location('validate_privacy_filter_output_under_test', VALIDATOR)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -42,6 +50,27 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
         self.assertEqual(len(passport_spans), 1)
         self.assertEqual(passport_spans[0]['preview'], '<redacted>')
+
+    def test_numeric_passport_is_masked_without_overmatching_numeric_boundaries(self):
+        text = 'Patient Jane Example passport 123456789 reference 1234567890 123456789A A123456789'
+        payload = run_text(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        self.assertIn('[PASSPORT]', payload['masked_text'])
+        self.assertNotIn('passport 123456789', payload['masked_text'])
+        self.assertIn('1234567890', payload['masked_text'])
+        self.assertIn('123456789A', payload['masked_text'])
+        self.assertIn('A123456789', payload['masked_text'])
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+        self.assertEqual(len(passport_spans), 1)
+        self.assertEqual(passport_spans[0]['preview'], '<redacted>')
+
+    def test_passport_payload_is_accepted_by_validator_contract(self):
+        payload = run_text('Patient Jane Example passport 123456789\n')
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        validator.validate_privacy_filter_output(payload)
 
     def test_stdin_mock_reads_stdin_emits_contract_and_detects_phi(self):
         phi = 'Patient Jane Example has MRN-12345\n'
