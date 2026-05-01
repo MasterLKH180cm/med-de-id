@@ -66,6 +66,75 @@ fn dicom_fixture() -> Vec<u8> {
 }
 
 #[test]
+fn redact_image_ppm_writes_redacted_bytes_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let phi_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_dir).unwrap();
+    let input_path = phi_dir.join("Jane-source.ppm");
+    let output_path = phi_dir.join("redacted-output.ppm");
+    let summary_path = phi_dir.join("summary.json");
+    let input = [
+        b"P6\n2 2\n255\n".as_slice(),
+        &[
+            10, 11, 12,
+            20, 21, 22,
+            30, 31, 32,
+            40, 41, 42,
+        ],
+    ]
+    .concat();
+    fs::write(&input_path, input).unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm",
+            "--input",
+            input_path.to_str().unwrap(),
+            "--regions-json",
+            r#"[{"x":1,"y":0,"width":1,"height":2}]"#,
+            "--output",
+            output_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let redacted = fs::read(&output_path).unwrap();
+    assert_eq!(
+        redacted,
+        [
+            b"P6\n2 2\n255\n".as_slice(),
+            &[10, 11, 12, 0, 0, 0, 30, 31, 32, 0, 0, 0],
+        ]
+        .concat()
+    );
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "image_redaction_export_summary");
+    assert_eq!(summary["format"], "ppm_p6");
+    assert_eq!(summary["redacted_region_count"], 1);
+    assert_eq!(summary["redacted_pixel_count"], 2);
+    assert_eq!(summary["bytes_written"], redacted.len());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in [
+        "Jane",
+        input_path.to_str().unwrap(),
+        output_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        phi_dir.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(!summary_text.contains(unsafe_text), "summary leaked {unsafe_text}");
+    }
+}
+
+#[test]
 fn cli_prints_ready_banner_with_no_args() {
     let mut cmd = Command::cargo_bin("mdid-cli").unwrap();
 
