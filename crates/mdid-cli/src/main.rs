@@ -1634,7 +1634,7 @@ fn validate_ocr_privacy_category_counts(value: &Value) -> bool {
 
 fn run_ocr_small_json(args: OcrSmallJsonArgs) -> Result<(), String> {
     if let Some(summary_output) = &args.summary_output {
-        if summary_output == &args.report_path {
+        if paths_are_same_existing_or_lexical(&args.report_path, summary_output) {
             return Err("OCR small JSON summary path must differ from report path".to_string());
         }
     }
@@ -1657,6 +1657,16 @@ fn run_ocr_small_json(args: OcrSmallJsonArgs) -> Result<(), String> {
         }
     }
     result
+}
+
+fn paths_are_same_existing_or_lexical(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn run_ocr_small_json_inner(args: &OcrSmallJsonArgs) -> Result<(), String> {
@@ -1770,6 +1780,7 @@ fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
         "engine",
         "scope",
         "privacy_filter_contract",
+        "engine_status",
         "ready_for_text_pii_eval",
         "extracted_text",
         "normalized_text",
@@ -1788,6 +1799,17 @@ fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
         if value[key] != expected {
             return Err("invalid OCR small JSON report".to_string());
         }
+    }
+    let engine_status = value["engine_status"]
+        .as_str()
+        .ok_or_else(|| "invalid OCR small JSON report".to_string())?;
+    if ![
+        "deterministic_synthetic_fixture_fallback",
+        "local_paddleocr_execution",
+    ]
+    .contains(&engine_status)
+    {
+        return Err("invalid OCR small JSON report".to_string());
     }
     if !value["ready_for_text_pii_eval"].is_boolean()
         || !value["extracted_text"].is_string()
