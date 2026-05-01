@@ -3988,8 +3988,8 @@ json.dump({{
     }},
     "masked_text": "Patient [NAME] [MRN]",
     "spans": [
-        {{"start": 8, "end": 21, "text": "[REDACTED]", "category": "NAME"}},
-        {{"start": 22, "end": 32, "text": "[REDACTED]", "category": "MRN"}}
+        {{"label": "NAME", "start": 8, "end": 21, "preview": "<redacted>"}},
+        {{"label": "MRN", "start": 22, "end": 32, "preview": "<redacted>"}}
     ],
     "metadata": {{
         "engine": "fake_stdin_only_runner",
@@ -4189,7 +4189,7 @@ fn privacy_filter_text_writes_verbatim_runner_json_report() {
         &runner_path,
         r#"import json, pathlib, sys
 pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
-print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PERSON> has <ID>","spans":[{"label":"PERSON","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
+print(json.dumps({"summary":{"detected_span_count":1,"category_counts":{"NAME":1}},"masked_text":"Patient [NAME] has <ID>","spans":[{"label":"NAME","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
 "#,
     )
     .unwrap();
@@ -4211,7 +4211,7 @@ print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PE
 
     let report_text = fs::read_to_string(&report_path).unwrap();
     assert!(report_text.contains("\"network_api_called\": false"));
-    assert!(report_text.contains("Patient <PERSON> has <ID>"));
+    assert!(report_text.contains("Patient [NAME] has <ID>"));
     assert!(!report_text.contains("Jane Example"));
 }
 
