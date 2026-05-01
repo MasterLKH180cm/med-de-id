@@ -16,6 +16,8 @@
 - Current README snapshot before this roadmap: CLI 96%, Browser/Web 99%, Desktop app 99%, Overall 97%.
 - Open GitHub issues: `#4` DICOM, `#5` PDF/OCR, `#6` conservative media/FCS remain open; `#1`-`#3` are closed.
 - Current gap cluster from README and plans: full OCR, visual redaction, image pixel redaction, handwriting recognition, final PDF rewrite/export, richer browser/desktop workflow depth, production packaging/hardening, broader controller/workflow orchestration.
+- User FIRST PRIORITY ACTION ITEMS are tracked explicitly as: (1) text-only PII detection/masking POC hardening, (2) local OCR execution depth and model-quality evidence, (3) visual redaction foundations, (4) image pixel redaction/rewrite foundations, (5) handwriting recognition workflow honesty, (6) final PDF rewrite/export, (7) Browser/Web workflow depth, (8) Desktop workstation workflow depth, (9) de-id-scoped runtime/controller/job orchestration, (10) conservative media disclosure/export honesty, (11) offline/local-first packaging and hardening evidence, and (12) PHI-safe verification/audit evidence across all surfaces.
+- This list is a priority tracking list, not a completion claim; each item remains bounded by the task/step checkboxes and evidence below.
 - Because no full-capability roadmap existed, this cron round is allowed to land the roadmap/tracking foundation before selecting the next code task. Future rounds must use this roadmap to select implementation work, not keep producing plan-only churn.
 
 ## Non-goals and product boundaries
@@ -206,9 +208,18 @@ Completed in commits `b01c819` and `3996913`: `ImageRedactionRegion` carries a b
 
 Completed in commit `b01c819`: `crates/mdid-adapters/tests/image_redaction_adapter.rs` uses tiny synthetic RGB buffers and verifies approved bbox pixels change, outside pixels remain unchanged, configured fill colors work, malformed RGB buffers fail closed, and out-of-bounds regions fail closed without partial mutation.
 
-- [ ] **Step 3: Runtime/application surface**
+- [x] **Step 3: Runtime/application surface**
 
-Not yet complete. The landed slice adds only bounded in-memory RGB image-region redaction in domain/adapters. Runtime/application endpoints are still pending and must not be claimed as Browser/Desktop/PDF/media execution.
+Completed in this bounded PPM-only slice: `VisualRedactionService` delegates explicit `ImageRedactionRegion` bbox requests to `mdid_adapters::redact_ppm_p6_bytes_with_verification`, returns rewritten PPM bytes plus PHI-safe aggregate verification, redacts debug byte output, and maps malformed PPM/out-of-bounds regions into `ApplicationError::VisualRedaction` without source filenames/paths. Runtime now exposes `POST /visual-redaction/ppm` for JSON `{ ppm_bytes_base64, regions:[{x,y,width,height}] }`, returning `{ rewritten_ppm_bytes_base64, verification }` on success and `422 invalid_visual_redaction` for malformed base64, malformed PPM, invalid/empty regions, or out-of-bounds regions.
+
+This does **not** claim OCR, automatic visual detection, PNG/JPEG rewrite, PDF/media rewrite/export, browser/desktop execution, or packaging completion.
+
+Verification run in this slice:
+
+```bash
+source "$HOME/.cargo/env" && cargo test -p mdid-application --test visual_redaction -- --nocapture
+source "$HOME/.cargo/env" && CARGO_BUILD_JOBS=1 cargo test -p mdid-runtime visual_redaction -- --nocapture
+```
 
 - [ ] **Step 4: Browser/desktop review/save helpers**
 
