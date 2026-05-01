@@ -10,8 +10,8 @@ use std::{
 };
 
 use mdid_adapters::{
-    ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter, FieldPolicy,
-    FieldPolicyAction, XlsxTabularAdapter, redact_ppm_p6_bytes,
+    redact_ppm_p6_bytes, ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter,
+    FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
 };
 use mdid_application::{
     ConservativeMediaDeidentificationService, DicomDeidentificationService,
@@ -1294,16 +1294,14 @@ fn run_command(command: CliCommand) -> Result<(), String> {
 }
 
 fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {
-    let regions: Vec<ImageRedactionRegion> = serde_json::from_str(&args.regions_json)
-        .map_err(|_| "invalid regions JSON".to_string())?;
+    let regions: Vec<ImageRedactionRegion> =
+        serde_json::from_str(&args.regions_json).map_err(|_| "invalid regions JSON".to_string())?;
     let input = fs::read(&args.input).map_err(|_| "failed to read PPM input".to_string())?;
     let redacted = redact_ppm_p6_bytes(&input, &regions)
         .map_err(|_| "failed to redact PPM image".to_string())?;
-    fs::write(&args.output, &redacted).map_err(|_| "failed to write redacted PPM output".to_string())?;
-    let redacted_pixel_count: u64 = regions
-        .iter()
-        .map(|region| u64::from(region.width()) * u64::from(region.height()))
-        .sum();
+    fs::write(&args.output, &redacted)
+        .map_err(|_| "failed to write redacted PPM output".to_string())?;
+    let redacted_pixel_count = unique_redacted_pixel_count(&regions)?;
     let summary = json!({
         "artifact": "image_redaction_export_summary",
         "schema_version": 1,
@@ -1313,7 +1311,11 @@ fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {
         "bytes_written": redacted.len(),
         "raw_paths_included": false,
     });
-    write_json_artifact(&args.summary_output, &summary, "image redaction export summary")?;
+    write_json_artifact(
+        &args.summary_output,
+        &summary,
+        "image redaction export summary",
+    )?;
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -1325,6 +1327,26 @@ fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {
         .map_err(|err| format!("failed to render image redaction summary: {err}"))?
     );
     Ok(())
+}
+
+fn unique_redacted_pixel_count(regions: &[ImageRedactionRegion]) -> Result<u64, String> {
+    let mut covered = HashSet::new();
+    for region in regions {
+        let right = region
+            .x()
+            .checked_add(region.width())
+            .ok_or_else(|| "failed to count redacted pixels".to_string())?;
+        let bottom = region
+            .y()
+            .checked_add(region.height())
+            .ok_or_else(|| "failed to count redacted pixels".to_string())?;
+        for y in region.y()..bottom {
+            for x in region.x()..right {
+                covered.insert((x, y));
+            }
+        }
+    }
+    u64::try_from(covered.len()).map_err(|_| "failed to count redacted pixels".to_string())
 }
 
 fn run_offline_readiness(args: OfflineReadinessArgs) -> Result<(), String> {

@@ -75,12 +75,7 @@ fn redact_image_ppm_writes_redacted_bytes_and_phi_safe_summary() {
     let summary_path = phi_dir.join("summary.json");
     let input = [
         b"P6\n2 2\n255\n".as_slice(),
-        &[
-            10, 11, 12,
-            20, 21, 22,
-            30, 31, 32,
-            40, 41, 42,
-        ],
+        &[10, 11, 12, 20, 21, 22, 30, 31, 32, 40, 41, 42],
     ]
     .concat();
     fs::write(&input_path, input).unwrap();
@@ -130,8 +125,62 @@ fn redact_image_ppm_writes_redacted_bytes_and_phi_safe_summary() {
     ] {
         assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
         assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
-        assert!(!summary_text.contains(unsafe_text), "summary leaked {unsafe_text}");
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
     }
+}
+
+#[test]
+fn redact_image_ppm_summary_counts_unique_pixels_for_overlapping_regions() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("source.ppm");
+    let output_path = dir.path().join("redacted.ppm");
+    let summary_path = dir.path().join("summary.json");
+    let input = [
+        b"P6\n3 2\n255\n".as_slice(),
+        &[
+            1, 1, 1, // (0,0)
+            2, 2, 2, // (1,0) redacted by both regions
+            3, 3, 3, // (2,0) redacted by second region
+            4, 4, 4, // (0,1)
+            5, 5, 5, // (1,1) redacted by both regions
+            6, 6, 6, // (2,1) redacted by second region
+        ],
+    ]
+    .concat();
+    fs::write(&input_path, input).unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm",
+            "--input",
+            input_path.to_str().unwrap(),
+            "--regions-json",
+            r#"[{"x":1,"y":0,"width":1,"height":2},{"x":1,"y":0,"width":2,"height":2}]"#,
+            "--output",
+            output_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let redacted = fs::read(&output_path).unwrap();
+    assert_eq!(
+        redacted,
+        [
+            b"P6\n3 2\n255\n".as_slice(),
+            &[1, 1, 1, 0, 0, 0, 0, 0, 0, 4, 4, 4, 0, 0, 0, 0, 0, 0,],
+        ]
+        .concat()
+    );
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["redacted_region_count"], 2);
+    assert_eq!(summary["redacted_pixel_count"], 4);
 }
 
 #[test]

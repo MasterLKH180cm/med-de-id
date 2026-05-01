@@ -41,6 +41,9 @@ fn parse_ppm_p6_header(bytes: &[u8]) -> Result<(u32, u32, usize), ImageRedaction
     let width = parse_ppm_u32(next_ppm_token(bytes, &mut offset)?)?;
     let height = parse_ppm_u32(next_ppm_token(bytes, &mut offset)?)?;
     let maxval = parse_ppm_u32(next_ppm_token(bytes, &mut offset)?)?;
+    if width == 0 || height == 0 {
+        return Err(ImageRedactionError::MalformedPpmP6);
+    }
     if maxval != 255 {
         return Err(ImageRedactionError::MalformedPpmP6);
     }
@@ -51,7 +54,10 @@ fn parse_ppm_p6_header(bytes: &[u8]) -> Result<(u32, u32, usize), ImageRedaction
     Ok((width, height, offset))
 }
 
-fn next_ppm_token<'a>(bytes: &'a [u8], offset: &mut usize) -> Result<&'a [u8], ImageRedactionError> {
+fn next_ppm_token<'a>(
+    bytes: &'a [u8],
+    offset: &mut usize,
+) -> Result<&'a [u8], ImageRedactionError> {
     while *offset < bytes.len() && bytes[*offset].is_ascii_whitespace() {
         *offset += 1;
     }

@@ -21,12 +21,7 @@ fn ppm_p6_redacts_approved_bbox_to_black_and_preserves_other_bytes() {
         output,
         [
             b"P6\n2 2\n255\n".as_slice(),
-            &[
-                10, 11, 12,
-                0, 0, 0,
-                30, 31, 32,
-                0, 0, 0,
-            ],
+            &[10, 11, 12, 0, 0, 0, 30, 31, 32, 0, 0, 0,],
         ]
         .concat()
     );
@@ -36,12 +31,7 @@ fn ppm_p6_redacts_approved_bbox_to_black_and_preserves_other_bytes() {
 fn ppm_p6_out_of_bounds_region_fails_without_debugging_raw_source_names() {
     let input = [
         b"P6\n2 2\n255\n".as_slice(),
-        &[
-            b'J', b'a', b'n',
-            b'e', 1, 2,
-            3, 4, 5,
-            6, 7, 8,
-        ],
+        &[b'J', b'a', b'n', b'e', 1, 2, 3, 4, 5, 6, 7, 8],
     ]
     .concat();
     let region = ImageRedactionRegion::new(1, 1, 2, 1).expect("valid region shape");
@@ -52,6 +42,24 @@ fn ppm_p6_out_of_bounds_region_fails_without_debugging_raw_source_names() {
     assert_eq!(err, ImageRedactionError::RegionOutOfBounds);
     assert!(!debug.contains("Jane"));
     assert!(!debug.contains("patient.ppm"));
+}
+
+#[test]
+fn ppm_p6_zero_width_is_malformed() {
+    let input = b"P6\n0 1\n255\n";
+
+    let err = redact_ppm_p6_bytes(input, &[]).expect_err("zero-width PPM fails closed");
+
+    assert_eq!(err, ImageRedactionError::MalformedPpmP6);
+}
+
+#[test]
+fn ppm_p6_zero_height_is_malformed() {
+    let input = b"P6\n1 0\n255\n";
+
+    let err = redact_ppm_p6_bytes(input, &[]).expect_err("zero-height PPM fails closed");
+
+    assert_eq!(err, ImageRedactionError::MalformedPpmP6);
 }
 
 #[test]
