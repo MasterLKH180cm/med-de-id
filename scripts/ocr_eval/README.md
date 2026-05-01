@@ -69,11 +69,13 @@ This wrapper is CLI/runtime evidence only. It is not OCR model-quality proof, no
 
 ### Text-only Privacy Filter handoff check
 ```bash
-python scripts/ocr_eval/run_small_ocr.py --mock --json scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png > /tmp/ocr-extraction.json
+python scripts/ocr_eval/run_small_ocr.py --mock scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png > /tmp/small-ocr-output.txt
+python scripts/ocr_eval/build_ocr_handoff.py --source scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --input /tmp/small-ocr-output.txt --output /tmp/ocr-handoff.json
+python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
 python - <<'PY'
 import json
 from pathlib import Path
-handoff = json.loads(Path('/tmp/ocr-extraction.json').read_text(encoding='utf-8'))
+handoff = json.loads(Path('/tmp/ocr-handoff.json').read_text(encoding='utf-8'))
 Path('/tmp/ocr-normalized-text.txt').write_text(handoff['normalized_text'], encoding='utf-8')
 PY
 python scripts/privacy_filter/run_privacy_filter.py --mock /tmp/ocr-normalized-text.txt > /tmp/privacy-filter-output.json

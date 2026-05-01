@@ -28,7 +28,7 @@
 - Modify: `crates/mdid-cli/src/main.rs`
 - Test: `crates/mdid-cli/tests/cli_smoke.rs`
 
-- [ ] **Step 1: Write the failing success smoke test**
+- [x] **Step 1: Write the failing success smoke test**
 
 Add this test near the existing `ocr-to-privacy-filter-corpus` tests in `crates/mdid-cli/tests/cli_smoke.rs`:
 
@@ -105,13 +105,13 @@ fn ocr_to_privacy_filter_single_runs_fixture_chain_without_phi_leaks() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p mdid-cli ocr_to_privacy_filter_single_runs_fixture_chain_without_phi_leaks -- --nocapture`
 
 Expected: FAIL because `ocr-to-privacy-filter` is not yet a known command.
 
-- [ ] **Step 3: Implement minimal CLI command**
+- [x] **Step 3: Implement minimal CLI command**
 
 In `crates/mdid-cli/src/main.rs`, add a new command variant, parser, help text entry, runner, and helpers by following the existing `ocr-to-privacy-filter-corpus` wrapper style. The command must:
 
@@ -159,13 +159,13 @@ Implementation requirements:
 
 The count values must be populated from the Privacy Filter output summary. Do not include raw OCR text, normalized text, masked text, spans, previews, local paths, fixture filenames, image bytes, bbox values, or raw synthetic PHI.
 
-- [ ] **Step 4: Run success test to verify it passes**
+- [x] **Step 4: Run success test to verify it passes**
 
 Run: `cargo test -p mdid-cli ocr_to_privacy_filter_single_runs_fixture_chain_without_phi_leaks -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Write stale cleanup failure test**
+- [x] **Step 5: Write stale cleanup failure test**
 
 Add this test in `crates/mdid-cli/tests/cli_smoke.rs`:
 
@@ -207,13 +207,13 @@ fn ocr_to_privacy_filter_single_removes_stale_outputs_on_missing_image() {
 }
 ```
 
-- [ ] **Step 6: Run cleanup test to verify it passes**
+- [x] **Step 6: Run cleanup test to verify it passes**
 
 Run: `cargo test -p mdid-cli ocr_to_privacy_filter_single_removes_stale_outputs_on_missing_image -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 7: Run broader CLI tests and formatting**
+- [x] **Step 7: Run broader CLI tests and formatting**
 
 Run:
 
@@ -226,7 +226,7 @@ git diff --check
 
 Expected: all PASS, no diff whitespace errors.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/mdid-cli/src/main.rs crates/mdid-cli/tests/cli_smoke.rs
