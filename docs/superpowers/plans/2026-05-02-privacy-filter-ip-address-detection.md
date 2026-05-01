@@ -26,7 +26,7 @@
 - Modify: `scripts/privacy_filter/validate_privacy_filter_output.py`
 - Test: `scripts/privacy_filter/test_run_privacy_filter.py`
 
-- [ ] **Step 1: Write failing Python tests for IPv4 detection and bounds**
+- [x] **Step 1: Write failing Python tests for IPv4 detection and bounds**
 
 Append these tests to `scripts/privacy_filter/test_run_privacy_filter.py` inside the main test class that already exercises `heuristic_detect`:
 
@@ -50,12 +50,12 @@ Append these tests to `scripts/privacy_filter/test_run_privacy_filter.py` inside
         self.assertNotIn('[IP_ADDRESS]', payload['masked_text'])
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `python -m pytest scripts/privacy_filter/test_run_privacy_filter.py -q`
 Expected: FAIL because `IP_ADDRESS` is not detected yet.
 
-- [ ] **Step 3: Implement minimal IPv4 detection and validator allowlist**
+- [x] **Step 3: Implement minimal IPv4 detection and validator allowlist**
 
 In `scripts/privacy_filter/run_privacy_filter.py`, add near other regex constants:
 
@@ -92,12 +92,12 @@ In `heuristic_detect`, after phone/date/SSN detection and before broad numeric i
 
 In `scripts/privacy_filter/validate_privacy_filter_output.py`, add `IP_ADDRESS` to `ALLOWED_LABELS`.
 
-- [ ] **Step 4: Run Python tests to verify GREEN**
+- [x] **Step 4: Run Python tests to verify GREEN**
 
 Run: `python -m pytest scripts/privacy_filter/test_run_privacy_filter.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Verify validator accepts generated IP_ADDRESS output**
+- [x] **Step 5: Verify validator accepts generated IP_ADDRESS output**
 
 Run:
 
@@ -112,7 +112,7 @@ python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-fil
 
 Expected: validator exits 0 and prints no raw PHI.
 
-- [ ] **Step 6: Commit Python slice**
+- [x] **Step 6: Commit Python slice**
 
 Run:
 
@@ -127,7 +127,7 @@ git commit -m "feat(privacy-filter): detect IPv4 address text spans"
 - Modify: `crates/mdid-cli/src/main.rs`
 - Test: `crates/mdid-cli/tests/cli_smoke.rs`
 
-- [ ] **Step 1: Write failing CLI smoke test**
+- [x] **Step 1: Write failing CLI smoke test**
 
 Add a test near the other `privacy_filter_text` category smoke tests in `crates/mdid-cli/tests/cli_smoke.rs`:
 
@@ -175,26 +175,26 @@ fn privacy_filter_text_detects_ip_address_from_stdin_without_raw_ip_leaks() {
 }
 ```
 
-- [ ] **Step 2: Run CLI test to verify RED**
+- [x] **Step 2: Run CLI test to verify RED**
 
 Run: `cargo test -p mdid-cli privacy_filter_text_detects_ip_address_from_stdin_without_raw_ip_leaks --test cli_smoke -- --nocapture`
 Expected: FAIL because Rust `is_allowed_privacy_filter_label` rejects `IP_ADDRESS`.
 
-- [ ] **Step 3: Add Rust allowlist entry**
+- [x] **Step 3: Add Rust allowlist entry**
 
 In `crates/mdid-cli/src/main.rs`, add `"IP_ADDRESS"` to `is_allowed_privacy_filter_label` next to the other Privacy Filter labels.
 
-- [ ] **Step 4: Run CLI test to verify GREEN**
+- [x] **Step 4: Run CLI test to verify GREEN**
 
 Run: `cargo test -p mdid-cli privacy_filter_text_detects_ip_address_from_stdin_without_raw_ip_leaks --test cli_smoke -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 5: Run broader Privacy Filter CLI regression gate**
+- [x] **Step 5: Run broader Privacy Filter CLI regression gate**
 
 Run: `cargo test -p mdid-cli privacy_filter_text --test cli_smoke -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 6: Commit Rust CLI alignment**
+- [x] **Step 6: Commit Rust CLI alignment**
 
 Run:
 
@@ -209,7 +209,7 @@ git commit -m "test(cli): accept privacy filter IP address category"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-05-02-privacy-filter-ip-address-detection.md`
 
-- [ ] **Step 1: Update README completion snapshot**
+- [x] **Step 1: Update README completion snapshot**
 
 Edit `README.md` current status to state this round adds and completes one CLI/runtime text-only PII detection requirement: `IP_ADDRESS`. Keep Browser/Web at 99%, Desktop app at 99%, Overall at 97%, and CLI at 96% unless fraction arithmetic visibly crosses the next integer threshold. Add explicit fraction accounting: prior CLI `131/136`, new requirement added and completed `132/137`, conservative floor remains `96%`. State Browser/Web +5%: FAIL/not claimed and Desktop +5%: FAIL/not claimed because this is CLI/runtime-only text detection.
 
@@ -219,11 +219,11 @@ Add a verification evidence paragraph:
 Verification evidence for the `mdid-cli privacy-filter-text` IP address detection slice landed on this branch: the bounded local text-only Privacy Filter runner now detects syntactically valid IPv4 addresses such as `192.168.10.42` as `IP_ADDRESS`, masks them as `[IP_ADDRESS]`, emits only `<redacted>` span previews, and keeps `metadata.network_api_called: false`. The detector rejects invalid or embedded IPv4-like tokens such as `999.168.10.42`, `host192.168.10.42`, and `192.168.10.42extra`. The Rust CLI summary/category validation now accepts `IP_ADDRESS`, and stdin smoke coverage proves stdout, stderr, and report contents do not leak the raw IP address, synthetic names, MRNs, report paths, or temp directories. Repository-visible verification: `python -m pytest scripts/privacy_filter/test_run_privacy_filter.py -q`, `python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-ip-address.json`, and `cargo test -p mdid-cli privacy_filter_text --test cli_smoke -- --nocapture`.
 ```
 
-- [ ] **Step 2: Truth-sync plan checkboxes**
+- [x] **Step 2: Truth-sync plan checkboxes**
 
 Mark completed steps in this plan with `- [x]` after successful implementation and verification.
 
-- [ ] **Step 3: Run final verification**
+- [x] **Step 3: Run final verification**
 
 Run:
 
@@ -241,7 +241,7 @@ git diff --check
 
 Expected: all commands PASS.
 
-- [ ] **Step 4: Commit docs truth-sync**
+- [x] **Step 4: Commit docs truth-sync**
 
 Run:
 
@@ -250,7 +250,7 @@ git add README.md docs/superpowers/plans/2026-05-02-privacy-filter-ip-address-de
 git commit -m "docs: truth sync privacy filter IP address detection"
 ```
 
-- [ ] **Step 5: Final branch status**
+- [x] **Step 5: Final branch status**
 
 Run:
 
