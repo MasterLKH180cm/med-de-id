@@ -4776,13 +4776,15 @@ fn cli_rejects_scope_drift_controller_commands() {
 }
 
 #[test]
-fn ocr_privacy_evidence_help_contains_exact_usage_line() {
+fn ocr_privacy_evidence_help_contains_exact_usage_line_and_command_detail() {
     Command::cargo_bin("mdid-cli")
         .unwrap()
         .arg("--help")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--python-command <cmd>] [--mock]"));
+        .stderr(predicate::str::contains("mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--python-command <cmd>] [--mock]"))
+        .stderr(predicate::str::contains("Commands:\n  status"))
+        .stderr(predicate::str::contains("ocr-privacy-evidence Run local OCR privacy evidence and write a bounded PHI-safe JSON report."));
 }
 
 #[test]
