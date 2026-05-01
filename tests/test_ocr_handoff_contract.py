@@ -144,3 +144,31 @@ def test_ppocrv5_mobile_bounded_spike_handoff_metadata_and_privacy_filter_text_c
     pii_obj = json.loads(pii.stdout)
     assert pii_obj["summary"]["detected_span_count"] >= 1
     assert pii_obj["metadata"]["network_api_called"] is False
+
+
+def test_small_ocr_json_mode_emits_bounded_extraction_contract_and_feeds_privacy_filter(tmp_path):
+    ocr = run(RUNNER, "--mock", "--json", FIXTURE_IMAGE)
+    assert ocr.returncode == 0, ocr.stderr
+
+    obj = json.loads(ocr.stdout)
+    expected_text = EXPECTED_TEXT.read_text(encoding="utf-8")
+    assert obj == {
+        "candidate": "PP-OCRv5_mobile_rec",
+        "engine": "PP-OCRv5-mobile-bounded-spike",
+        "engine_status": "deterministic_synthetic_fixture_fallback",
+        "scope": "printed_text_line_extraction_only",
+        "source": "synthetic_printed_phi_line.png",
+        "extracted_text": expected_text,
+        "normalized_text": " ".join(expected_text.split()),
+        "ready_for_text_pii_eval": True,
+        "privacy_filter_contract": "text_only_normalized_input",
+        "non_goals": sorted(REQUIRED_NON_GOALS),
+    }
+
+    privacy_input = tmp_path / "privacy-input.txt"
+    privacy_input.write_text(obj["normalized_text"], encoding="utf-8")
+    pii = run(PRIVACY_FILTER, "--mock", privacy_input)
+    assert pii.returncode == 0, pii.stderr
+    pii_obj = json.loads(pii.stdout)
+    assert pii_obj["summary"]["detected_span_count"] >= 1
+    assert pii_obj["metadata"]["network_api_called"] is False
