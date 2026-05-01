@@ -3136,6 +3136,80 @@ fn cli_privacy_filter_text_summary_output_is_phi_safe() {
 }
 
 #[test]
+fn privacy_filter_text_rejects_same_report_and_summary_path_before_cleanup() {
+    let bin = assert_cmd::cargo::cargo_bin("mdid-cli");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output_path = dir.path().join("Jane-Example-MRN-12345-output.json");
+    fs::write(&output_path, "stale Jane Example MRN-12345").expect("write stale output");
+
+    Command::new(&bin)
+        .args([
+            "privacy-filter-text",
+            "--input-path",
+            repo_path("scripts/privacy_filter/fixtures/sample_text_input.txt").as_str(),
+            "--runner-path",
+            repo_path("scripts/privacy_filter/run_privacy_filter.py").as_str(),
+            "--report-path",
+        ])
+        .arg(&output_path)
+        .arg("--summary-output")
+        .arg(&output_path)
+        .args(["--python-command", default_python_command(), "--mock"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "privacy filter summary path must differ from report path",
+        ))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not())
+        .stderr(predicate::str::contains(output_path.to_string_lossy().as_ref()).not());
+
+    assert_eq!(
+        fs::read_to_string(&output_path).expect("stale output retained"),
+        "stale Jane Example MRN-12345"
+    );
+}
+
+#[test]
+fn privacy_filter_text_rejects_alias_report_and_summary_path_before_cleanup() {
+    let bin = assert_cmd::cargo::cargo_bin("mdid-cli");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output_path = dir.path().join("privacy-filter-report.json");
+    let alias_path = dir.path().join(".").join("privacy-filter-report.json");
+    fs::write(&output_path, "stale Jane Example MRN-12345").expect("write stale output");
+
+    Command::new(&bin)
+        .args([
+            "privacy-filter-text",
+            "--input-path",
+            repo_path("scripts/privacy_filter/fixtures/sample_text_input.txt").as_str(),
+            "--runner-path",
+            repo_path("scripts/privacy_filter/run_privacy_filter.py").as_str(),
+            "--report-path",
+        ])
+        .arg(&output_path)
+        .arg("--summary-output")
+        .arg(&alias_path)
+        .args(["--python-command", default_python_command(), "--mock"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "privacy filter summary path must differ from report path",
+        ))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not())
+        .stderr(predicate::str::contains(output_path.to_string_lossy().as_ref()).not())
+        .stderr(predicate::str::contains(alias_path.to_string_lossy().as_ref()).not());
+
+    assert_eq!(
+        fs::read_to_string(&output_path).expect("stale output retained"),
+        "stale Jane Example MRN-12345"
+    );
+}
+
+#[test]
 fn cli_privacy_filter_text_summary_output_removes_stale_file_on_prerequisite_failure() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir

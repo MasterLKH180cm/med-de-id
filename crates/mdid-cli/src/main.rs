@@ -2660,6 +2660,11 @@ fn is_safe_summary_identifier(value: &str) -> bool {
 const PRIVACY_FILTER_STDIN_MAX_BYTES: usize = 1024 * 1024;
 
 fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
+    if let Some(summary_output) = &args.summary_output {
+        if paths_are_same_existing_or_lexical(&args.report_path, summary_output) {
+            return Err("privacy filter summary path must differ from report path".to_string());
+        }
+    }
     let _ = fs::remove_file(&args.report_path);
     if let Some(summary_output) = &args.summary_output {
         let _ = fs::remove_file(summary_output);
