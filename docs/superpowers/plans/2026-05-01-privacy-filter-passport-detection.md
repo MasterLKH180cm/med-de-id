@@ -51,12 +51,18 @@ Run: `python -m pytest scripts/privacy_filter/test_run_privacy_filter.py::Privac
 
 Expected: FAIL because `PASSPORT` is not detected or is not allowed by the validator.
 
-- [x] **Step 3: Implement the minimal Python detector and validator alignment**
+- [x] **Step 3: Implement the final bounded Python detector and validator alignment**
 
-Add this near the other regex constants in `scripts/privacy_filter/run_privacy_filter.py`:
+Final implementation after SDD review uses separate bounded regexes rather than a single broad numeric alternative. Add this near the other regex constants in `scripts/privacy_filter/run_privacy_filter.py`:
 
 ```python
-PASSPORT_RE = re.compile(r'(?<![A-Za-z0-9])(?:[A-Z]\d{8}|\d{9})(?![A-Za-z0-9])')
+PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
+PASSPORT_NUMERIC_CONTEXT_RE = re.compile(
+    r'\b(?:passport(?:\s+(?:number|no\.?))?)\s+(\d{9})(?![A-Za-z0-9-])',
+    re.I,
+)
+MRN_RE = re.compile(r'\bMRN[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
+ID_RE = re.compile(r'\bID[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
 ```
 
 Update the allowlist in both `scripts/privacy_filter/run_privacy_filter.py` and `scripts/privacy_filter/validate_privacy_filter_output.py`:
@@ -65,12 +71,18 @@ Update the allowlist in both `scripts/privacy_filter/run_privacy_filter.py` and 
 ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'ZIP', 'PASSPORT'}
 ```
 
-Add this detection loop after the SSN loop and before ZIP/address loops in `scripts/privacy_filter/run_privacy_filter.py`:
+Keep the MRN/ID prefix guard and add these detection loops after the SSN loop and before ZIP/address loops in `scripts/privacy_filter/run_privacy_filter.py`:
 
 ```python
-    for m in PASSPORT_RE.finditer(text):
+    for m in PASSPORT_ALNUM_RE.finditer(text):
+        if _has_identifier_prefix(text, m.start()):
+            continue
         add_span(spans, 'PASSPORT', m.start(), m.end())
+    for m in PASSPORT_NUMERIC_CONTEXT_RE.finditer(text):
+        add_span(spans, 'PASSPORT', m.start(1), m.end(1))
 ```
+
+Review-driven boundary coverage added in this executed plan: numeric passports require explicit passport context; `passport 123456789-01`, embedded/overlong tokens, address-like numeric text, and MRN/ID numeric/alphanumeric hyphen/spaced variants are not overbroad PASSPORT detections. Alphanumeric MRN/ID variants are masked as MRN/ID rather than left raw.
 
 - [x] **Step 4: Run focused and contract tests to verify GREEN**
 
