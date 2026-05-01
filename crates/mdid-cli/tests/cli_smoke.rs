@@ -85,6 +85,54 @@ fn cli_prints_status_banner() {
 }
 
 #[test]
+fn offline_readiness_reports_cli_opf_and_ocr_without_phi_paths_or_network_claims() {
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "offline-readiness",
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--ocr-fixture-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--python-command",
+            default_python_command(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["artifact"], "offline_cli_ocr_readiness");
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["network_required"], false);
+    assert_eq!(report["privacy_filter"]["opf_requires_explicit_flag"], true);
+    assert_eq!(report["privacy_filter"]["network_api_called"], false);
+    assert_eq!(report["ocr"]["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(report["ocr"]["fallback_fixture_available"], true);
+    assert!(!stdout.contains("synthetic_printed_phi_line.png"));
+    assert!(!stdout.contains("run_small_ocr.py"));
+    assert!(!stdout.contains("run_privacy_filter.py"));
+    assert!(!stdout.contains("Jane Example"));
+    assert!(!stdout.contains("MRN-12345"));
+}
+
+#[test]
+fn offline_readiness_help_mentions_exact_usage_line() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "mdid-cli offline-readiness --privacy-runner-path <path> --ocr-runner-path <path> --ocr-fixture-path <path>",
+        ));
+}
+
+#[test]
 fn ocr_small_json_runs_repo_fixture_runner_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir
@@ -218,6 +266,7 @@ fn ocr_small_json_writes_phi_safe_summary_output() {
         summary_keys,
         [
             "artifact",
+            "schema_version",
             "candidate",
             "engine",
             "engine_status",
@@ -230,6 +279,7 @@ fn ocr_small_json_writes_phi_safe_summary_output() {
         .collect::<std::collections::BTreeSet<_>>()
     );
     assert_eq!(summary["artifact"], "ocr_small_json_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
     assert_eq!(summary["scope"], "printed_text_line_extraction_only");
