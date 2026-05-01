@@ -71,6 +71,33 @@ def assert_no_phi(*values: str):
         assert sentinel not in combined
 
 
+def test_ocr_privacy_evidence_default_runner_paths_support_documented_command(tmp_path):
+    output = tmp_path / "ocr-privacy-evidence.json"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "--image-path",
+            str(IMAGE),
+            "--output",
+            str(output),
+            "--mock",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
+    assert output.exists()
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report == EXPECTED
+    assert_no_phi(proc.stdout, proc.stderr, output.read_text(encoding="utf-8"))
+
+
 def test_ocr_privacy_evidence_success_path_writes_aggregate_only_report(tmp_path):
     output = tmp_path / "ocr-privacy-evidence.json"
 

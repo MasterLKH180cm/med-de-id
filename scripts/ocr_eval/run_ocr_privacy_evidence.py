@@ -30,6 +30,8 @@ NON_GOALS = [
 ]
 EXPECTED_CATEGORIES = {"EMAIL", "MRN", "NAME", "PHONE"}
 SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_OCR_RUNNER = SCRIPT_DIR / "run_small_ocr.py"
+DEFAULT_PRIVACY_RUNNER = SCRIPT_DIR.parent / "privacy_filter" / "run_privacy_filter.py"
 DEFAULT_OCR_VALIDATOR = SCRIPT_DIR / "validate_ocr_handoff.py"
 DEFAULT_PRIVACY_VALIDATOR = SCRIPT_DIR.parent / "privacy_filter" / "validate_privacy_filter_output.py"
 
@@ -49,8 +51,8 @@ class OutputWriteError(EvidenceError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image-path", required=True)
-    parser.add_argument("--ocr-runner-path", required=True)
-    parser.add_argument("--privacy-runner-path", required=True)
+    parser.add_argument("--ocr-runner-path", default=str(DEFAULT_OCR_RUNNER))
+    parser.add_argument("--privacy-runner-path", default=str(DEFAULT_PRIVACY_RUNNER))
     parser.add_argument("--output", required=True)
     parser.add_argument("--mock", action="store_true")
     return parser

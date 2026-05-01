@@ -107,6 +107,18 @@ This runner composes the existing PP-OCRv5 mobile bounded printed-text OCR runne
 
 Non-goals: `browser_ui`, `desktop_ui`, `complete_ocr_pipeline`, `visual_redaction`, `image_pixel_redaction`, `handwriting_recognition`, and `final_pdf_rewrite_export`. This is CLI/runtime evidence only; it does not claim Browser/Desktop execution, visual/image pixel redaction, final PDF rewrite/export, handwriting recognition, or full OCR pipeline behavior.
 
+### CLI aggregate-only OCR Privacy evidence wrapper
+```bash
+cargo run -p mdid-cli -- ocr-privacy-evidence \
+  --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \
+  --runner-path scripts/ocr_eval/run_ocr_privacy_evidence.py \
+  --output /tmp/ocr-privacy-evidence-cli.json \
+  --python-command python3 \
+  --mock
+```
+
+The `mdid-cli ocr-privacy-evidence` wrapper invokes the local aggregate-only OCR Privacy evidence runner, validates the bounded JSON report, writes the requested report, and emits only a PHI-safe CLI summary with the report path redacted. The report is aggregate-only, PHI-safe, and CLI/runtime evidence only. It is not Browser/Web execution, not Desktop execution, not OCR model-quality proof, not visual redaction, not image pixel redaction, not handwriting recognition, and not final PDF rewrite/export.
+
 ### OCR-to-Privacy-Filter corpus wrapper evidence
 ```bash
 cargo run -p mdid-cli -- ocr-to-privacy-filter-corpus \

@@ -4776,6 +4776,28 @@ fn cli_rejects_scope_drift_controller_commands() {
 }
 
 #[test]
+fn ocr_privacy_evidence_docs_include_exact_wrapper_command_and_scope_limits() {
+    let ocr_readme = fs::read_to_string(repo_path("scripts/ocr_eval/README.md")).unwrap();
+    assert!(ocr_readme.contains(r#"cargo run -p mdid-cli -- ocr-privacy-evidence \"#));
+    assert!(ocr_readme
+        .contains(r#"  --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \"#));
+    assert!(
+        ocr_readme.contains(r#"  --runner-path scripts/ocr_eval/run_ocr_privacy_evidence.py \"#)
+    );
+    assert!(ocr_readme.contains(r#"  --output /tmp/ocr-privacy-evidence-cli.json \"#));
+    assert!(ocr_readme.contains(r#"  --python-command python3 \"#));
+    assert!(ocr_readme.contains("  --mock"));
+    assert!(ocr_readme.contains("aggregate-only, PHI-safe, and CLI/runtime evidence only"));
+    assert!(ocr_readme.contains("not Browser/Web execution"));
+    assert!(ocr_readme.contains("not Desktop execution"));
+    assert!(ocr_readme.contains("not OCR model-quality proof"));
+    assert!(ocr_readme.contains("not visual redaction"));
+    assert!(ocr_readme.contains("not image pixel redaction"));
+    assert!(ocr_readme.contains("not handwriting recognition"));
+    assert!(ocr_readme.contains("not final PDF rewrite/export"));
+}
+
+#[test]
 fn ocr_privacy_evidence_help_contains_exact_usage_line_and_command_detail() {
     Command::cargo_bin("mdid-cli")
         .unwrap()
