@@ -114,6 +114,15 @@ fn redact_image_ppm_writes_redacted_bytes_and_phi_safe_summary() {
     assert_eq!(summary["redacted_region_count"], 1);
     assert_eq!(summary["redacted_pixel_count"], 2);
     assert_eq!(summary["bytes_written"], redacted.len());
+    let visual_verification = &summary["visual_verification"];
+    assert_eq!(visual_verification["format"], "ppm_p6");
+    assert_eq!(visual_verification["redacted_pixel_count"], 2);
+    assert_eq!(visual_verification["unchanged_pixel_count"], 2);
+    assert_eq!(visual_verification["output_byte_count"], redacted.len());
+    assert_eq!(
+        visual_verification["verified_changed_pixels_within_regions"],
+        true
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
     for unsafe_text in [
@@ -122,6 +131,10 @@ fn redact_image_ppm_writes_redacted_bytes_and_phi_safe_summary() {
         output_path.to_str().unwrap(),
         summary_path.to_str().unwrap(),
         phi_dir.to_str().unwrap(),
+        "P6\\n2 2\\n255\\n",
+        "10,11,12",
+        "20,21,22",
+        r#"[{\"x\":1,\"y\":0,\"width\":1,\"height\":2}]"#,
     ] {
         assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
         assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");

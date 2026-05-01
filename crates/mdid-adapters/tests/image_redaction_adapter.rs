@@ -1,5 +1,97 @@
-use mdid_adapters::{redact_ppm_p6_bytes, redact_rgb_regions, ImageRedactionError};
+use mdid_adapters::{
+    redact_ppm_p6_bytes, redact_ppm_p6_bytes_with_verification, redact_rgb_regions,
+    verify_ppm_redaction_pixels, ImageRedactionError,
+};
 use mdid_domain::ImageRedactionRegion;
+
+#[test]
+fn ppm_visual_verification_counts_bounded_approved_pixels_without_phi_artifacts() {
+    let input = [
+        b"P6\n3 2\n255\n".as_slice(),
+        &[
+            1, 1, 1, // (0,0)
+            2, 2, 2, // (1,0) redacted
+            3, 3, 3, // (2,0) redacted
+            4, 4, 4, // (0,1)
+            5, 5, 5, // (1,1)
+            6, 6, 6, // (2,1)
+        ],
+    ]
+    .concat();
+    let region = ImageRedactionRegion::new(1, 0, 2, 1).expect("valid region");
+
+    let (output, verification) =
+        redact_ppm_p6_bytes_with_verification(&input, &[region], [0, 0, 0])
+            .expect("ppm redaction verification succeeds");
+
+    assert_eq!(verification.format, "ppm_p6");
+    assert_eq!(verification.width, 3);
+    assert_eq!(verification.height, 2);
+    assert_eq!(verification.redacted_region_count, 1);
+    assert_eq!(verification.redacted_pixel_count, 2);
+    assert_eq!(verification.unchanged_pixel_count, 4);
+    assert_eq!(verification.output_byte_count, output.len() as u64);
+    assert!(verification.verified_changed_pixels_within_regions);
+}
+
+#[test]
+fn ppm_visual_verification_counts_overlapping_regions_as_distinct_pixels_once() {
+    let input = [
+        b"P6\n3 2\n255\n".as_slice(),
+        &[
+            1, 1, 1, // (0,0) redacted by first region
+            2, 2, 2, // (1,0) redacted by both regions
+            3, 3, 3, // (2,0) redacted by second region
+            4, 4, 4, // (0,1)
+            5, 5, 5, // (1,1)
+            6, 6, 6, // (2,1)
+        ],
+    ]
+    .concat();
+    let first = ImageRedactionRegion::new(0, 0, 2, 1).expect("valid region");
+    let second = ImageRedactionRegion::new(1, 0, 2, 1).expect("valid region");
+
+    let (_output, verification) =
+        redact_ppm_p6_bytes_with_verification(&input, &[first, second], [0, 0, 0])
+            .expect("ppm redaction verification succeeds");
+
+    assert_eq!(verification.redacted_region_count, 2);
+    assert_eq!(verification.redacted_pixel_count, 3);
+    assert_eq!(verification.unchanged_pixel_count, 3);
+    assert!(verification.verified_changed_pixels_within_regions);
+}
+
+#[test]
+fn ppm_visual_verification_detects_unexpected_output_pixel_mismatch() {
+    let original_pixels = vec![
+        1, 1, 1, // (0,0) approved for fill
+        2, 2, 2, // (1,0) must remain unchanged
+    ];
+    let mut output_pixels = original_pixels.clone();
+    output_pixels[3..6].copy_from_slice(&[9, 9, 9]);
+    let region = ImageRedactionRegion::new(0, 0, 1, 1).expect("valid region");
+
+    let verified =
+        verify_ppm_redaction_pixels(&original_pixels, &output_pixels, 2, 1, &[region], [0, 0, 0])
+            .expect("verification runs");
+
+    assert!(!verified);
+}
+
+#[test]
+fn ppm_visual_verification_out_of_bounds_fails_without_artifact() {
+    let input = [
+        b"P6\n2 2\n255\n".as_slice(),
+        &[b'J', b'a', b'n', b'e', 1, 2, 3, 4, 5, 6, 7, 8],
+    ]
+    .concat();
+    let region = ImageRedactionRegion::new(1, 1, 2, 1).expect("valid region shape");
+
+    let err = redact_ppm_p6_bytes_with_verification(&input, &[region], [0, 0, 0])
+        .expect_err("oob fails before returning verification");
+
+    assert_eq!(err, ImageRedactionError::RegionOutOfBounds);
+}
 
 #[test]
 fn ppm_p6_redacts_approved_bbox_to_black_and_preserves_other_bytes() {
