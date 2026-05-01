@@ -4721,6 +4721,81 @@ fn ocr_handoff_writes_phi_safe_summary_output() {
 }
 
 #[test]
+fn ocr_handoff_rejects_not_ready_builder_report_without_stale_outputs_or_leaks() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    let summary_path = dir.path().join("summary.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Example MRN-12345')\n").unwrap();
+    fs::write(
+        &builder_path,
+        r#"import argparse, json
+parser = argparse.ArgumentParser()
+parser.add_argument("--source")
+parser.add_argument("--input")
+parser.add_argument("--output")
+args = parser.parse_args()
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump({
+        "source": args.source,
+        "extracted_text": "Jane Example MRN-12345",
+        "normalized_text": "Jane Example MRN-12345",
+        "ready_for_text_pii_eval": False,
+        "candidate": "PP-OCRv5_mobile_rec",
+        "engine": "PP-OCRv5-mobile-bounded-spike",
+        "scope": "printed_text_line_extraction_only",
+        "privacy_filter_contract": "text_only_normalized_input",
+        "non_goals": ["visual_redaction", "final_pdf_rewrite_export", "handwriting_recognition", "full_page_detection_or_segmentation", "complete_ocr_pipeline"]
+    }, handle)
+"#,
+    )
+    .unwrap();
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+    fs::write(&summary_path, "stale Jane Example summary").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("OCR handoff has invalid readiness"));
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        image_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        builder_path.to_str().unwrap(),
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+}
+
+#[test]
 fn cli_ocr_handoff_normalized_text_feeds_privacy_filter_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let handoff_report = dir.path().join("ocr-handoff.json");

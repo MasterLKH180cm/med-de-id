@@ -1,6 +1,6 @@
 # OCR Handoff Summary Output Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Implementation note:** Implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an optional PHI-safe aggregate-only `--summary-output <summary.json>` artifact to `mdid-cli ocr-handoff` for bounded PP-OCRv5 mobile single-image OCR handoff evidence.
 
@@ -306,7 +306,7 @@ git commit -m "test(cli): harden ocr handoff summary cleanup"
 
 - [ ] **Step 1: Update README current snapshot**
 
-Update the completion snapshot to state this round adds CLI/runtime-only `mdid-cli ocr-handoff --summary-output` aggregate summary evidence. Use the current README baseline `CLI 120/125 = 96%`; add and complete one new CLI/runtime requirement, yielding `121/126 = 96%` floor. Keep Browser/Web `99%`, Desktop app `99%`, and Overall `97%` unless new controller-visible evidence justifies a change.
+Update the completion snapshot to state this round adds CLI/runtime-only `mdid-cli ocr-handoff --summary-output` aggregate summary evidence. Use the current README baseline `CLI 120/125 = 96%`; add and complete one new CLI/runtime requirement, yielding `121/126 = 96%` floor. Keep Browser/Web `99%`, Desktop app `99%`, and Overall `97%` unless new product-visible evidence justifies a change.
 
 Add a verification paragraph:
 

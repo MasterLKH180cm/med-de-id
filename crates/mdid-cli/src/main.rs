@@ -2619,7 +2619,7 @@ fn build_ocr_handoff_summary(report: &Value) -> Value {
         "engine": "PP-OCRv5-mobile-bounded-spike",
         "scope": "printed_text_line_extraction_only",
         "privacy_filter_contract": "text_only_normalized_input",
-        "ready_for_text_pii_eval": report["ready_for_text_pii_eval"],
+        "ready_for_text_pii_eval": true,
         "line_count": normalized_text.lines().count(),
         "char_count": normalized_text.chars().count(),
         "network_api_called": false,
@@ -2688,6 +2688,9 @@ fn validate_ocr_handoff(value: &Value) -> Result<(), String> {
         || !value["non_goals"].is_array()
     {
         return Err("OCR handoff has invalid required field shape".to_string());
+    }
+    if value["ready_for_text_pii_eval"] != true {
+        return Err("OCR handoff has invalid readiness".to_string());
     }
     for (key, expected) in [
         ("candidate", "PP-OCRv5_mobile_rec"),
