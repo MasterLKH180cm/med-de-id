@@ -2261,6 +2261,7 @@ fn run_ocr_small_json_inner(args: &OcrSmallJsonArgs) -> Result<(), String> {
 fn build_ocr_small_json_summary(value: &Value) -> Value {
     json!({
         "artifact": "ocr_small_json_summary",
+        "schema_version": 1,
         "candidate": "PP-OCRv5_mobile_rec",
         "engine": "PP-OCRv5-mobile-bounded-spike",
         "engine_status": value["engine_status"],
