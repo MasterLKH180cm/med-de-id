@@ -25,7 +25,7 @@
 - Modify: `crates/mdid-cli/tests/cli_smoke.rs`
 - Modify: `crates/mdid-cli/src/main.rs`
 
-- [ ] **Step 1: Write the failing lexical-alias smoke test**
+- [x] **Step 1: Write the failing lexical-alias smoke test**
 
 Add this test near `ocr_to_privacy_filter_single_rejects_identical_report_and_summary_paths_before_cleanup` in `crates/mdid-cli/tests/cli_smoke.rs`:
 
@@ -59,7 +59,7 @@ fn ocr_to_privacy_filter_single_rejects_alias_report_and_summary_paths_before_cl
         .failure()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains(
-            "summary path must differ from report path",
+            "ocr_to_privacy_filter summary path must differ from report path",
         ))
         .stderr(predicate::str::contains(output_path.to_str().expect("output path")).not())
         .stderr(predicate::str::contains(alias_path.to_str().expect("alias output path")).not())
@@ -73,27 +73,27 @@ fn ocr_to_privacy_filter_single_rejects_alias_report_and_summary_paths_before_cl
 }
 ```
 
-- [ ] **Step 2: Run the test to verify RED**
+- [x] **Step 2: Run the test to verify RED**
 
 Run: `cargo test -p mdid-cli ocr_to_privacy_filter_single_rejects_alias_report_and_summary_paths_before_cleanup -- --nocapture`
 
 Expected: FAIL because the alias path is not rejected before execution/cleanup.
 
-- [ ] **Step 3: Implement the minimal path-equivalence guard**
+- [x] **Step 3: Implement the minimal path-equivalence guard**
 
 In `crates/mdid-cli/src/main.rs`, locate the parsed args for `run_ocr_to_privacy_filter_single`. Before any stale report/summary cleanup, add or correct this guard:
 
 ```rust
 if let Some(summary_output_path) = args.summary_output.as_ref() {
     if paths_are_same_existing_or_lexical(&args.report_path, summary_output_path) {
-        return Err("summary path must differ from report path".to_string());
+        return Err("ocr_to_privacy_filter summary path must differ from report path".to_string());
     }
 }
 ```
 
 Use the existing `paths_are_same_existing_or_lexical` helper already used by adjacent commands. Do not introduce ad hoc string comparison. Do not delete either output path before this check.
 
-- [ ] **Step 4: Run targeted tests to verify GREEN**
+- [x] **Step 4: Run targeted tests to verify GREEN**
 
 Run:
 
@@ -104,7 +104,7 @@ cargo test -p mdid-cli ocr_to_privacy_filter_single_rejects_identical_report_and
 
 Expected: PASS.
 
-- [ ] **Step 5: Run broader single-chain verification**
+- [x] **Step 5: Run broader single-chain verification**
 
 Run:
 
@@ -116,7 +116,7 @@ git diff --check
 
 Expected: all PASS, no formatting or whitespace failures.
 
-- [ ] **Step 6: Commit code/test hardening**
+- [x] **Step 6: Commit code/test hardening**
 
 ```bash
 git add crates/mdid-cli/src/main.rs crates/mdid-cli/tests/cli_smoke.rs
@@ -129,17 +129,17 @@ git commit -m "fix(cli): guard OCR privacy summary path aliasing"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-05-01-ocr-privacy-filter-single-summary-path-safety.md`
 
-- [ ] **Step 1: Update README completion evidence**
+- [x] **Step 1: Update README completion evidence**
 
 Add a paragraph near the other OCR-to-Privacy-Filter CLI evidence:
 
 ```markdown
-Verification evidence for the `mdid-cli ocr-to-privacy-filter --summary-output` report-path alias hardening landed on this branch: same and equivalent summary/report paths are rejected before stale output cleanup with the fixed PHI-safe error `summary path must differ from report path`, preserving any stale primary report bytes rather than deleting or overwriting them. Repository-visible verification: `cargo test -p mdid-cli ocr_to_privacy_filter_single_rejects_alias_report_and_summary_paths_before_cleanup -- --nocapture`, `cargo test -p mdid-cli ocr_to_privacy_filter_single_rejects_identical_report_and_summary_paths_before_cleanup -- --nocapture`, `cargo test -p mdid-cli ocr_to_privacy_filter_single -- --nocapture`, `cargo fmt --check`, and `git diff --check`. This is CLI/runtime artifact-safety hardening for the bounded PP-OCRv5 mobile OCR-to-text-only-Privacy-Filter chain only; it is not Browser/Web execution, not Desktop execution, not visual redaction, not image pixel redaction, not final PDF rewrite/export, and not model-quality evidence. Fraction accounting adds and completes one CLI/runtime artifact-safety requirement in the same round: CLI `102/107 -> 103/108 = 95%` floor, Browser/Web remains 99%, Desktop app remains 99%, and Overall remains 97%.
+Verification evidence for the `mdid-cli ocr-to-privacy-filter --summary-output` report-path alias hardening landed on this branch: same and equivalent summary/report paths are rejected before stale output cleanup with the fixed PHI-safe error `ocr_to_privacy_filter summary path must differ from report path`, preserving any stale primary report bytes rather than deleting or overwriting them. Repository-visible verification: `cargo test -p mdid-cli ocr_to_privacy_filter_single_rejects_alias_report_and_summary_paths_before_cleanup -- --nocapture`, `cargo test -p mdid-cli ocr_to_privacy_filter_single_rejects_identical_report_and_summary_paths_before_cleanup -- --nocapture`, `cargo test -p mdid-cli ocr_to_privacy_filter_single -- --nocapture`, `cargo fmt --check`, and `git diff --check`. This is CLI/runtime artifact-safety hardening for the bounded PP-OCRv5 mobile OCR-to-text-only-Privacy-Filter chain only; it is not Browser/Web execution, not Desktop execution, not visual redaction, not image pixel redaction, not final PDF rewrite/export, and not model-quality evidence. Fraction accounting adds and completes one CLI/runtime artifact-safety requirement in the same round: CLI `102/107 -> 103/108 = 95%` floor, Browser/Web remains 99%, Desktop app remains 99%, and Overall remains 97%.
 ```
 
 Also update the current snapshot sentence and Overall row if they still name an older hardening item as “this round”. Preserve completion percentages unless controller-visible facts support a conservative change.
 
-- [ ] **Step 2: Run README verification**
+- [x] **Step 2: Run README verification**
 
 Run:
 
@@ -150,7 +150,7 @@ git diff --check
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit README truth-sync**
+- [x] **Step 3: Commit README truth-sync**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-05-01-ocr-privacy-filter-single-summary-path-safety.md
