@@ -324,3 +324,48 @@ def test_batch_quality_runner_counts_real_local_adapter_status(tmp_path):
     assert payload["engine_status_counts"] == {"local_paddleocr_execution": 1}
     assert payload["real_model_quality_verified"] is True
     assert payload["quality_scope"] == "local_real_ocr_execution_aggregate_text_metrics"
+
+
+def test_batch_quality_runner_does_not_verify_partial_real_adapter_batch(tmp_path):
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "paddleocr.py").write_text(
+        "class PaddleOCR:\n"
+        "    def __init__(self, **kwargs):\n"
+        "        self.kwargs = kwargs\n"
+        "    def ocr(self, image_path):\n"
+        "        return [{'rec_texts': ['Patient Jane Example', 'MRN MRN-12345']}]\n",
+        encoding="utf-8",
+    )
+    image = tmp_path / "Jane-Example-MRN-12345.png"
+    missing = tmp_path / "Jane-Example-MRN-12345-missing.png"
+    image.write_bytes(b"synthetic image placeholder")
+    env = {**__import__("os").environ, "PYTHONPATH": str(adapter_dir)}
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/ocr_eval/run_ocr_batch_quality.py",
+            "--runner-path",
+            "scripts/ocr_eval/run_small_ocr.py",
+            str(image),
+            str(missing),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+
+    payload = json.loads(completed.stdout)
+    assert payload["input_count"] == 2
+    assert payload["succeeded_count"] == 1
+    assert payload["failed_count"] == 1
+    assert payload["engine_status_counts"] == {"local_paddleocr_execution": 1}
+    assert payload["real_model_quality_verified"] is False
+    assert payload["quality_scope"] == "fixture_or_mixed_execution_aggregate_text_metrics"
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "Jane-Example-MRN-12345" not in rendered
+    assert "Patient Jane Example" not in rendered
+    assert completed.stderr == ""

@@ -102,8 +102,10 @@ def build_summary(items: list[dict]) -> dict:
     successes = [item for item in items if item["status"] == "succeeded"]
     failed_count = len(items) - len(successes)
     engine_status_counts = Counter(item["engine_status"] for item in successes)
-    real_model_quality_verified = bool(successes) and all(
-        item["engine_status"] == REAL_ENGINE_STATUS for item in successes
+    real_model_quality_verified = (
+        bool(successes)
+        and len(successes) == len(items)
+        and all(item["engine_status"] == REAL_ENGINE_STATUS for item in successes)
     )
     return {
         "artifact": "ocr_batch_quality_summary",
