@@ -61,6 +61,23 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertNotIn('IP_ADDRESS', payload['summary']['category_counts'])
         self.assertNotIn('[IP_ADDRESS]', payload['masked_text'])
 
+    def test_detects_bounded_http_and_https_urls(self):
+        payload = detect_pii('Portal https://portal.example.test/patient/123 and callback http://clinic.example.test/cb?token=abc.')
+
+        self.assertEqual(payload['summary']['category_counts'].get('URL'), 2)
+        self.assertIn('[URL]', payload['masked_text'])
+        self.assertNotIn('https://portal.example.test', payload['masked_text'])
+        self.assertNotIn('http://clinic.example.test', payload['masked_text'])
+        url_spans = [span for span in payload['spans'] if span['label'] == 'URL']
+        self.assertEqual(len(url_spans), 2)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in url_spans))
+
+    def test_url_detector_rejects_unbounded_or_non_http_tokens(self):
+        payload = detect_pii('Email alice@example.test and host192.168.1.1 https://portal.example.testextra ftp://legacy.example.test')
+
+        self.assertNotIn('URL', payload['summary']['category_counts'])
+        self.assertNotIn('[URL]', payload['masked_text'])
+
     def test_fallback_detects_contextual_insurance_ids_without_raw_previews(self):
         text = 'Patient Jane Example insurance ID ABC1234567 and member number MBR-7654321.'
         payload = detect_pii(text)
