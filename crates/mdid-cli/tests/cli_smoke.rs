@@ -2609,7 +2609,28 @@ fn privacy_filter_corpus_writes_phi_safe_summary_output() {
         );
     }
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    let mut actual_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    actual_keys.sort_unstable();
+    let mut expected_keys = vec![
+        "artifact",
+        "category_counts",
+        "engine",
+        "fixture_count",
+        "network_api_called",
+        "non_goals",
+        "schema_version",
+        "scope",
+        "total_detected_span_count",
+    ];
+    expected_keys.sort_unstable();
+    assert_eq!(actual_keys, expected_keys);
     assert_eq!(summary["artifact"], "privacy_filter_corpus_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["engine"], "fallback_synthetic_patterns");
     assert_eq!(summary["scope"], "text_only_synthetic_corpus");
     assert_eq!(summary["network_api_called"], false);

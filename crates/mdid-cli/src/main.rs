@@ -2811,6 +2811,7 @@ fn run_privacy_filter_corpus_inner(args: &PrivacyFilterCorpusArgs) -> Result<(),
 fn build_privacy_filter_corpus_summary(value: &Value) -> Value {
     json!({
         "artifact": "privacy_filter_corpus_summary",
+        "schema_version": 1,
         "engine": value["engine"],
         "scope": value["scope"],
         "fixture_count": value["fixture_count"],
