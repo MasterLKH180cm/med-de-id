@@ -166,6 +166,7 @@ struct OcrSmallJsonArgs {
     image_path: PathBuf,
     ocr_runner_path: PathBuf,
     report_path: PathBuf,
+    summary_output: Option<PathBuf>,
     python_command: String,
     mock: bool,
 }
@@ -747,6 +748,7 @@ fn parse_ocr_small_json_args(args: &[String]) -> Result<OcrSmallJsonArgs, String
     let mut image_path = None;
     let mut ocr_runner_path = None;
     let mut report_path = None;
+    let mut summary_output = None;
     let mut python_command = None;
     let mut mock = false;
 
@@ -767,6 +769,7 @@ fn parse_ocr_small_json_args(args: &[String]) -> Result<OcrSmallJsonArgs, String
                 ocr_runner_path = Some(non_blank_path(value, "--ocr-runner-path")?)
             }
             "--report-path" => report_path = Some(non_blank_path(value, "--report-path")?),
+            "--summary-output" => summary_output = Some(non_blank_path(value, "--summary-output")?),
             "--python-command" => {
                 if value.trim().is_empty() {
                     return Err("missing --python-command".to_string());
@@ -782,6 +785,7 @@ fn parse_ocr_small_json_args(args: &[String]) -> Result<OcrSmallJsonArgs, String
         image_path: image_path.ok_or_else(|| "missing --image-path".to_string())?,
         ocr_runner_path: ocr_runner_path.ok_or_else(|| "missing --ocr-runner-path".to_string())?,
         report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+        summary_output,
         python_command: python_command.unwrap_or_else(default_python_command),
         mock,
     })
@@ -1629,7 +1633,15 @@ fn validate_ocr_privacy_category_counts(value: &Value) -> bool {
 }
 
 fn run_ocr_small_json(args: OcrSmallJsonArgs) -> Result<(), String> {
+    if let Some(summary_output) = &args.summary_output {
+        if summary_output == &args.report_path {
+            return Err("OCR small JSON summary path must differ from report path".to_string());
+        }
+    }
     let _ = fs::remove_file(&args.report_path);
+    if let Some(summary_output) = &args.summary_output {
+        let _ = fs::remove_file(summary_output);
+    }
     let result = (|| {
         if !args.mock {
             return Err("OCR small JSON requires mock mode".to_string());
@@ -1640,6 +1652,9 @@ fn run_ocr_small_json(args: OcrSmallJsonArgs) -> Result<(), String> {
     })();
     if result.is_err() {
         let _ = fs::remove_file(&args.report_path);
+        if let Some(summary_output) = &args.summary_output {
+            let _ = fs::remove_file(summary_output);
+        }
     }
     result
 }
@@ -1675,7 +1690,20 @@ fn run_ocr_small_json_inner(args: &OcrSmallJsonArgs) -> Result<(), String> {
     );
     fs::write(&args.report_path, rendered).map_err(|_| "OCR small JSON failed".to_string())?;
 
-    let summary = json!({
+    if let Some(summary_output) = &args.summary_output {
+        let summary_artifact = build_ocr_small_json_summary(&value);
+        let summary_text = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&summary_artifact)
+                .map_err(|err| format!("failed to render OCR small JSON summary: {err}"))?
+        );
+        if summary_text.len() > OCR_RUNNER_STDOUT_MAX_BYTES {
+            return Err("OCR small JSON summary exceeded limit".to_string());
+        }
+        fs::write(summary_output, summary_text).map_err(|_| "OCR small JSON failed".to_string())?;
+    }
+
+    let mut summary = json!({
         "command": "ocr-small-json",
         "report_written": true,
         "report_path": "<redacted>",
@@ -1683,12 +1711,37 @@ fn run_ocr_small_json_inner(args: &OcrSmallJsonArgs) -> Result<(), String> {
         "scope": value["scope"],
         "ready_for_text_pii_eval": value["ready_for_text_pii_eval"],
     });
+    if args.summary_output.is_some() {
+        summary["summary_written"] = Value::Bool(true);
+    }
     println!(
         "{}",
         serde_json::to_string(&summary)
             .map_err(|err| format!("failed to render summary: {err}"))?
     );
     Ok(())
+}
+
+fn build_ocr_small_json_summary(value: &Value) -> Value {
+    json!({
+        "artifact": "ocr_small_json_summary",
+        "candidate": "PP-OCRv5_mobile_rec",
+        "engine": "PP-OCRv5-mobile-bounded-spike",
+        "engine_status": value["engine_status"],
+        "scope": "printed_text_line_extraction_only",
+        "privacy_filter_contract": "text_only_normalized_input",
+        "ready_for_text_pii_eval": true,
+        "non_goals": [
+            "visual_redaction",
+            "image_pixel_redaction",
+            "final_pdf_rewrite_export",
+            "handwriting_recognition",
+            "full_page_detection_or_segmentation",
+            "complete_ocr_pipeline",
+            "browser_ui",
+            "desktop_ui",
+        ],
+    })
 }
 
 fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
@@ -3263,7 +3316,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-small-json --image-path <path> --ocr-runner-path <path> --report-path <report.json> [--python-command <cmd>] --mock\n       mdid-cli ocr-handoff --image-path <image> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-small-json --image-path <path> --ocr-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] --mock\n       mdid-cli ocr-handoff --image-path <image> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]
