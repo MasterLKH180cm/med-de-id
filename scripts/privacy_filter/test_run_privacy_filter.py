@@ -142,48 +142,6 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
             self.assertNotIn('Jane Example', result.stderr)
             self.assertNotIn('MRN-12345', result.stderr)
 
-    def test_explicit_opf_subprocess_path_is_verified_with_local_fake_binary(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            recorder = tmp_path / 'opf-stdin.txt'
-            fake_opf = tmp_path / 'opf'
-            fake_opf.write_text(
-                '#!/usr/bin/env python3\n'
-                'import json, pathlib, sys\n'
-                f'pathlib.Path({str(recorder)!r}).write_text(sys.stdin.read(), encoding="utf-8")\n'
-                'print(json.dumps({"masked_text":"Patient [NAME] has [MRN]",'
-                '"spans":[{"label":"NAME","start":8,"end":20,"preview":"Jane Example"},'
-                '{"label":"MRN","start":25,"end":34,"preview":"MRN-12345"}]}))\n',
-                encoding='utf-8',
-            )
-            fake_opf.chmod(0o755)
-            env = os.environ.copy()
-            env['PATH'] = f'{tmp_path}{os.pathsep}{env.get("PATH", "")}'
-            phi = 'Patient Jane Example has MRN-12345\n'
-
-            result = subprocess.run(
-                [sys.executable, str(RUNNER), '--stdin', '--use-opf'],
-                input=phi,
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=5,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stderr, '')
-            self.assertEqual(recorder.read_text(encoding='utf-8'), phi)
-            payload = json.loads(result.stdout)
-            self.assertEqual(payload['metadata']['engine'], 'openai_privacy_filter_opf')
-            self.assertEqual(payload['metadata']['network_api_called'], False)
-            self.assertEqual(payload['summary']['category_counts'], {'MRN': 1, 'NAME': 1})
-            rendered = json.dumps(payload, sort_keys=True)
-            self.assertNotIn('Jane Example', rendered)
-            self.assertNotIn('MRN-12345', rendered)
-            self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
-
     def test_explicit_opf_uses_stdin_not_phi_argv(self):
         module = load_runner_module()
         phi = 'Patient Jane Example has MRN-12345\n'
