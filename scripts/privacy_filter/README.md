@@ -99,6 +99,8 @@ python scripts/privacy_filter/run_synthetic_corpus.py --fixture-dir scripts/priv
 
 The PHI-safe aggregate report must contain only counts, category coverage, fixture names, engine/scope metadata, and explicit non-goals. It must not include raw fixture text, `masked_text`, spans, raw previews, or any per-detection text payload.
 
+When using `mdid-cli privacy-filter-corpus --summary-output <summary.json>`, the summary output path must differ from the primary `--report-path`. Same paths and equivalent aliases (for example lexical aliases or existing-file aliases) are rejected before stale report/summary cleanup, so stale artifacts are not deleted on this configuration error. The fixed error is PHI-safe: `privacy filter corpus summary path must differ from report path`.
+
 Corpus-runner non-goals:
 - not OCR
 - not visual redaction

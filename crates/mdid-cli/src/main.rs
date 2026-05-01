@@ -2333,6 +2333,13 @@ fn wait_for_ocr_runner(
 }
 
 fn run_privacy_filter_corpus(args: PrivacyFilterCorpusArgs) -> Result<(), String> {
+    if let Some(summary_output) = &args.summary_output {
+        if paths_are_same_existing_or_lexical(&args.report_path, summary_output) {
+            return Err(
+                "privacy filter corpus summary path must differ from report path".to_string(),
+            );
+        }
+    }
     let _ = fs::remove_file(&args.report_path);
     if let Some(summary_output) = &args.summary_output {
         let _ = fs::remove_file(summary_output);

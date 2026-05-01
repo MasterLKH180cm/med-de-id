@@ -2533,6 +2533,83 @@ fn privacy_filter_corpus_writes_phi_safe_summary_output() {
 }
 
 #[test]
+fn privacy_filter_corpus_rejects_same_report_and_summary_path_before_cleanup() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("Jane-Example-MRN-12345-report.json");
+    fs::write(&report_path, "stale Jane Example MRN-12345").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(repo_path("scripts/privacy_filter/fixtures/corpus"))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--summary-output")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("privacy filter corpus summary path must differ from report path"));
+    assert!(!stderr.contains("Jane Example"));
+    assert!(!stderr.contains("MRN-12345"));
+    assert!(!stderr.contains(report_path.to_string_lossy().as_ref()));
+    assert_eq!(
+        fs::read_to_string(&report_path).unwrap(),
+        "stale Jane Example MRN-12345"
+    );
+}
+
+#[test]
+fn privacy_filter_corpus_rejects_alias_report_and_summary_path_before_cleanup() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("Jane-Example-MRN-12345-report.json");
+    let alias_path = dir
+        .path()
+        .join(".")
+        .join("Jane-Example-MRN-12345-report.json");
+    fs::write(&report_path, "stale Jane Example MRN-12345").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-corpus")
+        .arg("--fixture-dir")
+        .arg(repo_path("scripts/privacy_filter/fixtures/corpus"))
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_synthetic_corpus.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--summary-output")
+        .arg(&alias_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("privacy filter corpus summary path must differ from report path"));
+    assert!(!stderr.contains("Jane Example"));
+    assert!(!stderr.contains("MRN-12345"));
+    assert!(!stderr.contains(report_path.to_string_lossy().as_ref()));
+    assert!(!stderr.contains(alias_path.to_string_lossy().as_ref()));
+    assert_eq!(
+        fs::read_to_string(&report_path).unwrap(),
+        "stale Jane Example MRN-12345"
+    );
+}
+
+#[test]
 fn privacy_filter_corpus_removes_stale_summary_on_prerequisite_failure() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-corpus.json");
