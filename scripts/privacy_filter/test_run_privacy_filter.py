@@ -72,6 +72,31 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
         validator.validate_privacy_filter_output(payload)
 
+    def test_mrn_and_id_numeric_values_are_not_detected_as_passports(self):
+        payload = run_text('Patient Jane Example MRN-123456789 and ID-123456789\n')
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('MRN'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 1)
+        self.assertNotIn('PASSPORT', payload['summary']['category_counts'])
+        self.assertNotIn('[PASSPORT]', payload['masked_text'])
+        validator.validate_privacy_filter_output(payload)
+
+    def test_passport_context_numeric_value_creates_exactly_one_passport_span(self):
+        payload = run_text('Patient Jane Example passport 123456789\n')
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        self.assertEqual(len(passport_spans), 1)
+        self.assertEqual(passport_spans[0]['start'], len('Patient Jane Example passport '))
+        self.assertEqual(passport_spans[0]['end'], len('Patient Jane Example passport 123456789'))
+
+    def test_street_address_number_is_not_detected_as_numeric_passport(self):
+        payload = run_text('Patient Jane Example lives at 123456789 Main Street\n')
+
+        self.assertNotIn('PASSPORT', payload['summary']['category_counts'])
+        self.assertNotIn('[PASSPORT]', payload['masked_text'])
+
     def test_stdin_mock_reads_stdin_emits_contract_and_detects_phi(self):
         phi = 'Patient Jane Example has MRN-12345\n'
         result = subprocess.run(
