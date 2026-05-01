@@ -3196,6 +3196,7 @@ fn cli_privacy_filter_text_summary_output_is_phi_safe() {
         .collect();
     for expected in [
         "artifact",
+        "schema_version",
         "scope",
         "engine",
         "network_api_called",
@@ -3207,8 +3208,9 @@ fn cli_privacy_filter_text_summary_output_is_phi_safe() {
     ] {
         assert!(keys.contains(&expected), "summary missing {expected}");
     }
-    assert_eq!(keys.len(), 9);
+    assert_eq!(keys.len(), 10);
     assert_eq!(summary["artifact"], "privacy_filter_text_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["scope"], "text_only_single_report_summary");
     assert_eq!(summary["engine"], "fallback_synthetic_patterns");
     assert_eq!(summary["network_api_called"], false);

@@ -3115,6 +3115,7 @@ fn emit_privacy_filter_text_success(
 fn privacy_filter_text_summary_artifact(value: &Value) -> Value {
     json!({
         "artifact": "privacy_filter_text_summary",
+        "schema_version": 1,
         "scope": "text_only_single_report_summary",
         "engine": value["metadata"]["engine"],
         "network_api_called": value["metadata"]["network_api_called"],
