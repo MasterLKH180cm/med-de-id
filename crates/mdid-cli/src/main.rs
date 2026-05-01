@@ -2492,6 +2492,8 @@ fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
         "source",
         "extracted_text",
         "normalized_text",
+        "line_count",
+        "normalized_char_count",
         "ready_for_text_pii_eval",
         "privacy_filter_contract",
         "non_goals",
