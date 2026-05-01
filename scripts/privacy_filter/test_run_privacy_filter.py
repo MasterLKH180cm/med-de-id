@@ -145,6 +145,34 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertEqual(vin_spans[0]['preview'], '<redacted>')
         self.assertNotIn('1hgcm82633a004352', json.dumps(payload, sort_keys=True))
 
+    def test_fallback_detects_contextual_driver_license_without_raw_previews(self):
+        text = 'Patient Jane Example driver license D1234567 for transport billing.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('DRIVER_LICENSE'), 1)
+        self.assertIn('[DRIVER_LICENSE]', payload['masked_text'])
+        self.assertNotIn('D1234567', payload['masked_text'])
+        driver_license_spans = [span for span in payload['spans'] if span['label'] == 'DRIVER_LICENSE']
+        self.assertEqual(len(driver_license_spans), 1)
+        self.assertEqual(text[driver_license_spans[0]['start']:driver_license_spans[0]['end']], 'D1234567')
+        self.assertEqual(driver_license_spans[0]['preview'], '<redacted>')
+        self.assertNotIn('D1234567', json.dumps(payload, sort_keys=True))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_detect_standalone_or_embedded_driver_license_like_tokens(self):
+        text = ' '.join([
+            'D1234567 appears without context.',
+            'driver license XD1234567Y is embedded.',
+            'MRN D1234567 stays medical-record context.',
+            'ID D1234567 stays generic-ID context.',
+            'driver license ABC123 is not a supported driver-license identifier.',
+        ])
+        payload = detect_pii(text)
+
+        self.assertNotIn('DRIVER_LICENSE', payload['summary']['category_counts'])
+        self.assertNotIn('[DRIVER_LICENSE]', payload['masked_text'])
+
     def test_fallback_detects_ipv4_address_without_raw_previews(self):
         text = 'Patient Jane Example remote login from 192.168.10.42 for MRN-12345'
         payload = detect_pii(text)

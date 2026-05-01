@@ -34,6 +34,10 @@ VIN_RE = re.compile(
     r'\b(?:VIN|vehicle(?:\s+(?:id|identification(?:\s+number)?|VIN))?)\s+([A-HJ-NPR-Z0-9]{17})(?![A-Za-z0-9-])',
     re.I,
 )
+DRIVER_LICENSE_RE = re.compile(
+    r"\b(?:driver(?:\s+license)?|drivers(?:\s+license)?|driver's\s+license|DL|license(?:\s+(?:number|no\.))?)\s+([A-Z]\d{7,8}|[A-Z]{1,2}-?\d{6,8})(?![A-Za-z0-9-])",
+    re.I,
+)
 IPV4_RE = re.compile(r'(?<![A-Za-z0-9.])(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?![A-Za-z0-9.])')
 URL_RE = re.compile(r"(?<![A-Za-z0-9_])https?://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,8}(?=$|[/?#]|[^A-Za-z0-9_.-])(?:[/?#][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*[A-Za-z0-9/#=%])?(?![A-Za-z0-9_])")
 ZIP_RE = re.compile(r'(?<![A-Za-z0-9-])\d{5}(?:-\d{4})?(?![A-Za-z0-9-])')
@@ -44,7 +48,7 @@ PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'FAX', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'DEA_NUMBER', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'VIN', 'IP_ADDRESS', 'URL'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'FAX', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'DEA_NUMBER', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'VIN', 'DRIVER_LICENSE', 'IP_ADDRESS', 'URL'}
 
 
 def add_span(spans, label, start, end):
@@ -140,6 +144,8 @@ def heuristic_detect(text: str):
         add_span(spans, 'LICENSE_PLATE', m.start(1), m.end(1))
     for m in VIN_RE.finditer(text):
         add_span(spans, 'VIN', m.start(1), m.end(1))
+    for m in DRIVER_LICENSE_RE.finditer(text):
+        add_span(spans, 'DRIVER_LICENSE', m.start(1), m.end(1))
     for m in IPV4_RE.finditer(text):
         add_span(spans, 'IP_ADDRESS', m.start(), m.end())
     for m in URL_RE.finditer(text):
