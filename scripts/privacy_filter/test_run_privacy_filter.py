@@ -276,7 +276,7 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
 
         self.assertEqual(stderr.getvalue(), '')
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload['masked_text'], 'Patient [NAME] has [MRN]\n')
+        self.assertEqual(payload['masked_text'], '[NAME] [MRN]')
         self.assertEqual(payload['summary']['category_counts'], {'MRN': 1, 'NAME': 1})
         self.assertEqual([span['label'] for span in payload['spans']], ['NAME', 'MRN'])
         normalized = json.dumps(payload, sort_keys=True)
@@ -309,13 +309,85 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
 
         self.assertEqual(stderr.getvalue(), '')
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload['masked_text'], 'Patient [NAME] email [EMAIL]\n')
+        self.assertEqual(payload['masked_text'], '[NAME] [EMAIL]')
         self.assertEqual(payload['summary']['category_counts'], {'EMAIL': 1, 'NAME': 1})
         self.assertEqual([span['label'] for span in payload['spans']], ['NAME', 'EMAIL'])
         normalized = json.dumps(payload, sort_keys=True)
         self.assertNotIn('Jane Example', normalized)
         self.assertNotIn('jane@example.test', normalized)
         self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
+    def test_explicit_opf_reconstructs_masked_text_without_raw_text_passthrough(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has SSN 123-45-6789\n'
+        raw_opf = json.dumps({
+            'text': phi,
+            'masked_text': phi,
+            'spans': [
+                {'label': 'NAME', 'start': 8, 'end': 20, 'preview': 'Jane Example'},
+                {'label': 'SSN', 'start': 29, 'end': 40, 'preview': '123-45-6789'},
+            ],
+        })
+
+        payload = module.normalize_opf_json(raw_opf, len(phi))
+        self.assertEqual(payload['masked_text'], '[NAME] [SSN]')
+        rendered = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('Jane Example', rendered)
+        self.assertNotIn('123-45-6789', rendered)
+
+    def test_explicit_opf_rejects_non_object_spans_without_phi_leak(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has rare token 123-45-6789\n'
+        raw_opf = json.dumps({'masked_text': phi, 'spans': ['Jane Example']})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text(phi, encoding='utf-8')
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch.object(module.sys, 'argv', ['run_privacy_filter.py', '--use-opf', str(input_path)]), \
+                 mock.patch.object(module.shutil, 'which', return_value='/tmp/opf'), \
+                 mock.patch.object(module, 'run_opf_with_stdin', return_value=raw_opf), \
+                 mock.patch.object(module.sys, 'stdout', stdout), \
+                 mock.patch.object(module.sys, 'stderr', stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    module.main()
+
+        self.assertEqual(raised.exception.code, 4)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('opf returned non-JSON output', stderr.getvalue())
+        self.assertNotIn('Jane Example', stderr.getvalue())
+        self.assertNotIn('123-45-6789', stderr.getvalue())
+
+    def test_explicit_opf_rejects_unsupported_category_without_phi_leak(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has rare token 123-45-6789\n'
+        raw_opf = json.dumps({
+            'masked_text': 'Patient [ALIEN] has rare token [SSN]\n',
+            'spans': [
+                {'label': 'ALIEN', 'start': 8, 'end': 20, 'preview': 'Jane Example'},
+                {'label': 'SSN', 'start': 36, 'end': 47, 'preview': '123-45-6789'},
+            ],
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text(phi, encoding='utf-8')
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch.object(module.sys, 'argv', ['run_privacy_filter.py', '--use-opf', str(input_path)]), \
+                 mock.patch.object(module.shutil, 'which', return_value='/tmp/opf'), \
+                 mock.patch.object(module, 'run_opf_with_stdin', return_value=raw_opf), \
+                 mock.patch.object(module.sys, 'stdout', stdout), \
+                 mock.patch.object(module.sys, 'stderr', stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    module.main()
+
+        self.assertEqual(raised.exception.code, 4)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('opf returned non-JSON output', stderr.getvalue())
+        self.assertNotIn('Jane Example', stderr.getvalue())
+        self.assertNotIn('123-45-6789', stderr.getvalue())
 
 
 class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):

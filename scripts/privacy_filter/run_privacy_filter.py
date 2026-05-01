@@ -13,6 +13,7 @@ PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN'}
 
 
 def add_span(spans, label, start, end):
@@ -86,8 +87,11 @@ def _coerce_int(value, default=0):
 
 def _span_label(span):
     if not isinstance(span, dict):
-        return 'UNKNOWN'
-    return str(span.get('label') or span.get('type') or span.get('category') or 'UNKNOWN')
+        raise ValueError('unsupported privacy category label')
+    label = str(span.get('label') or span.get('type') or span.get('category') or 'UNKNOWN')
+    if label not in ALLOWED_LABELS:
+        raise ValueError('unsupported privacy category label')
+    return label
 
 
 def _span_start(span):
@@ -128,9 +132,7 @@ def normalize_opf_json(raw: str, input_char_count: int):
         counts[span['label']] = counts.get(span['label'], 0) + 1
     category_counts = {key: counts[key] for key in sorted(counts)}
 
-    masked_text = obj.get('masked_text', obj.get('text', '<missing>'))
-    if not isinstance(masked_text, str):
-        masked_text = '<missing>'
+    masked_text = ' '.join(f'[{span["label"]}]' for span in spans) or '[NO_PII_DETECTED]'
 
     return {
         'summary': {
