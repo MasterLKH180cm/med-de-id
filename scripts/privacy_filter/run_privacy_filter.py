@@ -6,27 +6,63 @@ EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
 DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
 SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
+PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
+PASSPORT_NUMERIC_CONTEXT_RE = re.compile(
+    r'\b(?:passport(?:\s+(?:number|no\.?))?)\s+(\d{9})(?![A-Za-z0-9-])',
+    re.I,
+)
+INSURANCE_ID_RE = re.compile(
+    r'\b(?:insurance(?:\s+(?:id|number|policy))?|member(?:\s+(?:id|number))?|policy(?:\s+(?:id|number))?)\s+(?:ID\s+)?([A-Z]{2,4}-?\d{6,10}|[A-Z]{3}\d{6,10})(?![A-Za-z0-9-])',
+    re.I,
+)
+AGE_RE = re.compile(r'\b(?:age|aged|patient\s+age)\s+(\d{1,3})\b', re.I)
+FACILITY_RE = re.compile(
+    r'\b(?:facility|hospital|clinic|site|location)\s+([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,5}\s+(?:Hospital|Clinic|Medical\s+Center|Health\s+Center|Facility))\b'
+)
+NPI_RE = re.compile(r'\bNPI\s*(?:number|no\.)?\s*(\d{10})(?!\d)', re.I)
+LICENSE_PLATE_RE = re.compile(
+    r'\b(?:license\s+plate|plate(?:\s+(?:number|no\.))?)\s+([A-Z0-9]{2,4}-[A-Z0-9]{2,4})(?![A-Za-z0-9-])',
+    re.I,
+)
 ZIP_RE = re.compile(r'(?<![A-Za-z0-9-])\d{5}(?:-\d{4})?(?![A-Za-z0-9-])')
 ADDRESS_RE = re.compile(r'\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Ct|Court)\b')
-MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
-ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
+MRN_RE = re.compile(r'\bMRN[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
+ID_RE = re.compile(r'\bID[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'ZIP'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE'}
 
 
 def add_span(spans, label, start, end):
     spans.append({'label': label, 'start': start, 'end': end, 'preview': '<redacted>'})
 
 
+def _has_identifier_prefix(text: str, start: int) -> bool:
+    return bool(re.search(r'(?:MRN|ID)[- ]$', text[max(0, start - 5):start], re.I))
+
+
 def _zip_has_phi_identifier_prefix(text: str, start: int) -> bool:
-    return bool(re.search(r'(?:MRN|ID)[- ]?$', text[max(0, start - 5):start], re.I))
+    return _has_identifier_prefix(text, start)
 
 
 def _zip_starts_street_address(text: str, start: int) -> bool:
     return bool(ADDRESS_RE.match(text, start))
+
+
+def _is_valid_npi(value: str) -> bool:
+    digits = '80840' + value
+    total = 0
+    parity = len(digits) % 2
+    for index, char in enumerate(digits):
+        digit = int(char)
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
 
 
 def heuristic_detect(text: str):
@@ -41,6 +77,25 @@ def heuristic_detect(text: str):
         add_span(spans, 'DATE', m.start(), m.end())
     for m in SSN_RE.finditer(text):
         add_span(spans, 'SSN', m.start(), m.end())
+    for m in PASSPORT_ALNUM_RE.finditer(text):
+        if _has_identifier_prefix(text, m.start()):
+            continue
+        add_span(spans, 'PASSPORT', m.start(), m.end())
+    for m in PASSPORT_NUMERIC_CONTEXT_RE.finditer(text):
+        add_span(spans, 'PASSPORT', m.start(1), m.end(1))
+    for m in INSURANCE_ID_RE.finditer(text):
+        add_span(spans, 'INSURANCE_ID', m.start(1), m.end(1))
+    for m in AGE_RE.finditer(text):
+        age = int(m.group(1))
+        if 0 <= age <= 120:
+            add_span(spans, 'AGE', m.start(1), m.end(1))
+    for m in FACILITY_RE.finditer(text):
+        add_span(spans, 'FACILITY', m.start(1), m.end(1))
+    for m in NPI_RE.finditer(text):
+        if _is_valid_npi(m.group(1)):
+            add_span(spans, 'NPI', m.start(1), m.end(1))
+    for m in LICENSE_PLATE_RE.finditer(text):
+        add_span(spans, 'LICENSE_PLATE', m.start(1), m.end(1))
     for m in ZIP_RE.finditer(text):
         if _zip_has_phi_identifier_prefix(text, m.start()):
             continue

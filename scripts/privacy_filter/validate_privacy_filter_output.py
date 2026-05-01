@@ -3,7 +3,7 @@ import json, sys
 from pathlib import Path
 
 ALLOWED_PREVIEW_VALUES = {'<redacted>'}
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'ZIP'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE'}
 
 
 class PrivacyFilterOutputValidationError(ValueError):

@@ -13,6 +13,7 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = REPO_ROOT / 'scripts' / 'privacy_filter' / 'run_privacy_filter.py'
+VALIDATOR = REPO_ROOT / 'scripts' / 'privacy_filter' / 'validate_privacy_filter_output.py'
 CORPUS_RUNNER = REPO_ROOT / 'scripts' / 'privacy_filter' / 'run_synthetic_corpus.py'
 CORPUS_FIXTURE_DIR = REPO_ROOT / 'scripts' / 'privacy_filter' / 'fixtures' / 'corpus'
 
@@ -24,7 +25,166 @@ def load_runner_module():
     return module
 
 
-class PrivacyFilterRunnerFailureTests(unittest.TestCase):
+def load_validator_module():
+    spec = importlib.util.spec_from_file_location('validate_privacy_filter_output_under_test', VALIDATOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_text(text):
+    module = load_runner_module()
+    return module.heuristic_detect(text)
+
+
+def detect_pii(text):
+    return run_text(text)
+
+
+class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_fallback_detects_contextual_insurance_ids_without_raw_previews(self):
+        text = 'Patient Jane Example insurance ID ABC1234567 and member number MBR-7654321.'
+        payload = detect_pii(text)
+        labels = [span['label'] for span in payload['spans']]
+        self.assertEqual(labels.count('INSURANCE_ID'), 2)
+        self.assertIn('[INSURANCE_ID]', payload['masked_text'])
+        self.assertEqual(payload['summary']['category_counts']['INSURANCE_ID'], 2)
+        for span in payload['spans']:
+            self.assertEqual(span['preview'], '<redacted>')
+        self.assertNotIn('ABC1234567', json.dumps(payload))
+        self.assertNotIn('MBR-7654321', json.dumps(payload))
+
+    def test_fallback_does_not_detect_standalone_or_embedded_insurance_like_tokens(self):
+        text = 'Standalone ABC1234567 should not match; embedded XABC1234567 and MRN ABC1234567 stay bounded.'
+        payload = detect_pii(text)
+        labels = [span['label'] for span in payload['spans']]
+        self.assertNotIn('INSURANCE_ID', labels)
+
+    def test_fallback_detects_bounded_age_facility_npi_and_license_plate_without_raw_previews(self):
+        text = 'Patient Jane Example age 87 at facility North Valley Hospital, NPI 1234567893, license plate ABC-1234.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('AGE'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('FACILITY'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('NPI'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('LICENSE_PLATE'), 1)
+        self.assertIn('[AGE]', payload['masked_text'])
+        self.assertIn('[FACILITY]', payload['masked_text'])
+        self.assertIn('[NPI]', payload['masked_text'])
+        self.assertIn('[LICENSE_PLATE]', payload['masked_text'])
+        rendered = json.dumps(payload, sort_keys=True)
+        for raw in ('87', 'North Valley Hospital', '1234567893', 'ABC-1234'):
+            self.assertNotIn(raw, rendered)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_overmatch_unbounded_age_facility_npi_or_plate_like_tokens(self):
+        text = 'Age 130 is out of scope; North Valley Hospital lacks facility context; NPI 1234567890 fails checksum; ABC-1234 lacks plate context.'
+        payload = detect_pii(text)
+        labels = [span['label'] for span in payload['spans']]
+        self.assertNotIn('AGE', labels)
+        self.assertNotIn('FACILITY', labels)
+        self.assertNotIn('NPI', labels)
+        self.assertNotIn('LICENSE_PLATE', labels)
+
+    def test_passport_numbers_are_masked_without_overmatching_embedded_tokens(self):
+        text = 'Patient Jane Example passport X12345678 reference AX12345678 and X123456789'
+        payload = run_text(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        self.assertIn('[PASSPORT]', payload['masked_text'])
+        self.assertNotIn('passport X12345678', payload['masked_text'])
+        self.assertIn('AX12345678', payload['masked_text'])
+        self.assertIn('X123456789', payload['masked_text'])
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+        self.assertEqual(len(passport_spans), 1)
+        self.assertEqual(passport_spans[0]['preview'], '<redacted>')
+
+    def test_numeric_passport_is_masked_without_overmatching_numeric_boundaries(self):
+        text = 'Patient Jane Example passport 123456789 reference 1234567890 123456789A A123456789 passport 123456789-01'
+        payload = run_text(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        self.assertIn('[PASSPORT]', payload['masked_text'])
+        self.assertIn('passport [PASSPORT]', payload['masked_text'])
+        self.assertIn('1234567890', payload['masked_text'])
+        self.assertIn('123456789A', payload['masked_text'])
+        self.assertIn('A123456789', payload['masked_text'])
+        self.assertIn('passport 123456789-01', payload['masked_text'])
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+        self.assertEqual(len(passport_spans), 1)
+        self.assertEqual(passport_spans[0]['preview'], '<redacted>')
+
+    def test_passport_payload_is_accepted_by_validator_contract(self):
+        payload = run_text('Patient Jane Example passport 123456789\n')
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        validator.validate_privacy_filter_output(payload)
+
+    def test_mrn_and_id_numeric_values_are_not_detected_as_passports(self):
+        payload = run_text('Patient Jane Example MRN-123456789 and ID-123456789\n')
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('MRN'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 1)
+        self.assertNotIn('PASSPORT', payload['summary']['category_counts'])
+        self.assertNotIn('[PASSPORT]', payload['masked_text'])
+        validator.validate_privacy_filter_output(payload)
+
+    def test_mrn_and_id_alphanumeric_values_are_not_detected_as_passports(self):
+        payload = run_text('Patient Jane Example MRN-X12345678 and ID-X12345678; passport X12345678\n')
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('MRN'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        self.assertIn('[PASSPORT]', payload['masked_text'])
+        self.assertIn('[MRN]', payload['masked_text'])
+        self.assertIn('[ID]', payload['masked_text'])
+        self.assertNotIn('MRN-X12345678', payload['masked_text'])
+        self.assertNotIn('ID-X12345678', payload['masked_text'])
+        self.assertNotIn('X12345678 and ID-X12345678', payload['masked_text'])
+        self.assertNotIn('MRN-[PASSPORT]', payload['masked_text'])
+        self.assertNotIn('ID-[PASSPORT]', payload['masked_text'])
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+        self.assertEqual(len(passport_spans), 1)
+        validator.validate_privacy_filter_output(payload)
+
+    def test_spaced_mrn_and_id_alphanumeric_values_are_not_detected_as_passports(self):
+        payload = run_text('Patient Jane Example MRN X12345678 and ID X12345678; passport X12345678; X12345678\n')
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('MRN'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 2)
+        self.assertIn('[PASSPORT]', payload['masked_text'])
+        self.assertIn('[MRN]', payload['masked_text'])
+        self.assertIn('[ID]', payload['masked_text'])
+        self.assertNotIn('MRN X12345678', payload['masked_text'])
+        self.assertNotIn('ID X12345678', payload['masked_text'])
+        self.assertNotIn('MRN [PASSPORT]', payload['masked_text'])
+        self.assertNotIn('ID [PASSPORT]', payload['masked_text'])
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+        self.assertEqual(len(passport_spans), 2)
+        validator.validate_privacy_filter_output(payload)
+
+    def test_passport_context_numeric_value_creates_exactly_one_passport_span(self):
+        payload = run_text('Patient Jane Example passport 123456789\n')
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        self.assertEqual(len(passport_spans), 1)
+        self.assertEqual(passport_spans[0]['start'], len('Patient Jane Example passport '))
+        self.assertEqual(passport_spans[0]['end'], len('Patient Jane Example passport 123456789'))
+
+    def test_street_address_number_is_not_detected_as_numeric_passport(self):
+        payload = run_text('Patient Jane Example lives at 123456789 Main Street\n')
+
+        self.assertNotIn('PASSPORT', payload['summary']['category_counts'])
+        self.assertNotIn('[PASSPORT]', payload['masked_text'])
+
     def test_stdin_mock_reads_stdin_emits_contract_and_detects_phi(self):
         phi = 'Patient Jane Example has MRN-12345\n'
         result = subprocess.run(
