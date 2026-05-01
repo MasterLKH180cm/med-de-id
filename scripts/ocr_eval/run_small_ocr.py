@@ -28,6 +28,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_input_path(input_path: Path) -> None:
+    if not input_path.exists():
+        raise ValueError("OCR input path does not exist")
+    if not input_path.is_file():
+        raise ValueError("OCR input path must be a file")
+
+
 def run_mock(input_path: Path) -> int:
     expected = input_path.parent / "synthetic_printed_phi_expected.txt"
     if expected.exists():
@@ -113,6 +120,11 @@ def run_real(input_path: Path) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     input_path = Path(args.input_path)
+    try:
+        validate_input_path(input_path)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     if args.mock:
         return run_mock(input_path)
     return run_real(input_path)
