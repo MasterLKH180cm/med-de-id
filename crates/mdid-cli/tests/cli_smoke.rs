@@ -4804,7 +4804,7 @@ fn ocr_privacy_evidence_help_contains_exact_usage_line_and_command_detail() {
         .arg("--help")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--python-command <cmd>] [--mock]"))
+        .stderr(predicate::str::contains("mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]"))
         .stderr(predicate::str::contains("Commands:\n  status"))
         .stderr(predicate::str::contains("ocr-privacy-evidence Run local OCR privacy evidence and write a bounded PHI-safe JSON report."));
 }
@@ -4865,6 +4865,198 @@ fn ocr_privacy_evidence_runs_checked_in_fixture_without_phi_or_path_leaks() {
             !report_text.contains(unsafe_text),
             "report leaked {unsafe_text}"
         );
+    }
+}
+
+#[test]
+fn ocr_privacy_evidence_summary_output_writes_phi_safe_aggregate_summary() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir
+        .path()
+        .join("Jane-Example-MRN-12345-jane@example.com-555-123-4567");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("ocr-privacy-evidence-report.json");
+    let summary_path = phi_named_dir.join("ocr-privacy-evidence-summary.json");
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-privacy-evidence",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_privacy_evidence.py"),
+            "--output",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("\"summary_written\":true"));
+    assert!(stderr.is_empty());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "ocr_privacy_evidence_summary");
+    assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
+    assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
+    assert_eq!(summary["network_api_called"], false);
+    assert_eq!(summary["category_counts"]["NAME"], 1);
+    assert_eq!(summary["category_counts"]["MRN"], 1);
+    assert_eq!(summary["category_counts"]["EMAIL"], 1);
+    assert_eq!(summary["category_counts"]["PHONE"], 1);
+    for forbidden_key in [
+        "fixtures",
+        "report_path",
+        "normalized_text",
+        "masked_text",
+        "spans",
+    ] {
+        assert!(
+            summary.get(forbidden_key).is_none(),
+            "summary included {forbidden_key}"
+        );
+    }
+    for unsafe_text in [
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "synthetic_printed_phi_line.png",
+        "run_ocr_privacy_evidence.py",
+        "/tmp/",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn ocr_privacy_evidence_summary_output_rejects_same_report_and_summary_before_cleanup() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("report.json");
+    fs::write(&report_path, "stale primary report bytes").unwrap();
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-privacy-evidence",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_privacy_evidence.py"),
+            "--output",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim_end(),
+        "ocr privacy evidence summary path must differ from report path"
+    );
+    assert_eq!(
+        fs::read_to_string(&report_path).unwrap(),
+        "stale primary report bytes"
+    );
+}
+
+#[test]
+fn ocr_privacy_evidence_summary_output_rejects_alias_report_and_summary_before_cleanup() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("report.json");
+    fs::write(&report_path, "stale primary report bytes").unwrap();
+    let alias = dir.path().join(".").join("report.json");
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-privacy-evidence",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_privacy_evidence.py"),
+            "--output",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            alias.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim_end(),
+        "ocr privacy evidence summary path must differ from report path"
+    );
+    assert_eq!(
+        fs::read_to_string(&report_path).unwrap(),
+        "stale primary report bytes"
+    );
+}
+
+#[test]
+fn ocr_privacy_evidence_summary_output_missing_image_removes_stale_summary_without_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("report.json");
+    let summary_path = phi_named_dir.join("summary.json");
+    fs::write(&summary_path, "stale Jane Example MRN-12345").unwrap();
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-privacy-evidence",
+            "--image-path",
+            phi_named_dir.join("missing.png").to_str().unwrap(),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_privacy_evidence.py"),
+            "--output",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in [
+        summary_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+        "missing.png",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
     }
 }
 
