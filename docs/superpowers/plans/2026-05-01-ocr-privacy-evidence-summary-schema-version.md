@@ -162,7 +162,7 @@ git commit -m "docs: truth-sync OCR privacy evidence summary schema version"
 - Read/verify: `README.md`
 - Read/verify: `docs/superpowers/plans/2026-05-01-ocr-privacy-evidence-summary-schema-version.md`
 
-- [ ] **Step 1: Run final verification**
+- [x] **Step 1: Run final verification**
 
 Run:
 
@@ -175,7 +175,7 @@ git status --short
 
 Expected: formatting passes, focused tests pass, whitespace check passes, and the worktree is clean after commits.
 
-- [ ] **Step 2: Push branch**
+- [x] **Step 2: Push branch**
 
 ```bash
 git push -u origin feat/ocr-privacy-evidence-summary-1840
@@ -183,7 +183,7 @@ git push -u origin feat/ocr-privacy-evidence-summary-1840
 
 Expected: remote branch is updated and ready for PR/merge review.
 
-- [ ] **Step 3: Final SDD integration review**
+- [x] **Step 3: Final SDD integration review**
 
 Review the landed branch against this plan and confirm:
 
