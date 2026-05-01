@@ -4456,8 +4456,10 @@ fn ocr_handoff_success_with_synthetic_fixture() {
         report_path.to_string_lossy().to_string()
     );
 
-    let report: Value = serde_json::from_str(&fs::read_to_string(&report_path).unwrap()).unwrap();
-    assert_eq!(report["source"], "synthetic_printed_phi_line.png");
+    let rendered_report = fs::read_to_string(&report_path).unwrap();
+    assert!(!rendered_report.contains("synthetic_printed_phi_line.png"));
+    let report: Value = serde_json::from_str(&rendered_report).unwrap();
+    assert_eq!(report["source"], "<redacted>");
     assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(report["scope"], "printed_text_line_extraction_only");
     assert_eq!(
