@@ -179,6 +179,12 @@ struct OcrHandoffSummaryRequest {
     handoff: Value,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OcrToPrivacyFilterSummaryRequest {
+    handoff: Value,
+}
+
 const PRIVACY_FILTER_TEXT_MAX_BYTES: usize = 1_048_576;
 const INVALID_PRIVACY_FILTER_TEXT_REQUEST_MESSAGE: &str =
     "Privacy Filter text request requires non-empty text no larger than 1048576 bytes.";
@@ -362,6 +368,10 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
         .route("/ocr-handoff/summary", post(ocr_handoff_summary))
+        .route(
+            "/ocr-to-privacy-filter/summary",
+            post(ocr_to_privacy_filter_summary),
+        )
         .route("/privacy-filter/summary", post(privacy_filter_summary))
         .route("/privacy-filter/text", post(privacy_filter_text))
         .route("/tabular/deidentify", post(tabular_deidentify))
@@ -410,6 +420,30 @@ async fn ocr_handoff_summary(
     match build_ocr_handoff_summary(&payload.handoff) {
         Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
         None => invalid_ocr_handoff_summary_request_response().into_response(),
+    }
+}
+
+async fn ocr_to_privacy_filter_summary(
+    payload: Result<Json<OcrToPrivacyFilterSummaryRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_ocr_to_privacy_filter_summary_request_response().into_response(),
+    };
+
+    if build_ocr_handoff_summary(&payload.handoff).is_none() {
+        return invalid_ocr_to_privacy_filter_summary_request_response().into_response();
+    }
+
+    let normalized_text = match payload.handoff.get("normalized_text").and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() && text.len() <= PRIVACY_FILTER_TEXT_MAX_BYTES => text,
+        _ => return invalid_ocr_to_privacy_filter_summary_request_response().into_response(),
+    };
+
+    let report = build_runtime_privacy_filter_text_report(normalized_text);
+    match build_privacy_filter_summary(&report) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => internal_error_response().into_response(),
     }
 }
 
@@ -1481,6 +1515,18 @@ fn invalid_ocr_handoff_summary_request_response() -> (StatusCode, Json<ErrorEnve
     )
 }
 
+fn invalid_ocr_to_privacy_filter_summary_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_ocr_to_privacy_filter_summary_request",
+                message: "request body did not contain a valid OCR handoff report for text-only Privacy Filter summary",
+            },
+        }),
+    )
+}
+
 fn invalid_privacy_filter_text_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::BAD_REQUEST,
@@ -2012,6 +2058,94 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_accepts_fixture_handoff_without_raw_phi() {
+        let handoff: Value = serde_json::from_str(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-to-privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let body_text = String::from_utf8(body.to_vec()).expect("response should be utf8");
+        assert!(!body_text.contains("Jane Example"));
+        assert!(!body_text.contains("MRN-12345"));
+        assert!(!body_text.contains("jane@example.com"));
+        assert!(!body_text.contains("555-123-4567"));
+        let value: Value = serde_json::from_str(&body_text).expect("response should be json");
+        assert_eq!(value["artifact"], "privacy_filter_summary");
+        assert_eq!(value["network_api_called"], false);
+        assert_eq!(value["category_counts"]["NAME"], 1);
+        assert_eq!(value["category_counts"]["MRN"], 1);
+        assert_eq!(value["category_counts"]["EMAIL"], 1);
+        assert_eq!(value["category_counts"]["PHONE"], 1);
+    }
+
+    #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_rejects_unknown_request_fields_without_phi_echo() {
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-to-privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({
+                        "handoff": {},
+                        "Patient Jane Example": "MRN-12345"
+                    }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_text.contains("invalid_ocr_to_privacy_filter_summary_request"));
+        assert!(!body_text.contains("Patient Jane Example"));
+        assert!(!body_text.contains("MRN-12345"));
+    }
+
+    #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_rejects_visual_redaction_marker_without_phi_echo() {
+        let mut handoff: Value = serde_json::from_str(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        handoff["visual_redaction"] = json!({ "preview": "Patient Jane Example MRN-12345" });
+
+        let body_text = post_ocr_to_privacy_filter_summary(handoff, StatusCode::BAD_REQUEST).await;
+        assert!(body_text.contains("invalid_ocr_to_privacy_filter_summary_request"));
+        assert!(!body_text.contains("Patient Jane Example"));
+        assert!(!body_text.contains("MRN-12345"));
+    }
+
+    #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_rejects_empty_normalized_text() {
+        let mut handoff: Value = serde_json::from_str(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        handoff["normalized_text"] = json!("   ");
+
+        let body_text = post_ocr_to_privacy_filter_summary(handoff, StatusCode::BAD_REQUEST).await;
+        assert!(body_text.contains("invalid_ocr_to_privacy_filter_summary_request"));
+        assert!(!body_text.contains("Jane Example"));
+    }
+
+    #[tokio::test]
     async fn ocr_handoff_summary_accepts_existing_fixture_contract() {
         let handoff = serde_json::from_str::<Value>(include_str!(
             "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
@@ -2191,6 +2325,26 @@ mod tests {
             "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
         ))
         .expect("fixture should be valid JSON")
+    }
+
+    async fn post_ocr_to_privacy_filter_summary(
+        handoff: Value,
+        expected_status: StatusCode,
+    ) -> String {
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-to-privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(response.status(), expected_status);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
     }
 
     async fn post_ocr_handoff_summary(handoff: Value, expected_status: StatusCode) -> String {
