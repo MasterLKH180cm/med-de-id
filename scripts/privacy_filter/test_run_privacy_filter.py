@@ -171,6 +171,28 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertNotIn('ABC1234567', json.dumps(payload))
         self.assertNotIn('MBR-7654321', json.dumps(payload))
 
+    def test_fallback_detects_contextual_valid_dea_number_without_raw_previews(self):
+        text = 'Patient Jane Example DEA AB1234563 for MRN-12345.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('DEA_NUMBER'), 1)
+        self.assertIn('[DEA_NUMBER]', payload['masked_text'])
+        self.assertNotIn('AB1234563', payload['masked_text'])
+        dea_spans = [span for span in payload['spans'] if span['label'] == 'DEA_NUMBER']
+        self.assertEqual(len(dea_spans), 1)
+        self.assertEqual(text[dea_spans[0]['start']:dea_spans[0]['end']], 'AB1234563')
+        self.assertEqual(dea_spans[0]['preview'], '<redacted>')
+        self.assertNotIn('AB1234563', json.dumps(payload, sort_keys=True))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_detect_invalid_uncontextual_or_wrong_context_dea_like_tokens(self):
+        text = 'AB1234563 no context. DEA AB1234564. MRN AB1234563. ID AB1234563. xAB1234563 DEA ZZAB1234563Y.'
+        payload = detect_pii(text)
+
+        self.assertNotIn('DEA_NUMBER', payload['summary']['category_counts'])
+        self.assertNotIn('[DEA_NUMBER]', payload['masked_text'])
+
     def test_fallback_does_not_detect_standalone_or_embedded_insurance_like_tokens(self):
         text = 'Standalone ABC1234567 should not match; embedded XABC1234567 and MRN ABC1234567 stay bounded.'
         payload = detect_pii(text)

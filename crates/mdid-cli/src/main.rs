@@ -2096,6 +2096,7 @@ fn is_allowed_privacy_filter_label(label: &str) -> bool {
             | "ZIP"
             | "PASSPORT"
             | "INSURANCE_ID"
+            | "DEA_NUMBER"
             | "AGE"
             | "FACILITY"
             | "NPI"

@@ -18,6 +18,9 @@ INSURANCE_ID_RE = re.compile(
     r'\b(?:insurance(?:\s+(?:id|number|policy))?|member(?:\s+(?:id|number))?|policy(?:\s+(?:id|number))?)\s+(?:ID\s+)?([A-Z]{2,4}-?\d{6,10}|[A-Z]{3}\d{6,10})(?![A-Za-z0-9-])',
     re.I,
 )
+DEA_NUMBER_RE = re.compile(
+    r'\b(?:DEA|DEA\s+(?:number|no\.?|registration(?:\s+number)?))\s+([A-Z]{2}\d{7})(?![A-Za-z0-9-])'
+)
 AGE_RE = re.compile(r'\b(?:age|aged|patient\s+age)\s+(\d{1,3})\b', re.I)
 FACILITY_RE = re.compile(
     r'\b(?:facility|hospital|clinic|site|location)\s+([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,5}\s+(?:Hospital|Clinic|Medical\s+Center|Health\s+Center|Facility))\b'
@@ -37,7 +40,7 @@ PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'FAX', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'IP_ADDRESS', 'URL'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'FAX', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'DEA_NUMBER', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'IP_ADDRESS', 'URL'}
 
 
 def add_span(spans, label, start, end):
@@ -69,6 +72,16 @@ def _is_valid_npi(value: str) -> bool:
                 digit -= 9
         total += digit
     return total % 10 == 0
+
+
+def _is_valid_dea_number(value: str) -> bool:
+    digits = value[2:]
+    if len(value) != 9 or not value[:2].isupper() or not digits.isdigit():
+        return False
+    total = (int(digits[0]) + int(digits[2]) + int(digits[4])) + 2 * (
+        int(digits[1]) + int(digits[3]) + int(digits[5])
+    )
+    return int(digits[6]) == total % 10
 
 
 def heuristic_detect(text: str):
@@ -107,6 +120,9 @@ def heuristic_detect(text: str):
         add_span(spans, 'PASSPORT', m.start(1), m.end(1))
     for m in INSURANCE_ID_RE.finditer(text):
         add_span(spans, 'INSURANCE_ID', m.start(1), m.end(1))
+    for m in DEA_NUMBER_RE.finditer(text):
+        if _is_valid_dea_number(m.group(1)):
+            add_span(spans, 'DEA_NUMBER', m.start(1), m.end(1))
     for m in AGE_RE.finditer(text):
         age = int(m.group(1))
         if 0 <= age <= 120:
