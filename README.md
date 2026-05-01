@@ -184,10 +184,10 @@ Truth-synced 2026-04-30 from the current completion rubric, the still-open plan 
    - Remaining DICOM/PDF/media workflow depth that is currently helper-level only.
    - Packaging/hardening and final workstation governance/review polish.
 
-5. **Close the remaining CLI/product-core gaps that still block production readiness.**
-   - Conservative media rewrite/export remains unfinished; current CLI media support is metadata-review only.
-   - Generalized transfer workflow UX remains narrower than the final product story.
-   - Production packaging/hardening remains unfinished.
+5. **Continue closing the remaining CLI/product-core gaps that still block production readiness.**
+   - Conservative media now has CLI PHI-safe metadata-only export evidence via `review-media --export-report` with explicit `rewrite_status: metadata_only_export`; media-byte rewrite/export remains unfinished.
+   - Portable transfer UX now includes PHI-safe encrypted artifact inspection plus a `portable-transfer-summary` workflow summary; richer generalized transfer orchestration remains narrower than the final product story.
+   - Production packaging/hardening remains unfinished, though local artifact/offline readiness checks provide bounded CLI evidence.
    - Deeper policy/detection coverage is still incomplete, especially where current bounded routes rely on conservative or partial semantics.
 
 6. **Finish the still-missing shared product capabilities that block the repo from claiming end-to-end completion.**

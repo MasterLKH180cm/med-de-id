@@ -2665,6 +2665,57 @@ fn cli_review_media_writes_phi_safe_report() {
 }
 
 #[test]
+fn cli_review_media_can_export_metadata_only_rewrite_evidence() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("media-review.json");
+    let export_path = dir.path().join("media-export.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "review-media",
+            "--artifact-label",
+            "patient-alice-scan.png",
+            "--format",
+            "image",
+            "--metadata-json",
+            r#"[{"key":"DeviceSerialNumber","value":"ABC123"}]"#,
+            "--requires-visual-review",
+            "false",
+            "--unsupported-payload",
+            "false",
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--export-report",
+            export_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).unwrap();
+    let summary: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(summary["rewrite_status"], "metadata_only_export");
+    assert_eq!(summary["export_report_written"], true);
+    assert!(!stdout.contains("patient-alice"));
+    assert!(!stdout.contains("ABC123"));
+
+    let export_text = fs::read_to_string(&export_path).unwrap();
+    assert!(!export_text.contains("patient-alice"));
+    assert!(!export_text.contains("ABC123"));
+    let export: Value = serde_json::from_str(&export_text).unwrap();
+    assert_eq!(
+        export["artifact"],
+        "conservative_media_metadata_only_export"
+    );
+    assert_eq!(export["rewrite_status"], "metadata_only_export");
+    assert_eq!(export["raw_source_included"], false);
+    assert!(export["rewritten_media_bytes"].is_null());
+}
+
+#[test]
 fn cli_review_media_rejects_blank_artifact_label() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("media-review.json");
