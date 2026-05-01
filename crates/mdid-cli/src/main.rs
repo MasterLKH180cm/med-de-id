@@ -2171,6 +2171,16 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
     result
 }
 
+trait PrivacyFilterStdinTempFile: Write {
+    fn sync_all(&self) -> std::io::Result<()>;
+}
+
+impl PrivacyFilterStdinTempFile for fs::File {
+    fn sync_all(&self) -> std::io::Result<()> {
+        fs::File::sync_all(self)
+    }
+}
+
 fn write_privacy_filter_stdin_temp_file() -> Result<PathBuf, String> {
     let mut bytes = Vec::new();
     let limit = PRIVACY_FILTER_STDIN_MAX_BYTES + 1;
@@ -2192,11 +2202,8 @@ fn write_privacy_filter_stdin_temp_file() -> Result<PathBuf, String> {
         #[cfg(unix)]
         options.mode(0o600);
         match options.open(&path) {
-            Ok(mut file) => {
-                file.write_all(&bytes)
-                    .map_err(|err| format!("failed to write stdin input: {err}"))?;
-                file.sync_all()
-                    .map_err(|err| format!("failed to write stdin input: {err}"))?;
+            Ok(file) => {
+                write_privacy_filter_stdin_bytes_to_temp_file(file, &path, &bytes)?;
                 return Ok(path);
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -2204,6 +2211,22 @@ fn write_privacy_filter_stdin_temp_file() -> Result<PathBuf, String> {
         }
     }
     Err("failed to create unique stdin input file".to_string())
+}
+
+fn write_privacy_filter_stdin_bytes_to_temp_file<W: PrivacyFilterStdinTempFile>(
+    mut file: W,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if let Err(err) = file.write_all(bytes) {
+        let _ = fs::remove_file(path);
+        return Err(format!("failed to write stdin input: {err}"));
+    }
+    if let Err(err) = file.sync_all() {
+        let _ = fs::remove_file(path);
+        return Err(format!("failed to write stdin input: {err}"));
+    }
+    Ok(())
 }
 
 fn run_privacy_filter_text_inner(
@@ -3059,6 +3082,87 @@ mod tests {
     use super::*;
     use mdid_domain::MappingScope;
     use mdid_vault::NewMappingRecord;
+
+    struct FailingPrivacyFilterStdinFile {
+        fail_on_write: bool,
+        fail_on_sync: bool,
+    }
+
+    impl Write for FailingPrivacyFilterStdinFile {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.fail_on_write {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "simulated write failure",
+                ))
+            } else {
+                Ok(buf.len())
+            }
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl PrivacyFilterStdinTempFile for FailingPrivacyFilterStdinFile {
+        fn sync_all(&self) -> std::io::Result<()> {
+            if self.fail_on_sync {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "simulated sync failure",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn privacy_filter_stdin_temp_write_failure_removes_materialized_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_path = temp_dir.path().join("stdin-phi.txt");
+        std::fs::write(&temp_path, b"partial PHI").expect("create temp file marker");
+
+        let error = write_privacy_filter_stdin_bytes_to_temp_file(
+            FailingPrivacyFilterStdinFile {
+                fail_on_write: true,
+                fail_on_sync: false,
+            },
+            &temp_path,
+            b"Jane Doe MRN 123",
+        )
+        .expect_err("write failure should be returned");
+
+        assert!(error.contains("failed to write stdin input"));
+        assert!(
+            !temp_path.exists(),
+            "failed write must remove stdin PHI temp file"
+        );
+    }
+
+    #[test]
+    fn privacy_filter_stdin_temp_sync_failure_removes_materialized_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let temp_path = temp_dir.path().join("stdin-phi.txt");
+        std::fs::write(&temp_path, b"written PHI").expect("create temp file marker");
+
+        let error = write_privacy_filter_stdin_bytes_to_temp_file(
+            FailingPrivacyFilterStdinFile {
+                fail_on_write: false,
+                fail_on_sync: true,
+            },
+            &temp_path,
+            b"Jane Doe MRN 123",
+        )
+        .expect_err("sync failure should be returned");
+
+        assert!(error.contains("failed to write stdin input"));
+        assert!(
+            !temp_path.exists(),
+            "failed sync must remove stdin PHI temp file"
+        );
+    }
 
     #[test]
     fn parses_verify_artifacts_command_without_requiring_debug() {
