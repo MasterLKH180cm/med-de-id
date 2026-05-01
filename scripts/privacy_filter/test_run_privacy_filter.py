@@ -96,6 +96,20 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertEqual(len(passport_spans), 1)
         validator.validate_privacy_filter_output(payload)
 
+    def test_spaced_mrn_and_id_alphanumeric_values_are_not_detected_as_passports(self):
+        payload = run_text('Patient Jane Example MRN X12345678 and ID X12345678; passport X12345678; X12345678\n')
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 2)
+        self.assertIn('[PASSPORT]', payload['masked_text'])
+        self.assertIn('MRN X12345678', payload['masked_text'])
+        self.assertIn('ID X12345678', payload['masked_text'])
+        self.assertNotIn('MRN [PASSPORT]', payload['masked_text'])
+        self.assertNotIn('ID [PASSPORT]', payload['masked_text'])
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+        self.assertEqual(len(passport_spans), 2)
+        validator.validate_privacy_filter_output(payload)
+
     def test_passport_context_numeric_value_creates_exactly_one_passport_span(self):
         payload = run_text('Patient Jane Example passport 123456789\n')
         passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
