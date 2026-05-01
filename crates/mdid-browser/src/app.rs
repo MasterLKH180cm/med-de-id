@@ -1806,6 +1806,23 @@ impl BrowserFlowState {
         self.is_tabular_mode() && !self.result_output.trim().is_empty()
     }
 
+    fn can_export_pdf_clean_text_layer_export(&self) -> bool {
+        self.input_mode == InputMode::PdfBase64 && !self.result_output.trim().is_empty()
+    }
+
+    fn prepared_pdf_clean_text_layer_export_download_payload(
+        &self,
+    ) -> Result<BrowserDownloadPayload, String> {
+        if !self.can_export_pdf_clean_text_layer_export() {
+            return Err(
+                "PDF clean text-layer export download is only available after a successful PDF response."
+                    .to_string(),
+            );
+        }
+
+        build_pdf_clean_text_layer_export_download(&self.result_output)
+    }
+
     fn prepared_tabular_report_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
         if !self.can_export_tabular_report() {
             return Err(
@@ -3477,6 +3494,8 @@ pub fn App() -> impl IntoView {
     let can_export_output = move || state.get().can_export_output();
     let can_export_tabular_report = move || state.get().can_export_tabular_report();
     let can_export_decoded_values = move || state.get().can_export_decoded_values();
+    let can_export_pdf_clean_text_layer_export =
+        move || state.get().can_export_pdf_clean_text_layer_export();
 
     let on_export = move |_| {
         let export = state.with_untracked(|state| {
@@ -3516,6 +3535,23 @@ pub fn App() -> impl IntoView {
         let export = state.with_untracked(|state| {
             if state.can_export_tabular_report() {
                 Some(state.prepared_tabular_report_download_payload())
+            } else {
+                None
+            }
+        });
+
+        if let Some(export) = export {
+            match export.and_then(|payload| trigger_browser_download(&payload)) {
+                Ok(()) => {}
+                Err(message) => state.update(|state| state.error_banner = Some(message)),
+            }
+        }
+    };
+
+    let on_export_pdf_clean_text_layer = move |_| {
+        let export = state.with_untracked(|state| {
+            if state.can_export_pdf_clean_text_layer_export() {
+                Some(state.prepared_pdf_clean_text_layer_export_download_payload())
             } else {
                 None
             }
@@ -3773,6 +3809,16 @@ pub fn App() -> impl IntoView {
                         </p>
                         <button disabled=move || !can_export_tabular_report() on:click=on_export_tabular_report type="button">
                             "Download tabular structured report JSON"
+                        </button>
+                    </div>
+                </Show>
+                <Show when=move || state.get().input_mode == InputMode::PdfBase64>
+                    <div class="pdf-clean-text-layer-export">
+                        <p>
+                            "Download PHI-safe clean text-layer export evidence JSON when PDF rewrite bytes are available and no review blockers remain. The PDF review report download above remains unchanged."
+                        </p>
+                        <button disabled=move || !can_export_pdf_clean_text_layer_export() on:click=on_export_pdf_clean_text_layer type="button">
+                            "Download clean text-layer PDF export JSON"
                         </button>
                     </div>
                 </Show>
@@ -7524,6 +7570,111 @@ mod tests {
         assert!(!serialized.contains("Alice"));
         assert!(!serialized.contains("source_text"));
         assert!(!serialized.contains("patient_name"));
+    }
+
+    #[test]
+    fn pdf_clean_text_layer_export_prepared_download_uses_pdf_result_output() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            result_output: json!({
+                "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                "review_queue": [],
+                "no_rewritten_pdf": false,
+                "review_only": false,
+                "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+                "source_name": "Alice Report.pdf",
+                "raw_text": "Alice Smith"
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let review_payload = state.prepared_download_payload().unwrap();
+        let review_output: serde_json::Value =
+            serde_json::from_slice(&review_payload.bytes).unwrap();
+        assert_eq!(review_output["mode"], "pdf_review_report");
+
+        let clean_payload = state
+            .prepared_pdf_clean_text_layer_export_download_payload()
+            .unwrap();
+        assert_eq!(clean_payload.file_name, "clean-text-layer-pdf-export.json");
+        let clean_output: serde_json::Value = serde_json::from_slice(&clean_payload.bytes).unwrap();
+        assert_eq!(clean_output["mode"], "pdf_clean_text_layer_export");
+        assert_eq!(
+            clean_output["rewritten_pdf_bytes_base64"],
+            "JVBERi0xLjQKJSBjbGVhbgo="
+        );
+        let serialized = serde_json::to_string(&clean_output).unwrap();
+        assert!(!serialized.contains("Alice"));
+        assert!(!serialized.contains("raw_text"));
+
+        state.input_mode = InputMode::CsvText;
+        assert!(state
+            .prepared_pdf_clean_text_layer_export_download_payload()
+            .is_err());
+    }
+
+    #[test]
+    fn pdf_clean_text_layer_export_blocks_no_rewrite_review_only_missing_and_null_bytes() {
+        for (name, response) in [
+            (
+                "no_rewritten_pdf",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": true,
+                    "review_only": false,
+                    "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+            (
+                "review_only",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": false,
+                    "review_only": true,
+                    "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+            (
+                "missing_bytes",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": false,
+                    "review_only": false,
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+            (
+                "null_bytes",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": false,
+                    "review_only": false,
+                    "rewritten_pdf_bytes_base64": null,
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+        ] {
+            let payload =
+                build_pdf_clean_text_layer_export_download(&response.to_string()).unwrap();
+            let output: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+            assert_eq!(output["rewrite_available"], false, "{name}");
+            assert!(output.get("rewritten_pdf_bytes_base64").is_none(), "{name}");
+            let serialized = serde_json::to_string(&output).unwrap();
+            assert!(!serialized.contains("Alice"), "{name}: {serialized}");
+            assert!(!serialized.contains("raw_text"), "{name}: {serialized}");
+            assert!(!serialized.contains("source_name"), "{name}: {serialized}");
+        }
     }
 
     #[test]
