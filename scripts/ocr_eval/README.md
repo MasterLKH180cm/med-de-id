@@ -35,12 +35,23 @@ python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-handoff.json
 
 ### CLI bounded OCR handoff wrapper
 ```bash
-cargo run -p mdid-cli -- ocr-handoff --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png --ocr-runner-path scripts/ocr_eval/run_small_ocr.py --handoff-builder-path scripts/ocr_eval/build_ocr_handoff.py --report-path /tmp/ocr-handoff.json
+cargo run -p mdid-cli -- ocr-handoff \
+  --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \
+  --ocr-runner-path scripts/ocr_eval/run_small_ocr.py \
+  --handoff-builder-path scripts/ocr_eval/build_ocr_handoff.py \
+  --report-path /tmp/ocr-handoff.json \
+  --summary-output /tmp/ocr-handoff-summary.json
 ```
 
-The CLI wrapper invokes `run_small_ocr.py --mock <image>`, writes the bounded text to a temporary handoff input, invokes `build_ocr_handoff.py`, validates the JSON contract, deletes the temporary text, and prints a JSON summary containing `command: "ocr-handoff"` plus the report path.
+Usage: `mdid-cli ocr-handoff --image-path <path> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>]`.
+
+The CLI wrapper invokes `run_small_ocr.py --mock <image>`, writes the bounded text to a temporary handoff input, invokes `build_ocr_handoff.py`, validates the JSON contract, deletes the temporary text, and prints only an aggregate/path-redacted JSON summary such as `{"command":"ocr-handoff","report_path":"<redacted>","report_written":true,...}`. Stdout never echoes the caller-supplied report path or summary path, whether or not `--summary-output` is supplied.
 
 Use of `--mock` proves only extraction/handoff plumbing, not real model quality. The handoff artifact truthfully identifies the candidate as `PP-OCRv5_mobile_rec`, the bounded spike engine as `PP-OCRv5-mobile-bounded-spike`, and the current fallback status as `deterministic_synthetic_fixture_fallback` when real PP-OCRv5 local inference is not installed/wired.
+
+The optional `--summary-output <summary.json>` writes a secondary `ocr_handoff_summary` artifact only after the primary OCR handoff report validates. The summary is aggregate-only and PHI-safe: it contains bounded safe metadata, readiness booleans, counts, `network_api_called: false`, and explicit non-goals, while omitting raw OCR text, normalized text, source/fixture names, local paths, bbox/image data, spans, previews, masked text, and raw PHI. On failures after validation prerequisites begin, stale report, temporary text, and summary artifacts are removed so callers cannot mistake old evidence for the current run. If `--summary-output` is the same path as `--report-path`, or an equivalent lexical/existing-file alias such as `dir/report.json` versus `dir/./report.json`, the command fails before stale output cleanup with the fixed PHI/path-safe error `OCR handoff summary path must differ from report path`, preserving stale primary bytes for diagnosis.
+
+This wrapper is CLI/runtime evidence only. It does not add Browser/Web OCR execution, Desktop OCR execution, visual redaction, image pixel redaction, handwriting recognition, final PDF rewrite/export, OCR model-quality proof, or a complete OCR pipeline.
 
 ### JSON extraction contract mode
 ```bash

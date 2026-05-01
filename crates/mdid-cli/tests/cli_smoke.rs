@@ -4517,12 +4517,13 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
 
 #[test]
 fn ocr_handoff_help_mentions_command() {
+    let expected_usage = "mdid-cli ocr-handoff --image-path <path> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>]";
     Command::cargo_bin("mdid-cli")
         .unwrap()
         .arg("--help")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ocr-handoff"));
+        .stderr(predicate::str::contains(expected_usage));
 }
 
 #[test]
@@ -4585,10 +4586,9 @@ fn ocr_handoff_success_with_synthetic_fixture() {
         .clone();
     let summary: Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(summary["command"], "ocr-handoff");
-    assert_eq!(
-        summary["report_path"],
-        report_path.to_string_lossy().to_string()
-    );
+    assert_eq!(summary["report_path"], "<redacted>");
+    assert_eq!(summary["report_written"], true);
+    assert!(!String::from_utf8_lossy(&stdout).contains(report_path.to_str().unwrap()));
 
     let rendered_report = fs::read_to_string(&report_path).unwrap();
     assert!(!rendered_report.contains("synthetic_printed_phi_line.png"));
@@ -4727,6 +4727,7 @@ fn ocr_handoff_summary_output_rejects_same_report_and_summary_before_cleanup() {
     let runner_path = dir.path().join("runner.py");
     let builder_path = dir.path().join("builder.py");
     let report_path = dir.path().join("handoff.json");
+    let summary_alias_path = dir.path().join(".").join("handoff.json");
     fs::write(&image_path, b"png").unwrap();
     fs::write(&runner_path, "print('Jane Example MRN-12345')\n").unwrap();
     fs::write(&builder_path, "print('not reached')\n").unwrap();
@@ -4745,7 +4746,7 @@ fn ocr_handoff_summary_output_rejects_same_report_and_summary_before_cleanup() {
             "--report-path",
             report_path.to_str().unwrap(),
             "--summary-output",
-            report_path.to_str().unwrap(),
+            summary_alias_path.to_str().unwrap(),
         ])
         .assert()
         .failure()
@@ -4758,7 +4759,11 @@ fn ocr_handoff_summary_output_rejects_same_report_and_summary_before_cleanup() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("OCR handoff summary path must differ from report path"));
+    assert!(stdout.is_empty());
+    assert_eq!(
+        stderr.trim(),
+        "OCR handoff summary path must differ from report path"
+    );
     for forbidden in [
         "Jane Example",
         "MRN-12345",
