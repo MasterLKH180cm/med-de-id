@@ -78,4 +78,4 @@ Run: `git add README.md && git commit -m "docs(browser): truth-sync PPM visual r
 
 - Spec coverage: Advances priority item 2 and item 8 with actual browser submission/download for bounded PPM visual redaction using already-landed runtime; does not overclaim unsupported formats.
 - Placeholder scan: No TBD/TODO/placeholders.
-- Type consistency: New mode name is `VisualRedactionPpm`; endpoint is `/visual-redaction/ppm`; response field is `rewritten_ppm_bytes_base64`.
+- Type consistency: New mode name is `PpmVisualRedaction`; endpoint is `/visual-redaction/ppm`; response field is `rewritten_ppm_bytes_base64`.

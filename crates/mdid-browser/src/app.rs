@@ -548,7 +548,7 @@ fn visual_redaction_ppm_download_available(response_json: &str) -> bool {
         response
             .pointer("/verification/format")
             .and_then(serde_json::Value::as_str),
-        Some("ppm_p6" | "PPM_P6")
+        Some("ppm_p6")
     ) && response
         .pointer("/verification/redacted_region_count")
         .and_then(serde_json::Value::as_u64)
@@ -561,6 +561,37 @@ fn visual_redaction_ppm_download_available(response_json: &str) -> bool {
             .get("rewritten_ppm_bytes_base64")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn render_visual_redaction_ppm_safe_output(response_json: &str) -> Result<String, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|error| format!("Failed to parse PPM visual redaction response: {error}"))?;
+    let verification = response
+        .get("verification")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "PPM visual redaction response missing verification object.".to_string())?;
+    let mut safe = serde_json::Map::new();
+    for field in [
+        "format",
+        "width",
+        "height",
+        "redacted_region_count",
+        "distinct_redacted_pixel_count",
+        "unchanged_pixel_count",
+        "output_byte_count",
+        "verified_changed_pixels_within_regions",
+    ] {
+        if let Some(value) = verification.get(field) {
+            safe.insert(field.to_string(), value.clone());
+        }
+    }
+    serde_json::to_string_pretty(&serde_json::json!({
+        "ppm_visual_redaction": {
+            "download_available": visual_redaction_ppm_download_available(response_json),
+            "verification": safe,
+        }
+    }))
+    .map_err(|error| format!("Failed to render safe PPM visual redaction summary: {error}"))
 }
 
 fn build_visual_redaction_ppm_download(
@@ -2954,21 +2985,24 @@ fn parse_runtime_success(
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
         }
-        InputMode::PpmVisualRedaction => Ok(RuntimeResponseEnvelope {
-            rewritten_output: response_body.trim().to_string(),
-            decoded_values_output: None,
-            safe_response_metadata: serde_json::json!({
-                "mode": "ppm_visual_redaction",
-                "download_available": visual_redaction_ppm_download_available(response_body),
-            }),
-            summary: "PPM P6 visual redaction response received for explicit bbox regions."
-                .to_string(),
-            review_queue: if visual_redaction_ppm_download_available(response_body) {
-                "No review items returned.".to_string()
-            } else {
-                "Redacted PPM download unavailable pending verified changed pixels inside explicit regions.".to_string()
-            },
-        }),
+        InputMode::PpmVisualRedaction => {
+            let download_available = visual_redaction_ppm_download_available(response_body);
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: render_visual_redaction_ppm_safe_output(response_body)?,
+                decoded_values_output: None,
+                safe_response_metadata: serde_json::json!({
+                    "mode": "ppm_visual_redaction",
+                    "download_available": download_available,
+                }),
+                summary: "PPM P6 visual redaction response received for explicit bbox regions."
+                    .to_string(),
+                review_queue: if download_available {
+                    "No review items returned.".to_string()
+                } else {
+                    "Redacted PPM download unavailable pending verified changed pixels inside explicit regions.".to_string()
+                },
+            })
+        }
         InputMode::VaultAuditEvents => Ok(RuntimeResponseEnvelope {
             rewritten_output: response_body.trim().to_string(),
             decoded_values_output: None,
@@ -4216,6 +4250,67 @@ mod tests {
         assert_eq!(payload.bytes, redacted);
         let generic = state.prepared_download_payload().unwrap();
         assert_eq!(generic.bytes, redacted);
+    }
+
+    #[test]
+    fn visual_redaction_ppm_download_rejects_legacy_uppercase_format() {
+        let response = json!({
+            "rewritten_ppm_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"P6\n1 1\n255\n\0\0\0"),
+            "verification": {
+                "format": "PPM_P6",
+                "redacted_region_count": 1,
+                "verified_changed_pixels_within_regions": true
+            }
+        })
+        .to_string();
+
+        let state = BrowserAppState {
+            input_mode: InputMode::PpmVisualRedaction,
+            result_output: response,
+            ..Default::default()
+        };
+
+        assert!(!state.can_export_visual_redaction_ppm());
+        assert!(state
+            .prepared_visual_redaction_ppm_download_payload()
+            .is_err());
+    }
+
+    #[test]
+    fn visual_redaction_ppm_success_display_hides_raw_bytes_names_and_regions() {
+        let raw = json!({
+            "rewritten_ppm_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"P6\n2 1\n255\n\0\0\0\x01\x02\x03"),
+            "verification": {
+                "format": "ppm_p6",
+                "width": 2,
+                "height": 1,
+                "redacted_region_count": 1,
+                "distinct_redacted_pixel_count": 1,
+                "unchanged_pixel_count": 1,
+                "output_byte_count": 17,
+                "verified_changed_pixels_within_regions": true,
+                "source_name": "patient-face.ppm",
+                "bbox_regions": [{"x":0,"y":0,"width":1,"height":1}]
+            }
+        })
+        .to_string();
+
+        let envelope = parse_runtime_success(InputMode::PpmVisualRedaction, &raw).unwrap();
+
+        assert!(envelope.rewritten_output.contains("ppm_p6"));
+        assert!(envelope.rewritten_output.contains("redacted_region_count"));
+        assert!(envelope.rewritten_output.contains("output_byte_count"));
+        assert!(!envelope
+            .rewritten_output
+            .contains("rewritten_ppm_bytes_base64"));
+        assert!(!envelope.rewritten_output.contains("patient-face.ppm"));
+        assert!(!envelope.rewritten_output.contains("source_name"));
+        assert!(!envelope.rewritten_output.contains("bbox_regions"));
+        assert!(!envelope.rewritten_output.contains("[{\"x\""));
+        assert_eq!(
+            envelope.safe_response_metadata["download_available"],
+            serde_json::Value::Bool(true)
+        );
     }
 
     #[test]
@@ -7671,9 +7766,12 @@ mod tests {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("media metadata JSON files also load as text"));
         assert!(BROWSER_FILE_IMPORT_COPY
             .contains("Media metadata JSON sends metadata only, not media bytes"));
-        assert!(BROWSER_FILE_IMPORT_COPY.contains("XLSX and PDF files load as base64 payloads"));
-        assert!(BROWSER_FILE_IMPORT_COPY
-            .contains("does not add OCR, visual redaction, vault browsing, or auth/session"));
+        assert!(
+            BROWSER_FILE_IMPORT_COPY.contains("XLSX, PDF, and PPM files load as base64 payloads")
+        );
+        assert!(BROWSER_FILE_IMPORT_COPY.contains(
+            "does not add OCR, automatic visual detection, vault browsing, or auth/session"
+        ));
     }
 
     #[test]
