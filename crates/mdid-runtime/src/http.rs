@@ -435,8 +435,14 @@ async fn ocr_to_privacy_filter_summary(
         return invalid_ocr_to_privacy_filter_summary_request_response().into_response();
     }
 
-    let normalized_text = match payload.handoff.get("normalized_text").and_then(Value::as_str) {
-        Some(text) if !text.trim().is_empty() && text.len() <= PRIVACY_FILTER_TEXT_MAX_BYTES => text,
+    let normalized_text = match payload
+        .handoff
+        .get("normalized_text")
+        .and_then(Value::as_str)
+    {
+        Some(text) if !text.trim().is_empty() && text.len() <= PRIVACY_FILTER_TEXT_MAX_BYTES => {
+            text
+        }
         _ => return invalid_ocr_to_privacy_filter_summary_request_response().into_response(),
     };
 
@@ -2101,10 +2107,13 @@ mod tests {
                     .method("POST")
                     .uri("/ocr-to-privacy-filter/summary")
                     .header("content-type", "application/json")
-                    .body(Body::from(json!({
-                        "handoff": {},
-                        "Patient Jane Example": "MRN-12345"
-                    }).to_string()))
+                    .body(Body::from(
+                        json!({
+                            "handoff": {},
+                            "Patient Jane Example": "MRN-12345"
+                        })
+                        .to_string(),
+                    ))
                     .unwrap(),
             )
             .await

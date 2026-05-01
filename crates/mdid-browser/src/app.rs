@@ -30,6 +30,7 @@ enum InputMode {
     PortableArtifactInspect,
     PortableArtifactImport,
     PrivacyFilterSummary,
+    OcrToPrivacyFilterSummary,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,6 +96,7 @@ impl InputMode {
             "portable-artifact-inspect" => Self::PortableArtifactInspect,
             "portable-artifact-import" => Self::PortableArtifactImport,
             "privacy-filter-summary" => Self::PrivacyFilterSummary,
+            "ocr-to-privacy-filter-summary" => Self::OcrToPrivacyFilterSummary,
             _ => Self::CsvText,
         }
     }
@@ -112,6 +114,7 @@ impl InputMode {
             Self::PortableArtifactInspect => "portable-artifact-inspect",
             Self::PortableArtifactImport => "portable-artifact-import",
             Self::PrivacyFilterSummary => "privacy-filter-summary",
+            Self::OcrToPrivacyFilterSummary => "ocr-to-privacy-filter-summary",
         }
     }
 
@@ -128,6 +131,7 @@ impl InputMode {
             Self::PortableArtifactInspect => "Portable artifact inspect",
             Self::PortableArtifactImport => "Portable artifact import",
             Self::PrivacyFilterSummary => "Privacy Filter summary",
+            Self::OcrToPrivacyFilterSummary => "OCR to Privacy Filter summary",
         }
     }
 
@@ -159,6 +163,9 @@ impl InputMode {
             Self::PrivacyFilterSummary => {
                 "Paste/import an existing Privacy Filter JSON report here"
             }
+            Self::OcrToPrivacyFilterSummary => {
+                "Paste/import an existing OCR-to-Privacy-Filter JSON report here"
+            }
         }
     }
 
@@ -175,6 +182,7 @@ impl InputMode {
             Self::VaultDecode => Some("Vault decode mode sends explicit record ids to the existing localhost runtime endpoint. It does not browse vault contents, does not export vault contents, does not add auth/session, and does not add broader workflow behavior."),
             Self::VaultExport | Self::PortableArtifactInspect | Self::PortableArtifactImport => Some("Bounded localhost portable artifact request surfaces only. This is not vault browsing, decoded-value display, generalized transfer workflow, auth/session, or broader platform workflow functionality."),
             Self::PrivacyFilterSummary => Some("Privacy Filter summary mode is local-only: paste/import an existing Privacy Filter JSON report to prepare a PHI-safe summary download. It does not submit to a runtime endpoint and does not run Privacy Filter."),
+            Self::OcrToPrivacyFilterSummary => Some("OCR to Privacy Filter summary mode is local-only: paste/import an existing OCR-to-Privacy-Filter JSON report to prepare a PHI-safe summary download. It does not submit to a runtime endpoint, run OCR, run Privacy Filter, perform visual redaction, redact image pixels, or export/rewrite PDFs."),
         }
     }
 
@@ -191,6 +199,7 @@ impl InputMode {
             Self::PortableArtifactInspect => "/portable-artifacts/inspect",
             Self::PortableArtifactImport => "/portable-artifacts/import",
             Self::PrivacyFilterSummary => "",
+            Self::OcrToPrivacyFilterSummary => "",
         }
     }
 
@@ -224,7 +233,8 @@ impl InputMode {
             | Self::VaultExport
             | Self::PortableArtifactInspect
             | Self::PortableArtifactImport
-            | Self::PrivacyFilterSummary => BrowserFileReadMode::Text,
+            | Self::PrivacyFilterSummary
+            | Self::OcrToPrivacyFilterSummary => BrowserFileReadMode::Text,
             Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 => {
                 BrowserFileReadMode::DataUrlBase64
             }
@@ -1106,6 +1116,76 @@ fn build_pdf_review_report_download(
     })
 }
 
+fn build_ocr_to_privacy_filter_summary_download(
+    response_json: &str,
+    imported_file_name: Option<&str>,
+) -> Result<BrowserDownloadPayload, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json).map_err(|_| {
+        "OCR to Privacy Filter summary requires a JSON object response.".to_string()
+    })?;
+    if !response.is_object() {
+        return Err("OCR to Privacy Filter summary requires a JSON object response.".to_string());
+    }
+
+    let report = sanitized_ocr_to_privacy_filter_summary(&response);
+    Ok(BrowserDownloadPayload {
+        file_name: format!(
+            "{}-ocr-to-privacy-filter-summary.json",
+            pdf_review_report_source_stem(imported_file_name)
+        ),
+        mime_type: "application/json",
+        bytes: serde_json::to_vec_pretty(&report)
+            .map_err(|_| "OCR to Privacy Filter summary could not encode JSON.".to_string())?,
+        is_text: true,
+    })
+}
+
+fn sanitized_ocr_to_privacy_filter_summary(response: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "mode".to_string(),
+        serde_json::json!("ocr_to_privacy_filter_summary"),
+    );
+
+    for (key, expected) in [
+        ("ocr_candidate", "PP-OCRv5_mobile_rec"),
+        ("ocr_engine", "PP-OCRv5-mobile-bounded-spike"),
+        ("ocr_scope", "printed_text_line_extraction_only"),
+        ("privacy_scope", "text_only_pii_detection"),
+        ("privacy_filter_engine", "fallback_synthetic_patterns"),
+        ("privacy_filter_contract", "text_only_normalized_input"),
+    ] {
+        if response.get(key).and_then(serde_json::Value::as_str) == Some(expected) {
+            report.insert(key.to_string(), serde_json::json!(expected));
+        }
+    }
+
+    for (key, expected) in [
+        ("ready_for_text_pii_eval", true),
+        ("network_api_called", false),
+    ] {
+        if response.get(key).and_then(serde_json::Value::as_bool) == Some(expected) {
+            report.insert(key.to_string(), serde_json::json!(expected));
+        }
+    }
+
+    if let Some(value) = response
+        .get("privacy_filter_detected_span_count")
+        .and_then(serde_json::Value::as_u64)
+    {
+        report.insert(
+            "privacy_filter_detected_span_count".to_string(),
+            serde_json::json!(value),
+        );
+    }
+
+    report.insert(
+        "privacy_filter_category_counts".to_string(),
+        sanitized_privacy_filter_category_counts(response.get("privacy_filter_category_counts")),
+    );
+    serde_json::Value::Object(report)
+}
+
 fn build_privacy_filter_summary_download(
     response_json: &str,
     imported_file_name: Option<&str>,
@@ -1393,10 +1473,12 @@ impl BrowserFlowState {
             && detected_mode == InputMode::PortableArtifactInspect
         {
             InputMode::PortableArtifactImport
-        } else if self.input_mode == InputMode::PrivacyFilterSummary
-            && detected_mode == InputMode::MediaMetadataJson
+        } else if matches!(
+            self.input_mode,
+            InputMode::PrivacyFilterSummary | InputMode::OcrToPrivacyFilterSummary
+        ) && detected_mode == InputMode::MediaMetadataJson
         {
-            InputMode::PrivacyFilterSummary
+            self.input_mode
         } else {
             detected_mode
         }
@@ -1457,6 +1539,9 @@ impl BrowserFlowState {
                 InputMode::PrivacyFilterSummary => {
                     return format!("{stem}-privacy-filter-summary.json");
                 }
+                InputMode::OcrToPrivacyFilterSummary => {
+                    return format!("{stem}-ocr-to-privacy-filter-summary.json");
+                }
                 InputMode::VaultAuditEvents => {
                     return format!("{stem}-vault-audit-events.json");
                 }
@@ -1498,6 +1583,9 @@ impl BrowserFlowState {
             InputMode::PortableArtifactInspect => "mdid-browser-portable-artifact-inspect.json",
             InputMode::PortableArtifactImport => "mdid-browser-portable-artifact-import.json",
             InputMode::PrivacyFilterSummary => "mdid-browser-privacy-filter-summary.json",
+            InputMode::OcrToPrivacyFilterSummary => {
+                "mdid-browser-ocr-to-privacy-filter-summary.json"
+            }
         }
         .to_string()
     }
@@ -1561,8 +1649,10 @@ impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
-            || (self.input_mode == InputMode::PrivacyFilterSummary
-                && !self.payload.trim().is_empty())
+            || (matches!(
+                self.input_mode,
+                InputMode::PrivacyFilterSummary | InputMode::OcrToPrivacyFilterSummary
+            ) && !self.payload.trim().is_empty())
     }
 
     fn is_tabular_mode(&self) -> bool {
@@ -1855,6 +1945,19 @@ impl BrowserFlowState {
                     }),
                 )
             }
+            InputMode::OcrToPrivacyFilterSummary => {
+                let response_json = if self.result_output.trim().is_empty() {
+                    self.payload.as_str()
+                } else {
+                    self.result_output.as_str()
+                };
+                build_ocr_to_privacy_filter_summary_download(
+                    response_json,
+                    self.imported_file_name.as_deref().or_else(|| {
+                        (!self.source_name.trim().is_empty()).then_some(self.source_name.as_str())
+                    }),
+                )
+            }
             InputMode::VaultAuditEvents
             | InputMode::VaultDecode
             | InputMode::VaultExport
@@ -1889,9 +1992,12 @@ impl BrowserFlowState {
     }
 
     fn validate_submission(&self) -> Result<RuntimeSubmitRequest, String> {
-        if self.input_mode == InputMode::PrivacyFilterSummary {
+        if matches!(
+            self.input_mode,
+            InputMode::PrivacyFilterSummary | InputMode::OcrToPrivacyFilterSummary
+        ) {
             return Err(
-                "Privacy Filter summary mode is local-only; use download to prepare a PHI-safe summary from pasted/imported JSON."
+                "Summary mode is local-only; use download to prepare a PHI-safe summary from pasted/imported JSON."
                     .to_string(),
             );
         }
@@ -2456,6 +2562,9 @@ fn build_submit_request(
         InputMode::PrivacyFilterSummary => {
             unreachable!("Privacy Filter summary mode does not submit runtime requests")
         }
+        InputMode::OcrToPrivacyFilterSummary => {
+            unreachable!("OCR to Privacy Filter summary mode does not submit runtime requests")
+        }
     }
     .map_err(|error| format!("Failed to serialize runtime request: {error}"))?;
 
@@ -2629,9 +2738,8 @@ fn parse_runtime_success(
                 review_queue: format!("{duplicates} duplicate portable record(s). Generic audit notice recorded."),
             })
         }
-        InputMode::PrivacyFilterSummary => Err(
-            "Privacy Filter summary mode does not parse runtime responses because it is local-only."
-                .to_string(),
+        InputMode::PrivacyFilterSummary | InputMode::OcrToPrivacyFilterSummary => Err(
+            "Summary mode does not parse runtime responses because it is local-only.".to_string(),
         ),
     }
 }
@@ -3400,6 +3508,7 @@ pub fn App() -> impl IntoView {
                         <option value="portable-artifact-inspect">"Portable artifact inspect"</option>
                         <option value="portable-artifact-import">"Portable artifact import"</option>
                         <option value="privacy-filter-summary">"Privacy Filter summary"</option>
+                        <option value="ocr-to-privacy-filter-summary">"OCR to Privacy Filter summary"</option>
                     </select>
                 </label>
 
@@ -3609,8 +3718,8 @@ mod tests {
     use base64::Engine;
 
     use super::{
-        build_ocr_handoff_summary_download, build_pdf_review_report_download,
-        build_portable_artifact_import_request_payload,
+        build_ocr_handoff_summary_download, build_ocr_to_privacy_filter_summary_download,
+        build_pdf_review_report_download, build_portable_artifact_import_request_payload,
         build_portable_artifact_inspect_request_payload, build_portable_response_report_download,
         build_privacy_filter_summary_download, build_submit_request,
         build_vault_audit_request_payload, build_vault_decode_request_payload,
@@ -3751,6 +3860,165 @@ mod tests {
 
         assert_eq!(report["line_count"], 7);
         assert_eq!(report["char_count"], 1234);
+    }
+
+    #[test]
+    fn ocr_to_privacy_filter_summary_download_preserves_only_allowlisted_safe_fields() {
+        let response = json!({
+            "ocr_candidate": "PP-OCRv5_mobile_rec",
+            "ocr_engine": "PP-OCRv5-mobile-bounded-spike",
+            "ocr_scope": "printed_text_line_extraction_only",
+            "privacy_scope": "text_only_pii_detection",
+            "privacy_filter_engine": "fallback_synthetic_patterns",
+            "privacy_filter_contract": "text_only_normalized_input",
+            "ready_for_text_pii_eval": true,
+            "network_api_called": false,
+            "privacy_filter_detected_span_count": 4,
+            "privacy_filter_category_counts": {
+                "NAME": 1,
+                "MRN": 1,
+                "EMAIL": 1,
+                "PHONE": 1,
+                "ID": 0,
+                "ADDRESS": 9,
+                "Patient Jane Example": 8
+            },
+            "raw_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
+            "normalized_text": "Patient Jane Example MRN-12345",
+            "extracted_text": "Patient Jane Example",
+            "masked_text": "[NAME] [MRN]",
+            "spans": [{"text": "Patient Jane Example", "label": "NAME"}],
+            "preview": "Patient Jane Example",
+            "image_path": "/phi/Patient Jane Example.png",
+            "metadata": {"freeform": "MRN-12345"},
+            "visual_redaction": true,
+            "pdf_bytes_base64": "SHOULD_NOT_LEAK"
+        });
+
+        let payload = build_ocr_to_privacy_filter_summary_download(
+            &response.to_string(),
+            Some("ocr privacy report.json"),
+        )
+        .expect("ocr to privacy filter summary download");
+
+        assert_eq!(
+            payload.file_name,
+            "ocr_privacy_report-ocr-to-privacy-filter-summary.json"
+        );
+        assert_eq!(payload.mime_type, "application/json");
+        assert!(payload.is_text);
+
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(report["mode"], "ocr_to_privacy_filter_summary");
+        assert_eq!(report["ocr_candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(report["ocr_engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(report["ocr_scope"], "printed_text_line_extraction_only");
+        assert_eq!(report["privacy_scope"], "text_only_pii_detection");
+        assert_eq!(
+            report["privacy_filter_engine"],
+            "fallback_synthetic_patterns"
+        );
+        assert_eq!(
+            report["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(report["ready_for_text_pii_eval"], true);
+        assert_eq!(report["network_api_called"], false);
+        assert_eq!(report["privacy_filter_detected_span_count"], 4);
+        assert_eq!(report["privacy_filter_category_counts"]["NAME"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["MRN"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["EMAIL"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["PHONE"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["ID"], 0);
+        assert!(report["privacy_filter_category_counts"]
+            .get("ADDRESS")
+            .is_none());
+        assert!(report.get("raw_text").is_none());
+        assert!(report.get("normalized_text").is_none());
+        assert!(report.get("extracted_text").is_none());
+        assert!(report.get("masked_text").is_none());
+        assert!(report.get("spans").is_none());
+        assert!(report.get("preview").is_none());
+        assert!(report.get("image_path").is_none());
+        assert!(report.get("metadata").is_none());
+        assert!(report.get("visual_redaction").is_none());
+
+        let serialized = serde_json::to_string(&report).unwrap();
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+            "SHOULD_NOT_LEAK",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_to_privacy_filter_summary_download_omits_unsafe_values() {
+        let response = json!({
+            "ocr_candidate": "Patient Jane Example",
+            "ocr_engine": "unsafe-engine",
+            "ocr_scope": "printed_text_line_extraction_only;MRN-12345",
+            "privacy_scope": "text_only_pii_detection",
+            "privacy_filter_engine": "fallback_synthetic_patterns",
+            "privacy_filter_contract": "jane@example.com",
+            "ready_for_text_pii_eval": "true",
+            "network_api_called": true,
+            "privacy_filter_detected_span_count": -1,
+            "privacy_filter_category_counts": {
+                "NAME": "Patient Jane Example",
+                "PHONE": 1.5,
+                "DATE": 2,
+                "MRN": 2
+            },
+            "normalized_text": "555-123-4567"
+        });
+
+        let payload =
+            build_ocr_to_privacy_filter_summary_download(&response.to_string(), Some("case.json"))
+                .expect("ocr to privacy filter summary download");
+        let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        let serialized = serde_json::to_string(&report).unwrap();
+
+        assert_eq!(report["mode"], "ocr_to_privacy_filter_summary");
+        assert!(report.get("ocr_candidate").is_none());
+        assert!(report.get("ocr_engine").is_none());
+        assert!(report.get("ocr_scope").is_none());
+        assert_eq!(report["privacy_scope"], "text_only_pii_detection");
+        assert_eq!(
+            report["privacy_filter_engine"],
+            "fallback_synthetic_patterns"
+        );
+        assert!(report.get("privacy_filter_contract").is_none());
+        assert!(report.get("ready_for_text_pii_eval").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("privacy_filter_detected_span_count").is_none());
+        assert!(report["privacy_filter_category_counts"]
+            .get("NAME")
+            .is_none());
+        assert!(report["privacy_filter_category_counts"]
+            .get("PHONE")
+            .is_none());
+        assert!(report["privacy_filter_category_counts"]
+            .get("DATE")
+            .is_none());
+        assert_eq!(report["privacy_filter_category_counts"]["MRN"], 2);
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
     }
 
     #[test]
