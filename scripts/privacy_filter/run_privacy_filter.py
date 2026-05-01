@@ -6,7 +6,7 @@ EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
 DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
 SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
-PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9])[A-Z]\d{8}(?![A-Za-z0-9])')
+PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
 PASSPORT_NUMERIC_CONTEXT_RE = re.compile(
     r'\b(?:passport(?:\s+(?:number|no\.?))?)\s+(\d{9})(?![A-Za-z0-9])',
     re.I,
