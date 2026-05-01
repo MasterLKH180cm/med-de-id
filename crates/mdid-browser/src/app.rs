@@ -576,7 +576,7 @@ fn render_visual_redaction_ppm_safe_output(response_json: &str) -> Result<String
         "width",
         "height",
         "redacted_region_count",
-        "distinct_redacted_pixel_count",
+        "redacted_pixel_count",
         "unchanged_pixel_count",
         "output_byte_count",
         "verified_changed_pixels_within_regions",
@@ -3862,7 +3862,7 @@ pub fn App() -> impl IntoView {
                 <h2>"Input"</h2>
                 <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
                 <label>
-                    "Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"
+                    "Import local CSV/XLSX/PDF/DICOM/PPM/media metadata JSON payload"
                     <input
                         accept=".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.json"
                         on:change=on_file_import_change
@@ -3870,7 +3870,7 @@ pub fn App() -> impl IntoView {
                     />
                 </label>
                 <p class="input-disclosure">
-                    "This bounded control validates CSV/XLSX/PDF/DICOM/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. JSON payloads remain metadata-only and do not include media bytes."
+                    "This bounded control validates CSV/XLSX/PDF/DICOM/PPM/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. PPM payloads remain base64 text for explicit bbox PPM P6 visual redaction. JSON payloads remain metadata-only and do not include media bytes."
                 </p>
                 <label>
                     "Input mode"
@@ -4285,7 +4285,7 @@ mod tests {
                 "width": 2,
                 "height": 1,
                 "redacted_region_count": 1,
-                "distinct_redacted_pixel_count": 1,
+                "redacted_pixel_count": 1,
                 "unchanged_pixel_count": 1,
                 "output_byte_count": 17,
                 "verified_changed_pixels_within_regions": true,
@@ -4299,6 +4299,10 @@ mod tests {
 
         assert!(envelope.rewritten_output.contains("ppm_p6"));
         assert!(envelope.rewritten_output.contains("redacted_region_count"));
+        assert!(envelope.rewritten_output.contains("redacted_pixel_count"));
+        assert!(!envelope
+            .rewritten_output
+            .contains("distinct_redacted_pixel_count"));
         assert!(envelope.rewritten_output.contains("output_byte_count"));
         assert!(!envelope
             .rewritten_output
@@ -7781,8 +7785,10 @@ mod tests {
         assert!(source
             .contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
         assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.json\""));
-        assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"));
-        assert!(source.contains("validates CSV/XLSX/PDF/DICOM/media metadata JSON selection"));
+        assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/PPM/media metadata JSON payload"));
+        assert!(source.contains("validates CSV/XLSX/PDF/DICOM/PPM/media metadata JSON selection"));
+        assert!(source
+            .contains("PPM payloads remain base64 text for explicit bbox PPM P6 visual redaction"));
         assert!(
             source.contains("JSON payloads remain metadata-only and do not include media bytes")
         );
