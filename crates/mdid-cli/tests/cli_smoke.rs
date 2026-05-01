@@ -145,27 +145,107 @@ fn ocr_handoff_corpus_runs_repo_fixture_runner_without_phi_leaks() {
 }
 
 #[test]
-fn ocr_handoff_corpus_rejects_summary_output_flag_and_removes_stale_summary() {
+fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
     let dir = tempdir().unwrap();
-    let summary_path = dir.path().join("ocr-handoff-summary.md");
-    fs::write(&summary_path, "Patient Jane Example MRN-12345").unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+    let summary_path = dir.path().join("ocr-handoff-summary.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            &repo_path("scripts/ocr_eval/fixtures/corpus"),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_handoff_corpus.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .success();
+
+    assert!(report_path.exists());
+    assert!(summary_path.exists());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "ocr_handoff_corpus_readiness_summary");
+    assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
+    assert_eq!(summary["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        summary["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    assert_eq!(summary["fixture_count"].as_u64().unwrap(), 2);
+    assert_eq!(summary["ready_fixture_count"].as_u64().unwrap(), 2);
+    assert_eq!(summary["all_fixtures_ready_for_text_pii_eval"], true);
+    assert!(summary["total_char_count"].as_u64().unwrap() > 0);
+
+    for forbidden_key in [
+        "fixtures",
+        "fixture",
+        "normalized_text",
+        "ocr_lines",
+        "bbox",
+        "image_bytes",
+    ] {
+        assert!(!summary_text.contains(&format!("\"{forbidden_key}\"")));
+    }
+    for sentinel in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "fixture_001",
+        "synthetic_patient_label_",
+        "/home/",
+        "/tmp/",
+        "fixtures/",
+    ] {
+        assert!(
+            !summary_text.contains(sentinel),
+            "summary leaked {sentinel}"
+        );
+    }
+}
+
+#[test]
+fn ocr_handoff_corpus_removes_stale_summary_on_prerequisite_failure() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-handoff-corpus.json");
+    let summary_path = dir.path().join("ocr-handoff-summary.json");
+    fs::write(&report_path, "stale raw Jane Example").unwrap();
+    fs::write(&summary_path, "stale raw Jane Example").unwrap();
 
     let output = Command::cargo_bin("mdid-cli")
         .unwrap()
         .args([
             "ocr-handoff-corpus",
+            "--fixture-dir",
+            dir.path().join("missing-fixtures").to_str().unwrap(),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_handoff_corpus.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
             "--summary-output",
             summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
         ])
         .assert()
         .failure()
         .get_output()
         .clone();
 
+    assert!(!report_path.exists());
     assert!(!summary_path.exists());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
-    for sentinel in ["Jane Example", "MRN-12345", summary_path.to_str().unwrap()] {
+    for sentinel in ["Jane Example", summary_path.to_str().unwrap()] {
         assert!(!stdout.contains(sentinel));
         assert!(!stderr.contains(sentinel));
     }
