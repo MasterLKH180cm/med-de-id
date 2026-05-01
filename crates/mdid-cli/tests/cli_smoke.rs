@@ -1626,6 +1626,48 @@ fn ocr_to_privacy_filter_single_rejects_identical_report_and_summary_paths_befor
 }
 
 #[test]
+fn ocr_to_privacy_filter_single_rejects_alias_report_and_summary_paths_before_cleanup() {
+    let dir = tempdir().expect("tempdir");
+    let output_path = dir.path().join("same-output.json");
+    let alias_path = dir.path().join(".").join("same-output.json");
+    std::fs::write(&output_path, "stale output").expect("write stale output");
+
+    Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args([
+            "ocr-to-privacy-filter",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--report-path",
+            output_path.to_str().expect("output path"),
+            "--summary-output",
+            alias_path.to_str().expect("alias output path"),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "summary path must differ from report path",
+        ))
+        .stderr(predicate::str::contains(output_path.to_str().expect("output path")).not())
+        .stderr(predicate::str::contains(alias_path.to_str().expect("alias output path")).not())
+        .stderr(predicate::str::contains("Patient Jane Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not());
+
+    assert_eq!(
+        std::fs::read_to_string(&output_path).expect("stale output remains"),
+        "stale output"
+    );
+}
+
+#[test]
 fn ocr_to_privacy_filter_single_rejects_unsafe_privacy_metadata_and_removes_stale_outputs() {
     let dir = tempdir().expect("tempdir");
     let privacy_runner_path = dir.path().join("unsafe_privacy_runner.py");
