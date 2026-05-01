@@ -6,7 +6,7 @@ EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})(?![A-Za-z0-9-])')
 PHONE_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{1,5}(?![A-Za-z0-9-])', re.I)
 PHONE_OVERLONG_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{6,}(?![A-Za-z0-9-])', re.I)
-FAX_RE = re.compile(r'\b(?:fax|facsimile)(?:\s+(?:number|no\.))?\s*:?\s*((?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4}))(?![A-Za-z0-9-])', re.I)
+FAX_RE = re.compile(r'\b(?:fax|facsimile)(?:\s+(?:number|no\.))?\s*:?\s*((?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})(?!\s+(?:x|ext\.?|extension)\s*\d{6,}(?![A-Za-z0-9-]))(?:\s+(?:x|ext\.?|extension)\s*\d{1,5})?)(?![A-Za-z0-9-])', re.I)
 DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
 SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
 PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
@@ -82,9 +82,13 @@ def heuristic_detect(text: str):
         add_span(spans, 'FAX', m.start(1), m.end(1))
         occupied_phone_ranges.append((m.start(1), m.end(1)))
     for m in PHONE_OVERLONG_EXTENSION_RE.finditer(text):
+        if any(start <= m.start() < end for start, end in occupied_phone_ranges):
+            continue
         add_span(spans, 'PHONE', m.start(), m.end())
         occupied_phone_ranges.append((m.start(), m.end()))
     for m in PHONE_EXTENSION_RE.finditer(text):
+        if any(start <= m.start() < end for start, end in occupied_phone_ranges):
+            continue
         add_span(spans, 'PHONE', m.start(), m.end())
         occupied_phone_ranges.append((m.start(), m.end()))
     for m in PHONE_RE.finditer(text):

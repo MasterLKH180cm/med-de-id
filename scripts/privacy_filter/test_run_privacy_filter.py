@@ -66,6 +66,19 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertNotIn('FAX', payload['summary']['category_counts'])
         self.assertNotIn('[FAX]', payload['masked_text'])
 
+    def test_fallback_detects_fax_extension_as_single_fax_span(self):
+        text = 'Please fax 555-123-4567 x890 today.'
+        payload = run_privacy_filter_payload(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('FAX'), 1)
+        self.assertNotIn('PHONE', payload['summary']['category_counts'])
+        self.assertIn('[FAX]', payload['masked_text'])
+        self.assertNotIn('555-123-4567', payload['masked_text'])
+        self.assertNotIn('x890', payload['masked_text'])
+        fax_spans = [span for span in payload['spans'] if span['label'] == 'FAX']
+        self.assertEqual(len(fax_spans), 1)
+        self.assertEqual(fax_spans[0]['preview'], '<redacted>')
+
     def test_detects_phone_extensions_without_leaking_raw_values(self):
         text = 'Patient Jane Example call 555-123-4567 x890 or (555) 222-3333 ext. 44 for MRN-12345.'
         payload = detect_pii(text)
