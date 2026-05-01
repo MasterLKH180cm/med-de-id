@@ -25,6 +25,7 @@ LICENSE_PLATE_RE = re.compile(
     re.I,
 )
 IPV4_RE = re.compile(r'(?<![A-Za-z0-9.])(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?![A-Za-z0-9.])')
+URL_RE = re.compile(r'(?<![A-Za-z0-9_])https?://[A-Za-z0-9][A-Za-z0-9.-]*[/:?#][A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]*[A-Za-z0-9/#=%](?![A-Za-z0-9_])')
 ZIP_RE = re.compile(r'(?<![A-Za-z0-9-])\d{5}(?:-\d{4})?(?![A-Za-z0-9-])')
 ADDRESS_RE = re.compile(r'\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Ct|Court)\b')
 MRN_RE = re.compile(r'\bMRN[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
@@ -33,7 +34,7 @@ PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'IP_ADDRESS'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'IP_ADDRESS', 'URL'}
 
 
 def add_span(spans, label, start, end):
@@ -99,6 +100,8 @@ def heuristic_detect(text: str):
         add_span(spans, 'LICENSE_PLATE', m.start(1), m.end(1))
     for m in IPV4_RE.finditer(text):
         add_span(spans, 'IP_ADDRESS', m.start(), m.end())
+    for m in URL_RE.finditer(text):
+        add_span(spans, 'URL', m.start(), m.end())
     for m in ZIP_RE.finditer(text):
         if _zip_has_phi_identifier_prefix(text, m.start()):
             continue
