@@ -1147,6 +1147,129 @@ fn ocr_to_privacy_filter_corpus_help_mentions_command() {
 }
 
 #[test]
+fn ocr_to_privacy_filter_single_runs_fixture_chain_without_phi_leaks() {
+    let dir = tempdir().expect("tempdir");
+    let report_path = dir.path().join("ocr-to-privacy-filter.json");
+    let summary_path = dir.path().join("ocr-to-privacy-filter-summary.json");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args([
+            "ocr-to-privacy-filter",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--report-path",
+            report_path.to_str().expect("report path"),
+            "--summary-output",
+            summary_path.to_str().expect("summary path"),
+            "--python-command",
+            "python",
+            "--mock",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert!(stdout.contains("ocr-to-privacy-filter"));
+    assert!(stdout.contains("\"report_path\":\"...\""));
+    assert!(!stdout.contains(report_path.to_str().expect("report path")));
+    assert!(!stdout.contains("Patient Jane Example"));
+    assert!(!stdout.contains("MRN-12345"));
+    assert!(!stdout.contains("jane@example.com"));
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).expect("report file"))
+            .expect("report json");
+    assert_eq!(report["artifact"], "ocr_to_privacy_filter_single");
+    assert_eq!(report["ocr_scope"], "printed_text_line_extraction_only");
+    assert_eq!(report["privacy_scope"], "text_only_pii_detection");
+    assert_eq!(report["network_api_called"], false);
+    assert_eq!(report["ready_for_text_pii_eval"], true);
+    assert!(
+        report["privacy_filter_detected_span_count"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 3
+    );
+    assert!(report["privacy_filter_category_counts"]
+        .get("NAME")
+        .is_some());
+    let report_text = report.to_string();
+    assert!(!report_text.contains("Patient Jane Example"));
+    assert!(!report_text.contains("MRN-12345"));
+    assert!(!report_text.contains("jane@example.com"));
+    assert!(!report_text.contains("normalized_text"));
+    assert!(!report_text.contains("masked_text"));
+    assert!(!report_text.contains("spans"));
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&summary_path).expect("summary file"))
+            .expect("summary json");
+    assert_eq!(summary["artifact"], "ocr_to_privacy_filter_single_summary");
+    assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
+    assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
+    assert_eq!(summary["network_api_called"], false);
+    let summary_text = summary.to_string();
+    assert!(!summary_text.contains("Patient Jane Example"));
+    assert!(!summary_text.contains("MRN-12345"));
+    assert!(!summary_text.contains("jane@example.com"));
+    assert!(!summary_text.contains("normalized_text"));
+    assert!(!summary_text.contains("masked_text"));
+    assert!(!summary_text.contains("spans"));
+}
+
+#[test]
+fn ocr_to_privacy_filter_single_removes_stale_outputs_on_missing_image() {
+    let dir = tempdir().expect("tempdir");
+    let report_path = dir.path().join("stale-report.json");
+    let summary_path = dir.path().join("stale-summary.json");
+    std::fs::write(&report_path, "stale report").expect("write stale report");
+    std::fs::write(&summary_path, "stale summary").expect("write stale summary");
+
+    Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args([
+            "ocr-to-privacy-filter",
+            "--image-path",
+            dir.path()
+                .join("missing.png")
+                .to_str()
+                .expect("missing image path"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--report-path",
+            report_path.to_str().expect("report path"),
+            "--summary-output",
+            summary_path.to_str().expect("summary path"),
+            "--python-command",
+            "python",
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "ocr_to_privacy_filter single-image chain failed",
+        ))
+        .stderr(predicate::str::contains("missing.png").not())
+        .stderr(predicate::str::contains("Patient Jane Example").not());
+
+    assert!(
+        !report_path.exists(),
+        "stale report should be removed on failure"
+    );
+    assert!(
+        !summary_path.exists(),
+        "stale summary should be removed on failure"
+    );
+}
+
+#[test]
 fn ocr_to_privacy_filter_corpus_runs_repo_fixture_chain_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("Jane-Example-MRN-12345-report.json");
