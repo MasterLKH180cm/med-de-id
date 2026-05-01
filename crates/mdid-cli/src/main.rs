@@ -2102,6 +2102,7 @@ fn is_allowed_privacy_filter_label(label: &str) -> bool {
             | "NPI"
             | "LICENSE_PLATE"
             | "VIN"
+            | "DRIVER_LICENSE"
             | "IP_ADDRESS"
             | "URL"
     )
