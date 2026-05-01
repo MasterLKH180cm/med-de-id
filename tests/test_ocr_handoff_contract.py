@@ -34,7 +34,7 @@ REQUIRED_NON_GOALS = {
 
 def valid_handoff(**overrides):
     obj = {
-        "source": "synthetic_printed_phi_line.png",
+        "source": "<redacted>",
         "extracted_text": "Patient Jane Doe\nDOB 1970-01-02",
         "normalized_text": "Patient Jane Doe DOB 1970-01-02",
         "ready_for_text_pii_eval": True,
@@ -126,8 +126,10 @@ def test_ppocrv5_mobile_bounded_spike_handoff_metadata_and_privacy_filter_text_c
     validated = run(VALIDATOR, handoff)
     assert validated.returncode == 0, validated.stderr
 
-    obj = json.loads(handoff.read_text(encoding="utf-8"))
-    assert obj["source"] == "synthetic_printed_phi_line.png"
+    handoff_json = handoff.read_text(encoding="utf-8")
+    obj = json.loads(handoff_json)
+    assert obj["source"] == "<redacted>"
+    assert "synthetic_printed_phi_line.png" not in handoff_json
     assert obj["candidate"] == "PP-OCRv5_mobile_rec"
     assert obj["engine"] == "PP-OCRv5-mobile-bounded-spike"
     assert obj["engine_status"] == "deterministic_synthetic_fixture_fallback"
@@ -157,13 +159,14 @@ def test_small_ocr_json_mode_emits_bounded_extraction_contract_and_feeds_privacy
         "engine": "PP-OCRv5-mobile-bounded-spike",
         "engine_status": "deterministic_synthetic_fixture_fallback",
         "scope": "printed_text_line_extraction_only",
-        "source": "synthetic_printed_phi_line.png",
+        "source": "<redacted>",
         "extracted_text": expected_text,
         "normalized_text": " ".join(expected_text.split()),
         "ready_for_text_pii_eval": True,
         "privacy_filter_contract": "text_only_normalized_input",
         "non_goals": sorted(REQUIRED_NON_GOALS),
     }
+    assert "synthetic_printed_phi_line.png" not in ocr.stdout
 
     privacy_input = tmp_path / "privacy-input.txt"
     privacy_input.write_text(obj["normalized_text"], encoding="utf-8")
