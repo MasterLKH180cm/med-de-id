@@ -25,7 +25,7 @@ LICENSE_PLATE_RE = re.compile(
     re.I,
 )
 IPV4_RE = re.compile(r'(?<![A-Za-z0-9.])(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?![A-Za-z0-9.])')
-URL_RE = re.compile(r'(?<![A-Za-z0-9_])https?://[A-Za-z0-9][A-Za-z0-9.-]*[/:?#][A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]*[A-Za-z0-9/#](?![A-Za-z0-9_])')
+URL_RE = re.compile(r'(?<![A-Za-z0-9_])https?://[A-Za-z0-9][A-Za-z0-9.-]*[/:?#][A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]*[A-Za-z0-9/#=%](?![A-Za-z0-9_])')
 ZIP_RE = re.compile(r'(?<![A-Za-z0-9-])\d{5}(?:-\d{4})?(?![A-Za-z0-9-])')
 ADDRESS_RE = re.compile(r'\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Ct|Court)\b')
 MRN_RE = re.compile(r'\bMRN[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
