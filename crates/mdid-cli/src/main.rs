@@ -2025,14 +2025,20 @@ fn has_windows_drive_prefix(text: &str) -> bool {
         && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
+fn is_allowed_privacy_filter_label(label: &str) -> bool {
+    matches!(
+        label,
+        "NAME" | "MRN" | "EMAIL" | "PHONE" | "ID" | "DATE" | "ADDRESS" | "SSN"
+    )
+}
+
 fn validate_ocr_privacy_category_counts(value: &Value) -> bool {
     let Some(counts) = value.as_object() else {
         return false;
     };
-    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE", "ID", "DATE", "ADDRESS"];
     counts
         .iter()
-        .all(|(label, count)| allowed_labels.contains(&label.as_str()) && count.as_u64().is_some())
+        .all(|(label, count)| is_allowed_privacy_filter_label(label) && count.as_u64().is_some())
 }
 
 fn run_ocr_privacy_evidence(args: OcrPrivacyEvidenceArgs) -> Result<(), String> {
@@ -3054,10 +3060,9 @@ fn validate_privacy_filter_category_counts(value: &Value) -> bool {
     let Some(counts) = value.as_object() else {
         return false;
     };
-    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE", "ID", "DATE", "ADDRESS"];
     counts
         .iter()
-        .all(|(label, count)| allowed_labels.contains(&label.as_str()) && count.as_u64().is_some())
+        .all(|(label, count)| is_allowed_privacy_filter_label(label) && count.as_u64().is_some())
 }
 
 fn validate_privacy_filter_text_summary_artifact_fields(value: &Value) -> Result<(), String> {
@@ -3403,6 +3408,19 @@ fn validate_privacy_filter_output(value: &Value) -> Result<(), String> {
     }
     if value["metadata"]["network_api_called"] != false {
         return Err("privacy filter output indicates network API use".to_string());
+    }
+    if let Some(category_counts) = value["summary"].get("category_counts") {
+        if !validate_privacy_filter_category_counts(category_counts) {
+            return Err("privacy filter output has invalid category label".to_string());
+        }
+    }
+    for span in value["spans"].as_array().unwrap() {
+        let Some(label) = span.get("label").and_then(Value::as_str) else {
+            return Err("privacy filter output has invalid span label".to_string());
+        };
+        if !is_allowed_privacy_filter_label(label) {
+            return Err("privacy filter output has invalid category label".to_string());
+        }
     }
     Ok(())
 }

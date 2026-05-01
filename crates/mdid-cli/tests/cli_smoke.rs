@@ -1573,8 +1573,8 @@ print(json.dumps({{
     "engine_status": "local_paddleocr_execution",
     "scope": "printed_text_line_extraction_only",
     "source": "fixture_001",
-    "extracted_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 lives at 123 Main St",
-    "normalized_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 lives at 123 Main St",
+    "extracted_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 SSN 123-45-6789 lives at 123 Main St",
+    "normalized_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 SSN 123-45-6789 lives at 123 Main St",
     "ready_for_text_pii_eval": True,
     "privacy_filter_contract": "text_only_normalized_input",
     "non_goals": ["visual_redaction", "pixel_redaction", "final_pdf_rewrite_export"]
@@ -1605,6 +1605,7 @@ spans = [
     {{"label": "EMAIL", "start": text.find("jane@example.com"), "end": text.find("jane@example.com") + len("jane@example.com"), "preview": "<redacted>"}},
     {{"label": "PHONE", "start": text.find("555-123-4567"), "end": text.find("555-123-4567") + len("555-123-4567"), "preview": "<redacted>"}},
     {{"label": "DATE", "start": text.find("1978-04-23"), "end": text.find("1978-04-23") + len("1978-04-23"), "preview": "<redacted>"}},
+    {{"label": "SSN", "start": text.find("123-45-6789"), "end": text.find("123-45-6789") + len("123-45-6789"), "preview": "<redacted>"}},
     {{"label": "ADDRESS", "start": text.find("123 Main St"), "end": text.find("123 Main St") + len("123 Main St"), "preview": "<redacted>"}},
 ]
 spans = [span for span in spans if span["start"] >= 0]
@@ -1617,7 +1618,7 @@ print(json.dumps({{
         "detected_span_count": len(spans),
         "category_counts": counts,
     }},
-    "masked_text": "Patient [NAME] [MRN] [EMAIL] [PHONE] DOB [DATE] lives at [ADDRESS]",
+    "masked_text": "Patient [NAME] [MRN] [EMAIL] [PHONE] DOB [DATE] SSN [SSN] lives at [ADDRESS]",
     "spans": spans,
     "metadata": {{
         "engine": "fallback_synthetic_patterns",
@@ -1699,9 +1700,11 @@ print(json.dumps({{
         .as_object()
         .is_some());
     assert_eq!(report["privacy_filter_category_counts"]["DATE"], 1);
+    assert_eq!(report["privacy_filter_category_counts"]["SSN"], 1);
     assert_eq!(report["privacy_filter_category_counts"]["ADDRESS"], 1);
     assert_eq!(summary["artifact"], "ocr_to_privacy_filter_single_summary");
     assert_eq!(summary["privacy_filter_category_counts"]["DATE"], 1);
+    assert_eq!(summary["privacy_filter_category_counts"]["SSN"], 1);
     assert_eq!(summary["privacy_filter_category_counts"]["ADDRESS"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
@@ -1716,6 +1719,7 @@ print(json.dumps({{
         "jane@example.com",
         "555-123-4567",
         "1978-04-23",
+        "123-45-6789",
         "123 Main St",
         "normalized_text",
         "masked_text",
@@ -4650,6 +4654,10 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
         (
             r#"{"summary":{},"masked_text":"x","spans":[],"metadata":[]}"#,
             "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{"category_counts":{"UNBOUNDED":1}},"masked_text":"[UNBOUNDED]","spans":[{"label":"UNBOUNDED","start":0,"end":1,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output has invalid category label",
         ),
     ] {
         let python_payload = serde_json::to_string(payload).unwrap();
