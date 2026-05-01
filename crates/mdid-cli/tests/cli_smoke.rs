@@ -85,6 +85,251 @@ fn cli_prints_status_banner() {
 }
 
 #[test]
+fn ocr_small_json_runs_repo_fixture_runner_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir
+        .path()
+        .join("Jane-Example-MRN-12345-jane@example.com-555-123-4567");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("ocr-small-json-report.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("ocr-small-json"));
+    assert!(stdout.contains("\"report_path\":\"<redacted>\""));
+    assert!(stdout.contains("\"report_written\":true"));
+    for unsafe_text in [
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+    assert!(stderr.is_empty());
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(report["engine"], "PP-OCRv5-mobile-bounded-spike");
+    assert_eq!(report["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        report["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    assert!(report["ready_for_text_pii_eval"].is_boolean());
+    assert!(report["extracted_text"].is_string());
+    assert!(report["normalized_text"].is_string());
+    for non_goal in [
+        "visual_redaction",
+        "final_pdf_rewrite_export",
+        "handwriting_recognition",
+        "full_page_detection_or_segmentation",
+        "complete_ocr_pipeline",
+    ] {
+        assert!(report["non_goals"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String(non_goal.to_string())));
+    }
+}
+
+#[test]
+fn ocr_small_json_help_mentions_command() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ocr-small-json"));
+}
+
+#[test]
+fn ocr_small_json_invalid_runner_output_removes_stale_report_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let runner_path = phi_named_dir.join("bad-runner.py");
+    fs::write(
+        &runner_path,
+        r#"import json
+import sys
+print(json.dumps({"candidate":"PP-OCRv5_mobile_rec","engine":"PP-OCRv5-mobile-bounded-spike","scope":"wrong_scope","privacy_filter_contract":"text_only_normalized_input","ready_for_text_pii_eval":True,"extracted_text":"ok","normalized_text":"ok","non_goals":["visual_redaction","final_pdf_rewrite_export","handwriting_recognition","full_page_detection_or_segmentation","complete_ocr_pipeline"]}))
+"#,
+    )
+    .unwrap();
+    let report_path = phi_named_dir.join("report.json");
+    fs::write(&report_path, "stale Jane Example").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in [
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+}
+
+#[test]
+fn ocr_small_json_rejects_unknown_phi_bearing_keys_without_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let runner_path = phi_named_dir.join("unsafe-runner.py");
+    fs::write(
+        &runner_path,
+        r#"import json
+import sys
+print(json.dumps({
+    "candidate":"PP-OCRv5_mobile_rec",
+    "engine":"PP-OCRv5-mobile-bounded-spike",
+    "engine_status":"mock_ready",
+    "scope":"printed_text_line_extraction_only",
+    "source":"synthetic_fixture",
+    "privacy_filter_contract":"text_only_normalized_input",
+    "ready_for_text_pii_eval":True,
+    "extracted_text":"ok",
+    "normalized_text":"ok",
+    "non_goals":["visual_redaction","final_pdf_rewrite_export","handwriting_recognition","full_page_detection_or_segmentation","complete_ocr_pipeline"],
+    "source_image_path":"/patients/Jane Example/MRN-12345/source.png",
+    "bbox":[1,2,3,4],
+    "visual_redaction":"Jane Example overlay",
+    "pdf_export":"/tmp/Jane Example.pdf",
+    "agent_id":"agent-Jane-Example",
+    "controller_step":"controller copied MRN-12345 path",
+}))
+"#,
+    )
+    .unwrap();
+    let report_path = phi_named_dir.join("report.json");
+    fs::write(&report_path, "stale Jane Example").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in [
+        report_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "/patients/Jane Example/MRN-12345/source.png",
+        "/tmp/Jane Example.pdf",
+        "Jane Example",
+        "MRN-12345",
+        "agent-Jane-Example",
+        "controller copied",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+}
+
+#[test]
+fn ocr_small_json_missing_input_removes_stale_report_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("report.json");
+    fs::write(&report_path, "stale Jane Example").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            phi_named_dir.join("missing.png").to_str().unwrap(),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in [
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+}
+
+#[test]
 fn ocr_handoff_corpus_runs_repo_fixture_runner_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("ocr-handoff-corpus.json");

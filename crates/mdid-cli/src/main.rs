@@ -57,6 +57,7 @@ enum CliCommand {
     PrivacyFilterCorpus(PrivacyFilterCorpusArgs),
     OcrToPrivacyFilterCorpus(OcrToPrivacyFilterCorpusArgs),
     OcrHandoffCorpus(OcrHandoffCorpusArgs),
+    OcrSmallJson(OcrSmallJsonArgs),
     OcrHandoff(OcrHandoffArgs),
     VaultAudit(VaultAuditArgs),
     VaultDecode(VaultDecodeArgs),
@@ -158,6 +159,15 @@ struct OcrToPrivacyFilterCorpusArgs {
     report_path: PathBuf,
     summary_output: Option<PathBuf>,
     python_command: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct OcrSmallJsonArgs {
+    image_path: PathBuf,
+    ocr_runner_path: PathBuf,
+    report_path: PathBuf,
+    python_command: String,
+    mock: bool,
 }
 
 const PRIVACY_FILTER_RUNNER_STDOUT_MAX_BYTES: usize = 1024 * 1024;
@@ -272,6 +282,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "ocr-handoff-corpus" => {
             parse_ocr_handoff_corpus_args(rest).map(CliCommand::OcrHandoffCorpus)
+        }
+        [command, rest @ ..] if command == "ocr-small-json" => {
+            parse_ocr_small_json_args(rest).map(CliCommand::OcrSmallJson)
         }
         [command, rest @ ..] if command == "ocr-handoff" => {
             parse_ocr_handoff_args(rest).map(CliCommand::OcrHandoff)
@@ -730,6 +743,50 @@ fn parse_ocr_handoff_args(args: &[String]) -> Result<OcrHandoffArgs, String> {
     })
 }
 
+fn parse_ocr_small_json_args(args: &[String]) -> Result<OcrSmallJsonArgs, String> {
+    let mut image_path = None;
+    let mut ocr_runner_path = None;
+    let mut report_path = None;
+    let mut python_command = None;
+    let mut mock = false;
+
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        if flag == "--mock" {
+            mock = true;
+            index += 1;
+            continue;
+        }
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--image-path" => image_path = Some(non_blank_path(value, "--image-path")?),
+            "--ocr-runner-path" => {
+                ocr_runner_path = Some(non_blank_path(value, "--ocr-runner-path")?)
+            }
+            "--report-path" => report_path = Some(non_blank_path(value, "--report-path")?),
+            "--python-command" => {
+                if value.trim().is_empty() {
+                    return Err("missing --python-command".to_string());
+                }
+                python_command = Some(value.clone());
+            }
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+
+    Ok(OcrSmallJsonArgs {
+        image_path: image_path.ok_or_else(|| "missing --image-path".to_string())?,
+        ocr_runner_path: ocr_runner_path.ok_or_else(|| "missing --ocr-runner-path".to_string())?,
+        report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+        python_command: python_command.unwrap_or_else(default_python_command),
+        mock,
+    })
+}
+
 fn default_python_command() -> String {
     if cfg!(windows) {
         "py".to_string()
@@ -971,6 +1028,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::PrivacyFilterCorpus(args) => run_privacy_filter_corpus(args),
         CliCommand::OcrToPrivacyFilterCorpus(args) => run_ocr_to_privacy_filter_corpus(args),
         CliCommand::OcrHandoffCorpus(args) => run_ocr_handoff_corpus(args),
+        CliCommand::OcrSmallJson(args) => run_ocr_small_json(args),
         CliCommand::OcrHandoff(args) => run_ocr_handoff(args),
         CliCommand::VaultAudit(args) => run_vault_audit(args),
         CliCommand::VaultDecode(args) => run_vault_decode(args),
@@ -1568,6 +1626,137 @@ fn validate_ocr_privacy_category_counts(value: &Value) -> bool {
     counts
         .iter()
         .all(|(label, count)| allowed_labels.contains(&label.as_str()) && count.as_u64().is_some())
+}
+
+fn run_ocr_small_json(args: OcrSmallJsonArgs) -> Result<(), String> {
+    let _ = fs::remove_file(&args.report_path);
+    let result = (|| {
+        if !args.mock {
+            return Err("OCR small JSON requires mock mode".to_string());
+        }
+        require_regular_file(&args.image_path, "OCR small JSON failed")?;
+        require_regular_file(&args.ocr_runner_path, "OCR small JSON failed")?;
+        run_ocr_small_json_inner(&args)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&args.report_path);
+    }
+    result
+}
+
+fn run_ocr_small_json_inner(args: &OcrSmallJsonArgs) -> Result<(), String> {
+    let mut child = std::process::Command::new(&args.python_command)
+        .arg(&args.ocr_runner_path)
+        .arg("--mock")
+        .arg("--json")
+        .arg(&args.image_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| "OCR small JSON failed".to_string())?;
+    let (status, stdout_bytes) =
+        wait_for_ocr_runner(&mut child, OCR_RUNNER_TIMEOUT, OCR_RUNNER_STDOUT_MAX_BYTES)
+            .map_err(|_| "OCR small JSON failed".to_string())?;
+    if !status.success() {
+        return Err("OCR small JSON failed".to_string());
+    }
+    let report_text = String::from_utf8(stdout_bytes)
+        .map_err(|_| "OCR small JSON report is not valid UTF-8".to_string())?;
+    if report_text.len() > OCR_RUNNER_STDOUT_MAX_BYTES {
+        return Err("OCR small JSON report exceeded limit".to_string());
+    }
+    let value: Value = serde_json::from_str(&report_text)
+        .map_err(|_| "OCR small JSON report is not valid JSON".to_string())?;
+    validate_ocr_small_json_report(&value)?;
+    let rendered = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&value)
+            .map_err(|err| format!("failed to render OCR small JSON report: {err}"))?
+    );
+    fs::write(&args.report_path, rendered).map_err(|_| "OCR small JSON failed".to_string())?;
+
+    let summary = json!({
+        "command": "ocr-small-json",
+        "report_written": true,
+        "report_path": "<redacted>",
+        "candidate": value["candidate"],
+        "scope": value["scope"],
+        "ready_for_text_pii_eval": value["ready_for_text_pii_eval"],
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "invalid OCR small JSON report".to_string())?;
+    let allowed_keys = [
+        "candidate",
+        "engine",
+        "engine_status",
+        "scope",
+        "source",
+        "extracted_text",
+        "normalized_text",
+        "ready_for_text_pii_eval",
+        "privacy_filter_contract",
+        "non_goals",
+    ];
+    for key in object.keys() {
+        if !allowed_keys.contains(&key.as_str()) {
+            return Err("invalid OCR small JSON report".to_string());
+        }
+    }
+    for key in [
+        "candidate",
+        "engine",
+        "scope",
+        "privacy_filter_contract",
+        "ready_for_text_pii_eval",
+        "extracted_text",
+        "normalized_text",
+        "non_goals",
+    ] {
+        if !object.contains_key(key) {
+            return Err("invalid OCR small JSON report".to_string());
+        }
+    }
+    for (key, expected) in [
+        ("candidate", "PP-OCRv5_mobile_rec"),
+        ("engine", "PP-OCRv5-mobile-bounded-spike"),
+        ("scope", "printed_text_line_extraction_only"),
+        ("privacy_filter_contract", "text_only_normalized_input"),
+    ] {
+        if value[key] != expected {
+            return Err("invalid OCR small JSON report".to_string());
+        }
+    }
+    if !value["ready_for_text_pii_eval"].is_boolean()
+        || !value["extracted_text"].is_string()
+        || !value["normalized_text"].is_string()
+    {
+        return Err("invalid OCR small JSON report".to_string());
+    }
+    let non_goals = value["non_goals"]
+        .as_array()
+        .ok_or_else(|| "invalid OCR small JSON report".to_string())?;
+    for expected in [
+        "visual_redaction",
+        "final_pdf_rewrite_export",
+        "handwriting_recognition",
+        "full_page_detection_or_segmentation",
+        "complete_ocr_pipeline",
+    ] {
+        if !non_goals.iter().any(|item| item == expected) {
+            return Err("invalid OCR small JSON report".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn run_ocr_handoff(args: OcrHandoffArgs) -> Result<(), String> {
@@ -3074,7 +3263,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-handoff --image-path <image> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-small-json --image-path <path> --ocr-runner-path <path> --report-path <report.json> [--python-command <cmd>] --mock\n       mdid-cli ocr-handoff --image-path <image> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--python-command <path-or-command>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
 }
 
 #[cfg(test)]
