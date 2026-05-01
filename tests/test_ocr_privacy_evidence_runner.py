@@ -29,8 +29,8 @@ EXPECTED = {
     "privacy_scope": "text_only_pii_detection",
     "ready_for_text_pii_eval": True,
     "network_api_called": False,
-    "detected_span_count": 5,
-    "category_counts": {"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1, "ID": 1},
+    "detected_span_count": 4,
+    "category_counts": {"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1},
     "non_goals": [
         "browser_ui",
         "complete_ocr_pipeline",
@@ -78,6 +78,9 @@ def test_ocr_privacy_evidence_success_path_writes_aggregate_only_report(tmp_path
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr == ""
     assert json.loads(output.read_text(encoding="utf-8")) == EXPECTED
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert "ID" not in report["category_counts"]
+    assert report["detected_span_count"] == sum(report["category_counts"].values())
     assert json.loads(proc.stdout) == {"report_path": "<redacted>"}
     assert '"report_path": "<redacted>"' in proc.stdout
     assert_no_phi(proc.stdout, proc.stderr, output.read_text(encoding="utf-8"))
@@ -95,4 +98,19 @@ def test_missing_image_removes_stale_output_without_echoing_phi_path(tmp_path):
     assert proc.stdout == ""
     assert proc.stderr == "OCR Privacy evidence input image is missing\n"
     assert not output.exists()
+    assert_no_phi(proc.stdout, proc.stderr)
+
+
+def test_output_directory_cleanup_failure_is_generic_and_phi_safe(tmp_path):
+    output = tmp_path / "Jane-Example-MRN-12345-output.json"
+    output.mkdir()
+
+    proc = run_evidence(output)
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert proc.stderr == "OCR Privacy evidence output cleanup failed\n"
+    assert "Traceback" not in proc.stderr
+    assert "Jane-Example-MRN-12345" not in proc.stderr
+    assert "Jane-Example-MRN-12345" not in proc.stdout
     assert_no_phi(proc.stdout, proc.stderr)

@@ -16,6 +16,7 @@ from typing import Sequence
 TIMEOUT_SECONDS = 15
 GENERIC_ERROR = "OCR Privacy evidence runner failed"
 MISSING_IMAGE_ERROR = "OCR Privacy evidence input image is missing"
+CLEANUP_ERROR = "OCR Privacy evidence output cleanup failed"
 NON_GOALS = [
     "browser_ui",
     "complete_ocr_pipeline",
@@ -25,10 +26,14 @@ NON_GOALS = [
     "image_pixel_redaction",
     "visual_redaction",
 ]
-EXPECTED_CATEGORIES = {"EMAIL", "MRN", "NAME", "PHONE", "ID"}
+EXPECTED_CATEGORIES = {"EMAIL", "MRN", "NAME", "PHONE"}
 
 
 class EvidenceError(Exception):
+    pass
+
+
+class CleanupError(Exception):
     pass
 
 
@@ -47,6 +52,8 @@ def remove_stale(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         return
+    except Exception as exc:  # keep PHI/path details out of user-visible errors
+        raise CleanupError() from exc
 
 
 def run_child(args: list[str], *, input_text: str | None = None) -> str:
@@ -131,14 +138,7 @@ def load_privacy_contract(python: str, runner: Path, normalized_text: str, mock:
 def build_evidence(ocr: dict, privacy: dict) -> dict:
     summary = privacy["summary"]
     counts = dict(summary["category_counts"])
-    # The current single-line OCR fixture omits an ID token while this evidence
-    # contract tracks the full downstream synthetic Privacy Filter category set.
-    # Keep the aggregate artifact shape stable without exposing any raw text.
-    if counts == {"NAME": 1, "EMAIL": 1, "PHONE": 1, "MRN": 1} and summary["detected_span_count"] == 4:
-        counts["ID"] = 1
-        detected_span_count = 5
-    else:
-        detected_span_count = summary["detected_span_count"]
+    detected_span_count = summary["detected_span_count"]
     return {
         "artifact": "ocr_privacy_evidence",
         "ocr_candidate": ocr["candidate"],
@@ -151,7 +151,7 @@ def build_evidence(ocr: dict, privacy: dict) -> dict:
         "ready_for_text_pii_eval": True,
         "network_api_called": False,
         "detected_span_count": detected_span_count,
-        "category_counts": {"EMAIL": counts.get("EMAIL", 0), "MRN": counts.get("MRN", 0), "NAME": counts.get("NAME", 0), "PHONE": counts.get("PHONE", 0), "ID": counts.get("ID", 0)},
+        "category_counts": {"EMAIL": counts.get("EMAIL", 0), "MRN": counts.get("MRN", 0), "NAME": counts.get("NAME", 0), "PHONE": counts.get("PHONE", 0)},
         "non_goals": NON_GOALS,
     }
 
@@ -159,7 +159,11 @@ def build_evidence(ocr: dict, privacy: dict) -> dict:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output = Path(args.output)
-    remove_stale(output)
+    try:
+        remove_stale(output)
+    except CleanupError:
+        print(CLEANUP_ERROR, file=sys.stderr)
+        return 4
     image = Path(args.image_path)
     if not image.is_file():
         print(MISSING_IMAGE_ERROR, file=sys.stderr)
@@ -171,7 +175,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     except EvidenceError:
-        remove_stale(output)
+        try:
+            remove_stale(output)
+        except CleanupError:
+            print(CLEANUP_ERROR, file=sys.stderr)
+            return 4
         print(GENERIC_ERROR, file=sys.stderr)
         return 3
     print(json.dumps({"report_path": "<redacted>"}, indent=2))

@@ -90,8 +90,8 @@ def test_evidence_runner_writes_aggregate_only_phi_safe_report(tmp_path):
         "privacy_scope": "text_only_pii_detection",
         "ready_for_text_pii_eval": True,
         "network_api_called": False,
-        "detected_span_count": 5,
-        "category_counts": {"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1, "ID": 1},
+        "detected_span_count": 4,
+        "category_counts": {"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1},
         "non_goals": [
             "browser_ui",
             "complete_ocr_pipeline",
