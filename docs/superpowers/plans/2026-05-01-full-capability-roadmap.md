@@ -10,23 +10,6 @@
 
 ---
 
-## FIRST PRIORITY ACTION ITEMS — user-mandated 2026-05-02
-
-The user explicitly required every remaining item below to be implemented and promoted into cron first-priority work. Future autonomous rounds must choose from this list before any housekeeping, README-only, or small detector treadmill work.
-
-1. **Full OCR pipeline** — real local OCR pipeline, multi-page/multi-file handling, failure recovery, and model-quality benchmarking; fixture/mock/summary evidence alone is not completion.
-2. **Actual visual / image pixel redaction** — bbox/region-driven image and PDF-page pixel redaction plus visual verification loop; blocker/report-only evidence is not completion.
-3. **Full PDF rewrite/export** — rewritten/redacted PDF bytes, CLI/Browser/Desktop export, and rewrite validation; review-only PDF reports are not completion.
-4. **Media-byte rewrite/export** — image/video/FCS byte-level rewrite/export beyond metadata-only conservative review.
-5. **Handwriting handling** — handwriting recognition/detection/redaction pipeline with conservative unsupported/low-confidence fallback.
-6. **FCS semantic parsing** — FCS semantic parser, field-level PHI classification, and safe review/rewrite/export.
-7. **Generalized spreadsheet/workbook handling** — multi-sheet, complex workbook, formatting/fidelity-preserving support beyond the current first-non-empty-sheet bounded contract.
-8. **Browser/Web workflow depth** — richer upload/download/file-picker UX, actual OCR/visual/PDF execution where applicable, deeper vault/portable UX, and final governance/review polish.
-9. **Desktop workstation workflow depth** — actual workstation execution/file-picker/save UX, full OCR/visual/PDF/media flows, deeper vault decode/audit investigation, portable transfer UX, and workstation packaging/hardening.
-10. **Portable transfer workflow UX** — mode selection, file-picker/save flows, transfer-state review, error recovery, and audit-friendly handoff copy across Browser/Desktop/CLI.
-11. **Production packaging / distribution / hardening** — Windows installer/signed binary/release packaging, external packaging verification, distribution hardening, and field validation loop.
-12. **Deeper detection / policy coverage** — policy/detection crates, false-positive-bounded semantics, configurable policy, and remaining text-detector gaps. Complete current detector branches such as DRIVER_LICENSE when already dirty, then avoid endless +1/+1 detector accounting unless the work is tied to production policy coverage.
-
 ## Current truth-sync baseline — 2026-05-01
 
 - Branch creating this roadmap: `feature/full-capability-roadmap-cron-2251` from `develop`.
