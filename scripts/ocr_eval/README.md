@@ -55,14 +55,17 @@ cargo run -p mdid-cli -- ocr-small-json \
   --image-path scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png \
   --ocr-runner-path scripts/ocr_eval/run_small_ocr.py \
   --report-path /tmp/ocr-small-json-wrapper-report.json \
+  --summary-output /tmp/ocr-small-json-wrapper-summary.json \
   --python-command python \
   --mock
 python scripts/ocr_eval/validate_ocr_handoff.py /tmp/ocr-small-json-wrapper-report.json
 ```
 
-The `mdid-cli ocr-small-json` wrapper runs the existing local PP-OCRv5 mobile small OCR candidate runner as `run_small_ocr.py --mock --json`, validates the same OCR handoff JSON contract, writes a validated OCR handoff JSON report, keeps stdout/errors PHI/path-safe with the report path redacted, rejects unknown extra fields, and removes stale report artifacts on failure. The report is bounded to `scope: "printed_text_line_extraction_only"` and intentionally contains OCR text in `extracted_text` / `normalized_text` so downstream **text-only** Privacy Filter evaluation can consume normalized OCR text through `privacy_filter_contract: "text_only_normalized_input"`; do not treat the report itself as PHI-safe.
+The `mdid-cli ocr-small-json` wrapper runs the existing local PP-OCRv5 mobile small OCR candidate runner as `run_small_ocr.py --mock --json`, validates the same OCR handoff JSON contract, writes a validated OCR handoff JSON report, keeps stdout/errors PHI/path-safe with the report path redacted, rejects unknown extra fields, and removes stale report/summary artifacts on failure. The report is bounded to `scope: "printed_text_line_extraction_only"` and intentionally contains OCR text in `extracted_text` / `normalized_text` so downstream **text-only** Privacy Filter evaluation can consume normalized OCR text through `privacy_filter_contract: "text_only_normalized_input"`; do not treat the report itself as PHI-safe.
 
-This wrapper is CLI/runtime evidence only. It does not claim OCR model quality, visual redaction, image/pixel redaction, handwriting recognition, browser execution, desktop execution, final PDF rewrite/export, or a complete OCR pipeline.
+The optional `--summary-output <summary.json>` writes aggregate-only PP-OCRv5 mobile printed-text extraction readiness evidence for downstream text-only Privacy Filter evaluation. The summary omits raw OCR text, normalized text, source, local paths, bbox/image data, spans, previews, masked text, and raw PHI.
+
+This wrapper is CLI/runtime evidence only. It is not OCR model-quality proof, not visual redaction, not image pixel redaction, not final PDF rewrite/export, not Browser/Web OCR execution, not Desktop OCR execution, and not a full OCR pipeline.
 
 ### Text-only Privacy Filter handoff check
 ```bash
