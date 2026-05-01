@@ -1371,6 +1371,7 @@ fn build_ocr_handoff_corpus_summary(value: &Value) -> Value {
     let ready_fixture_count = value["ready_fixture_count"].as_u64().unwrap_or(0);
     json!({
         "artifact": "ocr_handoff_corpus_readiness_summary",
+        "schema_version": 1,
         "candidate": "PP-OCRv5_mobile_rec",
         "engine": value["engine"],
         "scope": value["scope"],
@@ -1769,6 +1770,7 @@ fn run_ocr_to_privacy_filter_corpus_inner(
 fn build_ocr_to_privacy_filter_corpus_summary(value: &Value) -> Value {
     json!({
         "artifact": "ocr_to_privacy_filter_corpus_summary",
+        "schema_version": 1,
         "ocr_candidate": value["ocr_candidate"],
         "ocr_engine": value["ocr_engine"],
         "ocr_scope": value["ocr_scope"],
@@ -2811,6 +2813,7 @@ fn run_privacy_filter_corpus_inner(args: &PrivacyFilterCorpusArgs) -> Result<(),
 fn build_privacy_filter_corpus_summary(value: &Value) -> Value {
     json!({
         "artifact": "privacy_filter_corpus_summary",
+        "schema_version": 1,
         "engine": value["engine"],
         "scope": value["scope"],
         "fixture_count": value["fixture_count"],

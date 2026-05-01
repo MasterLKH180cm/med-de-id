@@ -1103,6 +1103,7 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
         summary_keys,
         [
             "artifact",
+            "schema_version",
             "candidate",
             "engine",
             "scope",
@@ -1117,6 +1118,7 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
         .collect::<std::collections::BTreeSet<_>>()
     );
     assert_eq!(summary["artifact"], "ocr_handoff_corpus_readiness_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
     assert_eq!(summary["scope"], "printed_text_line_extraction_only");
@@ -1878,7 +1880,36 @@ fn ocr_to_privacy_filter_corpus_writes_phi_safe_summary_output() {
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let summary: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
 
+    let summary_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        summary_keys,
+        [
+            "artifact",
+            "schema_version",
+            "ocr_scope",
+            "ocr_engine",
+            "ocr_candidate",
+            "privacy_scope",
+            "privacy_filter_engine",
+            "privacy_filter_contract",
+            "network_api_called",
+            "fixture_count",
+            "ready_fixture_count",
+            "total_detected_span_count",
+            "category_counts",
+            "privacy_filter_category_counts",
+            "non_goals",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+    );
     assert_eq!(summary["artifact"], "ocr_to_privacy_filter_corpus_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
     assert_eq!(
@@ -2609,7 +2640,28 @@ fn privacy_filter_corpus_writes_phi_safe_summary_output() {
         );
     }
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    let mut actual_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    actual_keys.sort_unstable();
+    let mut expected_keys = vec![
+        "artifact",
+        "category_counts",
+        "engine",
+        "fixture_count",
+        "network_api_called",
+        "non_goals",
+        "schema_version",
+        "scope",
+        "total_detected_span_count",
+    ];
+    expected_keys.sort_unstable();
+    assert_eq!(actual_keys, expected_keys);
     assert_eq!(summary["artifact"], "privacy_filter_corpus_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["engine"], "fallback_synthetic_patterns");
     assert_eq!(summary["scope"], "text_only_synthetic_corpus");
     assert_eq!(summary["network_api_called"], false);
