@@ -937,6 +937,73 @@ pub fn build_desktop_privacy_filter_summary_save(
     })
 }
 
+pub fn build_desktop_ocr_to_privacy_filter_summary_save(
+    response_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "OCR to Privacy Filter summary requires a JSON object report".to_string())?;
+    if !response.is_object() {
+        return Err("OCR to Privacy Filter summary requires a JSON object report".to_string());
+    }
+    let contents = serde_json::to_string_pretty(&desktop_ocr_to_privacy_filter_summary(&response))
+        .map_err(|_| "OCR to Privacy Filter summary could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-ocr-to-privacy-filter".to_string());
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-ocr-to-privacy-filter-summary.json"),
+        contents,
+        status: "OCR to Privacy Filter summary ready to save; OCR text, masked text, spans, previews, paths, visual redaction data, and source document bytes are redacted from this report.".to_string(),
+    })
+}
+
+fn desktop_ocr_to_privacy_filter_summary(response: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "mode".to_string(),
+        serde_json::json!("ocr_to_privacy_filter_summary"),
+    );
+
+    for (key, expected) in [
+        ("ocr_candidate", "PP-OCRv5_mobile_rec"),
+        ("ocr_engine", "PP-OCRv5-mobile-bounded-spike"),
+        ("ocr_scope", "printed_text_line_extraction_only"),
+        ("privacy_scope", "text_only_pii_detection"),
+        ("privacy_filter_engine", "fallback_synthetic_patterns"),
+        ("privacy_filter_contract", "text_only_normalized_input"),
+    ] {
+        if response.get(key).and_then(serde_json::Value::as_str) == Some(expected) {
+            report.insert(key.to_string(), serde_json::json!(expected));
+        }
+    }
+
+    for (key, expected) in [
+        ("ready_for_text_pii_eval", true),
+        ("network_api_called", false),
+    ] {
+        if response.get(key).and_then(serde_json::Value::as_bool) == Some(expected) {
+            report.insert(key.to_string(), serde_json::json!(expected));
+        }
+    }
+
+    if let Some(value) = response
+        .get("privacy_filter_detected_span_count")
+        .and_then(serde_json::Value::as_u64)
+    {
+        report.insert(
+            "privacy_filter_detected_span_count".to_string(),
+            serde_json::json!(value),
+        );
+    }
+
+    report.insert(
+        "privacy_filter_category_counts".to_string(),
+        desktop_privacy_filter_category_counts(response.get("privacy_filter_category_counts")),
+    );
+    serde_json::Value::Object(report)
+}
+
 fn desktop_privacy_filter_summary(response: &serde_json::Value) -> serde_json::Value {
     let mut report = serde_json::Map::new();
     report.insert(
@@ -2924,6 +2991,162 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn ocr_to_privacy_filter_summary_save_preserves_only_allowlisted_safe_fields() {
+        let response = json!({
+            "ocr_candidate": "PP-OCRv5_mobile_rec",
+            "ocr_engine": "PP-OCRv5-mobile-bounded-spike",
+            "ocr_scope": "printed_text_line_extraction_only",
+            "privacy_scope": "text_only_pii_detection",
+            "privacy_filter_engine": "fallback_synthetic_patterns",
+            "privacy_filter_contract": "text_only_normalized_input",
+            "ready_for_text_pii_eval": true,
+            "network_api_called": false,
+            "privacy_filter_detected_span_count": 4,
+            "privacy_filter_category_counts": {
+                "NAME": 1,
+                "MRN": 1,
+                "EMAIL": 1,
+                "PHONE": 1,
+                "ID": 0,
+                "ADDRESS": 9,
+                "Patient Jane Example": 8
+            },
+            "raw_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
+            "normalized_text": "Patient Jane Example MRN-12345",
+            "extracted_text": "Patient Jane Example",
+            "masked_text": "[NAME] [MRN]",
+            "spans": [{"text": "Patient Jane Example", "label": "NAME"}],
+            "preview": "Patient Jane Example",
+            "image_path": "/phi/Patient Jane Example.png",
+            "metadata": {"freeform": "MRN-12345"},
+            "visual_redaction": true,
+            "pdf_bytes_base64": "SHOULD_NOT_LEAK"
+        });
+
+        let payload = build_desktop_ocr_to_privacy_filter_summary_save(
+            &response.to_string(),
+            Some("ocr privacy report.json"),
+        )
+        .expect("ocr to privacy filter summary save");
+
+        assert_eq!(
+            payload.file_name,
+            "ocr_privacy_report-ocr-to-privacy-filter-summary.json"
+        );
+        assert_eq!(payload.status, "OCR to Privacy Filter summary ready to save; OCR text, masked text, spans, previews, paths, visual redaction data, and source document bytes are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "ocr_to_privacy_filter_summary");
+        assert_eq!(report["ocr_candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(report["ocr_engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(report["ocr_scope"], "printed_text_line_extraction_only");
+        assert_eq!(report["privacy_scope"], "text_only_pii_detection");
+        assert_eq!(
+            report["privacy_filter_engine"],
+            "fallback_synthetic_patterns"
+        );
+        assert_eq!(
+            report["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(report["ready_for_text_pii_eval"], true);
+        assert_eq!(report["network_api_called"], false);
+        assert_eq!(report["privacy_filter_detected_span_count"], 4);
+        assert_eq!(
+            report["privacy_filter_category_counts"],
+            json!({"EMAIL": 1, "ID": 0, "MRN": 1, "NAME": 1, "PHONE": 1})
+        );
+        for forbidden_key in [
+            "raw_text",
+            "normalized_text",
+            "extracted_text",
+            "masked_text",
+            "spans",
+            "preview",
+            "image_path",
+            "metadata",
+            "visual_redaction",
+            "pdf_bytes_base64",
+        ] {
+            assert!(
+                report.get(forbidden_key).is_none(),
+                "forbidden key leaked: {forbidden_key}"
+            );
+        }
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+            "SHOULD_NOT_LEAK",
+            "ADDRESS",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_to_privacy_filter_summary_save_omits_unsafe_values() {
+        let response = json!({
+            "ocr_candidate": "Patient Jane Example",
+            "ocr_engine": "unsafe-engine",
+            "ocr_scope": "printed_text_line_extraction_only;MRN-12345",
+            "privacy_scope": "text_only_pii_detection",
+            "privacy_filter_engine": "fallback_synthetic_patterns",
+            "privacy_filter_contract": "jane@example.com",
+            "ready_for_text_pii_eval": "true",
+            "network_api_called": true,
+            "privacy_filter_detected_span_count": -1,
+            "privacy_filter_category_counts": {
+                "NAME": "Patient Jane Example",
+                "PHONE": 1.5,
+                "DATE": 2,
+                "MRN": 2
+            },
+            "normalized_text": "555-123-4567"
+        });
+
+        let payload = build_desktop_ocr_to_privacy_filter_summary_save(
+            &response.to_string(),
+            Some("case.json"),
+        )
+        .expect("ocr to privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["mode"], "ocr_to_privacy_filter_summary");
+        assert!(report.get("ocr_candidate").is_none());
+        assert!(report.get("ocr_engine").is_none());
+        assert!(report.get("ocr_scope").is_none());
+        assert_eq!(report["privacy_scope"], "text_only_pii_detection");
+        assert_eq!(
+            report["privacy_filter_engine"],
+            "fallback_synthetic_patterns"
+        );
+        assert!(report.get("privacy_filter_contract").is_none());
+        assert!(report.get("ready_for_text_pii_eval").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("privacy_filter_detected_span_count").is_none());
+        assert_eq!(report["privacy_filter_category_counts"], json!({"MRN": 2}));
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+            "unsafe-engine",
+            "DATE",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+    }
 
     #[test]
     fn privacy_filter_summary_save_preserves_only_safe_aggregates_and_source_stem() {
