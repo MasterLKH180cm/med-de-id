@@ -7,6 +7,44 @@ fn text_layer_pdf_fixture() -> Vec<u8> {
 }
 
 #[test]
+fn cli_deidentify_pdf_refuses_output_pdf_for_lowercase_review_queue_candidates() {
+    let dir = tempdir().unwrap();
+    let pdf_path = dir.path().join("patient-alice.pdf");
+    let report_path = dir.path().join("report.json");
+    let output_pdf_path = dir.path().join("out.pdf");
+    let mut pdf = text_layer_pdf_fixture();
+    let needle = b"Alice Smith";
+    let offset = pdf
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .unwrap();
+    pdf[offset..offset + needle.len()].copy_from_slice(b"alice smith");
+    fs::write(&pdf_path, pdf).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .arg("deidentify-pdf")
+        .arg("--pdf-path")
+        .arg(&pdf_path)
+        .arg("--source-name")
+        .arg("patient-jane.pdf")
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--output-pdf-path")
+        .arg(&output_pdf_path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!output_pdf_path.exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("PDF rewrite/export unavailable for this input"));
+    assert!(!stderr.contains("Alice Smith"));
+    for forbidden in ["agent", "controller", "orchestration"] {
+        assert!(!stderr.to_lowercase().contains(forbidden));
+    }
+}
+
+#[test]
 fn cli_deidentify_pdf_writes_phi_safe_review_report() {
     let dir = tempdir().unwrap();
     let pdf_path = dir.path().join("patient-jane.pdf");
@@ -47,6 +85,64 @@ fn cli_deidentify_pdf_writes_phi_safe_review_report() {
     assert!(json["review_queue_len"].as_u64().unwrap() >= 1);
     assert!(!report.contains("Jane Patient"));
     assert!(!report.contains("MRN123"));
+}
+
+#[test]
+fn cli_deidentify_pdf_redacts_report_path_in_stdout() {
+    let dir = tempdir().unwrap();
+    let pdf_path = dir.path().join("patient-jane.pdf");
+    let report_path = dir.path().join("sensitive-output-location.json");
+    fs::write(&pdf_path, text_layer_pdf_fixture()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .arg("deidentify-pdf")
+        .arg("--pdf-path")
+        .arg(&pdf_path)
+        .arg("--source-name")
+        .arg("patient-jane.pdf")
+        .arg("--report-path")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains(report_path.to_string_lossy().as_ref()));
+    assert!(!stdout.contains("sensitive-output-location.json"));
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["report_path"], "<redacted>");
+}
+
+#[test]
+fn cli_deidentify_pdf_rejects_same_report_and_output_pdf_path_without_creating_file() {
+    let dir = tempdir().unwrap();
+    let pdf_path = dir.path().join("patient-jane.pdf");
+    let colliding_path = dir.path().join("collision.pdf");
+    fs::write(&pdf_path, text_layer_pdf_fixture()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .arg("deidentify-pdf")
+        .arg("--pdf-path")
+        .arg(&pdf_path)
+        .arg("--source-name")
+        .arg("patient-jane.pdf")
+        .arg("--report-path")
+        .arg(&colliding_path)
+        .arg("--output-pdf-path")
+        .arg(dir.path().join(".").join("collision.pdf"))
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!colliding_path.exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("report and output PDF paths must be different"));
+    assert!(!stderr.contains(colliding_path.to_string_lossy().as_ref()));
+    assert!(!stderr.contains("patient-jane"));
 }
 
 #[test]

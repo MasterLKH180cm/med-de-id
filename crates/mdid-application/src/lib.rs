@@ -1,18 +1,20 @@
 use chrono::Utc;
 use mdid_adapters::{
-    sanitize_output_name, ConservativeMediaAdapter, ConservativeMediaAdapterError,
-    ConservativeMediaInput, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
-    DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy, PdfAdapter,
-    PdfAdapterError, PdfPageExtraction, TabularAdapterError, XlsxSheetDisclosure,
+    redact_ppm_p6_bytes_with_verification, sanitize_output_name, ConservativeMediaAdapter,
+    ConservativeMediaAdapterError, ConservativeMediaInput, CsvTabularAdapter, DicomAdapter,
+    DicomAdapterError, DicomRewritePlan, DicomTagReplacement, DicomUidReplacement,
+    ExtractedTabularData, FieldPolicy, ImageRedactionError, PdfAdapter, PdfAdapterError,
+    PdfPageExtraction, TabularAdapterError, XlsxSheetDisclosure,
 };
 use mdid_domain::{
     BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
-    DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, MappingScope,
-    PdfExtractionSummary, PdfPhiCandidate, PdfRewriteStatus, PhiCandidate, PipelineDefinition,
-    PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
+    DicomDeidentificationSummary, DicomPhiCandidate, DicomPrivateTagPolicy, ImageRedactionRegion,
+    MappingScope, PdfExtractionSummary, PdfPhiCandidate, PdfRewriteStatus, PhiCandidate,
+    PipelineDefinition, PipelineRun, PipelineRunState, SurfaceKind, TabularColumn,
     DICOM_BURNED_IN_PIXEL_REDACTION_NOTICE,
 };
 use mdid_vault::{LocalVaultStore, NewMappingRecord, VaultError};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -31,6 +33,8 @@ pub enum ApplicationError {
     ConservativeMediaAdapter(#[from] ConservativeMediaAdapterError),
     #[error(transparent)]
     TabularAdapter(#[from] TabularAdapterError),
+    #[error("visual redaction failed: {0}")]
+    VisualRedaction(#[from] VisualRedactionError),
     #[error(transparent)]
     Vault(#[from] VaultError),
     #[error("csv rewrite failure: {0}")]
@@ -39,6 +43,88 @@ pub enum ApplicationError {
     Io(#[from] std::io::Error),
     #[error("utf8 conversion failure: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum VisualRedactionError {
+    #[error("malformed or unsupported PPM P6 image")]
+    MalformedPpmP6,
+    #[error("at least one redaction region is required")]
+    EmptyRegions,
+    #[error("image redaction region is outside image bounds")]
+    RegionOutOfBounds,
+}
+
+impl From<ImageRedactionError> for VisualRedactionError {
+    fn from(error: ImageRedactionError) -> Self {
+        match error {
+            ImageRedactionError::RegionOutOfBounds => Self::RegionOutOfBounds,
+            ImageRedactionError::MalformedRgbBuffer | ImageRedactionError::MalformedPpmP6 => {
+                Self::MalformedPpmP6
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VisualRedactionVerification {
+    pub format: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub redacted_region_count: u64,
+    pub redacted_pixel_count: u64,
+    pub unchanged_pixel_count: u64,
+    pub output_byte_count: u64,
+    pub verified_changed_pixels_within_regions: bool,
+}
+
+#[derive(Clone)]
+pub struct VisualRedactionOutput {
+    pub rewritten_ppm_bytes: Vec<u8>,
+    pub verification: VisualRedactionVerification,
+}
+
+impl fmt::Debug for VisualRedactionOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VisualRedactionOutput")
+            .field("rewritten_ppm_bytes", &"[REDACTED]")
+            .field("verification", &self.verification)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct VisualRedactionService;
+
+impl VisualRedactionService {
+    pub fn redact_ppm_p6_bytes(
+        &self,
+        ppm_bytes: &[u8],
+        regions: &[ImageRedactionRegion],
+    ) -> Result<VisualRedactionOutput, ApplicationError> {
+        if regions.is_empty() {
+            return Err(VisualRedactionError::EmptyRegions.into());
+        }
+
+        let (rewritten_ppm_bytes, verification) =
+            redact_ppm_p6_bytes_with_verification(ppm_bytes, regions, [0, 0, 0])
+                .map_err(VisualRedactionError::from)?;
+
+        Ok(VisualRedactionOutput {
+            rewritten_ppm_bytes,
+            verification: VisualRedactionVerification {
+                format: verification.format,
+                width: verification.width,
+                height: verification.height,
+                redacted_region_count: verification.redacted_region_count,
+                redacted_pixel_count: verification.redacted_pixel_count,
+                unchanged_pixel_count: verification.unchanged_pixel_count,
+                output_byte_count: verification.output_byte_count,
+                verified_changed_pixels_within_regions: verification
+                    .verified_changed_pixels_within_regions,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -207,7 +293,28 @@ impl PdfDeidentificationService {
         bytes: &[u8],
         source_name: &str,
     ) -> Result<PdfDeidentificationOutput, ApplicationError> {
-        let extracted = PdfAdapter::new().extract(bytes, source_name)?;
+        let mut extracted = PdfAdapter::new().extract(bytes, source_name)?;
+
+        let can_export_clean_text_layer = extracted.candidates.is_empty()
+            && extracted
+                .pages
+                .iter()
+                .all(|page| page.status == mdid_domain::PdfScanStatus::TextLayerPresent);
+
+        if can_export_clean_text_layer {
+            extracted.summary.rewrite_status = PdfRewriteStatus::CleanTextLayerPdfBytesAvailable;
+            extracted.summary.no_rewritten_pdf = false;
+            extracted.summary.review_only = false;
+            return Ok(PdfDeidentificationOutput {
+                summary: extracted.summary,
+                page_statuses: extracted.pages,
+                review_queue: extracted.candidates,
+                rewrite_status: PdfRewriteStatus::CleanTextLayerPdfBytesAvailable,
+                no_rewritten_pdf: false,
+                review_only: false,
+                rewritten_pdf_bytes: Some(bytes.to_vec()),
+            });
+        }
 
         Ok(PdfDeidentificationOutput {
             summary: extracted.summary,

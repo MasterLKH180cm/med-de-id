@@ -175,7 +175,7 @@ impl InputMode {
             Self::XlsxBase64 => Some(
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
-            Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
+            Self::PdfBase64 => Some("PDF mode is bounded to local text-layer review. A clean text-layer PDF export may be available only when the runtime returns clean rewritten PDF bytes with no review blockers. This browser flow does not perform OCR, visual redaction, handwriting handling, or full PDF rewrite for blocked PDFs."),
             Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
@@ -1083,6 +1083,118 @@ fn sanitized_pdf_review_actionability(response: &serde_json::Value) -> serde_jso
     })
 }
 
+fn build_pdf_clean_text_layer_export_download(
+    response_json: &str,
+) -> Result<BrowserDownloadPayload, String> {
+    const INVALID_RESPONSE: &str = "PDF clean text-layer export requires a JSON object response.";
+
+    let response = serde_json::from_str::<serde_json::Value>(response_json)
+        .map_err(|_| INVALID_RESPONSE.to_string())?;
+    if !response.is_object() {
+        return Err(INVALID_RESPONSE.to_string());
+    }
+
+    let review_queue_empty = response
+        .get("review_queue")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty);
+    let no_rewritten_pdf = response
+        .get("no_rewritten_pdf")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let review_only = response
+        .get("review_only")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let rewritten_pdf_bytes_base64 = response
+        .get("rewritten_pdf_bytes_base64")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let clean_exportable = review_queue_empty
+        && !no_rewritten_pdf
+        && !review_only
+        && rewritten_pdf_bytes_base64.is_some();
+
+    let summary_source = response
+        .get("summary")
+        .and_then(serde_json::Value::as_object);
+    let mut summary = serde_json::Map::new();
+    for key in ["total_pages", "pages_requiring_review"] {
+        if let Some(value) = summary_source
+            .and_then(|source| source.get(key))
+            .and_then(pdf_review_report_primitive)
+        {
+            summary.insert(key.to_string(), value);
+        }
+    }
+
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "artifact".to_string(),
+        serde_json::json!("clean_text_layer_pdf_export_evidence"),
+    );
+    report.insert(
+        "mode".to_string(),
+        serde_json::json!("pdf_clean_text_layer_export"),
+    );
+    report.insert(
+        "rewrite_available".to_string(),
+        serde_json::json!(clean_exportable),
+    );
+    report.insert("review_only".to_string(), serde_json::json!(review_only));
+    report.insert(
+        "no_rewritten_pdf".to_string(),
+        serde_json::json!(no_rewritten_pdf),
+    );
+    report.insert(
+        "review_queue_empty".to_string(),
+        serde_json::json!(review_queue_empty),
+    );
+    report.insert("summary".to_string(), serde_json::Value::Object(summary));
+    if clean_exportable {
+        report.insert(
+            "rewritten_pdf_bytes_base64".to_string(),
+            serde_json::json!(rewritten_pdf_bytes_base64.unwrap()),
+        );
+    }
+
+    Ok(BrowserDownloadPayload {
+        file_name: "clean-text-layer-pdf-export.json".to_string(),
+        mime_type: "application/json",
+        bytes: serde_json::to_vec_pretty(&serde_json::Value::Object(report))
+            .map_err(|_| "PDF clean text-layer export could not encode JSON.".to_string())?,
+        is_text: true,
+    })
+}
+
+fn pdf_clean_text_layer_export_available(response_json: &str) -> bool {
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(response_json) else {
+        return false;
+    };
+    if !response.is_object() {
+        return false;
+    }
+
+    let review_queue_empty = response
+        .get("review_queue")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty);
+    let no_rewritten_pdf = response
+        .get("no_rewritten_pdf")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let review_only = response
+        .get("review_only")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let has_rewritten_pdf_bytes = response
+        .get("rewritten_pdf_bytes_base64")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+
+    review_queue_empty && !no_rewritten_pdf && !review_only && has_rewritten_pdf_bytes
+}
+
 fn build_pdf_review_report_download(
     response_json: &str,
     imported_file_name: Option<&str>,
@@ -1720,6 +1832,37 @@ impl BrowserFlowState {
 
     fn can_export_tabular_report(&self) -> bool {
         self.is_tabular_mode() && !self.result_output.trim().is_empty()
+    }
+
+    fn can_export_pdf_clean_text_layer_export(&self) -> bool {
+        self.input_mode == InputMode::PdfBase64
+            && pdf_clean_text_layer_export_available(&self.result_output)
+    }
+
+    fn display_result_output(&self) -> String {
+        if self.input_mode == InputMode::PdfBase64
+            && serde_json::from_str::<serde_json::Value>(&self.result_output)
+                .ok()
+                .is_some_and(|value| value.is_object())
+        {
+            "PDF runtime JSON is withheld from this UI view for PHI safety. If clean rewritten PDF bytes are available with no review blockers, use the clean export button for sanitized evidence JSON."
+                .to_string()
+        } else {
+            self.result_output.clone()
+        }
+    }
+
+    fn prepared_pdf_clean_text_layer_export_download_payload(
+        &self,
+    ) -> Result<BrowserDownloadPayload, String> {
+        if !self.can_export_pdf_clean_text_layer_export() {
+            return Err(
+                "PDF clean text-layer export download is only available after a successful PDF response."
+                    .to_string(),
+            );
+        }
+
+        build_pdf_clean_text_layer_export_download(&self.result_output)
     }
 
     fn prepared_tabular_report_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
@@ -2373,7 +2516,7 @@ struct PdfRuntimeSuccessResponse {
     rewrite_status: String,
     no_rewritten_pdf: bool,
     review_only: bool,
-    // PDF mode is review-only; rewrite/export bytes are intentionally ignored.
+    // PDF mode may include clean text-layer export bytes when runtime deems it safe.
     #[allow(dead_code)]
     rewritten_pdf_bytes_base64: Option<String>,
 }
@@ -2615,10 +2758,21 @@ fn parse_runtime_success(
         InputMode::PdfBase64 => {
             let parsed: PdfRuntimeSuccessResponse = serde_json::from_str(response_body)
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            let rewritten_output = if parsed.review_queue.is_empty()
+                && !parsed.no_rewritten_pdf
+                && !parsed.review_only
+                && parsed
+                    .rewritten_pdf_bytes_base64
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+            {
+                response_body.trim().to_string()
+            } else {
+                "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
+                    .to_string()
+            };
             Ok(RuntimeResponseEnvelope {
-                rewritten_output:
-                    "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
-                        .to_string(),
+                rewritten_output,
                 decoded_values_output: None,
                 safe_response_metadata: serde_json::json!({}),
                 summary: format_pdf_summary(
@@ -2970,8 +3124,8 @@ fn format_pdf_summary(
 
     lines.extend(page_statuses.iter().map(|page_status| {
         format!(
-            "- page {} ({}): {}",
-            page_status.page.page_number, page_status.page.label, page_status.status
+            "- page {}: {}",
+            page_status.page.page_number, page_status.status
         )
     }));
 
@@ -2987,12 +3141,11 @@ fn format_pdf_review_queue(review_queue: &[PdfReviewCandidate]) -> String {
         .iter()
         .map(|candidate| {
             format!(
-                "- page {} / {} / confidence {} / {}: {}",
+                "- page {} / {} / confidence {} / {} / text hidden for PHI safety",
                 candidate.page.page_number,
                 candidate.phi_type,
                 candidate.confidence,
-                candidate.decision,
-                candidate.source_text
+                candidate.decision
             )
         })
         .collect::<Vec<_>>()
@@ -3393,6 +3546,8 @@ pub fn App() -> impl IntoView {
     let can_export_output = move || state.get().can_export_output();
     let can_export_tabular_report = move || state.get().can_export_tabular_report();
     let can_export_decoded_values = move || state.get().can_export_decoded_values();
+    let can_export_pdf_clean_text_layer_export =
+        move || state.get().can_export_pdf_clean_text_layer_export();
 
     let on_export = move |_| {
         let export = state.with_untracked(|state| {
@@ -3432,6 +3587,23 @@ pub fn App() -> impl IntoView {
         let export = state.with_untracked(|state| {
             if state.can_export_tabular_report() {
                 Some(state.prepared_tabular_report_download_payload())
+            } else {
+                None
+            }
+        });
+
+        if let Some(export) = export {
+            match export.and_then(|payload| trigger_browser_download(&payload)) {
+                Ok(()) => {}
+                Err(message) => state.update(|state| state.error_banner = Some(message)),
+            }
+        }
+    };
+
+    let on_export_pdf_clean_text_layer = move |_| {
+        let export = state.with_untracked(|state| {
+            if state.can_export_pdf_clean_text_layer_export() {
+                Some(state.prepared_pdf_clean_text_layer_export_download_payload())
             } else {
                 None
             }
@@ -3692,6 +3864,16 @@ pub fn App() -> impl IntoView {
                         </button>
                     </div>
                 </Show>
+                <Show when=move || state.get().input_mode == InputMode::PdfBase64>
+                    <div class="pdf-clean-text-layer-export">
+                        <p>
+                            "Download PHI-safe clean text-layer export evidence JSON when PDF rewrite bytes are available and no review blockers remain. The PDF review report download above remains unchanged."
+                        </p>
+                        <button disabled=move || !can_export_pdf_clean_text_layer_export() on:click=on_export_pdf_clean_text_layer type="button">
+                            "Download clean text-layer PDF export JSON"
+                        </button>
+                    </div>
+                </Show>
                 <Show when=move || state.get().input_mode == InputMode::VaultDecode>
                     <div class="decoded-values-export-warning">
                         <p>
@@ -3702,7 +3884,7 @@ pub fn App() -> impl IntoView {
                         </button>
                     </div>
                 </Show>
-                <pre>{move || state.get().result_output}</pre>
+                <pre>{move || state.get().display_result_output()}</pre>
             </section>
 
             <section>
@@ -3729,7 +3911,8 @@ mod tests {
 
     use super::{
         build_ocr_handoff_summary_download, build_ocr_to_privacy_filter_summary_download,
-        build_pdf_review_report_download, build_portable_artifact_import_request_payload,
+        build_pdf_clean_text_layer_export_download, build_pdf_review_report_download,
+        build_portable_artifact_import_request_payload,
         build_portable_artifact_inspect_request_payload, build_portable_response_report_download,
         build_privacy_filter_summary_download, build_submit_request,
         build_vault_audit_request_payload, build_vault_decode_request_payload,
@@ -5467,6 +5650,91 @@ mod tests {
         assert_eq!(payload.mime_type, "text/plain;charset=utf-8");
         assert_eq!(payload.bytes, b"patient_id\nMDID-1\n");
         assert!(payload.is_text);
+    }
+
+    fn pdf_runtime_success_with_phi_response() -> serde_json::Value {
+        json!({
+            "summary": {
+                "total_pages": 1,
+                "text_layer_pages": 1,
+                "ocr_required_pages": 0,
+                "extracted_candidates": 1,
+                "review_required_candidates": 1,
+                "rewrite_status": "review_required",
+                "no_rewritten_pdf": true,
+                "review_only": true,
+                "source_label": "radiology/report.pdf"
+            },
+            "page_statuses": [
+                {
+                    "page": {"label": "radiology/report.pdf page 1", "page_number": 1},
+                    "status": "review_required"
+                }
+            ],
+            "review_queue": [
+                {
+                    "page": {"label": "radiology/report.pdf page 1", "page_number": 1},
+                    "source_text": "Alice Smith",
+                    "raw_text": "Alice Smith DOB 1970-01-01",
+                    "phi_type": "name",
+                    "confidence": 99,
+                    "decision": "review"
+                }
+            ],
+            "rewrite_status": "review_required",
+            "no_rewritten_pdf": true,
+            "review_only": true,
+            "rewritten_pdf_bytes_base64": null
+        })
+    }
+
+    #[test]
+    fn pdf_runtime_success_hides_phi_from_browser_ui_fields() {
+        let body = pdf_runtime_success_with_phi_response().to_string();
+        let parsed = parse_runtime_success(InputMode::PdfBase64, &body).expect("pdf response");
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::PdfBase64;
+        state.result_output = parsed.rewritten_output.clone();
+
+        for visible in [
+            parsed.summary.as_str(),
+            parsed.review_queue.as_str(),
+            state.display_result_output().as_str(),
+        ] {
+            assert!(!visible.contains("radiology/report.pdf"));
+            assert!(!visible.contains("Alice Smith"));
+            assert!(!visible.contains("source_text"));
+            assert!(!visible.contains("raw_text"));
+        }
+        assert!(parsed.summary.contains("extracted_candidates: 1"));
+        assert!(parsed.review_queue.contains("text hidden for PHI safety"));
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn pdf_clean_text_layer_export_button_is_available_only_for_clean_exportable_json() {
+        let valid = json!({
+            "summary": {"total_pages": 1, "pages_requiring_review": 0},
+            "review_queue": [],
+            "no_rewritten_pdf": false,
+            "review_only": false,
+            "rewritten_pdf_bytes_base64": "JVBERi0="
+        });
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::PdfBase64;
+        state.result_output = valid.to_string();
+        assert!(state.can_export_pdf_clean_text_layer_export());
+
+        for unavailable in [
+            json!({"review_queue": [{"kind": "review"}], "no_rewritten_pdf": false, "review_only": false, "rewritten_pdf_bytes_base64": "JVBERi0="}).to_string(),
+            json!({"review_queue": [], "no_rewritten_pdf": true, "review_only": false, "rewritten_pdf_bytes_base64": "JVBERi0="}).to_string(),
+            json!({"review_queue": [], "no_rewritten_pdf": false, "review_only": true, "rewritten_pdf_bytes_base64": "JVBERi0="}).to_string(),
+            json!({"review_queue": [], "no_rewritten_pdf": false, "review_only": false, "rewritten_pdf_bytes_base64": null}).to_string(),
+            "PDF rewrite/export unavailable: runtime returned review-only PDF analysis.".to_string(),
+        ] {
+            state.result_output = unavailable;
+            assert!(!state.can_export_pdf_clean_text_layer_export());
+        }
     }
 
     #[test]
@@ -7249,7 +7517,7 @@ mod tests {
         );
         assert_eq!(
             InputMode::PdfBase64.disclosure_copy(),
-            Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export.")
+            Some("PDF mode is bounded to local text-layer review. A clean text-layer PDF export may be available only when the runtime returns clean rewritten PDF bytes with no review blockers. This browser flow does not perform OCR, visual redaction, handwriting handling, or full PDF rewrite for blocked PDFs.")
         );
         assert_eq!(InputMode::PdfBase64.endpoint(), "/pdf/deidentify");
     }
@@ -7339,16 +7607,261 @@ mod tests {
         assert!(response.summary.contains("no_rewritten_pdf: true"));
         assert!(response.summary.contains("review_only: true"));
         assert!(response.summary.contains("page_statuses:"));
-        assert!(response
-            .summary
-            .contains("- page 1 (radiology/report.pdf): text_layer_present"));
-        assert!(response
-            .summary
-            .contains("- page 2 (radiology/report.pdf): ocr_required"));
+        assert!(response.summary.contains("- page 1: text_layer_present"));
+        assert!(response.summary.contains("- page 2: ocr_required"));
         assert_eq!(
             response.review_queue,
-            "- page 1 / patient_name / confidence 20 / needs_review: Alice Smith"
+            "- page 1 / patient_name / confidence 20 / needs_review / text hidden for PHI safety"
         );
+        assert!(!response.summary.contains("radiology/report.pdf"));
+        assert!(!response.review_queue.contains("Alice Smith"));
+    }
+
+    #[test]
+    fn browser_pdf_clean_text_layer_export_includes_rewritten_pdf_bytes() {
+        let payload = build_pdf_clean_text_layer_export_download(
+            &json!({
+                "summary": {
+                    "total_pages": 1,
+                    "pages_requiring_review": 0,
+                    "rewrite_status": "exported"
+                },
+                "review_queue": [],
+                "rewrite_status": "exported",
+                "rewrite_available": true,
+                "no_rewritten_pdf": false,
+                "review_only": false,
+                "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+                "source_name": "C:/phi/Alice Report.pdf",
+                "source_path": "C:/phi/Alice Report.pdf",
+                "passphrase": "secret",
+                "raw_text": "Alice Smith",
+                "bbox": [1, 2, 3, 4]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(payload.file_name, "clean-text-layer-pdf-export.json");
+        assert_eq!(payload.mime_type, "application/json");
+        assert!(payload.is_text);
+        let output: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(output["artifact"], "clean_text_layer_pdf_export_evidence");
+        assert_eq!(output["mode"], "pdf_clean_text_layer_export");
+        assert_eq!(
+            output["rewritten_pdf_bytes_base64"],
+            "JVBERi0xLjQKJSBjbGVhbgo="
+        );
+        assert_eq!(output["rewrite_available"], true);
+        assert_eq!(output["review_only"], false);
+        assert_eq!(output["no_rewritten_pdf"], false);
+        assert_eq!(output["summary"]["total_pages"], 1);
+        assert_eq!(output["summary"]["pages_requiring_review"], 0);
+        let serialized = serde_json::to_string(&output).unwrap();
+        for forbidden in [
+            "Alice",
+            "source_name",
+            "source_path",
+            "passphrase",
+            "raw_text",
+            "bbox",
+            "agent",
+            "controller",
+            "orchestration",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked {forbidden}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_pdf_clean_text_layer_export_blocks_review_queue() {
+        let payload = build_pdf_clean_text_layer_export_download(
+            &json!({
+                "summary": {"total_pages": 1, "pages_requiring_review": 1},
+                "review_queue": [{
+                    "page": {"label": "Alice.pdf", "page_number": 1},
+                    "source_text": "Alice Smith",
+                    "phi_type": "patient_name",
+                    "decision": "needs_review"
+                }],
+                "rewrite_available": true,
+                "no_rewritten_pdf": false,
+                "review_only": false,
+                "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo="
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let output: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+        assert_eq!(output["artifact"], "clean_text_layer_pdf_export_evidence");
+        assert_eq!(output["mode"], "pdf_clean_text_layer_export");
+        assert_eq!(output["rewrite_available"], false);
+        assert!(output.get("rewritten_pdf_bytes_base64").is_none());
+        let serialized = serde_json::to_string(&output).unwrap();
+        assert!(!serialized.contains("Alice"));
+        assert!(!serialized.contains("source_text"));
+        assert!(!serialized.contains("patient_name"));
+    }
+
+    #[test]
+    fn pdf_clean_text_layer_export_prepared_download_uses_pdf_result_output() {
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            result_output: json!({
+                "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                "review_queue": [],
+                "no_rewritten_pdf": false,
+                "review_only": false,
+                "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+                "source_name": "Alice Report.pdf",
+                "raw_text": "Alice Smith"
+            })
+            .to_string(),
+            ..BrowserFlowState::default()
+        };
+
+        let review_payload = state.prepared_download_payload().unwrap();
+        let review_output: serde_json::Value =
+            serde_json::from_slice(&review_payload.bytes).unwrap();
+        assert_eq!(review_output["mode"], "pdf_review_report");
+
+        let clean_payload = state
+            .prepared_pdf_clean_text_layer_export_download_payload()
+            .unwrap();
+        assert_eq!(clean_payload.file_name, "clean-text-layer-pdf-export.json");
+        let clean_output: serde_json::Value = serde_json::from_slice(&clean_payload.bytes).unwrap();
+        assert_eq!(clean_output["mode"], "pdf_clean_text_layer_export");
+        assert_eq!(
+            clean_output["rewritten_pdf_bytes_base64"],
+            "JVBERi0xLjQKJSBjbGVhbgo="
+        );
+        let serialized = serde_json::to_string(&clean_output).unwrap();
+        assert!(!serialized.contains("Alice"));
+        assert!(!serialized.contains("raw_text"));
+
+        state.input_mode = InputMode::CsvText;
+        assert!(state
+            .prepared_pdf_clean_text_layer_export_download_payload()
+            .is_err());
+    }
+
+    #[test]
+    fn pdf_clean_text_layer_export_preserves_clean_runtime_response_through_state() {
+        let runtime_body = json!({
+            "summary": {
+                "total_pages": 1,
+                "text_layer_pages": 1,
+                "ocr_required_pages": 0,
+                "extracted_candidates": 0,
+                "review_required_candidates": 0,
+                "pages_requiring_review": 0,
+                "rewrite_status": "exported",
+                "no_rewritten_pdf": false,
+                "review_only": false
+            },
+            "page_statuses": [{"page": {"label": "Alice Report.pdf", "page_number": 1}, "status": "text_layer_present"}],
+            "review_queue": [],
+            "rewrite_status": "exported",
+            "no_rewritten_pdf": false,
+            "review_only": false,
+            "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+            "source_name": "Alice Report.pdf",
+            "raw_text": "Alice Smith"
+        })
+        .to_string();
+        let response = parse_runtime_success(InputMode::PdfBase64, &runtime_body).unwrap();
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            active_submission_token: Some(7),
+            state_revision: 3,
+            is_submitting: true,
+            ..BrowserFlowState::default()
+        };
+
+        state.apply_runtime_success(7, 3, response);
+
+        assert_eq!(state.result_output, runtime_body);
+        let clean_payload = state
+            .prepared_pdf_clean_text_layer_export_download_payload()
+            .unwrap();
+        let clean_output: serde_json::Value = serde_json::from_slice(&clean_payload.bytes).unwrap();
+        assert_eq!(clean_output["mode"], "pdf_clean_text_layer_export");
+        assert_eq!(
+            clean_output["rewritten_pdf_bytes_base64"],
+            "JVBERi0xLjQKJSBjbGVhbgo="
+        );
+        assert_eq!(clean_output["rewrite_available"], true);
+        let serialized = serde_json::to_string(&clean_output).unwrap();
+        assert!(!serialized.contains("Alice"));
+        assert!(!serialized.contains("raw_text"));
+        assert!(!serialized.contains("source_name"));
+    }
+
+    #[test]
+    fn pdf_clean_text_layer_export_blocks_no_rewrite_review_only_missing_and_null_bytes() {
+        for (name, response) in [
+            (
+                "no_rewritten_pdf",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": true,
+                    "review_only": false,
+                    "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+            (
+                "review_only",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": false,
+                    "review_only": true,
+                    "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+            (
+                "missing_bytes",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": false,
+                    "review_only": false,
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+            (
+                "null_bytes",
+                json!({
+                    "summary": {"total_pages": 1, "pages_requiring_review": 0},
+                    "review_queue": [],
+                    "no_rewritten_pdf": false,
+                    "review_only": false,
+                    "rewritten_pdf_bytes_base64": null,
+                    "source_name": "Alice Report.pdf",
+                    "raw_text": "Alice Smith"
+                }),
+            ),
+        ] {
+            let payload =
+                build_pdf_clean_text_layer_export_download(&response.to_string()).unwrap();
+            let output: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
+            assert_eq!(output["rewrite_available"], false, "{name}");
+            assert!(output.get("rewritten_pdf_bytes_base64").is_none(), "{name}");
+            let serialized = serde_json::to_string(&output).unwrap();
+            assert!(!serialized.contains("Alice"), "{name}: {serialized}");
+            assert!(!serialized.contains("raw_text"), "{name}: {serialized}");
+            assert!(!serialized.contains("source_name"), "{name}: {serialized}");
+        }
     }
 
     #[test]

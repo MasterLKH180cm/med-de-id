@@ -419,6 +419,7 @@ pub enum PdfScanStatus {
 pub enum PdfRewriteStatus {
     #[default]
     ReviewOnlyNoRewrittenPdf,
+    CleanTextLayerPdfBytesAvailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
