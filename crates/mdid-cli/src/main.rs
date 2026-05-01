@@ -2053,6 +2053,7 @@ fn is_allowed_privacy_filter_label(label: &str) -> bool {
             | "NPI"
             | "LICENSE_PLATE"
             | "IP_ADDRESS"
+            | "URL"
     )
 }
 
