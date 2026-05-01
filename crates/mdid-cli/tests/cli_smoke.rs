@@ -3390,10 +3390,15 @@ fn privacy_filter_text_detects_ip_address_from_stdin_without_raw_ip_leaks() {
     let report: Value = serde_json::from_str(&report_text).unwrap();
 
     assert_eq!(report["summary"]["category_counts"]["IP_ADDRESS"], 1);
-    assert!(report["masked_text"].as_str().unwrap().contains("[IP_ADDRESS]"));
-    assert!(report["spans"].as_array().unwrap().iter().any(|span| {
-        span["label"] == "IP_ADDRESS" && span["preview"] == "<redacted>"
-    }));
+    assert!(report["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[IP_ADDRESS]"));
+    assert!(report["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|span| { span["label"] == "IP_ADDRESS" && span["preview"] == "<redacted>" }));
     for unsafe_text in [
         "192.168.10.42",
         "Jane Example",
@@ -3403,7 +3408,10 @@ fn privacy_filter_text_detects_ip_address_from_stdin_without_raw_ip_leaks() {
     ] {
         assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
         assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
-        assert!(!report_text.contains(unsafe_text), "report leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
     }
 }
 
