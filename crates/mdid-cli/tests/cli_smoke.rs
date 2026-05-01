@@ -4885,6 +4885,60 @@ fn ocr_privacy_evidence_missing_image_removes_stale_output_without_leaks() {
 }
 
 #[test]
+fn ocr_privacy_evidence_rejects_syntactically_invalid_json_and_removes_output_without_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let image_path = phi_named_dir.join("fixture.png");
+    fs::write(&image_path, b"image").unwrap();
+    let runner_path = phi_named_dir.join("invalid_json_runner.py");
+    fs::write(
+        &runner_path,
+        "import argparse\nparser = argparse.ArgumentParser(); parser.add_argument('--image-path'); parser.add_argument('--output'); parser.add_argument('--mock', action='store_true')\nargs = parser.parse_args()\nopen(args.output, 'w', encoding='utf-8').write('{\\\"artifact\\\": \\\"ocr_privacy_evidence\\\",')\nprint('Jane Example MRN-12345 /tmp/leak')\n",
+    )
+    .unwrap();
+    let report_path = phi_named_dir.join("report.json");
+    fs::write(&report_path, "stale Jane Example MRN-12345").unwrap();
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-privacy-evidence",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--runner-path",
+            runner_path.to_str().unwrap(),
+            "--output",
+            report_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(!report_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("OCR privacy evidence failed"));
+    for unsafe_text in [
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+        "fixture.png",
+        "invalid_json_runner.py",
+        "/tmp/leak",
+        "expected value",
+        "line 1 column",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+}
+
+#[test]
 fn ocr_privacy_evidence_rejects_invalid_runner_report_and_removes_stale_output() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
