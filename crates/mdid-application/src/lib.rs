@@ -293,7 +293,28 @@ impl PdfDeidentificationService {
         bytes: &[u8],
         source_name: &str,
     ) -> Result<PdfDeidentificationOutput, ApplicationError> {
-        let extracted = PdfAdapter::new().extract(bytes, source_name)?;
+        let mut extracted = PdfAdapter::new().extract(bytes, source_name)?;
+
+        let can_export_clean_text_layer = extracted.candidates.is_empty()
+            && extracted
+                .pages
+                .iter()
+                .all(|page| page.status == mdid_domain::PdfScanStatus::TextLayerPresent);
+
+        if can_export_clean_text_layer {
+            extracted.summary.rewrite_status = PdfRewriteStatus::CleanTextLayerPdfBytesAvailable;
+            extracted.summary.no_rewritten_pdf = false;
+            extracted.summary.review_only = false;
+            return Ok(PdfDeidentificationOutput {
+                summary: extracted.summary,
+                page_statuses: extracted.pages,
+                review_queue: extracted.candidates,
+                rewrite_status: PdfRewriteStatus::CleanTextLayerPdfBytesAvailable,
+                no_rewritten_pdf: false,
+                review_only: false,
+                rewritten_pdf_bytes: Some(bytes.to_vec()),
+            });
+        }
 
         Ok(PdfDeidentificationOutput {
             summary: extracted.summary,
