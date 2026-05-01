@@ -11,6 +11,10 @@ PASSPORT_NUMERIC_CONTEXT_RE = re.compile(
     r'\b(?:passport(?:\s+(?:number|no\.?))?)\s+(\d{9})(?![A-Za-z0-9-])',
     re.I,
 )
+INSURANCE_ID_RE = re.compile(
+    r'\b(?:insurance(?:\s+(?:id|number|policy))?|member(?:\s+(?:id|number))?|policy(?:\s+(?:id|number))?)\s+(?:ID\s+)?([A-Z]{2,4}-?\d{6,10}|[A-Z]{3}\d{6,10})(?![A-Za-z0-9-])',
+    re.I,
+)
 ZIP_RE = re.compile(r'(?<![A-Za-z0-9-])\d{5}(?:-\d{4})?(?![A-Za-z0-9-])')
 ADDRESS_RE = re.compile(r'\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Ct|Court)\b')
 MRN_RE = re.compile(r'\bMRN[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
@@ -19,7 +23,7 @@ PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID'}
 
 
 def add_span(spans, label, start, end):
@@ -56,6 +60,8 @@ def heuristic_detect(text: str):
         add_span(spans, 'PASSPORT', m.start(), m.end())
     for m in PASSPORT_NUMERIC_CONTEXT_RE.finditer(text):
         add_span(spans, 'PASSPORT', m.start(1), m.end(1))
+    for m in INSURANCE_ID_RE.finditer(text):
+        add_span(spans, 'INSURANCE_ID', m.start(1), m.end(1))
     for m in ZIP_RE.finditer(text):
         if _zip_has_phi_identifier_prefix(text, m.start()):
             continue

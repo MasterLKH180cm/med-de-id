@@ -37,7 +37,29 @@ def run_text(text):
     return module.heuristic_detect(text)
 
 
+def detect_pii(text):
+    return run_text(text)
+
+
 class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_fallback_detects_contextual_insurance_ids_without_raw_previews(self):
+        text = 'Patient Jane Example insurance ID ABC1234567 and member number MBR-7654321.'
+        payload = detect_pii(text)
+        labels = [span['label'] for span in payload['spans']]
+        self.assertEqual(labels.count('INSURANCE_ID'), 2)
+        self.assertIn('[INSURANCE_ID]', payload['masked_text'])
+        self.assertEqual(payload['summary']['category_counts']['INSURANCE_ID'], 2)
+        for span in payload['spans']:
+            self.assertEqual(span['preview'], '<redacted>')
+        self.assertNotIn('ABC1234567', json.dumps(payload))
+        self.assertNotIn('MBR-7654321', json.dumps(payload))
+
+    def test_fallback_does_not_detect_standalone_or_embedded_insurance_like_tokens(self):
+        text = 'Standalone ABC1234567 should not match; embedded XABC1234567 and MRN ABC1234567 stay bounded.'
+        payload = detect_pii(text)
+        labels = [span['label'] for span in payload['spans']]
+        self.assertNotIn('INSURANCE_ID', labels)
+
     def test_passport_numbers_are_masked_without_overmatching_embedded_tokens(self):
         text = 'Patient Jane Example passport X12345678 reference AX12345678 and X123456789'
         payload = run_text(text)
