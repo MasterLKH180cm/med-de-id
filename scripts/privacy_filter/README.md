@@ -6,9 +6,10 @@ This directory is only for a bounded local text-only PII detection/masking spike
 ## Non-goals
 - not OCR
 - not visual redaction
-- not image/pixel redaction
+- not image pixel redaction
+- not browser UI
+- not desktop UI
 - not final PDF rewrite/export
-- not browser or desktop UI
 - not production Privacy Filter integration
 
 ## Bootstrap
@@ -16,7 +17,7 @@ Normal invocation intentionally uses the deterministic local `fallback_synthetic
 
 When explicit --use-opf is selected, PHI-bearing input text is sent to the local `opf` subprocess via stdin only, not by command-line argument or temporary input file. Both canonical span output and alternate entities-style output are normalized into the bounded text-only contract used here: `summary`, `masked_text`, redacted `spans`, and metadata with `network_api_called: false`. Span previews are redacted previews only and must not expose raw PHI.
 
-The fallback is a synthetic plumbing/evaluation aid only. It proves output shape and downstream wiring, not real model quality. The OPF path is still a bounded CLI/runtime Privacy Filter POC and is not OCR, not visual redaction, not image/pixel redaction, not final PDF rewrite/export, not browser integration, and not desktop integration.
+The fallback is a synthetic plumbing/evaluation aid only. It proves output shape and downstream wiring, not real model quality. The OPF path is still a bounded CLI/runtime Privacy Filter POC and is not OCR, not visual redaction, not image pixel redaction, not browser UI, not desktop UI, and not final PDF rewrite/export.
 
 All successful single-text runner outputs must include:
 - `summary.input_char_count`
@@ -51,9 +52,20 @@ python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-fil
 cargo run -p mdid-cli -- privacy-filter-text \
   --input-path scripts/privacy_filter/fixtures/sample_text_input.txt \
   --runner-path scripts/privacy_filter/run_privacy_filter.py \
-  --report-path /tmp/mdid-privacy-filter-wrapper-output.json
+  --report-path /tmp/mdid-privacy-filter-wrapper-output.json \
+  --summary-output /tmp/mdid-privacy-filter-wrapper-summary.json
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/mdid-privacy-filter-wrapper-output.json
 ```
+
+`--summary-output <summary.json>` is optional. When provided, the CLI writes a second single-text summary artifact only after the full text-only runner report has passed validation. The summary is derived from the validated report rather than from raw input text, is aggregate/PHI-safe, and is limited to the allowlisted summary/provenance fields used by the bounded report contract: safe artifact/mode metadata, safe engine/preview-policy values, `network_api_called: false`, nonnegative input/detected-span counts, bounded category counts, and explicit non-goals. It must not include raw input text, `masked_text`, span arrays, raw previews, raw values, local paths, or unallowlisted report data.
+
+Single-text summary non-goals:
+- not OCR
+- not visual redaction
+- not image pixel redaction
+- not browser UI
+- not desktop UI
+- not final PDF rewrite/export
 
 ### Run the synthetic corpus aggregate evidence
 ```bash
@@ -67,8 +79,9 @@ The PHI-safe aggregate report must contain only counts, category coverage, fixtu
 Corpus-runner non-goals:
 - not OCR
 - not visual redaction
-- not image/pixel redaction
+- not image pixel redaction
+- not browser UI
+- not desktop UI
 - not final PDF rewrite/export
-- not browser/desktop UI
 
 Use of fallback, `--mock`, or the synthetic corpus proves only the output contract/pipeline shape, not real model quality.
