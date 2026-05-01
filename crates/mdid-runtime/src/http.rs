@@ -495,6 +495,9 @@ fn is_incompatible_ocr_handoff_field(key: &str, value: &Value, is_top_level: boo
         "masked_text",
         "spans",
         "preview",
+        "previews",
+        "bbox",
+        "image",
         "pdf_rewrite",
         "pdf_export",
         "visual_redaction_result",
@@ -2130,6 +2133,9 @@ mod tests {
             json!({"metadata": {"file_path": "/tmp/Jane Example.pdf"}}),
             json!({"metadata": {"source": "Jane Example.pdf"}}),
             json!({"metadata": [{"ocr_output": "jane@example.com"}]}),
+            json!({"previews": [{"text": "Jane Example MRN-12345"}]}),
+            json!({"metadata": {"bbox": [1, 2, 3, 4], "note": "jane@example.com"}}),
+            json!({"metadata": [{"image": "555-123-4567"}]}),
         ] {
             let mut handoff = valid_ocr_handoff_fixture();
             let mutation = mutation
