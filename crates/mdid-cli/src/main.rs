@@ -1371,6 +1371,7 @@ fn build_ocr_handoff_corpus_summary(value: &Value) -> Value {
     let ready_fixture_count = value["ready_fixture_count"].as_u64().unwrap_or(0);
     json!({
         "artifact": "ocr_handoff_corpus_readiness_summary",
+        "schema_version": 1,
         "candidate": "PP-OCRv5_mobile_rec",
         "engine": value["engine"],
         "scope": value["scope"],

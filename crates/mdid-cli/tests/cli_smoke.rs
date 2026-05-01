@@ -1103,6 +1103,7 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
         summary_keys,
         [
             "artifact",
+            "schema_version",
             "candidate",
             "engine",
             "scope",
@@ -1117,6 +1118,7 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
         .collect::<std::collections::BTreeSet<_>>()
     );
     assert_eq!(summary["artifact"], "ocr_handoff_corpus_readiness_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
     assert_eq!(summary["scope"], "printed_text_line_extraction_only");
