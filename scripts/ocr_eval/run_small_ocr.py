@@ -62,6 +62,7 @@ def normalize_text(text: str) -> str:
 
 def build_extraction_contract(extracted_text: str, engine_status: str) -> dict:
     normalized_text = normalize_text(extracted_text)
+    lines = [line for line in extracted_text.splitlines() if line.strip()]
     return {
         "candidate": CANDIDATE_RECOGNIZER,
         "engine": ENGINE,
@@ -70,6 +71,8 @@ def build_extraction_contract(extracted_text: str, engine_status: str) -> dict:
         "source": REDACTED_SOURCE,
         "extracted_text": extracted_text,
         "normalized_text": normalized_text,
+        "line_count": len(lines),
+        "normalized_char_count": len(normalized_text),
         "ready_for_text_pii_eval": bool(normalized_text),
         "privacy_filter_contract": PRIVACY_FILTER_CONTRACT,
         "non_goals": NON_GOALS,

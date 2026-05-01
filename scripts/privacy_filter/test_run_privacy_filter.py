@@ -42,6 +42,30 @@ def detect_pii(text):
 
 
 class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_detects_phone_extensions_without_leaking_raw_values(self):
+        text = 'Patient Jane Example call 555-123-4567 x890 or (555) 222-3333 ext. 44 for MRN-12345.'
+        payload = detect_pii(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PHONE'), 2)
+        self.assertEqual(payload['masked_text'].count('[PHONE]'), 2)
+        rendered = json.dumps(payload, sort_keys=True)
+        for raw_phone in ['555-123-4567 x890', '(555) 222-3333 ext. 44']:
+            self.assertNotIn(raw_phone, rendered)
+        phone_spans = [span for span in payload['spans'] if span['label'] == 'PHONE']
+        self.assertEqual(len(phone_spans), 2)
+        self.assertEqual([text[span['start']:span['end']] for span in phone_spans], ['555-123-4567 x890', '(555) 222-3333 ext. 44'])
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in phone_spans))
+
+    def test_phone_extension_detector_rejects_embedded_or_unbounded_tokens(self):
+        text = 'ID555-123-4567 555-123-4567ext 555-123-4567 x 123456 (555) 222-3333 extension 123456'
+        payload = detect_pii(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PHONE'), 2)
+        self.assertNotIn('ID555-123-4567', payload['masked_text'])
+        for raw_phone in ['555-123-4567 x 123456', '(555) 222-3333 extension 123456']:
+            self.assertNotIn(raw_phone, payload['masked_text'])
+        self.assertEqual(payload['masked_text'].count('[PHONE]'), 2)
+
     def test_fallback_detects_ipv4_address_without_raw_previews(self):
         text = 'Patient Jane Example remote login from 192.168.10.42 for MRN-12345'
         payload = detect_pii(text)
@@ -62,22 +86,38 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertNotIn('[IP_ADDRESS]', payload['masked_text'])
 
     def test_detects_bounded_http_and_https_urls(self):
-        text = 'Portal https://portal.example.test/patient/123 and callback http://clinic.example.test/cb?token=abc'
+        expected_urls = [
+            'https://portal.example.test',
+            'https://portal.example.test/patient/123',
+            'http://clinic.example.test/cb?token=abc',
+        ]
+        text = ' '.join([
+            f'Portal {expected_urls[0]}',
+            f'patient link {expected_urls[1]}',
+            f'callback {expected_urls[2]}',
+        ])
         payload = detect_pii(text)
 
-        self.assertEqual(payload['summary']['category_counts'].get('URL'), 2)
+        self.assertEqual(payload['summary']['category_counts'].get('URL'), 3)
         self.assertIn('[URL]', payload['masked_text'])
-        self.assertNotIn('https://portal.example.test/patient/123', payload['masked_text'])
-        self.assertNotIn('http://clinic.example.test/cb?token=abc', payload['masked_text'])
-        self.assertNotIn('=abc', payload['masked_text'])
+        for raw_url in expected_urls:
+            self.assertNotIn(raw_url, payload['masked_text'])
         url_spans = [span for span in payload['spans'] if span['label'] == 'URL']
-        self.assertEqual(len(url_spans), 2)
-        self.assertEqual(text[url_spans[0]['start']:url_spans[0]['end']], 'https://portal.example.test/patient/123')
-        self.assertEqual(text[url_spans[1]['start']:url_spans[1]['end']], 'http://clinic.example.test/cb?token=abc')
+        self.assertEqual(len(url_spans), 3)
+        self.assertEqual(
+            [text[span['start']:span['end']] for span in url_spans],
+            expected_urls,
+        )
         self.assertTrue(all(span['preview'] == '<redacted>' for span in url_spans))
 
     def test_url_detector_rejects_unbounded_or_non_http_tokens(self):
-        payload = detect_pii('Email alice@example.test and host192.168.1.1 https://portal.example.testextra ftp://legacy.example.test')
+        text = ' '.join([
+            'invalid-tld https://portal.example.testextra/path',
+            'short-host http://a/1',
+            'non-http ftp://legacy.example.test',
+            'embedded notehttps://portal.example.test/path',
+        ])
+        payload = detect_pii(text)
 
         self.assertNotIn('URL', payload['summary']['category_counts'])
         self.assertNotIn('[URL]', payload['masked_text'])
