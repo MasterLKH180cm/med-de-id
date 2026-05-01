@@ -1,6 +1,14 @@
 # Privacy Filter Date Detection Implementation Plan
 
-**Goal:** Improve bounded CLI/runtime text-only PII detection by adding deterministic DATE/DOB detection to the local Privacy Filter runner used by `mdid-cli privacy-filter-text`, without adding any agent/controller/orchestration semantics.
+> **For implementation workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+
+**Goal:** Improve bounded CLI/runtime text-only PII detection by adding deterministic DATE/DOB detection to the local Privacy Filter runner used by `mdid-cli privacy-filter-text`.
+
+**Architecture:** Extend the existing deterministic local Privacy Filter fallback runner with one bounded DATE span pattern, then keep the Rust CLI wrapper's PHI-safe summary/category allowlist aligned with the runner contract. The slice remains CLI/runtime text-only PII detection evidence; it does not add OCR, visual redaction, Browser/Web execution, Desktop execution, final PDF rewrite/export, or unrelated workflow coordination semantics.
+
+**Tech Stack:** Python Privacy Filter fallback runner, Rust `mdid-cli`, Cargo CLI smoke tests, JSON contract validator.
+
+---
 
 **Why now:** Dates of birth and service dates are common PHI in OCR handoff text and typed clinical notes. The existing bounded heuristic detects names, emails, phone numbers, MRNs, and IDs, but misses common DOB/date forms.
 
