@@ -47,6 +47,47 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
         self.assertIn('[NAME]', payload['masked_text'])
         self.assertIn('[MRN]', payload['masked_text'])
 
+    def test_stdin_mock_detects_ssn_without_phi_previews(self):
+        phi = 'Patient Jane Example has SSN 123-45-6789 for intake\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['metadata']['engine'], 'fallback_synthetic_patterns')
+        self.assertEqual(payload['metadata']['network_api_called'], False)
+        self.assertEqual(payload['summary']['category_counts'].get('SSN'), 1)
+        self.assertIn('[SSN]', payload['masked_text'])
+        rendered = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('123-45-6789', rendered)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
+    def test_stdin_mock_does_not_detect_embedded_ssn_like_tokens(self):
+        phi = 'Codes ID123-45-6789 abc123-45-6789 123-45-6789-extra remain ordinary text\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertNotIn('SSN', payload['summary']['category_counts'])
+        self.assertNotIn('[SSN]', payload['masked_text'])
+
     def test_stdin_rejects_oversized_input_without_stdout_or_phi(self):
         phi_prefix = 'Patient Jane Example has MRN-12345\n'
         result = subprocess.run(

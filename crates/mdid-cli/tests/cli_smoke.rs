@@ -1573,8 +1573,8 @@ print(json.dumps({{
     "engine_status": "local_paddleocr_execution",
     "scope": "printed_text_line_extraction_only",
     "source": "fixture_001",
-    "extracted_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 lives at 123 Main St",
-    "normalized_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 lives at 123 Main St",
+    "extracted_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 SSN 123-45-6789 lives at 123 Main St",
+    "normalized_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 SSN 123-45-6789 lives at 123 Main St",
     "ready_for_text_pii_eval": True,
     "privacy_filter_contract": "text_only_normalized_input",
     "non_goals": ["visual_redaction", "pixel_redaction", "final_pdf_rewrite_export"]
@@ -1605,6 +1605,7 @@ spans = [
     {{"label": "EMAIL", "start": text.find("jane@example.com"), "end": text.find("jane@example.com") + len("jane@example.com"), "preview": "<redacted>"}},
     {{"label": "PHONE", "start": text.find("555-123-4567"), "end": text.find("555-123-4567") + len("555-123-4567"), "preview": "<redacted>"}},
     {{"label": "DATE", "start": text.find("1978-04-23"), "end": text.find("1978-04-23") + len("1978-04-23"), "preview": "<redacted>"}},
+    {{"label": "SSN", "start": text.find("123-45-6789"), "end": text.find("123-45-6789") + len("123-45-6789"), "preview": "<redacted>"}},
     {{"label": "ADDRESS", "start": text.find("123 Main St"), "end": text.find("123 Main St") + len("123 Main St"), "preview": "<redacted>"}},
 ]
 spans = [span for span in spans if span["start"] >= 0]
@@ -1617,7 +1618,7 @@ print(json.dumps({{
         "detected_span_count": len(spans),
         "category_counts": counts,
     }},
-    "masked_text": "Patient [NAME] [MRN] [EMAIL] [PHONE] DOB [DATE] lives at [ADDRESS]",
+    "masked_text": "Patient [NAME] [MRN] [EMAIL] [PHONE] DOB [DATE] SSN [SSN] lives at [ADDRESS]",
     "spans": spans,
     "metadata": {{
         "engine": "fallback_synthetic_patterns",
@@ -1699,9 +1700,11 @@ print(json.dumps({{
         .as_object()
         .is_some());
     assert_eq!(report["privacy_filter_category_counts"]["DATE"], 1);
+    assert_eq!(report["privacy_filter_category_counts"]["SSN"], 1);
     assert_eq!(report["privacy_filter_category_counts"]["ADDRESS"], 1);
     assert_eq!(summary["artifact"], "ocr_to_privacy_filter_single_summary");
     assert_eq!(summary["privacy_filter_category_counts"]["DATE"], 1);
+    assert_eq!(summary["privacy_filter_category_counts"]["SSN"], 1);
     assert_eq!(summary["privacy_filter_category_counts"]["ADDRESS"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
@@ -1716,6 +1719,7 @@ print(json.dumps({{
         "jane@example.com",
         "555-123-4567",
         "1978-04-23",
+        "123-45-6789",
         "123 Main St",
         "normalized_text",
         "masked_text",
@@ -3812,6 +3816,57 @@ fn privacy_filter_text_detects_dates_from_stdin_without_raw_date_leaks() {
 }
 
 #[test]
+fn privacy_filter_text_detects_ssns_from_stdin_without_raw_ssn_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-ssn-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example SSN 123-45-6789 has MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["category_counts"]["SSN"], 1);
+    assert_eq!(report["summary"]["category_counts"]["NAME"], 1);
+    assert_eq!(report["summary"]["category_counts"]["MRN"], 1);
+    assert!(report["masked_text"].as_str().unwrap().contains("[SSN]"));
+    for span in report["spans"].as_array().unwrap() {
+        assert_eq!(span["preview"], "<redacted>");
+    }
+    for unsafe_text in [
+        "Jane Example",
+        "123-45-6789",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn privacy_filter_text_detects_addresses_from_stdin_without_raw_address_leaks() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-address-report.json");
@@ -3933,8 +3988,8 @@ json.dump({{
     }},
     "masked_text": "Patient [NAME] [MRN]",
     "spans": [
-        {{"start": 8, "end": 21, "text": "[REDACTED]", "category": "NAME"}},
-        {{"start": 22, "end": 32, "text": "[REDACTED]", "category": "MRN"}}
+        {{"label": "NAME", "start": 8, "end": 21, "preview": "<redacted>"}},
+        {{"label": "MRN", "start": 22, "end": 32, "preview": "<redacted>"}}
     ],
     "metadata": {{
         "engine": "fake_stdin_only_runner",
@@ -4134,7 +4189,7 @@ fn privacy_filter_text_writes_verbatim_runner_json_report() {
         &runner_path,
         r#"import json, pathlib, sys
 pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
-print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PERSON> has <ID>","spans":[{"label":"PERSON","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
+print(json.dumps({"summary":{"detected_span_count":1,"category_counts":{"NAME":1}},"masked_text":"Patient [NAME] has <ID>","spans":[{"label":"NAME","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
 "#,
     )
     .unwrap();
@@ -4156,7 +4211,7 @@ print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PE
 
     let report_text = fs::read_to_string(&report_path).unwrap();
     assert!(report_text.contains("\"network_api_called\": false"));
-    assert!(report_text.contains("Patient <PERSON> has <ID>"));
+    assert!(report_text.contains("Patient [NAME] has <ID>"));
     assert!(!report_text.contains("Jane Example"));
 }
 
@@ -4599,6 +4654,10 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
         (
             r#"{"summary":{},"masked_text":"x","spans":[],"metadata":[]}"#,
             "privacy filter output has invalid required field shape",
+        ),
+        (
+            r#"{"summary":{"category_counts":{"UNBOUNDED":1}},"masked_text":"[UNBOUNDED]","spans":[{"label":"UNBOUNDED","start":0,"end":1,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output has invalid category label",
         ),
     ] {
         let python_payload = serde_json::to_string(payload).unwrap();
