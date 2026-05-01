@@ -156,7 +156,9 @@ impl InputMode {
             Self::PortableArtifactImport => {
                 "Portable artifact import request fields are rendered by the browser form"
             }
-            Self::PrivacyFilterSummary => "Paste/import an existing Privacy Filter JSON report here",
+            Self::PrivacyFilterSummary => {
+                "Paste/import an existing Privacy Filter JSON report here"
+            }
         }
     }
 
@@ -1559,7 +1561,8 @@ impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn can_export_output(&self) -> bool {
         !self.result_output.trim().is_empty()
-            || (self.input_mode == InputMode::PrivacyFilterSummary && !self.payload.trim().is_empty())
+            || (self.input_mode == InputMode::PrivacyFilterSummary
+                && !self.payload.trim().is_empty())
     }
 
     fn is_tabular_mode(&self) -> bool {
@@ -4029,7 +4032,10 @@ mod tests {
             .expect("prepared privacy filter summary download");
         let report: serde_json::Value = serde_json::from_slice(&payload.bytes).unwrap();
 
-        assert_eq!(payload.file_name, "privacy-report-privacy-filter-summary.json");
+        assert_eq!(
+            payload.file_name,
+            "privacy-report-privacy-filter-summary.json"
+        );
         assert_eq!(report["mode"], "privacy_filter_summary");
         assert_eq!(report["category_counts"]["NAME"], 1);
         assert_eq!(report["category_counts"]["MRN"], 1);
