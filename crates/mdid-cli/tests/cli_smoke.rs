@@ -4721,6 +4721,110 @@ fn ocr_handoff_writes_phi_safe_summary_output() {
 }
 
 #[test]
+fn ocr_handoff_summary_output_rejects_same_report_and_summary_before_cleanup() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Example MRN-12345')\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            report_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        fs::read_to_string(&report_path).unwrap(),
+        "stale Jane Example report"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("OCR handoff summary path must differ from report path"));
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        image_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        builder_path.to_str().unwrap(),
+        report_path.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+}
+
+#[test]
+fn ocr_handoff_summary_output_missing_image_removes_stale_summary_without_leaks() {
+    let dir = tempdir().unwrap();
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    let summary_path = dir.path().join("summary.json");
+    let missing_image_path = dir.path().join("Jane-Example-MRN-12345.png");
+    fs::write(&runner_path, "print('Jane Example MRN-12345')\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+    fs::write(&summary_path, "stale Jane Example summary").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            missing_image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing image file"));
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        missing_image_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        builder_path.to_str().unwrap(),
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+}
+
+#[test]
 fn ocr_handoff_rejects_not_ready_builder_report_without_stale_outputs_or_leaks() {
     let dir = tempdir().unwrap();
     let image_path = dir.path().join("image.png");

@@ -190,7 +190,7 @@ git commit -m "feat(cli): add ocr handoff summary output"
 - Modify: `crates/mdid-cli/tests/cli_smoke.rs`
 - Modify: `crates/mdid-cli/src/main.rs`
 
-- [ ] **Step 1: Write failing tests for same-path rejection and stale summary cleanup**
+- [x] **Step 1: Write failing tests for same-path rejection and stale summary cleanup**
 
 Add two tests near `ocr_handoff_writes_phi_safe_summary_output`:
 
@@ -264,7 +264,7 @@ fn ocr_handoff_summary_output_missing_image_removes_stale_summary_without_leaks(
 }
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run:
 
@@ -272,13 +272,13 @@ Run:
 cargo test -p mdid-cli ocr_handoff_summary_output --test cli_smoke -- --nocapture
 ```
 
-Expected: FAIL if cleanup/same-path handling is incomplete.
+Expected: FAIL if cleanup/same-path handling is incomplete. Actual: PASS as test-only hardening because production cleanup/same-path handling was already implemented.
 
-- [ ] **Step 3: Implement hardening**
+- [x] **Step 3: Implement hardening**
 
-Ensure `run_ocr_handoff` uses the same path-equivalence helper already used by adjacent commands. Cleanup must remove stale summary before prerequisite checks and after any failure from prerequisites, runner execution, JSON parsing, validation, primary report write, or secondary summary write.
+Ensure `run_ocr_handoff` uses the same path-equivalence helper already used by adjacent commands. Cleanup must remove stale summary before prerequisite checks and after any failure from prerequisites, runner execution, JSON parsing, validation, primary report write, or secondary summary write. Actual: no production change needed; existing implementation already satisfied the new smoke coverage.
 
-- [ ] **Step 4: Run GREEN tests**
+- [x] **Step 4: Run GREEN tests**
 
 Run:
 
@@ -304,7 +304,7 @@ git commit -m "test(cli): harden ocr handoff summary cleanup"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-05-01-ocr-handoff-summary-output.md`
 
-- [ ] **Step 1: Update README current snapshot**
+- [x] **Step 1: Update README current snapshot**
 
 Update the completion snapshot to state this round adds CLI/runtime-only `mdid-cli ocr-handoff --summary-output` aggregate summary evidence. Use the current README baseline `CLI 120/125 = 96%`; add and complete one new CLI/runtime requirement, yielding `121/126 = 96%` floor. Keep Browser/Web `99%`, Desktop app `99%`, and Overall `97%` unless new product-visible evidence justifies a change.
 
@@ -314,7 +314,7 @@ Add a verification paragraph:
 Verification evidence for the `mdid-cli ocr-handoff --summary-output` slice landed on this branch: the PP-OCRv5 mobile single-image OCR handoff CLI can now write a secondary aggregate-only `ocr_handoff_summary` artifact with `schema_version: 1`, bounded OCR scope, text-only Privacy Filter readiness metadata, numeric counts, `network_api_called: false`, and explicit non-goals. The primary handoff report remains unchanged for downstream text-only PII detection, while the summary omits raw OCR text, normalized text, source paths, fixture filenames, bbox/image data, raw synthetic PHI, visual redaction, image pixel redaction, handwriting recognition, final PDF rewrite/export, Browser/Web execution, and Desktop execution. Repository-visible verification: `cargo test -p mdid-cli ocr_handoff_summary_output --test cli_smoke -- --nocapture`; broader smoke: `cargo test -p mdid-cli ocr_handoff --test cli_smoke -- --nocapture`.
 ```
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 Run:
 
