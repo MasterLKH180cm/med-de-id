@@ -172,6 +172,29 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
     assert!(summary_path.exists());
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    let summary_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        summary_keys,
+        [
+            "artifact",
+            "candidate",
+            "engine",
+            "scope",
+            "privacy_filter_contract",
+            "fixture_count",
+            "ready_fixture_count",
+            "all_fixtures_ready_for_text_pii_eval",
+            "total_char_count",
+            "non_goals",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+    );
     assert_eq!(summary["artifact"], "ocr_handoff_corpus_readiness_summary");
     assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
@@ -184,6 +207,16 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
     assert_eq!(summary["ready_fixture_count"].as_u64().unwrap(), 2);
     assert_eq!(summary["all_fixtures_ready_for_text_pii_eval"], true);
     assert!(summary["total_char_count"].as_u64().unwrap() > 0);
+    let non_goals = summary["non_goals"].as_array().unwrap();
+    for non_goal in [
+        "complete_ocr_pipeline",
+        "final_pdf_rewrite_export",
+        "full_page_detection_or_segmentation",
+        "handwriting_recognition",
+        "visual_redaction",
+    ] {
+        assert!(non_goals.contains(&Value::String(non_goal.to_string())));
+    }
 
     for forbidden_key in [
         "fixtures",

@@ -1034,6 +1034,7 @@ fn build_ocr_handoff_corpus_summary(value: &Value) -> Value {
         "ready_fixture_count": value["ready_fixture_count"],
         "all_fixtures_ready_for_text_pii_eval": value["fixture_count"] == value["ready_fixture_count"],
         "total_char_count": value["total_char_count"],
+        "non_goals": value["non_goals"],
     })
 }
 
