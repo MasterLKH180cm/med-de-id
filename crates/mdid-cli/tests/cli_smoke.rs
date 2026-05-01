@@ -85,6 +85,54 @@ fn cli_prints_status_banner() {
 }
 
 #[test]
+fn offline_readiness_reports_cli_opf_and_ocr_without_phi_paths_or_network_claims() {
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "offline-readiness",
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--ocr-fixture-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--python-command",
+            default_python_command(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["artifact"], "offline_cli_ocr_readiness");
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["network_required"], false);
+    assert_eq!(report["privacy_filter"]["opf_requires_explicit_flag"], true);
+    assert_eq!(report["privacy_filter"]["network_api_called"], false);
+    assert_eq!(report["ocr"]["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(report["ocr"]["fallback_fixture_available"], true);
+    assert!(!stdout.contains("synthetic_printed_phi_line.png"));
+    assert!(!stdout.contains("run_small_ocr.py"));
+    assert!(!stdout.contains("run_privacy_filter.py"));
+    assert!(!stdout.contains("Jane Example"));
+    assert!(!stdout.contains("MRN-12345"));
+}
+
+#[test]
+fn offline_readiness_help_mentions_exact_usage_line() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "mdid-cli offline-readiness --privacy-runner-path <path> --ocr-runner-path <path> --ocr-fixture-path <path>",
+        ));
+}
+
+#[test]
 fn ocr_small_json_runs_repo_fixture_runner_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir
@@ -157,6 +205,67 @@ fn ocr_small_json_runs_repo_fixture_runner_without_phi_leaks() {
 }
 
 #[test]
+fn ocr_small_json_redacts_phi_bearing_source_artifacts() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("Jane-Example-MRN-12345.png");
+    fs::copy(
+        repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+        &image_path,
+    )
+    .unwrap();
+    fs::copy(
+        repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_expected.txt"),
+        dir.path().join("synthetic_printed_phi_expected.txt"),
+    )
+    .unwrap();
+    let report_path = dir.path().join("ocr-small-json-report.json");
+    let summary_path = dir.path().join("ocr-small-json-summary.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let full_image_path = image_path.to_str().unwrap();
+    for (artifact, text) in [
+        ("stdout", stdout.as_str()),
+        ("stderr", stderr.as_str()),
+        ("report", report_text.as_str()),
+        ("summary", summary_text.as_str()),
+    ] {
+        for unsafe_text in ["Jane-Example-MRN-12345", full_image_path] {
+            assert!(
+                !text.contains(unsafe_text),
+                "{artifact} leaked source artifact {unsafe_text}"
+            );
+        }
+    }
+
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["source"], "<redacted>");
+}
+
+#[test]
 fn ocr_small_json_writes_phi_safe_summary_output() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir
@@ -218,6 +327,7 @@ fn ocr_small_json_writes_phi_safe_summary_output() {
         summary_keys,
         [
             "artifact",
+            "schema_version",
             "candidate",
             "engine",
             "engine_status",
@@ -230,6 +340,7 @@ fn ocr_small_json_writes_phi_safe_summary_output() {
         .collect::<std::collections::BTreeSet<_>>()
     );
     assert_eq!(summary["artifact"], "ocr_small_json_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
     assert_eq!(summary["scope"], "printed_text_line_extraction_only");
@@ -289,7 +400,7 @@ print(json.dumps({{
     "engine": "PP-OCRv5-mobile-bounded-spike",
     "engine_status": "local_paddleocr_execution",
     "scope": "printed_text_line_extraction_only",
-    "source": "fixture_001",
+    "source": "<redacted>",
     "extracted_text": "LOCAL OCR PRINTED TEXT LINE READY FOR EVAL!",
     "normalized_text": "LOCAL OCR PRINTED TEXT LINE READY FOR EVAL!",
     "ready_for_text_pii_eval": True,
@@ -346,7 +457,7 @@ print(json.dumps({{
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let report: Value = serde_json::from_str(&report_text).unwrap();
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
-    assert_eq!(report["source"], "fixture_001");
+    assert_eq!(report["source"], "<redacted>");
     assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(report["scope"], "printed_text_line_extraction_only");
     assert_eq!(report["engine_status"], "local_paddleocr_execution");
@@ -793,6 +904,79 @@ fn ocr_small_json_help_mentions_command() {
 }
 
 #[test]
+fn ocr_small_json_rejects_phi_bearing_runner_source() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let image_path = phi_named_dir.join("Jane-Example-MRN-12345.png");
+    fs::copy(
+        repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+        &image_path,
+    )
+    .unwrap();
+    let runner_path = phi_named_dir.join("unsafe-source-runner.py");
+    fs::write(
+        &runner_path,
+        r#"import json
+import sys
+print(json.dumps({
+    "candidate":"PP-OCRv5_mobile_rec",
+    "engine":"PP-OCRv5-mobile-bounded-spike",
+    "engine_status":"deterministic_synthetic_fixture_fallback",
+    "scope":"printed_text_line_extraction_only",
+    "source":"Jane-Example-MRN-12345.png",
+    "privacy_filter_contract":"text_only_normalized_input",
+    "ready_for_text_pii_eval":True,
+    "extracted_text":"ok",
+    "normalized_text":"ok",
+    "non_goals":["visual_redaction","final_pdf_rewrite_export","handwriting_recognition","full_page_detection_or_segmentation","complete_ocr_pipeline"]
+}))
+"#,
+    )
+    .unwrap();
+    let report_path = phi_named_dir.join("report.json");
+    let summary_path = phi_named_dir.join("summary.json");
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+    fs::write(&summary_path, "stale Jane Example summary").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in [
+        "Jane-Example-MRN-12345",
+        image_path.to_str().unwrap(),
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+}
+
+#[test]
 fn ocr_small_json_invalid_runner_output_removes_stale_report_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
@@ -1053,6 +1237,7 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
         summary_keys,
         [
             "artifact",
+            "schema_version",
             "candidate",
             "engine",
             "scope",
@@ -1067,6 +1252,7 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
         .collect::<std::collections::BTreeSet<_>>()
     );
     assert_eq!(summary["artifact"], "ocr_handoff_corpus_readiness_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
     assert_eq!(summary["scope"], "printed_text_line_extraction_only");
@@ -1387,8 +1573,8 @@ print(json.dumps({{
     "engine_status": "local_paddleocr_execution",
     "scope": "printed_text_line_extraction_only",
     "source": "fixture_001",
-    "extracted_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
-    "normalized_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
+    "extracted_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 SSN 123-45-6789 lives at 123 Main St",
+    "normalized_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 DOB 1978-04-23 SSN 123-45-6789 lives at 123 Main St",
     "ready_for_text_pii_eval": True,
     "privacy_filter_contract": "text_only_normalized_input",
     "non_goals": ["visual_redaction", "pixel_redaction", "final_pdf_rewrite_export"]
@@ -1418,6 +1604,9 @@ spans = [
     {{"label": "MRN", "start": text.find("MRN-12345"), "end": text.find("MRN-12345") + len("MRN-12345"), "preview": "<redacted>"}},
     {{"label": "EMAIL", "start": text.find("jane@example.com"), "end": text.find("jane@example.com") + len("jane@example.com"), "preview": "<redacted>"}},
     {{"label": "PHONE", "start": text.find("555-123-4567"), "end": text.find("555-123-4567") + len("555-123-4567"), "preview": "<redacted>"}},
+    {{"label": "DATE", "start": text.find("1978-04-23"), "end": text.find("1978-04-23") + len("1978-04-23"), "preview": "<redacted>"}},
+    {{"label": "SSN", "start": text.find("123-45-6789"), "end": text.find("123-45-6789") + len("123-45-6789"), "preview": "<redacted>"}},
+    {{"label": "ADDRESS", "start": text.find("123 Main St"), "end": text.find("123 Main St") + len("123 Main St"), "preview": "<redacted>"}},
 ]
 spans = [span for span in spans if span["start"] >= 0]
 counts = {{}}
@@ -1429,7 +1618,7 @@ print(json.dumps({{
         "detected_span_count": len(spans),
         "category_counts": counts,
     }},
-    "masked_text": "Patient [NAME] [MRN] [EMAIL] [PHONE]",
+    "masked_text": "Patient [NAME] [MRN] [EMAIL] [PHONE] DOB [DATE] SSN [SSN] lives at [ADDRESS]",
     "spans": spans,
     "metadata": {{
         "engine": "fallback_synthetic_patterns",
@@ -1510,7 +1699,13 @@ print(json.dumps({{
     assert!(report["privacy_filter_category_counts"]
         .as_object()
         .is_some());
+    assert_eq!(report["privacy_filter_category_counts"]["DATE"], 1);
+    assert_eq!(report["privacy_filter_category_counts"]["SSN"], 1);
+    assert_eq!(report["privacy_filter_category_counts"]["ADDRESS"], 1);
     assert_eq!(summary["artifact"], "ocr_to_privacy_filter_single_summary");
+    assert_eq!(summary["privacy_filter_category_counts"]["DATE"], 1);
+    assert_eq!(summary["privacy_filter_category_counts"]["SSN"], 1);
+    assert_eq!(summary["privacy_filter_category_counts"]["ADDRESS"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
     assert_eq!(summary["network_api_called"], false);
@@ -1523,6 +1718,9 @@ print(json.dumps({{
         "MRN-12345",
         "jane@example.com",
         "555-123-4567",
+        "1978-04-23",
+        "123-45-6789",
+        "123 Main St",
         "normalized_text",
         "masked_text",
         "spans",
@@ -1828,7 +2026,36 @@ fn ocr_to_privacy_filter_corpus_writes_phi_safe_summary_output() {
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let summary: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
 
+    let summary_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        summary_keys,
+        [
+            "artifact",
+            "schema_version",
+            "ocr_scope",
+            "ocr_engine",
+            "ocr_candidate",
+            "privacy_scope",
+            "privacy_filter_engine",
+            "privacy_filter_contract",
+            "network_api_called",
+            "fixture_count",
+            "ready_fixture_count",
+            "total_detected_span_count",
+            "category_counts",
+            "privacy_filter_category_counts",
+            "non_goals",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+    );
     assert_eq!(summary["artifact"], "ocr_to_privacy_filter_corpus_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
     assert_eq!(
@@ -2559,7 +2786,28 @@ fn privacy_filter_corpus_writes_phi_safe_summary_output() {
         );
     }
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    let mut actual_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    actual_keys.sort_unstable();
+    let mut expected_keys = vec![
+        "artifact",
+        "category_counts",
+        "engine",
+        "fixture_count",
+        "network_api_called",
+        "non_goals",
+        "schema_version",
+        "scope",
+        "total_detected_span_count",
+    ];
+    expected_keys.sort_unstable();
+    assert_eq!(actual_keys, expected_keys);
     assert_eq!(summary["artifact"], "privacy_filter_corpus_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["engine"], "fallback_synthetic_patterns");
     assert_eq!(summary["scope"], "text_only_synthetic_corpus");
     assert_eq!(summary["network_api_called"], false);
@@ -3216,8 +3464,9 @@ fn cli_privacy_filter_text_summary_output_is_phi_safe() {
     assert_eq!(summary["network_api_called"], false);
     assert_eq!(summary["preview_policy"], "redacted_placeholders_only");
     assert_eq!(summary["input_char_count"], 137);
-    assert_eq!(summary["detected_span_count"], 4);
+    assert_eq!(summary["detected_span_count"], 5);
     assert_eq!(summary["category_counts"]["NAME"], 1);
+    assert_eq!(summary["category_counts"]["DATE"], 1);
     for non_goal in [
         "ocr",
         "visual_redaction",
@@ -3242,6 +3491,7 @@ fn cli_privacy_filter_text_summary_output_is_phi_safe() {
         "+1-555-123-4567",
         "555-123-4567",
         "MRN-12345",
+        "2026-04-30",
         "masked_text",
         "spans",
         "\"preview\"",
@@ -3517,6 +3767,203 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
 }
 
 #[test]
+fn privacy_filter_text_detects_dates_from_stdin_without_raw_date_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-date-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example DOB 1978-04-23 seen on 04/23/1978 MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["category_counts"]["DATE"], 2);
+    assert_eq!(report["summary"]["category_counts"]["NAME"], 1);
+    assert_eq!(report["summary"]["category_counts"]["MRN"], 1);
+    assert!(report["masked_text"].as_str().unwrap().contains("[DATE]"));
+    for unsafe_text in [
+        "Jane Example",
+        "1978-04-23",
+        "04/23/1978",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn privacy_filter_text_detects_ssns_from_stdin_without_raw_ssn_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-ssn-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example SSN 123-45-6789 has MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["category_counts"]["SSN"], 1);
+    assert_eq!(report["summary"]["category_counts"]["NAME"], 1);
+    assert_eq!(report["summary"]["category_counts"]["MRN"], 1);
+    assert!(report["masked_text"].as_str().unwrap().contains("[SSN]"));
+    for span in report["spans"].as_array().unwrap() {
+        assert_eq!(span["preview"], "<redacted>");
+    }
+    for unsafe_text in [
+        "Jane Example",
+        "123-45-6789",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn privacy_filter_text_detects_zips_from_stdin_without_raw_zip_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-zip-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example ZIP 02139 alternate 02139-4307 MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["category_counts"]["ZIP"], 2);
+    assert!(report["masked_text"].as_str().unwrap().contains("[ZIP]"));
+    for span in report["spans"].as_array().unwrap() {
+        assert_eq!(span["preview"], "<redacted>");
+    }
+    for unsafe_text in [
+        "02139",
+        "02139-4307",
+        "Jane Example",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn privacy_filter_text_detects_addresses_from_stdin_without_raw_address_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-address-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi =
+        "Patient Jane Example lives at 123 Main St and follow-up mail goes to 456 Oak Avenue.\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["category_counts"]["ADDRESS"], 2);
+    assert!(report["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[ADDRESS]"));
+    for span in report["spans"].as_array().unwrap() {
+        assert_eq!(span["preview"], "<redacted>");
+    }
+    for unsafe_text in ["123 Main St", "456 Oak Avenue"] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn privacy_filter_text_accepts_stdin_without_leaking_input_path() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-report.json");
@@ -3591,8 +4038,8 @@ json.dump({{
     }},
     "masked_text": "Patient [NAME] [MRN]",
     "spans": [
-        {{"start": 8, "end": 21, "text": "[REDACTED]", "category": "NAME"}},
-        {{"start": 22, "end": 32, "text": "[REDACTED]", "category": "MRN"}}
+        {{"label": "NAME", "start": 8, "end": 21, "preview": "<redacted>"}},
+        {{"label": "MRN", "start": 22, "end": 32, "preview": "<redacted>"}}
     ],
     "metadata": {{
         "engine": "fake_stdin_only_runner",
@@ -3792,7 +4239,7 @@ fn privacy_filter_text_writes_verbatim_runner_json_report() {
         &runner_path,
         r#"import json, pathlib, sys
 pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
-print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PERSON> has <ID>","spans":[{"label":"PERSON","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
+print(json.dumps({"summary":{"detected_span_count":1,"category_counts":{"NAME":1}},"masked_text":"Patient [NAME] has <ID>","spans":[{"label":"NAME","start":8,"end":20,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":False,"preview_policy":"redacted_placeholders_only"}}, indent=2))
 "#,
     )
     .unwrap();
@@ -3814,7 +4261,7 @@ print(json.dumps({"summary":{"detected_span_count":1},"masked_text":"Patient <PE
 
     let report_text = fs::read_to_string(&report_path).unwrap();
     assert!(report_text.contains("\"network_api_called\": false"));
-    assert!(report_text.contains("Patient <PERSON> has <ID>"));
+    assert!(report_text.contains("Patient [NAME] has <ID>"));
     assert!(!report_text.contains("Jane Example"));
 }
 
@@ -4258,6 +4705,10 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
             r#"{"summary":{},"masked_text":"x","spans":[],"metadata":[]}"#,
             "privacy filter output has invalid required field shape",
         ),
+        (
+            r#"{"summary":{"category_counts":{"UNBOUNDED":1}},"masked_text":"[UNBOUNDED]","spans":[{"label":"UNBOUNDED","start":0,"end":1,"preview":"<redacted>"}],"metadata":{"engine":"fallback_synthetic_patterns","network_api_called":false,"preview_policy":"redacted_placeholders_only"}}"#,
+            "privacy filter output has invalid category label",
+        ),
     ] {
         let python_payload = serde_json::to_string(payload).unwrap();
         write_privacy_runner(&runner_path, &format!("print({python_payload})\n"));
@@ -4281,12 +4732,13 @@ fn privacy_filter_text_rejects_incomplete_or_invalid_runner_payloads() {
 
 #[test]
 fn ocr_handoff_help_mentions_command() {
+    let expected_usage = "mdid-cli ocr-handoff --image-path <path> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>]";
     Command::cargo_bin("mdid-cli")
         .unwrap()
         .arg("--help")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ocr-handoff"));
+        .stderr(predicate::str::contains(expected_usage));
 }
 
 #[test]
@@ -4349,13 +4801,14 @@ fn ocr_handoff_success_with_synthetic_fixture() {
         .clone();
     let summary: Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(summary["command"], "ocr-handoff");
-    assert_eq!(
-        summary["report_path"],
-        report_path.to_string_lossy().to_string()
-    );
+    assert_eq!(summary["report_path"], "<redacted>");
+    assert_eq!(summary["report_written"], true);
+    assert!(!String::from_utf8_lossy(&stdout).contains(report_path.to_str().unwrap()));
 
-    let report: Value = serde_json::from_str(&fs::read_to_string(&report_path).unwrap()).unwrap();
-    assert_eq!(report["source"], "synthetic_printed_phi_line.png");
+    let rendered_report = fs::read_to_string(&report_path).unwrap();
+    assert!(!rendered_report.contains("synthetic_printed_phi_line.png"));
+    let report: Value = serde_json::from_str(&rendered_report).unwrap();
+    assert_eq!(report["source"], "<redacted>");
     assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
     assert_eq!(report["scope"], "printed_text_line_extraction_only");
     assert_eq!(
@@ -4368,6 +4821,302 @@ fn ocr_handoff_success_with_synthetic_fixture() {
         .unwrap()
         .contains("Jane Example"));
     assert!(!report_path.with_extension("json.ocr-text.tmp").exists());
+}
+
+#[test]
+fn ocr_handoff_writes_phi_safe_summary_output() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("ocr-handoff-report.json");
+    let summary_path = dir.path().join("ocr-handoff-summary.json");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--handoff-builder-path",
+            &repo_path("scripts/ocr_eval/build_ocr_handoff.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stdout.contains(summary_path.to_str().unwrap()));
+    assert!(!stderr.contains(summary_path.to_str().unwrap()));
+
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "ocr_handoff_summary");
+    assert_eq!(summary["schema_version"], 1);
+    assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
+    assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
+    assert_eq!(summary["scope"], "printed_text_line_extraction_only");
+    assert_eq!(
+        summary["privacy_filter_contract"],
+        "text_only_normalized_input"
+    );
+    assert_eq!(summary["ready_for_text_pii_eval"], true);
+    assert!(summary["line_count"].as_u64().unwrap() >= 1);
+    assert!(summary["char_count"].as_u64().unwrap() >= 1);
+    assert_eq!(summary["network_api_called"], false);
+    assert!(summary["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::Value::String("visual_redaction".to_string())));
+    assert!(summary["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::Value::String(
+            "image_pixel_redaction".to_string()
+        )));
+    assert!(summary["non_goals"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::Value::String(
+            "final_pdf_rewrite_export".to_string()
+        )));
+
+    let keys: std::collections::BTreeSet<_> =
+        summary.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        keys,
+        [
+            "artifact",
+            "candidate",
+            "char_count",
+            "engine",
+            "line_count",
+            "network_api_called",
+            "non_goals",
+            "privacy_filter_contract",
+            "ready_for_text_pii_eval",
+            "schema_version",
+            "scope",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    );
+
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "synthetic_printed_phi_line.png",
+        "extracted_text",
+        "normalized_text",
+        "bbox",
+        "image_bytes",
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+    ] {
+        assert!(
+            !summary_text.contains(forbidden),
+            "summary leaked {forbidden}"
+        );
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+}
+
+#[test]
+fn ocr_handoff_summary_output_rejects_same_report_and_summary_before_cleanup() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    let summary_alias_path = dir.path().join(".").join("handoff.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Example MRN-12345')\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_alias_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        fs::read_to_string(&report_path).unwrap(),
+        "stale Jane Example report"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.is_empty());
+    assert_eq!(
+        stderr.trim(),
+        "OCR handoff summary path must differ from report path"
+    );
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        image_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        builder_path.to_str().unwrap(),
+        report_path.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+}
+
+#[test]
+fn ocr_handoff_summary_output_missing_image_removes_stale_summary_without_leaks() {
+    let dir = tempdir().unwrap();
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    let summary_path = dir.path().join("summary.json");
+    let missing_image_path = dir.path().join("Jane-Example-MRN-12345.png");
+    fs::write(&runner_path, "print('Jane Example MRN-12345')\n").unwrap();
+    fs::write(&builder_path, "print('not reached')\n").unwrap();
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+    fs::write(&summary_path, "stale Jane Example summary").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            missing_image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing image file"));
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        missing_image_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        builder_path.to_str().unwrap(),
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+}
+
+#[test]
+fn ocr_handoff_rejects_not_ready_builder_report_without_stale_outputs_or_leaks() {
+    let dir = tempdir().unwrap();
+    let image_path = dir.path().join("image.png");
+    let runner_path = dir.path().join("runner.py");
+    let builder_path = dir.path().join("builder.py");
+    let report_path = dir.path().join("handoff.json");
+    let summary_path = dir.path().join("summary.json");
+    fs::write(&image_path, b"png").unwrap();
+    fs::write(&runner_path, "print('Jane Example MRN-12345')\n").unwrap();
+    fs::write(
+        &builder_path,
+        r#"import argparse, json
+parser = argparse.ArgumentParser()
+parser.add_argument("--source")
+parser.add_argument("--input")
+parser.add_argument("--output")
+args = parser.parse_args()
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump({
+        "source": args.source,
+        "extracted_text": "Jane Example MRN-12345",
+        "normalized_text": "Jane Example MRN-12345",
+        "ready_for_text_pii_eval": False,
+        "candidate": "PP-OCRv5_mobile_rec",
+        "engine": "PP-OCRv5-mobile-bounded-spike",
+        "scope": "printed_text_line_extraction_only",
+        "privacy_filter_contract": "text_only_normalized_input",
+        "non_goals": ["visual_redaction", "final_pdf_rewrite_export", "handwriting_recognition", "full_page_detection_or_segmentation", "complete_ocr_pipeline"]
+    }, handle)
+"#,
+    )
+    .unwrap();
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+    fs::write(&summary_path, "stale Jane Example summary").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff",
+            "--image-path",
+            image_path.to_str().unwrap(),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--handoff-builder-path",
+            builder_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("OCR handoff has invalid readiness"));
+    for forbidden in [
+        "Jane Example",
+        "MRN-12345",
+        image_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        builder_path.to_str().unwrap(),
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(forbidden), "stdout leaked {forbidden}");
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
 }
 
 #[test]
@@ -4930,11 +5679,13 @@ fn ocr_privacy_evidence_writes_phi_safe_summary_output() {
         "privacy_filter_contract",
         "privacy_scope",
         "ready_for_text_pii_eval",
+        "schema_version",
         "total_detected_span_count",
     ];
     expected_keys.sort_unstable();
     assert_eq!(actual_keys, expected_keys);
     assert_eq!(summary["artifact"], "ocr_privacy_evidence_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
     assert_eq!(summary["network_api_called"], false);

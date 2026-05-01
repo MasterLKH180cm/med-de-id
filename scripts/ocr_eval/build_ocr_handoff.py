@@ -46,7 +46,7 @@ if not normalized_text:
     fail('OCR input text is empty', output_path)
 
 obj = {
-    'source': source_path.name,
+    'source': '<redacted>',
     'extracted_text': text.strip(),
     'normalized_text': normalized_text,
     'ready_for_text_pii_eval': bool(normalized_text),

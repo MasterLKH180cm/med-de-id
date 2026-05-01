@@ -3,6 +3,7 @@ import json, sys
 from pathlib import Path
 
 ALLOWED_PREVIEW_VALUES = {'<redacted>'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'ZIP'}
 
 
 class PrivacyFilterOutputValidationError(ValueError):
@@ -45,6 +46,7 @@ def validate_privacy_filter_output(obj) -> None:
         for key in ['label', 'start', 'end', 'preview']:
             _ensure(key in span, f'span {i} missing key: {key}')
         _ensure(isinstance(span['label'], str) and bool(span['label']), f'span {i} label must be non-empty string')
+        _ensure(span['label'] in ALLOWED_LABELS, f"span {i} label must be one of {sorted(ALLOWED_LABELS)}")
         _ensure(isinstance(span['start'], int) and isinstance(span['end'], int), f'span {i} start/end must be ints')
         _ensure(span['start'] >= 0 and span['end'] > span['start'], f'span {i} must have 0 <= start < end')
         _ensure(span['start'] >= prev_end, f'span {i} overlaps or is unsorted')

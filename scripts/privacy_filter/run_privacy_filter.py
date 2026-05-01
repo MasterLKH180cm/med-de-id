@@ -4,16 +4,29 @@ from pathlib import Path
 
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
+DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
+SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
+ZIP_RE = re.compile(r'(?<![A-Za-z0-9-])\d{5}(?:-\d{4})?(?![A-Za-z0-9-])')
+ADDRESS_RE = re.compile(r'\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Ct|Court)\b')
 MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
 ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'ZIP'}
 
 
 def add_span(spans, label, start, end):
     spans.append({'label': label, 'start': start, 'end': end, 'preview': '<redacted>'})
+
+
+def _zip_has_phi_identifier_prefix(text: str, start: int) -> bool:
+    return bool(re.search(r'(?:MRN|ID)[- ]?$', text[max(0, start - 5):start], re.I))
+
+
+def _zip_starts_street_address(text: str, start: int) -> bool:
+    return bool(ADDRESS_RE.match(text, start))
 
 
 def heuristic_detect(text: str):
@@ -24,6 +37,18 @@ def heuristic_detect(text: str):
         add_span(spans, 'EMAIL', m.start(), m.end())
     for m in PHONE_RE.finditer(text):
         add_span(spans, 'PHONE', m.start(), m.end())
+    for m in DATE_RE.finditer(text):
+        add_span(spans, 'DATE', m.start(), m.end())
+    for m in SSN_RE.finditer(text):
+        add_span(spans, 'SSN', m.start(), m.end())
+    for m in ZIP_RE.finditer(text):
+        if _zip_has_phi_identifier_prefix(text, m.start()):
+            continue
+        if _zip_starts_street_address(text, m.start()):
+            continue
+        add_span(spans, 'ZIP', m.start(), m.end())
+    for m in ADDRESS_RE.finditer(text):
+        add_span(spans, 'ADDRESS', m.start(), m.end())
     for m in MRN_RE.finditer(text):
         add_span(spans, 'MRN', m.start(), m.end())
     for m in ID_RE.finditer(text):
@@ -77,8 +102,11 @@ def _coerce_int(value, default=0):
 
 def _span_label(span):
     if not isinstance(span, dict):
-        return 'UNKNOWN'
-    return str(span.get('label') or span.get('type') or span.get('category') or 'UNKNOWN')
+        raise ValueError('unsupported privacy category label')
+    label = str(span.get('label') or span.get('type') or span.get('category') or 'UNKNOWN')
+    if label not in ALLOWED_LABELS:
+        raise ValueError('unsupported privacy category label')
+    return label
 
 
 def _span_start(span):
@@ -119,9 +147,7 @@ def normalize_opf_json(raw: str, input_char_count: int):
         counts[span['label']] = counts.get(span['label'], 0) + 1
     category_counts = {key: counts[key] for key in sorted(counts)}
 
-    masked_text = obj.get('masked_text', obj.get('text', '<missing>'))
-    if not isinstance(masked_text, str):
-        masked_text = '<missing>'
+    masked_text = ' '.join(f'[{span["label"]}]' for span in spans) or '[NO_PII_DETECTED]'
 
     return {
         'summary': {

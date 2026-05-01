@@ -47,6 +47,150 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
         self.assertIn('[NAME]', payload['masked_text'])
         self.assertIn('[MRN]', payload['masked_text'])
 
+    def test_stdin_mock_detects_ssn_without_phi_previews(self):
+        phi = 'Patient Jane Example has SSN 123-45-6789 for intake\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['metadata']['engine'], 'fallback_synthetic_patterns')
+        self.assertEqual(payload['metadata']['network_api_called'], False)
+        self.assertEqual(payload['summary']['category_counts'].get('SSN'), 1)
+        self.assertIn('[SSN]', payload['masked_text'])
+        rendered = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('123-45-6789', rendered)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
+    def test_stdin_mock_does_not_detect_embedded_ssn_like_tokens(self):
+        phi = 'Codes ID123-45-6789 abc123-45-6789 123-45-6789-extra remain ordinary text\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertNotIn('SSN', payload['summary']['category_counts'])
+        self.assertNotIn('[SSN]', payload['masked_text'])
+
+    def test_stdin_mock_detects_zip_codes_without_phi_previews(self):
+        phi = 'Patient Jane Example lives in ZIP 02139 and alternate 02139-4307\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / 'privacy-filter-output.json'
+            output_path.write_text(result.stdout, encoding='utf-8')
+            validator = subprocess.run(
+                [sys.executable, str(REPO_ROOT / 'scripts' / 'privacy_filter' / 'validate_privacy_filter_output.py'), str(output_path)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+        self.assertEqual(validator.returncode, 0, validator.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['metadata']['engine'], 'fallback_synthetic_patterns')
+        self.assertEqual(payload['metadata']['network_api_called'], False)
+        self.assertEqual(payload['summary']['category_counts'].get('ZIP'), 2)
+        self.assertIn('[ZIP]', payload['masked_text'])
+        rendered = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('02139', rendered)
+        self.assertNotIn('02139-4307', rendered)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
+    def test_stdin_mock_does_not_detect_id_numbers_as_zip(self):
+        phi = 'Patient Jane Example ID 12345 and ID-67890\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 2)
+        self.assertNotIn('ZIP', payload['summary']['category_counts'])
+        self.assertNotIn('[ZIP]', payload['masked_text'])
+
+    def test_stdin_mock_does_not_detect_address_street_number_as_zip(self):
+        phi = 'Patient Jane Example lives at 12345 Main St\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['summary']['category_counts'].get('ADDRESS'), 1)
+        self.assertNotIn('ZIP', payload['summary']['category_counts'])
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / 'privacy-filter-output.json'
+            output_path.write_text(result.stdout, encoding='utf-8')
+            validator = subprocess.run(
+                [sys.executable, str(REPO_ROOT / 'scripts' / 'privacy_filter' / 'validate_privacy_filter_output.py'), str(output_path)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+        self.assertEqual(validator.returncode, 0, validator.stderr)
+
+    def test_stdin_mock_does_not_detect_embedded_zip_like_tokens(self):
+        phi = 'Codes A02139 02139B 02139-4307-extra and ID02139 remain ordinary text\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertNotIn('ZIP', payload['summary']['category_counts'])
+        self.assertNotIn('[ZIP]', payload['masked_text'])
+
     def test_stdin_rejects_oversized_input_without_stdout_or_phi(self):
         phi_prefix = 'Patient Jane Example has MRN-12345\n'
         result = subprocess.run(
@@ -142,6 +286,48 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
             self.assertNotIn('Jane Example', result.stderr)
             self.assertNotIn('MRN-12345', result.stderr)
 
+    def test_explicit_opf_subprocess_path_is_verified_with_local_fake_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            recorder = tmp_path / 'opf-stdin.txt'
+            fake_opf = tmp_path / 'opf'
+            fake_opf.write_text(
+                '#!/usr/bin/env python3\n'
+                'import json, pathlib, sys\n'
+                f'pathlib.Path({str(recorder)!r}).write_text(sys.stdin.read(), encoding="utf-8")\n'
+                'print(json.dumps({"masked_text":"Patient [NAME] has [MRN]",'
+                '"spans":[{"label":"NAME","start":8,"end":20,"preview":"Jane Example"},'
+                '{"label":"MRN","start":25,"end":34,"preview":"MRN-12345"}]}))\n',
+                encoding='utf-8',
+            )
+            fake_opf.chmod(0o755)
+            env = os.environ.copy()
+            env['PATH'] = f'{tmp_path}{os.pathsep}{env.get("PATH", "")}'
+            phi = 'Patient Jane Example has MRN-12345\n'
+
+            result = subprocess.run(
+                [sys.executable, str(RUNNER), '--stdin', '--use-opf'],
+                input=phi,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, '')
+            self.assertEqual(recorder.read_text(encoding='utf-8'), phi)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload['metadata']['engine'], 'openai_privacy_filter_opf')
+            self.assertEqual(payload['metadata']['network_api_called'], False)
+            self.assertEqual(payload['summary']['category_counts'], {'MRN': 1, 'NAME': 1})
+            rendered = json.dumps(payload, sort_keys=True)
+            self.assertNotIn('Jane Example', rendered)
+            self.assertNotIn('MRN-12345', rendered)
+            self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
     def test_explicit_opf_uses_stdin_not_phi_argv(self):
         module = load_runner_module()
         phi = 'Patient Jane Example has MRN-12345\n'
@@ -193,7 +379,7 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
 
         self.assertEqual(stderr.getvalue(), '')
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload['masked_text'], 'Patient [NAME] has [MRN]\n')
+        self.assertEqual(payload['masked_text'], '[NAME] [MRN]')
         self.assertEqual(payload['summary']['category_counts'], {'MRN': 1, 'NAME': 1})
         self.assertEqual([span['label'] for span in payload['spans']], ['NAME', 'MRN'])
         normalized = json.dumps(payload, sort_keys=True)
@@ -226,13 +412,85 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
 
         self.assertEqual(stderr.getvalue(), '')
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload['masked_text'], 'Patient [NAME] email [EMAIL]\n')
+        self.assertEqual(payload['masked_text'], '[NAME] [EMAIL]')
         self.assertEqual(payload['summary']['category_counts'], {'EMAIL': 1, 'NAME': 1})
         self.assertEqual([span['label'] for span in payload['spans']], ['NAME', 'EMAIL'])
         normalized = json.dumps(payload, sort_keys=True)
         self.assertNotIn('Jane Example', normalized)
         self.assertNotIn('jane@example.test', normalized)
         self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
+    def test_explicit_opf_reconstructs_masked_text_without_raw_text_passthrough(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has SSN 123-45-6789\n'
+        raw_opf = json.dumps({
+            'text': phi,
+            'masked_text': phi,
+            'spans': [
+                {'label': 'NAME', 'start': 8, 'end': 20, 'preview': 'Jane Example'},
+                {'label': 'SSN', 'start': 29, 'end': 40, 'preview': '123-45-6789'},
+            ],
+        })
+
+        payload = module.normalize_opf_json(raw_opf, len(phi))
+        self.assertEqual(payload['masked_text'], '[NAME] [SSN]')
+        rendered = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('Jane Example', rendered)
+        self.assertNotIn('123-45-6789', rendered)
+
+    def test_explicit_opf_rejects_non_object_spans_without_phi_leak(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has rare token 123-45-6789\n'
+        raw_opf = json.dumps({'masked_text': phi, 'spans': ['Jane Example']})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text(phi, encoding='utf-8')
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch.object(module.sys, 'argv', ['run_privacy_filter.py', '--use-opf', str(input_path)]), \
+                 mock.patch.object(module.shutil, 'which', return_value='/tmp/opf'), \
+                 mock.patch.object(module, 'run_opf_with_stdin', return_value=raw_opf), \
+                 mock.patch.object(module.sys, 'stdout', stdout), \
+                 mock.patch.object(module.sys, 'stderr', stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    module.main()
+
+        self.assertEqual(raised.exception.code, 4)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('opf returned non-JSON output', stderr.getvalue())
+        self.assertNotIn('Jane Example', stderr.getvalue())
+        self.assertNotIn('123-45-6789', stderr.getvalue())
+
+    def test_explicit_opf_rejects_unsupported_category_without_phi_leak(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has rare token 123-45-6789\n'
+        raw_opf = json.dumps({
+            'masked_text': 'Patient [ALIEN] has rare token [SSN]\n',
+            'spans': [
+                {'label': 'ALIEN', 'start': 8, 'end': 20, 'preview': 'Jane Example'},
+                {'label': 'SSN', 'start': 36, 'end': 47, 'preview': '123-45-6789'},
+            ],
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text(phi, encoding='utf-8')
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with mock.patch.object(module.sys, 'argv', ['run_privacy_filter.py', '--use-opf', str(input_path)]), \
+                 mock.patch.object(module.shutil, 'which', return_value='/tmp/opf'), \
+                 mock.patch.object(module, 'run_opf_with_stdin', return_value=raw_opf), \
+                 mock.patch.object(module.sys, 'stdout', stdout), \
+                 mock.patch.object(module.sys, 'stderr', stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    module.main()
+
+        self.assertEqual(raised.exception.code, 4)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('opf returned non-JSON output', stderr.getvalue())
+        self.assertNotIn('Jane Example', stderr.getvalue())
+        self.assertNotIn('123-45-6789', stderr.getvalue())
 
 
 class PrivacyFilterSyntheticCorpusTests(unittest.TestCase):
