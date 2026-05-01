@@ -214,21 +214,18 @@ Not yet complete. The landed slice adds only bounded in-memory RGB image-region 
 
 Not yet complete. Browser/Desktop region review and save helpers remain pending.
 
-- [x] **Step 5: Verification**
+- [x] **Step 5: Verification for landed domain/adapters foundation**
 
 Run:
 
 ```bash
-source "$HOME/.cargo/env" && cargo test -p mdid-domain visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-adapters image_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-application visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-runtime visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-browser visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-desktop visual_redaction -- --nocapture
+source "$HOME/.cargo/env" && cargo test -p mdid-domain --test visual_redaction_models -p mdid-adapters --test image_redaction_adapter
+source "$HOME/.cargo/env" && cargo test -p mdid-domain -p mdid-adapters
+source "$HOME/.cargo/env" && cargo clippy -p mdid-domain -p mdid-adapters --all-targets -- -D warnings
 git diff --check
 ```
 
-Acceptance: image pixel redaction foundation is verified; automatic visual detection remains non-goal unless a later task adds it.
+Acceptance: the landed domain/adapters image pixel redaction foundation is verified; automatic visual detection remains non-goal unless a later task adds it. Application/runtime/browser/desktop visual-redaction verification is intentionally left for incomplete Steps 3 and 4.
 
 ## Task 5: Handwriting recognition workflow honesty
 
