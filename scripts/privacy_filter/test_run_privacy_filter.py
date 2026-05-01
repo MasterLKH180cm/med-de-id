@@ -24,7 +24,25 @@ def load_runner_module():
     return module
 
 
-class PrivacyFilterRunnerFailureTests(unittest.TestCase):
+def run_text(text):
+    module = load_runner_module()
+    return module.heuristic_detect(text)
+
+
+class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_passport_numbers_are_masked_without_overmatching_embedded_tokens(self):
+        text = 'Patient Jane Example passport X12345678 reference AX12345678 and X123456789'
+        payload = run_text(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
+        self.assertIn('[PASSPORT]', payload['masked_text'])
+        self.assertNotIn('passport X12345678', payload['masked_text'])
+        self.assertIn('AX12345678', payload['masked_text'])
+        self.assertIn('X123456789', payload['masked_text'])
+        passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
+        self.assertEqual(len(passport_spans), 1)
+        self.assertEqual(passport_spans[0]['preview'], '<redacted>')
+
     def test_stdin_mock_reads_stdin_emits_contract_and_detects_phi(self):
         phi = 'Patient Jane Example has MRN-12345\n'
         result = subprocess.run(
