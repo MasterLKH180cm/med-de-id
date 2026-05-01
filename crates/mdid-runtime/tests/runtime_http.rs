@@ -121,6 +121,37 @@ async fn privacy_filter_text_endpoint_returns_phi_safe_summary() {
 }
 
 #[tokio::test]
+async fn privacy_filter_text_endpoint_counts_phone_extensions_without_echoing_phone() {
+    let app = build_router(RuntimeState::default());
+    let raw_phone = "(555) 222-3333 ext. 44";
+    let request = json!({
+        "text": format!("Patient Jane Example should be called at {raw_phone}.")
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["category_counts"]["NAME"], 1);
+    assert_eq!(json["category_counts"]["PHONE"], 1);
+    assert_eq!(json["detected_span_count"], 2);
+    assert!(!body_text.contains(raw_phone), "{body_text}");
+}
+
+#[tokio::test]
 async fn privacy_filter_text_endpoint_rejects_empty_text() {
     let app = build_router(RuntimeState::default());
     let request = json!({"text": "  \n\t  "});

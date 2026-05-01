@@ -42,6 +42,30 @@ def detect_pii(text):
 
 
 class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_detects_phone_extensions_without_leaking_raw_values(self):
+        text = 'Patient Jane Example call 555-123-4567 x890 or (555) 222-3333 ext. 44 for MRN-12345.'
+        payload = detect_pii(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PHONE'), 2)
+        self.assertEqual(payload['masked_text'].count('[PHONE]'), 2)
+        rendered = json.dumps(payload, sort_keys=True)
+        for raw_phone in ['555-123-4567 x890', '(555) 222-3333 ext. 44']:
+            self.assertNotIn(raw_phone, rendered)
+        phone_spans = [span for span in payload['spans'] if span['label'] == 'PHONE']
+        self.assertEqual(len(phone_spans), 2)
+        self.assertEqual([text[span['start']:span['end']] for span in phone_spans], ['555-123-4567 x890', '(555) 222-3333 ext. 44'])
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in phone_spans))
+
+    def test_phone_extension_detector_rejects_embedded_or_unbounded_tokens(self):
+        text = 'ID555-123-4567 555-123-4567ext 555-123-4567 x 123456 (555) 222-3333 extension 123456'
+        payload = detect_pii(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('PHONE'), 2)
+        self.assertNotIn('ID555-123-4567', payload['masked_text'])
+        for raw_phone in ['555-123-4567 x 123456', '(555) 222-3333 extension 123456']:
+            self.assertNotIn(raw_phone, payload['masked_text'])
+        self.assertEqual(payload['masked_text'].count('[PHONE]'), 2)
+
     def test_fallback_detects_ipv4_address_without_raw_previews(self):
         text = 'Patient Jane Example remote login from 192.168.10.42 for MRN-12345'
         payload = detect_pii(text)
