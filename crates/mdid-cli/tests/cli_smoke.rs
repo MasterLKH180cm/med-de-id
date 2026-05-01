@@ -539,6 +539,73 @@ print(json.dumps({
 }
 
 #[test]
+fn ocr_small_json_rejects_not_ready_report_and_removes_stale_outputs_without_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let runner_path = phi_named_dir.join("not-ready-runner.py");
+    fs::write(
+        &runner_path,
+        r#"import json
+print(json.dumps({
+    "candidate":"PP-OCRv5_mobile_rec",
+    "engine":"PP-OCRv5-mobile-bounded-spike",
+    "engine_status":"deterministic_synthetic_fixture_fallback",
+    "scope":"printed_text_line_extraction_only",
+    "source":"synthetic_fixture",
+    "privacy_filter_contract":"text_only_normalized_input",
+    "ready_for_text_pii_eval":False,
+    "extracted_text":"Jane Example MRN-12345",
+    "normalized_text":"Jane Example MRN-12345",
+    "non_goals":["visual_redaction","final_pdf_rewrite_export","handwriting_recognition","full_page_detection_or_segmentation","complete_ocr_pipeline"]
+}))
+"#,
+    )
+    .unwrap();
+    let report_path = phi_named_dir.join("report.json");
+    let summary_path = phi_named_dir.join("summary.json");
+    fs::write(&report_path, "stale Jane Example report").unwrap();
+    fs::write(&summary_path, "stale Jane Example summary").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            runner_path.to_str().unwrap(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in [
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        runner_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+}
+
+#[test]
 fn ocr_small_json_help_mentions_command() {
     Command::cargo_bin("mdid-cli")
         .unwrap()

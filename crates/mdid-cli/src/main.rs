@@ -1675,7 +1675,7 @@ fn paths_are_same_existing_or_lexical(left: &Path, right: &Path) -> bool {
     ) else {
         return false;
     };
-    if left_file_name != right_file_name {
+    if !path_file_names_same_lexical(left_file_name, right_file_name) {
         return false;
     }
     match (
@@ -1685,6 +1685,17 @@ fn paths_are_same_existing_or_lexical(left: &Path, right: &Path) -> bool {
         (Ok(left_parent), Ok(right_parent)) => left_parent == right_parent,
         _ => false,
     }
+}
+
+fn path_file_names_same_lexical(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
+    if left == right {
+        return true;
+    }
+    cfg!(windows)
+        && left
+            .to_str()
+            .zip(right.to_str())
+            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
 fn run_ocr_small_json_inner(args: &OcrSmallJsonArgs) -> Result<(), String> {
@@ -1829,7 +1840,7 @@ fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
     {
         return Err("invalid OCR small JSON report".to_string());
     }
-    if !value["ready_for_text_pii_eval"].is_boolean()
+    if value["ready_for_text_pii_eval"] != true
         || !value["extracted_text"].is_string()
         || !value["normalized_text"].is_string()
     {
@@ -3443,6 +3454,18 @@ mod tests {
         assert!(
             !temp_path.exists(),
             "failed sync must remove stdin PHI temp file"
+        );
+    }
+
+    #[test]
+    fn windows_ascii_case_filename_equivalence_matches_same_canonical_parent() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let report_path = temp_dir.path().join("report.json");
+        let summary_path = temp_dir.path().join("REPORT.json");
+
+        assert_eq!(
+            paths_are_same_existing_or_lexical(&report_path, &summary_path),
+            cfg!(windows)
         );
     }
 
