@@ -60,7 +60,7 @@ def normalize_text(text: str) -> str:
     return " ".join(text.split())
 
 
-def build_extraction_contract(input_path: Path, extracted_text: str, engine_status: str) -> dict:
+def build_extraction_contract(extracted_text: str, engine_status: str) -> dict:
     normalized_text = normalize_text(extracted_text)
     return {
         "candidate": CANDIDATE_RECOGNIZER,
@@ -76,11 +76,11 @@ def build_extraction_contract(input_path: Path, extracted_text: str, engine_stat
     }
 
 
-def emit_output(input_path: Path, extracted_text: str, engine_status: str, json_output: bool) -> None:
+def emit_output(extracted_text: str, engine_status: str, json_output: bool) -> None:
     if json_output:
         sys.stdout.write(
             json.dumps(
-                build_extraction_contract(input_path, extracted_text, engine_status),
+                build_extraction_contract(extracted_text, engine_status),
                 indent=2,
                 sort_keys=True,
             )
@@ -102,7 +102,7 @@ def run_mock(input_path: Path, json_output: bool) -> int:
     extracted_text = read_mock_text(input_path)
     if extracted_text is None:
         return 2
-    emit_output(input_path, extracted_text, MOCK_ENGINE_STATUS, json_output)
+    emit_output(extracted_text, MOCK_ENGINE_STATUS, json_output)
     return 0
 
 
@@ -175,7 +175,7 @@ def run_real(input_path: Path, json_output: bool) -> int:
 
     engine = create_engine(paddleocr_class)
     result = engine.ocr(str(input_path))
-    emit_output(input_path, normalize_ocr_result(result), REAL_ENGINE_STATUS, json_output)
+    emit_output(normalize_ocr_result(result), REAL_ENGINE_STATUS, json_output)
     return 0
 
 
