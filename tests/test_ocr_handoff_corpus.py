@@ -101,7 +101,11 @@ def test_corpus_summary_output_contains_only_downstream_readiness_fields(tmp_pat
         "sample_patient_b.txt",
         '"fixtures"',
         '"id"',
-        "bbox",
+        '"bbox"',
+        '"spans"',
+        '"line_text"',
+        '"ocr_lines"',
+        '"image"',
         "base64",
         str(FIXTURE_DIR),
     ]:
