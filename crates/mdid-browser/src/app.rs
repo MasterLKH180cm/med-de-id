@@ -1810,6 +1810,19 @@ impl BrowserFlowState {
         self.input_mode == InputMode::PdfBase64 && !self.result_output.trim().is_empty()
     }
 
+    fn display_result_output(&self) -> String {
+        if self.input_mode == InputMode::PdfBase64
+            && serde_json::from_str::<serde_json::Value>(&self.result_output)
+                .ok()
+                .is_some_and(|value| value.is_object())
+        {
+            "PDF rewrite/export available for clean download. Raw runtime PDF JSON is withheld from this UI view. Use the clean export button for sanitized evidence JSON."
+                .to_string()
+        } else {
+            self.result_output.clone()
+        }
+    }
+
     fn prepared_pdf_clean_text_layer_export_download_payload(
         &self,
     ) -> Result<BrowserDownloadPayload, String> {
@@ -2716,10 +2729,21 @@ fn parse_runtime_success(
         InputMode::PdfBase64 => {
             let parsed: PdfRuntimeSuccessResponse = serde_json::from_str(response_body)
                 .map_err(|error| format!("Failed to parse runtime success response: {error}"))?;
+            let rewritten_output = if parsed.review_queue.is_empty()
+                && !parsed.no_rewritten_pdf
+                && !parsed.review_only
+                && parsed
+                    .rewritten_pdf_bytes_base64
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+            {
+                response_body.trim().to_string()
+            } else {
+                "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
+                    .to_string()
+            };
             Ok(RuntimeResponseEnvelope {
-                rewritten_output:
-                    "PDF rewrite/export unavailable: runtime returned review-only PDF analysis."
-                        .to_string(),
+                rewritten_output,
                 decoded_values_output: None,
                 safe_response_metadata: serde_json::json!({}),
                 summary: format_pdf_summary(
@@ -3832,7 +3856,7 @@ pub fn App() -> impl IntoView {
                         </button>
                     </div>
                 </Show>
-                <pre>{move || state.get().result_output}</pre>
+                <pre>{move || state.get().display_result_output()}</pre>
             </section>
 
             <section>
@@ -7612,6 +7636,58 @@ mod tests {
         assert!(state
             .prepared_pdf_clean_text_layer_export_download_payload()
             .is_err());
+    }
+
+    #[test]
+    fn pdf_clean_text_layer_export_preserves_clean_runtime_response_through_state() {
+        let runtime_body = json!({
+            "summary": {
+                "total_pages": 1,
+                "text_layer_pages": 1,
+                "ocr_required_pages": 0,
+                "extracted_candidates": 0,
+                "review_required_candidates": 0,
+                "pages_requiring_review": 0,
+                "rewrite_status": "exported",
+                "no_rewritten_pdf": false,
+                "review_only": false
+            },
+            "page_statuses": [{"page": {"label": "Alice Report.pdf", "page_number": 1}, "status": "text_layer_present"}],
+            "review_queue": [],
+            "rewrite_status": "exported",
+            "no_rewritten_pdf": false,
+            "review_only": false,
+            "rewritten_pdf_bytes_base64": "JVBERi0xLjQKJSBjbGVhbgo=",
+            "source_name": "Alice Report.pdf",
+            "raw_text": "Alice Smith"
+        })
+        .to_string();
+        let response = parse_runtime_success(InputMode::PdfBase64, &runtime_body).unwrap();
+        let mut state = BrowserFlowState {
+            input_mode: InputMode::PdfBase64,
+            active_submission_token: Some(7),
+            state_revision: 3,
+            is_submitting: true,
+            ..BrowserFlowState::default()
+        };
+
+        state.apply_runtime_success(7, 3, response);
+
+        assert_eq!(state.result_output, runtime_body);
+        let clean_payload = state
+            .prepared_pdf_clean_text_layer_export_download_payload()
+            .unwrap();
+        let clean_output: serde_json::Value = serde_json::from_slice(&clean_payload.bytes).unwrap();
+        assert_eq!(clean_output["mode"], "pdf_clean_text_layer_export");
+        assert_eq!(
+            clean_output["rewritten_pdf_bytes_base64"],
+            "JVBERi0xLjQKJSBjbGVhbgo="
+        );
+        assert_eq!(clean_output["rewrite_available"], true);
+        let serialized = serde_json::to_string(&clean_output).unwrap();
+        assert!(!serialized.contains("Alice"));
+        assert!(!serialized.contains("raw_text"));
+        assert!(!serialized.contains("source_name"));
     }
 
     #[test]
