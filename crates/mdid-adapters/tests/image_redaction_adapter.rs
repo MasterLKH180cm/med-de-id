@@ -1,6 +1,6 @@
 use mdid_adapters::{
     redact_ppm_p6_bytes, redact_ppm_p6_bytes_with_verification, redact_rgb_regions,
-    ImageRedactionError,
+    verify_ppm_redaction_pixels, ImageRedactionError,
 };
 use mdid_domain::ImageRedactionRegion;
 
@@ -32,6 +32,50 @@ fn ppm_visual_verification_counts_bounded_approved_pixels_without_phi_artifacts(
     assert_eq!(verification.unchanged_pixel_count, 4);
     assert_eq!(verification.output_byte_count, output.len() as u64);
     assert!(verification.verified_changed_pixels_within_regions);
+}
+
+#[test]
+fn ppm_visual_verification_counts_overlapping_regions_as_distinct_pixels_once() {
+    let input = [
+        b"P6\n3 2\n255\n".as_slice(),
+        &[
+            1, 1, 1, // (0,0) redacted by first region
+            2, 2, 2, // (1,0) redacted by both regions
+            3, 3, 3, // (2,0) redacted by second region
+            4, 4, 4, // (0,1)
+            5, 5, 5, // (1,1)
+            6, 6, 6, // (2,1)
+        ],
+    ]
+    .concat();
+    let first = ImageRedactionRegion::new(0, 0, 2, 1).expect("valid region");
+    let second = ImageRedactionRegion::new(1, 0, 2, 1).expect("valid region");
+
+    let (_output, verification) =
+        redact_ppm_p6_bytes_with_verification(&input, &[first, second], [0, 0, 0])
+            .expect("ppm redaction verification succeeds");
+
+    assert_eq!(verification.redacted_region_count, 2);
+    assert_eq!(verification.redacted_pixel_count, 3);
+    assert_eq!(verification.unchanged_pixel_count, 3);
+    assert!(verification.verified_changed_pixels_within_regions);
+}
+
+#[test]
+fn ppm_visual_verification_detects_unexpected_output_pixel_mismatch() {
+    let original_pixels = vec![
+        1, 1, 1, // (0,0) approved for fill
+        2, 2, 2, // (1,0) must remain unchanged
+    ];
+    let mut output_pixels = original_pixels.clone();
+    output_pixels[3..6].copy_from_slice(&[9, 9, 9]);
+    let region = ImageRedactionRegion::new(0, 0, 1, 1).expect("valid region");
+
+    let verified =
+        verify_ppm_redaction_pixels(&original_pixels, &output_pixels, 2, 1, &[region], [0, 0, 0])
+            .expect("verification runs");
+
+    assert!(!verified);
 }
 
 #[test]
