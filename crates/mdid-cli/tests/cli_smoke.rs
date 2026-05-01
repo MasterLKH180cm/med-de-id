@@ -3894,6 +3894,7 @@ fn privacy_filter_text_detects_zips_from_stdin_without_raw_zip_leaks() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     let report_text = fs::read_to_string(&report_path).unwrap();
     let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert!(stdout.contains("\"report_path\":\"<redacted>\""));
     assert_eq!(report["summary"]["category_counts"]["ZIP"], 2);
     assert!(report["masked_text"].as_str().unwrap().contains("[ZIP]"));
     for span in report["spans"].as_array().unwrap() {
