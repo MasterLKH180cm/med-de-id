@@ -2088,6 +2088,7 @@ fn is_allowed_privacy_filter_label(label: &str) -> bool {
             | "MRN"
             | "EMAIL"
             | "PHONE"
+            | "FAX"
             | "ID"
             | "DATE"
             | "ADDRESS"

@@ -4069,6 +4069,63 @@ fn privacy_filter_text_detects_ssns_from_stdin_without_raw_ssn_leaks() {
 }
 
 #[test]
+fn cli_privacy_filter_text_detects_fax_without_phi_or_path_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-fax");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("fax-report.json");
+    let raw_fax = "555-222-3333";
+    let input = format!("Patient Jane Example fax {raw_fax} MRN MRN-12345");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "privacy-filter-text",
+            "--stdin",
+            "--runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--python-command",
+            default_python_command(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--mock",
+        ])
+        .write_stdin(input)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("\"report_path\":\"<redacted>\""));
+    assert!(!stdout.contains(raw_fax));
+    assert!(!stdout.contains("Jane Example"));
+    assert!(!stdout.contains("MRN-12345"));
+    assert!(!stdout.contains(report_path.to_str().unwrap()));
+    assert!(!stdout.contains(phi_named_dir.to_str().unwrap()));
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(!report_text.contains(raw_fax));
+    assert!(!report_text.contains("Jane Example"));
+    assert!(!report_text.contains("MRN-12345"));
+    assert!(!report_text.contains(report_path.to_str().unwrap()));
+    assert!(!report_text.contains(phi_named_dir.to_str().unwrap()));
+    let report_json: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report_json["summary"]["category_counts"]["FAX"], 1);
+    assert!(report_json["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[FAX]"));
+    assert_eq!(report_json["metadata"]["network_api_called"], false);
+    for span in report_json["spans"].as_array().unwrap() {
+        if span["label"] == "FAX" {
+            assert_eq!(span["preview"], "<redacted>");
+        }
+    }
+}
+
+#[test]
 fn cli_privacy_filter_text_detects_passport_without_phi_leaks() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("passport-report.json");
