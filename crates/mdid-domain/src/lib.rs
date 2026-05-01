@@ -4,6 +4,51 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageRedactionRegion {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl ImageRedactionRegion {
+    pub fn new(x: u32, y: u32, width: u32, height: u32) -> Result<Self, ImageRedactionRegionError> {
+        if width == 0 || height == 0 {
+            return Err(ImageRedactionRegionError::EmptyRegion);
+        }
+
+        Ok(Self {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    pub fn x(&self) -> u32 {
+        self.x
+    }
+
+    pub fn y(&self) -> u32 {
+        self.y
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ImageRedactionRegionError {
+    #[error("image redaction region must have non-zero width and height")]
+    EmptyRegion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SurfaceKind {
     Cli,
