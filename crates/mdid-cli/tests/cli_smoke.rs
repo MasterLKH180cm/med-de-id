@@ -3452,8 +3452,9 @@ fn cli_privacy_filter_text_summary_output_is_phi_safe() {
     assert_eq!(summary["network_api_called"], false);
     assert_eq!(summary["preview_policy"], "redacted_placeholders_only");
     assert_eq!(summary["input_char_count"], 137);
-    assert_eq!(summary["detected_span_count"], 4);
+    assert_eq!(summary["detected_span_count"], 5);
     assert_eq!(summary["category_counts"]["NAME"], 1);
+    assert_eq!(summary["category_counts"]["DATE"], 1);
     for non_goal in [
         "ocr",
         "visual_redaction",
@@ -3478,6 +3479,7 @@ fn cli_privacy_filter_text_summary_output_is_phi_safe() {
         "+1-555-123-4567",
         "555-123-4567",
         "MRN-12345",
+        "2026-04-30",
         "masked_text",
         "spans",
         "\"preview\"",
@@ -3750,6 +3752,55 @@ fn privacy_filter_text_runs_repo_fixture_runner_and_validator() {
         String::from_utf8_lossy(&validator.stdout),
         String::from_utf8_lossy(&validator.stderr)
     );
+}
+
+#[test]
+fn privacy_filter_text_detects_dates_from_stdin_without_raw_date_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-date-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example DOB 1978-04-23 seen on 04/23/1978 MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["category_counts"]["DATE"], 2);
+    assert_eq!(report["summary"]["category_counts"]["NAME"], 1);
+    assert_eq!(report["summary"]["category_counts"]["MRN"], 1);
+    assert!(report["masked_text"].as_str().unwrap().contains("[DATE]"));
+    for unsafe_text in [
+        "Jane Example",
+        "1978-04-23",
+        "04/23/1978",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
 }
 
 #[test]
