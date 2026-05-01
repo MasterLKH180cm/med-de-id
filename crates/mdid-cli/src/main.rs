@@ -1770,6 +1770,7 @@ fn run_ocr_to_privacy_filter_corpus_inner(
 fn build_ocr_to_privacy_filter_corpus_summary(value: &Value) -> Value {
     json!({
         "artifact": "ocr_to_privacy_filter_corpus_summary",
+        "schema_version": 1,
         "ocr_candidate": value["ocr_candidate"],
         "ocr_engine": value["ocr_engine"],
         "ocr_scope": value["ocr_scope"],

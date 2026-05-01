@@ -1880,7 +1880,36 @@ fn ocr_to_privacy_filter_corpus_writes_phi_safe_summary_output() {
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let summary: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
 
+    let summary_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        summary_keys,
+        [
+            "artifact",
+            "schema_version",
+            "ocr_scope",
+            "ocr_engine",
+            "ocr_candidate",
+            "privacy_scope",
+            "privacy_filter_engine",
+            "privacy_filter_contract",
+            "network_api_called",
+            "fixture_count",
+            "ready_fixture_count",
+            "total_detected_span_count",
+            "category_counts",
+            "privacy_filter_category_counts",
+            "non_goals",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+    );
     assert_eq!(summary["artifact"], "ocr_to_privacy_filter_corpus_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
     assert_eq!(
