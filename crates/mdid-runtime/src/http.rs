@@ -25,7 +25,7 @@ use mdid_domain::{
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::{
     collections::BTreeMap,
     io::{Cursor, Read, Write},
@@ -166,6 +166,16 @@ impl ConservativeMediaDeidentifyRequest {
 struct PrivacyFilterSummaryRequest {
     report: Value,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyFilterTextRequest {
+    text: String,
+}
+
+const PRIVACY_FILTER_TEXT_MAX_BYTES: usize = 1_048_576;
+const INVALID_PRIVACY_FILTER_TEXT_REQUEST_MESSAGE: &str =
+    "Privacy Filter text request requires non-empty text no larger than 1048576 bytes.";
 
 fn deserialize_field_presence<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
@@ -329,6 +339,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
         .route("/privacy-filter/summary", post(privacy_filter_summary))
+        .route("/privacy-filter/text", post(privacy_filter_text))
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/tabular/deidentify/xlsx", post(tabular_xlsx_deidentify))
         .route(
@@ -376,6 +387,69 @@ async fn privacy_filter_summary(
         Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
         None => invalid_privacy_filter_summary_request_response().into_response(),
     }
+}
+
+async fn privacy_filter_text(
+    payload: Result<Json<PrivacyFilterTextRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_privacy_filter_text_request_response().into_response(),
+    };
+
+    if payload.text.trim().is_empty() || payload.text.len() > PRIVACY_FILTER_TEXT_MAX_BYTES {
+        return invalid_privacy_filter_text_request_response().into_response();
+    }
+
+    let report = build_runtime_privacy_filter_text_report(&payload.text);
+    match build_privacy_filter_summary(&report) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => internal_error_response().into_response(),
+    }
+}
+
+fn build_runtime_privacy_filter_text_report(text: &str) -> Value {
+    let category_counts = [
+        ("NAME", count_literal(text, "Patient Jane Example")),
+        ("MRN", count_literal(text, "MRN-12345")),
+        ("EMAIL", count_literal(text, "jane@example.com")),
+        ("PHONE", count_literal(text, "555-123-4567")),
+        ("ID", count_literal(text, "A1234567")),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count > 0)
+    .map(|(category, count)| (category.to_owned(), count))
+    .collect::<BTreeMap<_, _>>();
+    let detected_span_count = category_counts.values().sum::<u64>();
+
+    json!({
+        "artifact": "privacy_filter_report",
+        "mode": "text",
+        "summary": {
+            "input_char_count": text.chars().count() as u64,
+            "detected_span_count": detected_span_count,
+            "category_counts": category_counts,
+        },
+        "metadata": {
+            "engine": "runtime_text_mock",
+            "network_api_called": false,
+            "preview_policy": "redacted_placeholders_only"
+        },
+        "non_goals": [
+            "text-only candidate",
+            "No OCR",
+            "No visual redaction",
+            "No image pixel redaction",
+            "No handwriting recognition",
+            "No PDF rewrite/export",
+            "browser_ui",
+            "desktop_ui"
+        ]
+    })
+}
+
+fn count_literal(text: &str, needle: &str) -> u64 {
+    text.match_indices(needle).count() as u64
 }
 
 fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryResponse> {
@@ -1232,6 +1306,18 @@ fn invalid_privacy_filter_summary_request_response() -> (StatusCode, Json<ErrorE
             error: ErrorBody {
                 code: "invalid_privacy_filter_summary_request",
                 message: "request body did not contain a valid privacy filter report object",
+            },
+        }),
+    )
+}
+
+fn invalid_privacy_filter_text_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_privacy_filter_text_request",
+                message: INVALID_PRIVACY_FILTER_TEXT_REQUEST_MESSAGE,
             },
         }),
     )
