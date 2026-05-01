@@ -57,11 +57,11 @@ git commit -m "feat(cli): add OCR privacy evidence wrapper"
 - Modify: `scripts/ocr_eval/README.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write docs regression expectations or identify existing docs checks**
+- [x] **Step 1: Write docs regression expectations or identify existing docs checks**
 
 Search existing tests for README/docs assertions. If a docs test exists, add assertions that the new CLI wrapper is documented as CLI/runtime aggregate evidence only and not Browser/Web/Desktop execution. If no docs test exists, document the exact commands and verify with `git diff --check`.
 
-- [ ] **Step 2: Update docs**
+- [x] **Step 2: Update docs**
 
 Update `scripts/ocr_eval/README.md` with the exact command:
 ```bash
@@ -76,7 +76,7 @@ State the report is aggregate-only, PHI-safe, and CLI/runtime evidence only.
 
 Update `README.md` completion snapshot: add this new CLI/runtime requirement to numerator and denominator, conservatively floor percentages, keep Browser/Web 99% and Desktop 99%, and mark the reserved final 1% blockers unchanged. Mention Browser/Web/Desktop receive +0% this round because no user-facing surface capability changed.
 
-- [ ] **Step 3: Verify docs and code**
+- [x] **Step 3: Verify docs and code**
 
 Run: `/home/azureuser/.cargo/bin/cargo test -p mdid-cli ocr_privacy_evidence -- --nocapture`
 Expected: PASS.
@@ -85,7 +85,7 @@ Expected: PASS with PHI-safe stdout.
 Run: `git diff --check`
 Expected: no whitespace errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Run:
 ```bash
