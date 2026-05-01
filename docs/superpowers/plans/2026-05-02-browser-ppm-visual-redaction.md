@@ -37,7 +37,7 @@ Update `InputMode`, match arms, `browser_file_read_mode`, and request-payload co
 
 - [ ] **Step 4: Implement download gating**
 
-Add helper to decode `rewritten_ppm_bytes_base64` only when runtime response has `verification.format == "PPM_P6"`, nonzero `redacted_region_count`, and `verified_changed_pixels_within_regions == true`. The prepared download must be `image/x-portable-pixmap`, binary, filename `mdid-browser-redacted.ppm`, and must not include bbox arrays or source names in any summary.
+Add helper to decode `rewritten_ppm_bytes_base64` only when runtime response has `verification.format == "ppm_p6"`, nonzero `redacted_region_count`, and `verified_changed_pixels_within_regions == true`. The prepared download must be `image/x-portable-pixmap`, binary, filename `mdid-browser-redacted.ppm`, and must not include bbox arrays or source names in any summary.
 
 - [ ] **Step 5: Run targeted GREEN**
 

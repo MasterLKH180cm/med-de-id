@@ -535,8 +535,8 @@ fn build_visual_redaction_ppm_request_payload(
         }
     }
     Ok(serde_json::json!({
-        "ppm_p6_bytes_base64": ppm_p6_bytes_base64,
-        "bbox_regions": bbox_regions,
+        "ppm_bytes_base64": ppm_p6_bytes_base64,
+        "regions": bbox_regions,
     }))
 }
 
@@ -544,14 +544,15 @@ fn visual_redaction_ppm_download_available(response_json: &str) -> bool {
     let Ok(response) = serde_json::from_str::<serde_json::Value>(response_json) else {
         return false;
     };
-    response
-        .pointer("/verification/format")
-        .and_then(serde_json::Value::as_str)
-        == Some("PPM_P6")
-        && response
-            .pointer("/verification/redacted_region_count")
-            .and_then(serde_json::Value::as_u64)
-            .is_some_and(|count| count > 0)
+    matches!(
+        response
+            .pointer("/verification/format")
+            .and_then(serde_json::Value::as_str),
+        Some("ppm_p6" | "PPM_P6")
+    ) && response
+        .pointer("/verification/redacted_region_count")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|count| count > 0)
         && response
             .pointer("/verification/verified_changed_pixels_within_regions")
             .and_then(serde_json::Value::as_bool)
@@ -565,7 +566,7 @@ fn visual_redaction_ppm_download_available(response_json: &str) -> bool {
 fn build_visual_redaction_ppm_download(
     response_json: &str,
 ) -> Result<BrowserDownloadPayload, String> {
-    const ERROR: &str = "PPM visual redaction download is only available after verified PPM_P6 redaction with changed pixels inside explicit regions.";
+    const ERROR: &str = "PPM visual redaction download is only available after verified ppm_p6 redaction with changed pixels inside explicit regions.";
     if !visual_redaction_ppm_download_available(response_json) {
         return Err(ERROR.to_string());
     }
@@ -1706,7 +1707,11 @@ impl BrowserFlowState {
     #[cfg_attr(not(test), allow(dead_code))]
     fn apply_imported_file(&mut self, file_name: &str, payload: &str, mode: InputMode) {
         self.input_mode = mode;
-        self.source_name = file_name.to_string();
+        self.source_name = if mode == InputMode::PpmVisualRedaction {
+            r#"[{"x":0,"y":0,"width":1,"height":1}]"#.to_string()
+        } else {
+            file_name.to_string()
+        };
         self.imported_file_name = Some(file_name.to_string());
         self.invalidate_generated_state();
         self.payload = payload.to_string();
@@ -1716,7 +1721,7 @@ impl BrowserFlowState {
         self.imported_file_name = Some(file_name.to_string());
         self.invalidate_generated_state();
         self.error_banner = Some(
-            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, or .json."
+            "Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, .ppm, or .json."
                 .to_string(),
         );
     }
@@ -4099,6 +4104,24 @@ mod tests {
     }
 
     #[test]
+    fn visual_redaction_ppm_import_sets_default_bbox_regions_not_filename() {
+        let mut state = BrowserFlowState::default();
+        state.apply_imported_file(
+            "patient-face.ppm",
+            "UDYKAA==",
+            InputMode::PpmVisualRedaction,
+        );
+
+        assert_eq!(state.input_mode, InputMode::PpmVisualRedaction);
+        assert_eq!(state.payload, "UDYKAA==");
+        assert_eq!(state.source_name, r#"[{"x":0,"y":0,"width":1,"height":1}]"#);
+        assert_eq!(
+            state.imported_file_name.as_deref(),
+            Some("patient-face.ppm")
+        );
+    }
+
+    #[test]
     fn visual_redaction_ppm_select_value_maps_to_new_mode() {
         assert_eq!(
             InputMode::from_select_value("ppm-visual-redaction"),
@@ -4128,19 +4151,21 @@ mod tests {
     }
 
     #[test]
-    fn visual_redaction_ppm_request_json_wraps_imported_base64_and_bbox_regions() {
+    fn visual_redaction_ppm_request_json_wraps_imported_base64_and_runtime_regions() {
         let request = build_visual_redaction_ppm_request_payload(
             " UDYKAA== ",
             r#"[{"x":1,"y":2,"width":3,"height":4,"reason":"patient_name"}]"#,
         )
         .expect("ppm request");
 
-        assert_eq!(request["ppm_p6_bytes_base64"], "UDYKAA==");
-        assert_eq!(request["bbox_regions"][0]["x"], 1);
-        assert_eq!(request["bbox_regions"][0]["y"], 2);
-        assert_eq!(request["bbox_regions"][0]["width"], 3);
-        assert_eq!(request["bbox_regions"][0]["height"], 4);
-        assert_eq!(request["bbox_regions"].as_array().unwrap().len(), 1);
+        assert_eq!(request["ppm_bytes_base64"], "UDYKAA==");
+        assert!(request.get("ppm_p6_bytes_base64").is_none());
+        assert!(request.get("bbox_regions").is_none());
+        assert_eq!(request["regions"][0]["x"], 1);
+        assert_eq!(request["regions"][0]["y"], 2);
+        assert_eq!(request["regions"][0]["width"], 3);
+        assert_eq!(request["regions"][0]["height"], 4);
+        assert_eq!(request["regions"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -4155,8 +4180,10 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&request.body_json).unwrap();
 
         assert_eq!(request.endpoint, "/visual-redaction/ppm");
-        assert_eq!(body["ppm_p6_bytes_base64"], "UDYKAA==");
-        assert_eq!(body["bbox_regions"].as_array().unwrap().len(), 1);
+        assert_eq!(body["ppm_bytes_base64"], "UDYKAA==");
+        assert!(body.get("ppm_p6_bytes_base64").is_none());
+        assert!(body.get("bbox_regions").is_none());
+        assert_eq!(body["regions"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -4165,7 +4192,7 @@ mod tests {
         let response = json!({
             "rewritten_ppm_bytes_base64": base64::engine::general_purpose::STANDARD.encode(redacted),
             "verification": {
-                "format": "PPM_P6",
+                "format": "ppm_p6",
                 "redacted_region_count": 1,
                 "verified_changed_pixels_within_regions": true,
                 "source_name": "patient.ppm",
@@ -7655,7 +7682,7 @@ mod tests {
 
         assert!(source
             .contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
-        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.json\""));
+        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.json\""));
         assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/media metadata JSON payload"));
         assert!(source.contains("validates CSV/XLSX/PDF/DICOM/media metadata JSON selection"));
         assert!(
@@ -7670,7 +7697,7 @@ mod tests {
 
         assert_eq!(
             state.error_banner.as_deref(),
-            Some("Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, or .json.")
+            Some("Unsupported browser import file type. Use .csv, .xlsx, .pdf, .dcm, .dicom, .ppm, or .json.")
         );
         assert_eq!(state.summary, IDLE_SUMMARY);
         assert_eq!(state.review_queue, IDLE_REVIEW_QUEUE);
