@@ -175,7 +175,7 @@ impl InputMode {
             Self::XlsxBase64 => Some(
                 "XLSX mode only processes the first non-empty worksheet. Sheet selection is not supported in this browser flow.",
             ),
-            Self::PdfBase64 => Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export."),
+            Self::PdfBase64 => Some("PDF mode is bounded to local text-layer review. A clean text-layer PDF export may be available only when the runtime returns clean rewritten PDF bytes with no review blockers. This browser flow does not perform OCR, visual redaction, handwriting handling, or full PDF rewrite for blocked PDFs."),
             Self::DicomBase64 => Some("DICOM mode uses the existing local runtime tag-level de-identification route, removes private tags, and returns rewritten DICOM bytes as base64 text. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It does not add pixel redaction, OCR, vault browsing, auth/session, or broader platform workflow semantics."),
             Self::MediaMetadataJson => Some("Media metadata JSON mode is metadata-only: it sends a JSON object to the local media review runtime route, does not perform OCR, does not upload media bytes, and does not perform visual redaction or media rewrite/export."),
             Self::VaultAuditEvents => Some("Vault audit events mode uses the existing read-only localhost runtime endpoint with bounded optional kind, actor, and limit filters. It does not decode, export, browse vault contents, or add auth/session semantics."),
@@ -1167,6 +1167,34 @@ fn build_pdf_clean_text_layer_export_download(
     })
 }
 
+fn pdf_clean_text_layer_export_available(response_json: &str) -> bool {
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(response_json) else {
+        return false;
+    };
+    if !response.is_object() {
+        return false;
+    }
+
+    let review_queue_empty = response
+        .get("review_queue")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty);
+    let no_rewritten_pdf = response
+        .get("no_rewritten_pdf")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let review_only = response
+        .get("review_only")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let has_rewritten_pdf_bytes = response
+        .get("rewritten_pdf_bytes_base64")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+
+    review_queue_empty && !no_rewritten_pdf && !review_only && has_rewritten_pdf_bytes
+}
+
 fn build_pdf_review_report_download(
     response_json: &str,
     imported_file_name: Option<&str>,
@@ -1807,7 +1835,8 @@ impl BrowserFlowState {
     }
 
     fn can_export_pdf_clean_text_layer_export(&self) -> bool {
-        self.input_mode == InputMode::PdfBase64 && !self.result_output.trim().is_empty()
+        self.input_mode == InputMode::PdfBase64
+            && pdf_clean_text_layer_export_available(&self.result_output)
     }
 
     fn display_result_output(&self) -> String {
@@ -1816,7 +1845,7 @@ impl BrowserFlowState {
                 .ok()
                 .is_some_and(|value| value.is_object())
         {
-            "PDF rewrite/export available for clean download. Raw runtime PDF JSON is withheld from this UI view. Use the clean export button for sanitized evidence JSON."
+            "PDF runtime JSON is withheld from this UI view for PHI safety. If clean rewritten PDF bytes are available with no review blockers, use the clean export button for sanitized evidence JSON."
                 .to_string()
         } else {
             self.result_output.clone()
@@ -2487,7 +2516,7 @@ struct PdfRuntimeSuccessResponse {
     rewrite_status: String,
     no_rewritten_pdf: bool,
     review_only: bool,
-    // PDF mode is review-only; rewrite/export bytes are intentionally ignored.
+    // PDF mode may include clean text-layer export bytes when runtime deems it safe.
     #[allow(dead_code)]
     rewritten_pdf_bytes_base64: Option<String>,
 }
@@ -3095,8 +3124,8 @@ fn format_pdf_summary(
 
     lines.extend(page_statuses.iter().map(|page_status| {
         format!(
-            "- page {} ({}): {}",
-            page_status.page.page_number, page_status.page.label, page_status.status
+            "- page {}: {}",
+            page_status.page.page_number, page_status.status
         )
     }));
 
@@ -3112,12 +3141,11 @@ fn format_pdf_review_queue(review_queue: &[PdfReviewCandidate]) -> String {
         .iter()
         .map(|candidate| {
             format!(
-                "- page {} / {} / confidence {} / {}: {}",
+                "- page {} / {} / confidence {} / {} / text hidden for PHI safety",
                 candidate.page.page_number,
                 candidate.phi_type,
                 candidate.confidence,
-                candidate.decision,
-                candidate.source_text
+                candidate.decision
             )
         })
         .collect::<Vec<_>>()
@@ -5624,6 +5652,91 @@ mod tests {
         assert!(payload.is_text);
     }
 
+    fn pdf_runtime_success_with_phi_response() -> serde_json::Value {
+        json!({
+            "summary": {
+                "total_pages": 1,
+                "text_layer_pages": 1,
+                "ocr_required_pages": 0,
+                "extracted_candidates": 1,
+                "review_required_candidates": 1,
+                "rewrite_status": "review_required",
+                "no_rewritten_pdf": true,
+                "review_only": true,
+                "source_label": "radiology/report.pdf"
+            },
+            "page_statuses": [
+                {
+                    "page": {"label": "radiology/report.pdf page 1", "page_number": 1},
+                    "status": "review_required"
+                }
+            ],
+            "review_queue": [
+                {
+                    "page": {"label": "radiology/report.pdf page 1", "page_number": 1},
+                    "source_text": "Alice Smith",
+                    "raw_text": "Alice Smith DOB 1970-01-01",
+                    "phi_type": "name",
+                    "confidence": 99,
+                    "decision": "review"
+                }
+            ],
+            "rewrite_status": "review_required",
+            "no_rewritten_pdf": true,
+            "review_only": true,
+            "rewritten_pdf_bytes_base64": null
+        })
+    }
+
+    #[test]
+    fn pdf_runtime_success_hides_phi_from_browser_ui_fields() {
+        let body = pdf_runtime_success_with_phi_response().to_string();
+        let parsed = parse_runtime_success(InputMode::PdfBase64, &body).expect("pdf response");
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::PdfBase64;
+        state.result_output = parsed.rewritten_output.clone();
+
+        for visible in [
+            parsed.summary.as_str(),
+            parsed.review_queue.as_str(),
+            state.display_result_output().as_str(),
+        ] {
+            assert!(!visible.contains("radiology/report.pdf"));
+            assert!(!visible.contains("Alice Smith"));
+            assert!(!visible.contains("source_text"));
+            assert!(!visible.contains("raw_text"));
+        }
+        assert!(parsed.summary.contains("extracted_candidates: 1"));
+        assert!(parsed.review_queue.contains("text hidden for PHI safety"));
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn pdf_clean_text_layer_export_button_is_available_only_for_clean_exportable_json() {
+        let valid = json!({
+            "summary": {"total_pages": 1, "pages_requiring_review": 0},
+            "review_queue": [],
+            "no_rewritten_pdf": false,
+            "review_only": false,
+            "rewritten_pdf_bytes_base64": "JVBERi0="
+        });
+        let mut state = BrowserFlowState::default();
+        state.input_mode = InputMode::PdfBase64;
+        state.result_output = valid.to_string();
+        assert!(state.can_export_pdf_clean_text_layer_export());
+
+        for unavailable in [
+            json!({"review_queue": [{"kind": "review"}], "no_rewritten_pdf": false, "review_only": false, "rewritten_pdf_bytes_base64": "JVBERi0="}).to_string(),
+            json!({"review_queue": [], "no_rewritten_pdf": true, "review_only": false, "rewritten_pdf_bytes_base64": "JVBERi0="}).to_string(),
+            json!({"review_queue": [], "no_rewritten_pdf": false, "review_only": true, "rewritten_pdf_bytes_base64": "JVBERi0="}).to_string(),
+            json!({"review_queue": [], "no_rewritten_pdf": false, "review_only": false, "rewritten_pdf_bytes_base64": null}).to_string(),
+            "PDF rewrite/export unavailable: runtime returned review-only PDF analysis.".to_string(),
+        ] {
+            state.result_output = unavailable;
+            assert!(!state.can_export_pdf_clean_text_layer_export());
+        }
+    }
+
     #[test]
     fn pdf_review_download_exports_structured_json_report() {
         let mut state = BrowserFlowState {
@@ -7404,7 +7517,7 @@ mod tests {
         );
         assert_eq!(
             InputMode::PdfBase64.disclosure_copy(),
-            Some("PDF mode is review-only: it reports text-layer candidates and OCR-required pages, but does not perform OCR, visual redaction, handwriting handling, or PDF rewrite/export.")
+            Some("PDF mode is bounded to local text-layer review. A clean text-layer PDF export may be available only when the runtime returns clean rewritten PDF bytes with no review blockers. This browser flow does not perform OCR, visual redaction, handwriting handling, or full PDF rewrite for blocked PDFs.")
         );
         assert_eq!(InputMode::PdfBase64.endpoint(), "/pdf/deidentify");
     }
@@ -7494,16 +7607,14 @@ mod tests {
         assert!(response.summary.contains("no_rewritten_pdf: true"));
         assert!(response.summary.contains("review_only: true"));
         assert!(response.summary.contains("page_statuses:"));
-        assert!(response
-            .summary
-            .contains("- page 1 (radiology/report.pdf): text_layer_present"));
-        assert!(response
-            .summary
-            .contains("- page 2 (radiology/report.pdf): ocr_required"));
+        assert!(response.summary.contains("- page 1: text_layer_present"));
+        assert!(response.summary.contains("- page 2: ocr_required"));
         assert_eq!(
             response.review_queue,
-            "- page 1 / patient_name / confidence 20 / needs_review: Alice Smith"
+            "- page 1 / patient_name / confidence 20 / needs_review / text hidden for PHI safety"
         );
+        assert!(!response.summary.contains("radiology/report.pdf"));
+        assert!(!response.review_queue.contains("Alice Smith"));
     }
 
     #[test]
