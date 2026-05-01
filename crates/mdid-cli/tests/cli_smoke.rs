@@ -3867,6 +3867,59 @@ fn privacy_filter_text_detects_ssns_from_stdin_without_raw_ssn_leaks() {
 }
 
 #[test]
+fn cli_privacy_filter_text_detects_passport_without_phi_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("passport-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example passport X12345678 MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert!(stdout.contains("\"report_path\":\"<redacted>\""));
+    assert_eq!(report["summary"]["category_counts"]["PASSPORT"], 1);
+    assert!(report["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[PASSPORT]"));
+    for span in report["spans"].as_array().unwrap() {
+        assert_eq!(span["preview"], "<redacted>");
+    }
+    for unsafe_text in [
+        "X12345678",
+        "Jane Example",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn privacy_filter_text_detects_zips_from_stdin_without_raw_zip_leaks() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-zip-report.json");
