@@ -472,6 +472,23 @@ fn optional_u64(report: &Map<String, Value>, field: &str) -> Option<Option<u64>>
 }
 
 fn contains_incompatible_ocr_handoff_marker(report: &Map<String, Value>) -> bool {
+    contains_incompatible_ocr_handoff_value(&Value::Object(report.clone()), true)
+}
+
+fn contains_incompatible_ocr_handoff_value(value: &Value, is_top_level: bool) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            is_incompatible_ocr_handoff_field(key, value, is_top_level)
+                || contains_incompatible_ocr_handoff_value(value, false)
+        }),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contains_incompatible_ocr_handoff_value(value, false)),
+        _ => false,
+    }
+}
+
+fn is_incompatible_ocr_handoff_field(key: &str, value: &Value, is_top_level: bool) -> bool {
     const INCOMPATIBLE_MARKERS: &[&str] = &[
         "image_bytes",
         "image_bytes_base64",
@@ -486,19 +503,16 @@ fn contains_incompatible_ocr_handoff_marker(report: &Map<String, Value>) -> bool
         "controller_step",
         "complete_command",
         "claim",
+        "raw_text",
+        "text",
+        "ocr_output",
+        "path",
+        "file_path",
     ];
 
-    report.iter().any(|(key, value)| {
-        INCOMPATIBLE_MARKERS.contains(&key.as_str())
-            || match value {
-                Value::Object(object) => contains_incompatible_ocr_handoff_marker(object),
-                Value::Array(values) => values.iter().any(|value| match value {
-                    Value::Object(object) => contains_incompatible_ocr_handoff_marker(object),
-                    _ => false,
-                }),
-                _ => false,
-            }
-    })
+    (key == "network_api_called" && value.as_bool() == Some(true))
+        || INCOMPATIBLE_MARKERS.contains(&key)
+        || (!is_top_level && matches!(key, "extracted_text" | "normalized_text" | "source"))
 }
 
 fn safe_ocr_handoff_non_goal(non_goal: &str) -> Option<&str> {
@@ -2033,6 +2047,13 @@ mod tests {
             .any(|non_goal| non_goal == "visual_redaction"));
 
         let serialized_summary = serde_json::to_string(&summary).expect("summary should serialize");
+        for allowed_input_raw_field in ["extracted_text", "normalized_text"] {
+            assert!(
+                handoff.get(allowed_input_raw_field).is_some(),
+                "official fixture should include top-level {allowed_input_raw_field} as input"
+            );
+        }
+
         for forbidden in [
             "Jane Example",
             "MRN-12345",
@@ -2067,6 +2088,67 @@ mod tests {
                 !body.contains(forbidden),
                 "error body must not echo {forbidden}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_network_api_called_true_without_echoing_phi() {
+        for mutation in [
+            json!({"network_api_called": true}),
+            json!({"metadata": {"network_api_called": true, "note": "Jane Example MRN-12345"}}),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            let mutation = mutation
+                .as_object()
+                .expect("mutation should be an object")
+                .clone();
+            handoff
+                .as_object_mut()
+                .expect("handoff should be an object")
+                .extend(mutation);
+
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in [
+                "Jane Example",
+                "MRN-12345",
+                "jane@example.com",
+                "555-123-4567",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_unsafe_non_contract_fields_recursively() {
+        for mutation in [
+            json!({"raw_text": "Jane Example MRN-12345"}),
+            json!({"metadata": {"file_path": "/tmp/Jane Example.pdf"}}),
+            json!({"metadata": {"source": "Jane Example.pdf"}}),
+            json!({"metadata": [{"ocr_output": "jane@example.com"}]}),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            let mutation = mutation
+                .as_object()
+                .expect("mutation should be an object")
+                .clone();
+            handoff
+                .as_object_mut()
+                .expect("handoff should be an object")
+                .extend(mutation);
+
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in ["Jane Example", "MRN-12345", "jane@example.com"] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
         }
     }
 
