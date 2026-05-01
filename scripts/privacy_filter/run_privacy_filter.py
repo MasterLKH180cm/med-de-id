@@ -160,11 +160,17 @@ def run_opf_with_stdin(opf: str, text: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('input_path')
+    ap.add_argument('input_path', nargs='?')
+    ap.add_argument('--stdin', action='store_true', help='Read UTF-8 text from stdin instead of a file path')
     ap.add_argument('--mock', action='store_true', help='Use bounded heuristic/mock detection for contract plumbing only')
     ap.add_argument('--use-opf', action='store_true', help='Explicitly invoke local opf via stdin; ambient opf auto-use is disabled')
     args = ap.parse_args()
-    text = Path(args.input_path).read_text(encoding='utf-8')
+    if (args.input_path is None) == (not args.stdin):
+        ap.error('exactly one input source is required')
+    if args.stdin:
+        text = sys.stdin.read()
+    else:
+        text = Path(args.input_path).read_text(encoding='utf-8')
     if args.mock or not args.use_opf:
         print(json.dumps(heuristic_detect(text), ensure_ascii=False, indent=2))
         return

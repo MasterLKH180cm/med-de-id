@@ -25,6 +25,72 @@ def load_runner_module():
 
 
 class PrivacyFilterRunnerFailureTests(unittest.TestCase):
+    def test_stdin_mock_reads_stdin_emits_contract_and_detects_phi(self):
+        phi = 'Patient Jane Example has MRN-12345\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['metadata']['engine'], 'fallback_synthetic_patterns')
+        self.assertEqual(payload['summary']['input_char_count'], len(phi))
+        self.assertGreaterEqual(payload['summary']['category_counts'].get('NAME', 0), 1)
+        self.assertGreaterEqual(payload['summary']['category_counts'].get('MRN', 0), 1)
+        self.assertIn('[NAME]', payload['masked_text'])
+        self.assertIn('[MRN]', payload['masked_text'])
+
+    def test_positional_input_plus_stdin_is_rejected_phi_safely(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text('Patient Jane Example has MRN-12345\n', encoding='utf-8')
+            result = subprocess.run(
+                [sys.executable, str(RUNNER), str(input_path), '--stdin', '--mock'],
+                input='Patient John Sample has MRN-67890\n',
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('exactly one input source is required', result.stderr)
+        self.assertNotIn('Jane Example', result.stderr)
+        self.assertNotIn('MRN-12345', result.stderr)
+        self.assertNotIn('John Sample', result.stderr)
+        self.assertNotIn('MRN-67890', result.stderr)
+
+    def test_explicit_opf_with_stdin_uses_subprocess_stdin_not_phi_argv(self):
+        module = load_runner_module()
+        phi = 'Patient Jane Example has MRN-12345\n'
+        raw_opf = json.dumps({'masked_text': 'Patient [NAME] has [MRN]\n', 'spans': []})
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        stdin = io.StringIO(phi)
+
+        with mock.patch.object(module.sys, 'argv', ['run_privacy_filter.py', '--stdin', '--use-opf']), \
+             mock.patch.object(module.shutil, 'which', return_value='/tmp/opf'), \
+             mock.patch.object(module, 'run_opf_with_stdin', return_value=raw_opf) as run_opf, \
+             mock.patch.object(module.sys, 'stdin', stdin), \
+             mock.patch.object(module.sys, 'stdout', stdout), \
+             mock.patch.object(module.sys, 'stderr', stderr):
+            module.main()
+
+        self.assertEqual(stderr.getvalue(), '')
+        run_opf.assert_called_once_with('/tmp/opf', phi)
+        self.assertNotIn(phi, run_opf.call_args.args[0])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload['metadata']['engine'], 'openai_privacy_filter_opf')
+
     def test_ambient_opf_is_not_auto_used(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
