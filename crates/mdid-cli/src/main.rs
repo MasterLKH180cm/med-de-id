@@ -10,8 +10,8 @@ use std::{
 };
 
 use mdid_adapters::{
-    ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter, FieldPolicy,
-    FieldPolicyAction, XlsxTabularAdapter,
+    redact_ppm_p6_bytes, ConservativeMediaInput, ConservativeMediaMetadataEntry, CsvTabularAdapter,
+    FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
 };
 use mdid_application::{
     ConservativeMediaDeidentificationService, DicomDeidentificationService,
@@ -19,7 +19,7 @@ use mdid_application::{
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaFormat, DecodeRequest,
-    DicomPrivateTagPolicy, PdfPageRef, PdfScanStatus, SurfaceKind,
+    DicomPrivateTagPolicy, ImageRedactionRegion, PdfPageRef, PdfScanStatus, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact};
 use rust_xlsxwriter::Workbook;
@@ -65,6 +65,15 @@ enum CliCommand {
     VaultImport(VaultImportArgs),
     VaultInspectArtifact(VaultInspectArtifactArgs),
     PortableTransferSummary(VaultInspectArtifactArgs),
+    RedactImagePpm(RedactImagePpmArgs),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RedactImagePpmArgs {
+    input: PathBuf,
+    regions_json: String,
+    output: PathBuf,
+    summary_output: PathBuf,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -352,8 +361,39 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [command, rest @ ..] if command == "portable-transfer-summary" => {
             parse_vault_inspect_artifact_args(rest).map(CliCommand::PortableTransferSummary)
         }
+        [command, rest @ ..] if command == "redact-image-ppm" => {
+            parse_redact_image_ppm_args(rest).map(CliCommand::RedactImagePpm)
+        }
         _ => Err("unknown command".to_string()),
     }
+}
+
+fn parse_redact_image_ppm_args(args: &[String]) -> Result<RedactImagePpmArgs, String> {
+    let mut input = None;
+    let mut regions_json = None;
+    let mut output = None;
+    let mut summary_output = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--input" => input = Some(non_blank_path(value, "--input")?),
+            "--regions-json" => regions_json = Some(non_blank_value(value, "--regions-json")?),
+            "--output" => output = Some(non_blank_path(value, "--output")?),
+            "--summary-output" => summary_output = Some(non_blank_path(value, "--summary-output")?),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+    Ok(RedactImagePpmArgs {
+        input: input.ok_or_else(|| "missing --input".to_string())?,
+        regions_json: regions_json.ok_or_else(|| "missing --regions-json".to_string())?,
+        output: output.ok_or_else(|| "missing --output".to_string())?,
+        summary_output: summary_output.ok_or_else(|| "missing --summary-output".to_string())?,
+    })
 }
 
 fn parse_verify_artifacts_args(args: &[String]) -> Result<VerifyArtifactsArgs, String> {
@@ -1249,7 +1289,64 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultImport(args) => run_vault_import(args),
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
         CliCommand::PortableTransferSummary(args) => run_portable_transfer_summary(args),
+        CliCommand::RedactImagePpm(args) => run_redact_image_ppm(args),
     }
+}
+
+fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {
+    let regions: Vec<ImageRedactionRegion> =
+        serde_json::from_str(&args.regions_json).map_err(|_| "invalid regions JSON".to_string())?;
+    let input = fs::read(&args.input).map_err(|_| "failed to read PPM input".to_string())?;
+    let redacted = redact_ppm_p6_bytes(&input, &regions)
+        .map_err(|_| "failed to redact PPM image".to_string())?;
+    fs::write(&args.output, &redacted)
+        .map_err(|_| "failed to write redacted PPM output".to_string())?;
+    let redacted_pixel_count = unique_redacted_pixel_count(&regions)?;
+    let summary = json!({
+        "artifact": "image_redaction_export_summary",
+        "schema_version": 1,
+        "format": "ppm_p6",
+        "redacted_region_count": regions.len(),
+        "redacted_pixel_count": redacted_pixel_count,
+        "bytes_written": redacted.len(),
+        "raw_paths_included": false,
+    });
+    write_json_artifact(
+        &args.summary_output,
+        &summary,
+        "image redaction export summary",
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "artifact": "image_redaction_export_summary",
+            "format": "ppm_p6",
+            "summary_written": true,
+            "output_written": true,
+        }))
+        .map_err(|err| format!("failed to render image redaction summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn unique_redacted_pixel_count(regions: &[ImageRedactionRegion]) -> Result<u64, String> {
+    let mut covered = HashSet::new();
+    for region in regions {
+        let right = region
+            .x()
+            .checked_add(region.width())
+            .ok_or_else(|| "failed to count redacted pixels".to_string())?;
+        let bottom = region
+            .y()
+            .checked_add(region.height())
+            .ok_or_else(|| "failed to count redacted pixels".to_string())?;
+        for y in region.y()..bottom {
+            for x in region.x()..right {
+                covered.insert((x, y));
+            }
+        }
+    }
+    u64::try_from(covered.len()).map_err(|_| "failed to count redacted pixels".to_string())
 }
 
 fn run_offline_readiness(args: OfflineReadinessArgs) -> Result<(), String> {

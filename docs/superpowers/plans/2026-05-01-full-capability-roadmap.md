@@ -198,37 +198,34 @@ Acceptance: local runtime-path proof lands; model-quality status is truthful; no
 - Modify: `crates/mdid-desktop/src/lib.rs`
 - Modify: `README.md`
 
-- [ ] **Step 1: Add RED domain tests for redaction-region models**
+- [x] **Step 1: Add RED domain tests for redaction-region models**
 
-Model must carry page/image ref, bounded rectangles, decision/status, confidence, and redacted Debug output.
+Completed in commits `b01c819` and `3996913`: `ImageRedactionRegion` carries a bounded in-image rectangle (`x`, `y`, `width`, `height`) with constructor and deserialization validation for non-empty dimensions. Debug output remains coordinate-only and does not include source filenames or raw image bytes. This landed only the minimal region model foundation; decision/status/confidence review semantics remain for a later review-queue task.
 
-- [ ] **Step 2: Add RED adapter tests for pixel rewrite**
+- [x] **Step 2: Add RED adapter tests for pixel rewrite**
 
-Use a tiny synthetic image with a known red pixel/black box region; assert pixels in approved region change and pixels outside remain unchanged. Test malformed/out-of-bounds regions fail closed.
+Completed in commit `b01c819`: `crates/mdid-adapters/tests/image_redaction_adapter.rs` uses tiny synthetic RGB buffers and verifies approved bbox pixels change, outside pixels remain unchanged, configured fill colors work, malformed RGB buffers fail closed, and out-of-bounds regions fail closed without partial mutation.
 
 - [ ] **Step 3: Runtime/application surface**
 
-Add only bounded image-region redaction first. Do not claim face detection or automatic object detection unless implemented/tested.
+Not yet complete. The landed slice adds only bounded in-memory RGB image-region redaction in domain/adapters. Runtime/application endpoints are still pending and must not be claimed as Browser/Desktop/PDF/media execution.
 
 - [ ] **Step 4: Browser/desktop review/save helpers**
 
-Render region counts and safe artifact names; never render source filenames or raw image bytes.
+Not yet complete. Browser/Desktop region review and save helpers remain pending.
 
-- [ ] **Step 5: Verification**
+- [x] **Step 5: Verification for landed domain/adapters foundation**
 
 Run:
 
 ```bash
-source "$HOME/.cargo/env" && cargo test -p mdid-domain visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-adapters image_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-application visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-runtime visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-browser visual_redaction -- --nocapture
-source "$HOME/.cargo/env" && cargo test -p mdid-desktop visual_redaction -- --nocapture
+source "$HOME/.cargo/env" && cargo test -p mdid-domain --test visual_redaction_models -p mdid-adapters --test image_redaction_adapter
+source "$HOME/.cargo/env" && cargo test -p mdid-domain -p mdid-adapters
+source "$HOME/.cargo/env" && cargo clippy -p mdid-domain -p mdid-adapters --all-targets -- -D warnings
 git diff --check
 ```
 
-Acceptance: image pixel redaction foundation is verified; automatic visual detection remains non-goal unless a later task adds it.
+Acceptance: the landed domain/adapters image pixel redaction foundation is verified; automatic visual detection remains non-goal unless a later task adds it. Application/runtime/browser/desktop visual-redaction verification is intentionally left for incomplete Steps 3 and 4.
 
 ## Task 5: Handwriting recognition workflow honesty
 
