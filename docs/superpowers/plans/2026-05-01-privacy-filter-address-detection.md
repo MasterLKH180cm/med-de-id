@@ -1,6 +1,6 @@
 # Privacy Filter Address Detection Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]` / `- [x]`) syntax for tracking.
 
 **Goal:** Improve bounded CLI/runtime text-only PII detection by adding deterministic street-address detection to the local Privacy Filter runner used by `mdid-cli privacy-filter-text`.
 
@@ -27,7 +27,7 @@
 - Test: `crates/mdid-cli/tests/cli_smoke.rs`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write the failing CLI smoke test**
+- [x] **Step 1: Write the failing CLI smoke test**
 
 Add a test named `privacy_filter_text_detects_addresses_from_stdin_without_raw_address_leaks` in `crates/mdid-cli/tests/cli_smoke.rs`. The test must pipe this exact synthetic text through `mdid-cli privacy-filter-text --stdin`:
 
@@ -50,7 +50,7 @@ assert!(report["masked_text"].as_str().unwrap().contains("[ADDRESS]"));
 assert!(report["spans"].as_array().unwrap().iter().all(|span| span["preview"] == "<redacted>"));
 ```
 
-- [ ] **Step 2: Run the failing test and verify RED**
+- [x] **Step 2: Run the failing test and verify RED**
 
 Run:
 
@@ -60,13 +60,13 @@ cargo test -p mdid-cli privacy_filter_text_detects_addresses_from_stdin_without_
 
 Expected: FAIL because the current runner does not emit `ADDRESS` and/or CLI validation rejects the new category.
 
-- [ ] **Step 3: Implement bounded ADDRESS detection and CLI allowlist alignment**
+- [x] **Step 3: Implement bounded ADDRESS detection and CLI allowlist alignment**
 
 In `scripts/privacy_filter/run_privacy_filter.py`, add a regex that detects common synthetic street-address forms with a street number, one to four capitalized street words, and a suffix from `St`, `Street`, `Ave`, `Avenue`, `Rd`, `Road`, `Blvd`, `Boulevard`, `Dr`, `Drive`, `Ln`, `Lane`, `Ct`, or `Court`. Emit spans with label `ADDRESS` in `heuristic_detect` after phone/date detection and before MRN/ID detection.
 
 In `crates/mdid-cli/src/main.rs`, update current text-only Privacy Filter category allowlists so `ADDRESS` counts are accepted and preserved in PHI-safe summaries. Do not add unbounded category passthrough.
 
-- [ ] **Step 4: Run targeted and broader verification**
+- [x] **Step 4: Run targeted and broader verification**
 
 Run:
 
@@ -80,7 +80,7 @@ git diff --check
 
 Expected: all commands PASS. The generated report path may be the test temp file if retained or a new `/tmp/privacy-filter-address-output.json` generated with the same stdin text.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/privacy_filter/run_privacy_filter.py crates/mdid-cli/src/main.rs crates/mdid-cli/tests/cli_smoke.rs README.md docs/superpowers/plans/2026-05-01-privacy-filter-address-detection.md
