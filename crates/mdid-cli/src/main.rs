@@ -1663,8 +1663,26 @@ fn paths_are_same_existing_or_lexical(left: &Path, right: &Path) -> bool {
     if left == right {
         return true;
     }
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
+    if let (Ok(left), Ok(right)) = (fs::canonicalize(left), fs::canonicalize(right)) {
+        return left == right;
+    }
+
+    let (Some(left_parent), Some(right_parent), Some(left_file_name), Some(right_file_name)) = (
+        left.parent(),
+        right.parent(),
+        left.file_name(),
+        right.file_name(),
+    ) else {
+        return false;
+    };
+    if left_file_name != right_file_name {
+        return false;
+    }
+    match (
+        fs::canonicalize(left_parent),
+        fs::canonicalize(right_parent),
+    ) {
+        (Ok(left_parent), Ok(right_parent)) => left_parent == right_parent,
         _ => false,
     }
 }

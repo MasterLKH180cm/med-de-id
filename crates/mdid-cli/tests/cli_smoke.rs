@@ -414,6 +414,63 @@ fn ocr_small_json_rejects_existing_alias_report_and_summary_path_without_cleanup
 }
 
 #[test]
+fn ocr_small_json_rejects_non_existing_alias_report_and_summary_path_without_cleanup() {
+    let dir = tempdir().unwrap();
+    let report_path = dir
+        .path()
+        .join("ocr-small-json-Jane-Example-MRN-12345.json");
+    let alias_dir = dir.path().join("alias");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.path(), &alias_dir).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(dir.path(), &alias_dir).unwrap();
+    let summary_path = alias_dir.join("ocr-small-json-Jane-Example-MRN-12345.json");
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "OCR small JSON summary path must differ from report path",
+        ))
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for sentinel in [
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+        "success",
+    ] {
+        assert!(!stdout.contains(sentinel), "stdout leaked {sentinel}");
+        assert!(!stderr.contains(sentinel), "stderr leaked {sentinel}");
+    }
+}
+
+#[test]
 fn ocr_small_json_rejects_unsafe_engine_status_without_phi_or_path_leaks() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");
