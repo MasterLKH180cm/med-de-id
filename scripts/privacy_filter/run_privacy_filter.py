@@ -4,6 +4,7 @@ from pathlib import Path
 
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
+DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
 MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
 ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
@@ -24,6 +25,8 @@ def heuristic_detect(text: str):
         add_span(spans, 'EMAIL', m.start(), m.end())
     for m in PHONE_RE.finditer(text):
         add_span(spans, 'PHONE', m.start(), m.end())
+    for m in DATE_RE.finditer(text):
+        add_span(spans, 'DATE', m.start(), m.end())
     for m in MRN_RE.finditer(text):
         add_span(spans, 'MRN', m.start(), m.end())
     for m in ID_RE.finditer(text):

@@ -3054,7 +3054,7 @@ fn validate_privacy_filter_category_counts(value: &Value) -> bool {
     let Some(counts) = value.as_object() else {
         return false;
     };
-    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE", "ID"];
+    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE", "ID", "DATE"];
     counts
         .iter()
         .all(|(label, count)| allowed_labels.contains(&label.as_str()) && count.as_u64().is_some())
