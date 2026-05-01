@@ -3812,6 +3812,57 @@ fn privacy_filter_text_detects_dates_from_stdin_without_raw_date_leaks() {
 }
 
 #[test]
+fn privacy_filter_text_detects_ssns_from_stdin_without_raw_ssn_leaks() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-ssn-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let stdin_phi = "Patient Jane Example SSN 123-45-6789 has MRN-12345\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report["summary"]["category_counts"]["SSN"], 1);
+    assert_eq!(report["summary"]["category_counts"]["NAME"], 1);
+    assert_eq!(report["summary"]["category_counts"]["MRN"], 1);
+    assert!(report["masked_text"].as_str().unwrap().contains("[SSN]"));
+    for span in report["spans"].as_array().unwrap() {
+        assert_eq!(span["preview"], "<redacted>");
+    }
+    for unsafe_text in [
+        "Jane Example",
+        "123-45-6789",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn privacy_filter_text_detects_addresses_from_stdin_without_raw_address_leaks() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-address-report.json");
