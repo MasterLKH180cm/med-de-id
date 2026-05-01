@@ -69,6 +69,126 @@ async fn pipelines_endpoint_registers_pipeline() {
 }
 
 #[tokio::test]
+async fn privacy_filter_text_endpoint_returns_phi_safe_summary() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "text": "Patient Jane Example has MRN-12345, email jane@example.com, phone 555-123-4567, and ID A1234567."
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    for forbidden in [
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "A1234567",
+        "masked_text",
+        "spans",
+        "detected_spans",
+        "input_text",
+        "normalized_text",
+    ] {
+        assert!(!body_text.contains(forbidden), "{body_text}");
+    }
+
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["artifact"], "privacy_filter_summary");
+    assert_eq!(json["mode"], "text");
+    assert_eq!(json["engine"], "runtime_text_mock");
+    assert_eq!(json["network_api_called"], false);
+    assert_eq!(json["preview_policy"], "redacted_placeholders_only");
+    assert_eq!(json["detected_span_count"], 5);
+    assert_eq!(json["category_counts"]["NAME"], 1);
+    assert_eq!(json["category_counts"]["MRN"], 1);
+    assert_eq!(json["category_counts"]["EMAIL"], 1);
+    assert_eq!(json["category_counts"]["PHONE"], 1);
+    assert_eq!(json["category_counts"]["ID"], 1);
+}
+
+#[tokio::test]
+async fn privacy_filter_text_endpoint_rejects_empty_text() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({"text": "  \n\t  "});
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_privacy_filter_text_request");
+    assert_eq!(
+        json["error"]["message"],
+        "Privacy Filter text request requires non-empty text no larger than 1048576 bytes."
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_text_endpoint_rejects_oversized_text_without_echoing_phi() {
+    let app = build_router(RuntimeState::default());
+    let oversized_text = format!(
+        "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 A1234567 {}",
+        "x".repeat(1_048_577)
+    );
+    let request = json!({"text": oversized_text});
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    for forbidden in [
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "A1234567",
+    ] {
+        assert!(!body_text.contains(forbidden), "{body_text}");
+    }
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_privacy_filter_text_request");
+    assert_eq!(
+        json["error"]["message"],
+        "Privacy Filter text request requires non-empty text no larger than 1048576 bytes."
+    );
+}
+
+#[tokio::test]
 async fn privacy_filter_summary_endpoint_returns_phi_safe_summary() {
     let app = build_router(RuntimeState::default());
     let request = json!({
