@@ -154,6 +154,7 @@ def test_small_ocr_json_mode_emits_bounded_extraction_contract_and_feeds_privacy
 
     obj = json.loads(ocr.stdout)
     expected_text = EXPECTED_TEXT.read_text(encoding="utf-8")
+    expected_normalized_text = " ".join(expected_text.split())
     assert obj == {
         "candidate": "PP-OCRv5_mobile_rec",
         "engine": "PP-OCRv5-mobile-bounded-spike",
@@ -161,7 +162,9 @@ def test_small_ocr_json_mode_emits_bounded_extraction_contract_and_feeds_privacy
         "scope": "printed_text_line_extraction_only",
         "source": "<redacted>",
         "extracted_text": expected_text,
-        "normalized_text": " ".join(expected_text.split()),
+        "normalized_text": expected_normalized_text,
+        "line_count": len(expected_text.splitlines()),
+        "normalized_char_count": len(expected_normalized_text),
         "ready_for_text_pii_eval": True,
         "privacy_filter_contract": "text_only_normalized_input",
         "non_goals": sorted(REQUIRED_NON_GOALS),
