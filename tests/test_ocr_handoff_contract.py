@@ -34,7 +34,7 @@ REQUIRED_NON_GOALS = {
 
 def valid_handoff(**overrides):
     obj = {
-        "source": "synthetic_printed_phi_line.png",
+        "source": "<redacted>",
         "extracted_text": "Patient Jane Doe\nDOB 1970-01-02",
         "normalized_text": "Patient Jane Doe DOB 1970-01-02",
         "ready_for_text_pii_eval": True,
@@ -126,8 +126,10 @@ def test_ppocrv5_mobile_bounded_spike_handoff_metadata_and_privacy_filter_text_c
     validated = run(VALIDATOR, handoff)
     assert validated.returncode == 0, validated.stderr
 
-    obj = json.loads(handoff.read_text(encoding="utf-8"))
-    assert obj["source"] == "synthetic_printed_phi_line.png"
+    handoff_json = handoff.read_text(encoding="utf-8")
+    obj = json.loads(handoff_json)
+    assert obj["source"] == "<redacted>"
+    assert "synthetic_printed_phi_line.png" not in handoff_json
     assert obj["candidate"] == "PP-OCRv5_mobile_rec"
     assert obj["engine"] == "PP-OCRv5-mobile-bounded-spike"
     assert obj["engine_status"] == "deterministic_synthetic_fixture_fallback"
