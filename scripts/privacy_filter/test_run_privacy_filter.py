@@ -60,6 +60,34 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         labels = [span['label'] for span in payload['spans']]
         self.assertNotIn('INSURANCE_ID', labels)
 
+    def test_fallback_detects_bounded_age_facility_npi_and_license_plate_without_raw_previews(self):
+        text = 'Patient Jane Example age 87 at facility North Valley Hospital, NPI 1234567893, license plate ABC-1234.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('AGE'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('FACILITY'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('NPI'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('LICENSE_PLATE'), 1)
+        self.assertIn('[AGE]', payload['masked_text'])
+        self.assertIn('[FACILITY]', payload['masked_text'])
+        self.assertIn('[NPI]', payload['masked_text'])
+        self.assertIn('[LICENSE_PLATE]', payload['masked_text'])
+        rendered = json.dumps(payload, sort_keys=True)
+        for raw in ('87', 'North Valley Hospital', '1234567893', 'ABC-1234'):
+            self.assertNotIn(raw, rendered)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_overmatch_unbounded_age_facility_npi_or_plate_like_tokens(self):
+        text = 'Age 130 is out of scope; North Valley Hospital lacks facility context; NPI 1234567890 fails checksum; ABC-1234 lacks plate context.'
+        payload = detect_pii(text)
+        labels = [span['label'] for span in payload['spans']]
+        self.assertNotIn('AGE', labels)
+        self.assertNotIn('FACILITY', labels)
+        self.assertNotIn('NPI', labels)
+        self.assertNotIn('LICENSE_PLATE', labels)
+
     def test_passport_numbers_are_masked_without_overmatching_embedded_tokens(self):
         text = 'Patient Jane Example passport X12345678 reference AX12345678 and X123456789'
         payload = run_text(text)
