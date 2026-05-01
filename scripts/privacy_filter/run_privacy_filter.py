@@ -21,6 +21,14 @@ def add_span(spans, label, start, end):
     spans.append({'label': label, 'start': start, 'end': end, 'preview': '<redacted>'})
 
 
+def _zip_has_phi_identifier_prefix(text: str, start: int) -> bool:
+    return bool(re.search(r'(?:MRN|ID)[- ]?$', text[max(0, start - 5):start], re.I))
+
+
+def _zip_starts_street_address(text: str, start: int) -> bool:
+    return bool(ADDRESS_RE.match(text, start))
+
+
 def heuristic_detect(text: str):
     spans = []
     for m in PERSON_RE.finditer(text):
@@ -34,7 +42,9 @@ def heuristic_detect(text: str):
     for m in SSN_RE.finditer(text):
         add_span(spans, 'SSN', m.start(), m.end())
     for m in ZIP_RE.finditer(text):
-        if re.search(r'MRN[- ]?$', text[max(0, m.start() - 5):m.start()], re.I):
+        if _zip_has_phi_identifier_prefix(text, m.start()):
+            continue
+        if _zip_starts_street_address(text, m.start()):
             continue
         add_span(spans, 'ZIP', m.start(), m.end())
     for m in ADDRESS_RE.finditer(text):
