@@ -15,13 +15,14 @@ use mdid_application::{
     ApplicationError, ApplicationService, ConservativeMediaDeidentificationOutput,
     ConservativeMediaDeidentificationService, DicomDeidentificationOutput,
     DicomDeidentificationService, PdfDeidentificationOutput, PdfDeidentificationService,
-    TabularDeidentificationOutput, TabularDeidentificationService,
+    TabularDeidentificationOutput, TabularDeidentificationService, VisualRedactionService,
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
     ConservativeMediaSummary, DecodeRequest, DecodeRequestError, DicomDeidentificationSummary,
-    DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary,
-    PdfPageRef, PdfPhiCandidate, PdfRewriteStatus, PdfScanStatus, PhiCandidate, SurfaceKind,
+    DicomPhiCandidate, DicomPrivateTagPolicy, ImageRedactionRegion, MappingRecord, MappingScope,
+    PdfExtractionSummary, PdfPageRef, PdfPhiCandidate, PdfRewriteStatus, PdfScanStatus,
+    PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,18 @@ struct DicomDeidentifyRequest {
     dicom_bytes_base64: String,
     source_name: String,
     private_tag_policy: DicomPrivateTagPolicy,
+}
+
+#[derive(Deserialize)]
+struct VisualRedactionPpmRequest {
+    ppm_bytes_base64: String,
+    regions: Vec<ImageRedactionRegion>,
+}
+
+#[derive(Serialize)]
+struct VisualRedactionPpmResponse {
+    rewritten_ppm_bytes_base64: String,
+    verification: mdid_application::VisualRedactionVerification,
 }
 
 #[derive(Deserialize)]
@@ -381,6 +394,7 @@ pub fn build_router(state: RuntimeState) -> Router {
             post(conservative_media_deidentify),
         )
         .route("/pdf/deidentify", post(pdf_deidentify))
+        .route("/visual-redaction/ppm", post(visual_redaction_ppm))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
         .route("/vault/export", post(vault_export))
@@ -977,6 +991,32 @@ async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Respon
     success_response(output).into_response()
 }
 
+async fn visual_redaction_ppm(
+    payload: Result<Json<VisualRedactionPpmRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_visual_redaction_response().into_response(),
+    };
+
+    let ppm_bytes = match STANDARD.decode(payload.ppm_bytes_base64.as_bytes()) {
+        Ok(bytes) => bytes,
+        Err(_) => return invalid_visual_redaction_response().into_response(),
+    };
+
+    match VisualRedactionService.redact_ppm_p6_bytes(&ppm_bytes, &payload.regions) {
+        Ok(output) => (
+            StatusCode::OK,
+            Json(VisualRedactionPpmResponse {
+                rewritten_ppm_bytes_base64: STANDARD.encode(output.rewritten_ppm_bytes),
+                verification: output.verification,
+            }),
+        )
+            .into_response(),
+        Err(_) => invalid_visual_redaction_response().into_response(),
+    }
+}
+
 async fn pdf_deidentify(payload: Result<Json<PdfDeidentifyRequest>, JsonRejection>) -> Response {
     let Json(payload) = match payload {
         Ok(payload) => payload,
@@ -1496,6 +1536,18 @@ fn invalid_pdf_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_pdf",
                 message: "request body did not contain a valid PDF payload",
+            },
+        }),
+    )
+}
+
+fn invalid_visual_redaction_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_visual_redaction",
+                message: "request body did not contain a valid PPM visual redaction request",
             },
         }),
     )
