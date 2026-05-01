@@ -1322,11 +1322,21 @@ fn is_fixture_ordinal_id(id: &str) -> bool {
 }
 
 fn run_ocr_to_privacy_filter(args: OcrToPrivacyFilterArgs) -> Result<(), String> {
+    if let Some(summary_output) = &args.summary_output {
+        if paths_are_same_existing_or_lexical(&args.report_path, summary_output) {
+            return Err(
+                "ocr_to_privacy_filter summary path must differ from report path".to_string(),
+            );
+        }
+    }
     let _ = fs::remove_file(&args.report_path);
     if let Some(summary_output) = &args.summary_output {
         let _ = fs::remove_file(summary_output);
     }
     let result = (|| {
+        if !args.mock {
+            return Err("ocr_to_privacy_filter single-image chain requires mock mode".to_string());
+        }
         require_regular_file(
             &args.image_path,
             "ocr_to_privacy_filter single-image chain failed",
@@ -1454,7 +1464,11 @@ fn validate_ocr_to_privacy_filter_ocr_json(value: &Value) -> Result<&str, String
 fn validate_ocr_to_privacy_filter_privacy_json(value: &Value) -> Result<(), String> {
     let network_api_called =
         value["metadata"]["network_api_called"] == false || value["network_api_called"] == false;
+    let engine = value["metadata"]["engine"]
+        .as_str()
+        .filter(|engine| *engine == "fallback_synthetic_patterns");
     if !network_api_called
+        || engine.is_none()
         || value["summary"]["detected_span_count"].as_u64().is_none()
         || !validate_ocr_privacy_category_counts(&value["summary"]["category_counts"])
     {

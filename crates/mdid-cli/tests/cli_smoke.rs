@@ -1167,7 +1167,7 @@ fn ocr_to_privacy_filter_single_runs_fixture_chain_without_phi_leaks() {
             "--summary-output",
             summary_path.to_str().expect("summary path"),
             "--python-command",
-            "python",
+            default_python_command(),
             "--mock",
         ])
         .assert()
@@ -1248,7 +1248,7 @@ fn ocr_to_privacy_filter_single_removes_stale_outputs_on_missing_image() {
             "--summary-output",
             summary_path.to_str().expect("summary path"),
             "--python-command",
-            "python",
+            default_python_command(),
             "--mock",
         ])
         .assert()
@@ -1267,6 +1267,123 @@ fn ocr_to_privacy_filter_single_removes_stale_outputs_on_missing_image() {
         !summary_path.exists(),
         "stale summary should be removed on failure"
     );
+}
+
+#[test]
+fn ocr_to_privacy_filter_single_requires_mock_mode_without_leaking_paths_or_phi() {
+    let dir = tempdir().expect("tempdir");
+    let report_path = dir.path().join("report.json");
+
+    Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args([
+            "ocr-to-privacy-filter",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--report-path",
+            report_path.to_str().expect("report path"),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires mock mode"))
+        .stderr(predicate::str::contains(report_path.to_str().expect("report path")).not())
+        .stderr(predicate::str::contains("Patient Jane Example").not());
+
+    assert!(!report_path.exists());
+}
+
+#[test]
+fn ocr_to_privacy_filter_single_rejects_identical_report_and_summary_paths_before_cleanup() {
+    let dir = tempdir().expect("tempdir");
+    let output_path = dir.path().join("same-output.json");
+    std::fs::write(&output_path, "stale output").expect("write stale output");
+
+    Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args([
+            "ocr-to-privacy-filter",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--privacy-runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--report-path",
+            output_path.to_str().expect("output path"),
+            "--summary-output",
+            output_path.to_str().expect("output path"),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "summary path must differ from report path",
+        ))
+        .stderr(predicate::str::contains(output_path.to_str().expect("output path")).not())
+        .stderr(predicate::str::contains("Patient Jane Example").not());
+
+    assert_eq!(
+        std::fs::read_to_string(&output_path).expect("stale output remains"),
+        "stale output"
+    );
+}
+
+#[test]
+fn ocr_to_privacy_filter_single_rejects_unsafe_privacy_metadata_and_removes_stale_outputs() {
+    let dir = tempdir().expect("tempdir");
+    let privacy_runner_path = dir.path().join("unsafe_privacy_runner.py");
+    std::fs::write(
+        &privacy_runner_path,
+        r#"import json
+print(json.dumps({"metadata":{"network_api_called":False,"engine":"/patients/Jane-Example/MRN-12345"},"summary":{"detected_span_count":1,"category_counts":{"NAME":1}}}))
+"#,
+    )
+    .expect("write privacy runner");
+    let report_path = dir.path().join("report.json");
+    let summary_path = dir.path().join("summary.json");
+    std::fs::write(&report_path, "stale report").expect("write stale report");
+    std::fs::write(&summary_path, "stale summary").expect("write stale summary");
+
+    let assert = Command::cargo_bin("mdid-cli")
+        .expect("binary")
+        .args([
+            "ocr-to-privacy-filter",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--privacy-runner-path",
+            privacy_runner_path.to_str().expect("privacy runner path"),
+            "--report-path",
+            report_path.to_str().expect("report path"),
+            "--summary-output",
+            summary_path.to_str().expect("summary path"),
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "ocr_to_privacy_filter single-image chain failed",
+        ))
+        .stderr(predicate::str::contains("Jane-Example").not())
+        .stderr(predicate::str::contains("MRN-12345").not())
+        .stderr(predicate::str::contains("/patients").not());
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert!(!stdout.contains("Jane-Example"));
+    assert!(!stdout.contains("MRN-12345"));
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
 }
 
 #[test]
