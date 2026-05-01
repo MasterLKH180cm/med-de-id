@@ -247,6 +247,53 @@ fn ocr_handoff_corpus_writes_phi_safe_summary_output() {
 }
 
 #[test]
+fn ocr_handoff_corpus_rejects_identical_report_and_summary_paths_safely() {
+    let dir = tempdir().unwrap();
+    let shared_path = dir.path().join("ocr-handoff-Jane-Example-MRN-12345.json");
+    fs::write(&shared_path, "stale raw Jane Example").unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "ocr-handoff-corpus",
+            "--fixture-dir",
+            &repo_path("scripts/ocr_eval/fixtures/corpus"),
+            "--runner-path",
+            &repo_path("scripts/ocr_eval/run_ocr_handoff_corpus.py"),
+            "--report-path",
+            shared_path.to_str().unwrap(),
+            "--summary-output",
+            shared_path.to_str().unwrap(),
+            "--python-command",
+            default_python_command(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .get_output()
+        .clone();
+
+    assert!(shared_path.exists());
+    assert_eq!(
+        fs::read_to_string(&shared_path).unwrap(),
+        "stale raw Jane Example"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stdout.contains("ocr-handoff-corpus"));
+    for sentinel in [
+        shared_path.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+        "success",
+    ] {
+        assert!(!stdout.contains(sentinel), "stdout leaked {sentinel}");
+        assert!(!stderr.contains(sentinel), "stderr leaked {sentinel}");
+    }
+}
+
+#[test]
 fn ocr_handoff_corpus_removes_stale_summary_on_prerequisite_failure() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("ocr-handoff-corpus.json");

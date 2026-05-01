@@ -950,6 +950,11 @@ fn run_command(command: CliCommand) -> Result<(), String> {
 }
 
 fn run_ocr_handoff_corpus(args: OcrHandoffCorpusArgs) -> Result<(), String> {
+    if let Some(summary_output) = &args.summary_output {
+        if summary_output == &args.report_path {
+            return Err("OCR handoff corpus report and summary paths must differ".to_string());
+        }
+    }
     let _ = fs::remove_file(&args.report_path);
     if let Some(summary_output) = &args.summary_output {
         let _ = fs::remove_file(summary_output);
@@ -1000,8 +1005,14 @@ fn run_ocr_handoff_corpus_inner(args: &OcrHandoffCorpusArgs) -> Result<(), Strin
 
     if let Some(summary_output) = &args.summary_output {
         let summary_artifact = build_ocr_handoff_corpus_summary(&value);
-        let summary_text = serde_json::to_string_pretty(&summary_artifact)
-            .map_err(|err| format!("failed to render OCR handoff corpus summary: {err}"))?;
+        let summary_text = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&summary_artifact)
+                .map_err(|err| format!("failed to render OCR handoff corpus summary: {err}"))?
+        );
+        if summary_text.len() > OCR_RUNNER_STDOUT_MAX_BYTES {
+            return Err("OCR handoff corpus summary exceeded limit".to_string());
+        }
         fs::write(summary_output, summary_text)
             .map_err(|err| format!("failed to write OCR handoff corpus summary: {err}"))?;
     }
@@ -1024,6 +1035,8 @@ fn run_ocr_handoff_corpus_inner(args: &OcrHandoffCorpusArgs) -> Result<(), Strin
 }
 
 fn build_ocr_handoff_corpus_summary(value: &Value) -> Value {
+    let fixture_count = value["fixture_count"].as_u64().unwrap_or(0);
+    let ready_fixture_count = value["ready_fixture_count"].as_u64().unwrap_or(0);
     json!({
         "artifact": "ocr_handoff_corpus_readiness_summary",
         "candidate": "PP-OCRv5_mobile_rec",
@@ -1032,7 +1045,7 @@ fn build_ocr_handoff_corpus_summary(value: &Value) -> Value {
         "privacy_filter_contract": value["privacy_filter_contract"],
         "fixture_count": value["fixture_count"],
         "ready_fixture_count": value["ready_fixture_count"],
-        "all_fixtures_ready_for_text_pii_eval": value["fixture_count"] == value["ready_fixture_count"],
+        "all_fixtures_ready_for_text_pii_eval": fixture_count > 0 && fixture_count == ready_fixture_count,
         "total_char_count": value["total_char_count"],
         "non_goals": value["non_goals"],
     })
