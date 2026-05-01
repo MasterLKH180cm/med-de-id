@@ -42,6 +42,25 @@ def detect_pii(text):
 
 
 class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_fallback_detects_ipv4_address_without_raw_previews(self):
+        text = 'Patient Jane Example remote login from 192.168.10.42 for MRN-12345'
+        payload = detect_pii(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('IP_ADDRESS'), 1)
+        self.assertIn('[IP_ADDRESS]', payload['masked_text'])
+        rendered = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('192.168.10.42', rendered)
+        ip_spans = [span for span in payload['spans'] if span['label'] == 'IP_ADDRESS']
+        self.assertEqual(len(ip_spans), 1)
+        self.assertEqual(ip_spans[0]['preview'], '<redacted>')
+
+    def test_fallback_does_not_detect_invalid_or_embedded_ipv4_addresses(self):
+        text = '999.168.10.42 host192.168.10.42 192.168.10.42extra and 1.2.3 are not IPs'
+        payload = detect_pii(text)
+
+        self.assertNotIn('IP_ADDRESS', payload['summary']['category_counts'])
+        self.assertNotIn('[IP_ADDRESS]', payload['masked_text'])
+
     def test_fallback_detects_contextual_insurance_ids_without_raw_previews(self):
         text = 'Patient Jane Example insurance ID ABC1234567 and member number MBR-7654321.'
         payload = detect_pii(text)
