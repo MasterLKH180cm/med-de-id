@@ -2067,7 +2067,8 @@ fn run_privacy_filter_text_inner(args: &PrivacyFilterTextArgs) -> Result<(), Str
 
     let summary = json!({
         "command": "privacy-filter-text",
-        "report_path": args.report_path,
+        "report_path": "<redacted>",
+        "report_written": true,
         "engine": value["metadata"]["engine"],
         "network_api_called": value["metadata"]["network_api_called"],
         "detected_span_count": value["summary"]["detected_span_count"],
