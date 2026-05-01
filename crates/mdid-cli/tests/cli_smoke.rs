@@ -3542,17 +3542,19 @@ fn cli_privacy_filter_text_detects_driver_license_from_stdin_without_raw_value_l
         .as_str()
         .unwrap()
         .contains("[DRIVER_LICENSE]"));
-    assert!(report["spans"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|span| span["label"] == "DRIVER_LICENSE")
-        .all(|span| span["preview"] == "<redacted>"));
+    let spans = report["spans"].as_array().unwrap();
+    assert!(
+        spans
+            .iter()
+            .any(|span| span["label"] == "DRIVER_LICENSE" && span["preview"] == "<redacted>"),
+        "expected at least one DRIVER_LICENSE span with redacted preview: {spans:?}"
+    );
     assert_eq!(report["metadata"]["network_api_called"], false);
 
     for unsafe_text in [
         "D1234567",
         "Patient Jane Example",
+        "Jane Example",
         "MRN-12345",
         report_path.to_str().unwrap(),
         phi_named_dir.to_str().unwrap(),
