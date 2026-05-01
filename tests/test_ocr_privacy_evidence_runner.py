@@ -114,3 +114,27 @@ def test_output_directory_cleanup_failure_is_generic_and_phi_safe(tmp_path):
     assert "Jane-Example-MRN-12345" not in proc.stderr
     assert "Jane-Example-MRN-12345" not in proc.stdout
     assert_no_phi(proc.stdout, proc.stderr)
+
+
+def test_output_write_failure_is_generic_and_phi_safe(tmp_path):
+    unwritable_dir = tmp_path / "Jane-Example-MRN-12345-output"
+    unwritable_dir.mkdir()
+    unwritable_dir.chmod(0o500)
+    output = unwritable_dir / "ocr-privacy-evidence.json"
+
+    try:
+        proc = run_evidence(output)
+    finally:
+        unwritable_dir.chmod(0o700)
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert proc.stderr == "OCR Privacy evidence output write failed\n"
+    assert "Traceback" not in proc.stderr
+    assert "Jane" not in proc.stderr
+    assert "MRN-12345" not in proc.stderr
+    assert str(tmp_path) not in proc.stderr
+    assert "Jane" not in proc.stdout
+    assert "MRN-12345" not in proc.stdout
+    assert str(tmp_path) not in proc.stdout
+    assert_no_phi(proc.stdout, proc.stderr)

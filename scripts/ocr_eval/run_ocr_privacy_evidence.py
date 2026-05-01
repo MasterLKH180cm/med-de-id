@@ -17,6 +17,7 @@ TIMEOUT_SECONDS = 15
 GENERIC_ERROR = "OCR Privacy evidence runner failed"
 MISSING_IMAGE_ERROR = "OCR Privacy evidence input image is missing"
 CLEANUP_ERROR = "OCR Privacy evidence output cleanup failed"
+OUTPUT_WRITE_ERROR = "OCR Privacy evidence output write failed"
 NON_GOALS = [
     "browser_ui",
     "complete_ocr_pipeline",
@@ -34,6 +35,10 @@ class EvidenceError(Exception):
 
 
 class CleanupError(Exception):
+    pass
+
+
+class OutputWriteError(EvidenceError):
     pass
 
 
@@ -172,8 +177,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         ocr = load_ocr_contract(sys.executable, Path(args.ocr_runner_path), image, args.mock)
         privacy = load_privacy_contract(sys.executable, Path(args.privacy_runner_path), ocr["normalized_text"], args.mock)
         evidence = build_evidence(ocr, privacy)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise OutputWriteError() from exc
+    except OutputWriteError:
+        print(OUTPUT_WRITE_ERROR, file=sys.stderr)
+        return 5
     except EvidenceError:
         try:
             remove_stale(output)
