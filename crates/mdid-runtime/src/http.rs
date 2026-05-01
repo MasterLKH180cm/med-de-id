@@ -173,6 +173,12 @@ struct PrivacyFilterTextRequest {
     text: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OcrHandoffSummaryRequest {
+    handoff: Value,
+}
+
 const PRIVACY_FILTER_TEXT_MAX_BYTES: usize = 1_048_576;
 const INVALID_PRIVACY_FILTER_TEXT_REQUEST_MESSAGE: &str =
     "Privacy Filter text request requires non-empty text no larger than 1048576 bytes.";
@@ -324,6 +330,23 @@ struct PrivacyFilterSummaryResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct OcrHandoffSummaryResponse {
+    artifact: &'static str,
+    candidate: String,
+    engine: String,
+    engine_status: String,
+    scope: &'static str,
+    privacy_filter_contract: &'static str,
+    ready_for_text_pii_eval: bool,
+    network_api_called: bool,
+    non_goals: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    char_count: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorEnvelope {
     error: ErrorBody,
 }
@@ -338,6 +361,7 @@ pub fn build_router(state: RuntimeState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
+        .route("/ocr-handoff/summary", post(ocr_handoff_summary))
         .route("/privacy-filter/summary", post(privacy_filter_summary))
         .route("/privacy-filter/text", post(privacy_filter_text))
         .route("/tabular/deidentify", post(tabular_deidentify))
@@ -373,6 +397,140 @@ async fn create_pipeline(
 ) -> impl IntoResponse {
     let pipeline = state.application.register_pipeline(payload.name);
     (StatusCode::CREATED, Json(pipeline))
+}
+
+async fn ocr_handoff_summary(
+    payload: Result<Json<OcrHandoffSummaryRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_ocr_handoff_summary_request_response().into_response(),
+    };
+
+    match build_ocr_handoff_summary(&payload.handoff) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => invalid_ocr_handoff_summary_request_response().into_response(),
+    }
+}
+
+fn build_ocr_handoff_summary(handoff: &Value) -> Option<OcrHandoffSummaryResponse> {
+    let handoff = handoff.as_object()?;
+    if contains_incompatible_ocr_handoff_marker(handoff) {
+        return None;
+    }
+
+    if handoff.get("ready_for_text_pii_eval")?.as_bool()? != true {
+        return None;
+    }
+    if handoff.get("privacy_filter_contract")?.as_str()? != "text_only_normalized_input" {
+        return None;
+    }
+    if handoff.get("scope")?.as_str()? != "printed_text_line_extraction_only" {
+        return None;
+    }
+
+    let candidate = safe_identifier(handoff.get("candidate")?.as_str()?)?.to_owned();
+    let engine = safe_identifier(handoff.get("engine")?.as_str()?)?.to_owned();
+    let engine_status = safe_identifier(handoff.get("engine_status")?.as_str()?)?.to_owned();
+    let input_non_goals = handoff.get("non_goals")?.as_array()?;
+    if !input_non_goals.iter().all(|non_goal| {
+        non_goal
+            .as_str()
+            .and_then(safe_ocr_handoff_non_goal)
+            .is_some()
+    }) {
+        return None;
+    }
+
+    let line_count = optional_u64(handoff, "line_count")?;
+    let char_count = optional_u64(handoff, "char_count")?;
+
+    Some(OcrHandoffSummaryResponse {
+        artifact: "ocr_handoff_summary",
+        candidate,
+        engine,
+        engine_status,
+        scope: "printed_text_line_extraction_only",
+        privacy_filter_contract: "text_only_normalized_input",
+        ready_for_text_pii_eval: true,
+        network_api_called: false,
+        non_goals: vec![
+            "visual_redaction".to_owned(),
+            "image_pixel_redaction".to_owned(),
+            "final_pdf_rewrite_export".to_owned(),
+        ],
+        line_count,
+        char_count,
+    })
+}
+
+fn optional_u64(report: &Map<String, Value>, field: &str) -> Option<Option<u64>> {
+    match report.get(field) {
+        Some(value) => value.as_u64().map(Some),
+        None => Some(None),
+    }
+}
+
+fn contains_incompatible_ocr_handoff_marker(report: &Map<String, Value>) -> bool {
+    contains_incompatible_ocr_handoff_value(&Value::Object(report.clone()), true)
+}
+
+fn contains_incompatible_ocr_handoff_value(value: &Value, is_top_level: bool) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            is_incompatible_ocr_handoff_field(key, value, is_top_level)
+                || contains_incompatible_ocr_handoff_value(value, false)
+        }),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contains_incompatible_ocr_handoff_value(value, false)),
+        _ => false,
+    }
+}
+
+fn is_incompatible_ocr_handoff_field(key: &str, value: &Value, is_top_level: bool) -> bool {
+    const INCOMPATIBLE_MARKERS: &[&str] = &[
+        "image_bytes",
+        "image_bytes_base64",
+        "masked_text",
+        "spans",
+        "preview",
+        "previews",
+        "bbox",
+        "image",
+        "pdf_rewrite",
+        "pdf_export",
+        "visual_redaction",
+        "visual_redaction_result",
+        "pixel_redaction",
+        "agent_id",
+        "controller_step",
+        "complete_command",
+        "claim",
+        "raw_text",
+        "text",
+        "ocr_output",
+        "path",
+        "file_path",
+    ];
+
+    (key == "network_api_called" && value.as_bool() == Some(true))
+        || INCOMPATIBLE_MARKERS.contains(&key)
+        || (!is_top_level && matches!(key, "extracted_text" | "normalized_text" | "source"))
+}
+
+fn safe_ocr_handoff_non_goal(non_goal: &str) -> Option<&str> {
+    (!contains_phi_sentinel(non_goal)
+        && matches!(
+            non_goal,
+            "visual_redaction"
+                | "image_pixel_redaction"
+                | "final_pdf_rewrite_export"
+                | "handwriting_recognition"
+                | "full_page_detection_or_segmentation"
+                | "complete_ocr_pipeline"
+        ))
+    .then_some(non_goal)
 }
 
 async fn privacy_filter_summary(
@@ -1311,6 +1469,18 @@ fn invalid_privacy_filter_summary_request_response() -> (StatusCode, Json<ErrorE
     )
 }
 
+fn invalid_ocr_handoff_summary_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_ocr_handoff_summary_request",
+                message: "request body did not contain a valid OCR handoff report object",
+            },
+        }),
+    )
+}
+
 fn invalid_privacy_filter_text_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::BAD_REQUEST,
@@ -1832,9 +2002,215 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
     use mdid_adapters::{DicomAdapter, DicomAdapterError};
     use mdid_domain::DicomPrivateTagPolicy;
     use std::backtrace::Backtrace;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_accepts_existing_fixture_contract() {
+        let handoff = serde_json::from_str::<Value>(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-handoff/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should buffer");
+        let summary = serde_json::from_slice::<Value>(&body).expect("response should be JSON");
+        assert_eq!(summary["artifact"], "ocr_handoff_summary");
+        assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(summary["scope"], "printed_text_line_extraction_only");
+        assert_eq!(
+            summary["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(summary["ready_for_text_pii_eval"], true);
+        assert_eq!(summary["network_api_called"], false);
+        assert!(summary["non_goals"]
+            .as_array()
+            .expect("non_goals should be an array")
+            .iter()
+            .any(|non_goal| non_goal == "visual_redaction"));
+
+        let serialized_summary = serde_json::to_string(&summary).expect("summary should serialize");
+        for allowed_input_raw_field in ["extracted_text", "normalized_text"] {
+            assert!(
+                handoff.get(allowed_input_raw_field).is_some(),
+                "official fixture should include top-level {allowed_input_raw_field} as input"
+            );
+        }
+
+        for forbidden in [
+            "Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+            "extracted_text",
+            "normalized_text",
+            "bbox",
+        ] {
+            assert!(
+                !serialized_summary.contains(forbidden),
+                "summary must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_raw_text_and_incompatible_markers_without_echoing_phi() {
+        let mut handoff = valid_ocr_handoff_fixture();
+        handoff["spans"] = json!([{ "preview": "Jane Example MRN-12345" }]);
+        handoff["line_count"] = json!("Jane Example");
+        let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+
+        assert!(body.contains("invalid_ocr_handoff_summary_request"));
+        for forbidden in [
+            "Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "error body must not echo {forbidden}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_network_api_called_true_without_echoing_phi() {
+        for mutation in [
+            json!({"network_api_called": true}),
+            json!({"metadata": {"network_api_called": true, "note": "Jane Example MRN-12345"}}),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            let mutation = mutation
+                .as_object()
+                .expect("mutation should be an object")
+                .clone();
+            handoff
+                .as_object_mut()
+                .expect("handoff should be an object")
+                .extend(mutation);
+
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in [
+                "Jane Example",
+                "MRN-12345",
+                "jane@example.com",
+                "555-123-4567",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_unsafe_non_contract_fields_recursively() {
+        for mutation in [
+            json!({"raw_text": "Jane Example MRN-12345"}),
+            json!({"metadata": {"file_path": "/tmp/Jane Example.pdf"}}),
+            json!({"metadata": {"source": "Jane Example.pdf"}}),
+            json!({"metadata": [{"ocr_output": "jane@example.com"}]}),
+            json!({"previews": [{"text": "Jane Example MRN-12345"}]}),
+            json!({"metadata": {"bbox": [1, 2, 3, 4], "note": "jane@example.com"}}),
+            json!({"metadata": [{"image": "555-123-4567"}]}),
+            json!({"visual_redaction": "Jane Example overlay MRN-12345"}),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            let mutation = mutation
+                .as_object()
+                .expect("mutation should be an object")
+                .clone();
+            handoff
+                .as_object_mut()
+                .expect("handoff should be an object")
+                .extend(mutation);
+
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in ["Jane Example", "MRN-12345", "jane@example.com"] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_not_ready_or_wrong_contract() {
+        for mutation in [
+            ("ready_for_text_pii_eval", json!(false)),
+            ("privacy_filter_contract", json!("visual_redaction")),
+            ("scope", json!("full_pdf_ocr")),
+            ("line_count", json!("Jane Example")),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            handoff[mutation.0] = mutation.1;
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in [
+                "Jane Example",
+                "MRN-12345",
+                "jane@example.com",
+                "555-123-4567",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
+        }
+    }
+
+    fn valid_ocr_handoff_fixture() -> Value {
+        serde_json::from_str::<Value>(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON")
+    }
+
+    async fn post_ocr_handoff_summary(handoff: Value, expected_status: StatusCode) -> String {
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-handoff/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(response.status(), expected_status);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should buffer");
+        String::from_utf8(body.to_vec()).expect("body should be UTF-8")
+    }
 
     #[test]
     fn classifies_parse_errors_as_invalid_dicom() {
