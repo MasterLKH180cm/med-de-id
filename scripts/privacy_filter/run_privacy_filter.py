@@ -35,7 +35,7 @@ VIN_RE = re.compile(
     re.I,
 )
 DRIVER_LICENSE_RE = re.compile(
-    r"\b(?:driver(?:\s+license)?|drivers(?:\s+license)?|driver's\s+license|DL|license(?:\s+(?:number|no\.))?)\s+([A-Z]\d{7,8}|[A-Z]{1,2}-?\d{6,8})(?![A-Za-z0-9-])",
+    r"\b(?:(?:driver(?:'s|s)?[-\s]+license)|DL(?:\s+(?:no\.?|number))?)(?:\s*(?:#|:)\s*|\s+)([A-Z]\d{7,8}|[A-Z]{1,2}-?\d{6,8})(?![A-Za-z0-9-])",
     re.I,
 )
 IPV4_RE = re.compile(r'(?<![A-Za-z0-9.])(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?![A-Za-z0-9.])')

@@ -173,6 +173,17 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertNotIn('DRIVER_LICENSE', payload['summary']['category_counts'])
         self.assertNotIn('[DRIVER_LICENSE]', payload['masked_text'])
 
+    def test_fallback_does_not_detect_generic_license_contexts_as_driver_license(self):
+        text = ' '.join([
+            'medical license number A1234567 remains a professional credential.',
+            'professional license A1234567 should not be classified as driver-license PHI.',
+            'software license A1234567 should not be classified as driver-license PHI.',
+        ])
+        payload = detect_pii(text)
+
+        self.assertNotIn('DRIVER_LICENSE', payload['summary']['category_counts'])
+        self.assertNotIn('[DRIVER_LICENSE]', payload['masked_text'])
+
     def test_fallback_detects_ipv4_address_without_raw_previews(self):
         text = 'Patient Jane Example remote login from 192.168.10.42 for MRN-12345'
         payload = detect_pii(text)
