@@ -2021,10 +2021,58 @@ fn validate_privacy_filter_category_counts(value: &Value) -> bool {
     let Some(counts) = value.as_object() else {
         return false;
     };
-    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE"];
+    let allowed_labels = ["NAME", "MRN", "EMAIL", "PHONE", "ID"];
     counts
         .iter()
         .all(|(label, count)| allowed_labels.contains(&label.as_str()) && count.as_u64().is_some())
+}
+
+fn validate_privacy_filter_text_summary_artifact_fields(value: &Value) -> Result<(), String> {
+    let metadata = value
+        .get("metadata")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "privacy filter summary has invalid required field shape".to_string())?;
+    let summary = value
+        .get("summary")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "privacy filter summary has invalid required field shape".to_string())?;
+
+    let engine = metadata
+        .get("engine")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "privacy filter summary has invalid required field shape".to_string())?;
+    let preview_policy = metadata
+        .get("preview_policy")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "privacy filter summary has invalid required field shape".to_string())?;
+    if !is_safe_summary_identifier(engine) || !is_safe_summary_identifier(preview_policy) {
+        return Err("privacy filter summary has invalid required field shape".to_string());
+    }
+    if metadata.get("network_api_called") != Some(&Value::Bool(false)) {
+        return Err("privacy filter summary has invalid required field shape".to_string());
+    }
+    if !summary
+        .get("input_char_count")
+        .is_some_and(|count| count.as_u64().is_some())
+        || !summary
+            .get("detected_span_count")
+            .is_some_and(|count| count.as_u64().is_some())
+        || !summary
+            .get("category_counts")
+            .is_some_and(validate_privacy_filter_category_counts)
+    {
+        return Err("privacy filter summary has invalid required field shape".to_string());
+    }
+    Ok(())
+}
+
+fn is_safe_summary_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !is_unsafe_report_string(value)
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
@@ -2074,6 +2122,9 @@ fn run_privacy_filter_text_inner(args: &PrivacyFilterTextArgs) -> Result<(), Str
     let value: Value =
         serde_json::from_str(&stdout).map_err(|_| "runner returned non-JSON output".to_string())?;
     validate_privacy_filter_output(&value)?;
+    if args.summary_output.is_some() {
+        validate_privacy_filter_text_summary_artifact_fields(&value)?;
+    }
     fs::write(&args.report_path, stdout)
         .map_err(|err| format!("failed to write privacy filter report: {err}"))?;
 
