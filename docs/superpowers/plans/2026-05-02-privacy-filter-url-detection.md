@@ -124,9 +124,9 @@ This plan records completed steps with `[x]`.
 
 Final controller-visible verification commands are recorded in the round report.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
-Commit this plan and README truth-sync after final controller verification.
+Committed this plan and README truth-sync after controller verification with `docs: truth-sync privacy filter URL detection`.
 
 ## Self-Review
 
