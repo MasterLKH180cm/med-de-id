@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -65,6 +66,27 @@ def test_ocr_runner_rejects_directory_input_without_phi_leak(tmp_path):
     assert "OCR input path must be a file" in proc.stderr
     assert "Patient Jane Example" not in proc.stderr
     assert "MRN-12345" not in proc.stderr
+
+
+def test_json_output_redacts_phi_bearing_source_filename(tmp_path):
+    source = tmp_path / "Jane-Example-MRN-12345.png"
+    source.write_bytes(b"synthetic image placeholder")
+    expected = tmp_path / "synthetic_printed_phi_expected.txt"
+    expected.write_text("Patient Jane Example MRN-12345\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/ocr_eval/run_small_ocr.py", "--mock", "--json", str(source)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    payload = json.loads(completed.stdout)
+    rendered = json.dumps(payload, sort_keys=True)
+    assert payload["source"] == "<redacted>"
+    assert "Jane-Example-MRN-12345" not in rendered
+    assert "Jane-Example-MRN-12345" not in completed.stderr
 
 
 def test_missing_paddleocr_without_mock_exits_3_without_fixture_text(monkeypatch, capsys):

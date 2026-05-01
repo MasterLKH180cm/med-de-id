@@ -1,5 +1,5 @@
 {
-  "source": "synthetic_printed_phi_line.png",
+  "source": "<redacted>",
   "extracted_text": "Patient Jane Example jane@example.com +1-555-123-4567 MRN-12345",
   "normalized_text": "Patient Jane Example jane@example.com +1-555-123-4567 MRN-12345",
   "ready_for_text_pii_eval": true,
