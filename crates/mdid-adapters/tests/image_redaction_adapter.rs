@@ -1,5 +1,58 @@
-use mdid_adapters::{redact_rgb_regions, ImageRedactionError};
+use mdid_adapters::{redact_ppm_p6_bytes, redact_rgb_regions, ImageRedactionError};
 use mdid_domain::ImageRedactionRegion;
+
+#[test]
+fn ppm_p6_redacts_approved_bbox_to_black_and_preserves_other_bytes() {
+    let input = [
+        b"P6\n2 2\n255\n".as_slice(),
+        &[
+            10, 11, 12, // (0,0)
+            20, 21, 22, // (1,0) redacted
+            30, 31, 32, // (0,1)
+            40, 41, 42, // (1,1) redacted
+        ],
+    ]
+    .concat();
+    let region = ImageRedactionRegion::new(1, 0, 1, 2).expect("valid region");
+
+    let output = redact_ppm_p6_bytes(&input, &[region]).expect("ppm redaction succeeds");
+
+    assert_eq!(
+        output,
+        [
+            b"P6\n2 2\n255\n".as_slice(),
+            &[
+                10, 11, 12,
+                0, 0, 0,
+                30, 31, 32,
+                0, 0, 0,
+            ],
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn ppm_p6_out_of_bounds_region_fails_without_debugging_raw_source_names() {
+    let input = [
+        b"P6\n2 2\n255\n".as_slice(),
+        &[
+            b'J', b'a', b'n',
+            b'e', 1, 2,
+            3, 4, 5,
+            6, 7, 8,
+        ],
+    ]
+    .concat();
+    let region = ImageRedactionRegion::new(1, 1, 2, 1).expect("valid region shape");
+
+    let err = redact_ppm_p6_bytes(&input, &[region]).expect_err("oob fails");
+    let debug = format!("{err:?}");
+
+    assert_eq!(err, ImageRedactionError::RegionOutOfBounds);
+    assert!(!debug.contains("Jane"));
+    assert!(!debug.contains("patient.ppm"));
+}
 
 #[test]
 fn redacts_approved_region_pixels_to_black_and_leaves_outside_unchanged() {

@@ -12,7 +12,7 @@ pub use dicom::{
     sanitize_output_name, DicomAdapter, DicomAdapterError, DicomRewritePlan, DicomTagReplacement,
     DicomUidReplacement, DicomUidValue, ExtractedDicomData,
 };
-pub use image_redaction::{redact_rgb_regions, ImageRedactionError};
+pub use image_redaction::{redact_ppm_p6_bytes, redact_rgb_regions, ImageRedactionError};
 pub use pdf::{ExtractedPdfData, PdfAdapter, PdfAdapterError, PdfPageExtraction};
 pub use tabular::{
     CsvTabularAdapter, ExtractedTabularData, FieldPolicy, FieldPolicyAction, TabularAdapterError,
