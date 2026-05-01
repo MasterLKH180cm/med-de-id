@@ -52,15 +52,16 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         self.assertEqual(passport_spans[0]['preview'], '<redacted>')
 
     def test_numeric_passport_is_masked_without_overmatching_numeric_boundaries(self):
-        text = 'Patient Jane Example passport 123456789 reference 1234567890 123456789A A123456789'
+        text = 'Patient Jane Example passport 123456789 reference 1234567890 123456789A A123456789 passport 123456789-01'
         payload = run_text(text)
 
         self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
         self.assertIn('[PASSPORT]', payload['masked_text'])
-        self.assertNotIn('passport 123456789', payload['masked_text'])
+        self.assertIn('passport [PASSPORT]', payload['masked_text'])
         self.assertIn('1234567890', payload['masked_text'])
         self.assertIn('123456789A', payload['masked_text'])
         self.assertIn('A123456789', payload['masked_text'])
+        self.assertIn('passport 123456789-01', payload['masked_text'])
         passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
         self.assertEqual(len(passport_spans), 1)
         self.assertEqual(passport_spans[0]['preview'], '<redacted>')
@@ -86,10 +87,15 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         payload = run_text('Patient Jane Example MRN-X12345678 and ID-X12345678; passport X12345678\n')
         validator = load_validator_module()
 
+        self.assertEqual(payload['summary']['category_counts'].get('MRN'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 1)
         self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 1)
         self.assertIn('[PASSPORT]', payload['masked_text'])
-        self.assertIn('MRN-X12345678', payload['masked_text'])
-        self.assertIn('ID-X12345678', payload['masked_text'])
+        self.assertIn('[MRN]', payload['masked_text'])
+        self.assertIn('[ID]', payload['masked_text'])
+        self.assertNotIn('MRN-X12345678', payload['masked_text'])
+        self.assertNotIn('ID-X12345678', payload['masked_text'])
+        self.assertNotIn('X12345678 and ID-X12345678', payload['masked_text'])
         self.assertNotIn('MRN-[PASSPORT]', payload['masked_text'])
         self.assertNotIn('ID-[PASSPORT]', payload['masked_text'])
         passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']
@@ -100,10 +106,14 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         payload = run_text('Patient Jane Example MRN X12345678 and ID X12345678; passport X12345678; X12345678\n')
         validator = load_validator_module()
 
+        self.assertEqual(payload['summary']['category_counts'].get('MRN'), 1)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 1)
         self.assertEqual(payload['summary']['category_counts'].get('PASSPORT'), 2)
         self.assertIn('[PASSPORT]', payload['masked_text'])
-        self.assertIn('MRN X12345678', payload['masked_text'])
-        self.assertIn('ID X12345678', payload['masked_text'])
+        self.assertIn('[MRN]', payload['masked_text'])
+        self.assertIn('[ID]', payload['masked_text'])
+        self.assertNotIn('MRN X12345678', payload['masked_text'])
+        self.assertNotIn('ID X12345678', payload['masked_text'])
         self.assertNotIn('MRN [PASSPORT]', payload['masked_text'])
         self.assertNotIn('ID [PASSPORT]', payload['masked_text'])
         passport_spans = [span for span in payload['spans'] if span['label'] == 'PASSPORT']

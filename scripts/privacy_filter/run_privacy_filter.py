@@ -8,13 +8,13 @@ DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d
 SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
 PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
 PASSPORT_NUMERIC_CONTEXT_RE = re.compile(
-    r'\b(?:passport(?:\s+(?:number|no\.?))?)\s+(\d{9})(?![A-Za-z0-9])',
+    r'\b(?:passport(?:\s+(?:number|no\.?))?)\s+(\d{9})(?![A-Za-z0-9-])',
     re.I,
 )
 ZIP_RE = re.compile(r'(?<![A-Za-z0-9-])\d{5}(?:-\d{4})?(?![A-Za-z0-9-])')
 ADDRESS_RE = re.compile(r'\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Ct|Court)\b')
-MRN_RE = re.compile(r'\bMRN[- ]?\d+\b', re.I)
-ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
+MRN_RE = re.compile(r'\bMRN[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
+ID_RE = re.compile(r'\bID[- ]?(?:\d+|[A-Z]\d{8})\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
