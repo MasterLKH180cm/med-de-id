@@ -92,22 +92,27 @@ Expected: all commands pass. No Rust tests are required for this docs-only track
 - Modify: `crates/mdid-desktop/src/lib.rs`
 - Modify: `README.md`
 
-- [ ] **Step 1: Add RED tests for the next unsupported PII class**
+- [x] **Step 1: Add RED tests for the next unsupported PII class**
 
-Add one bounded detector at a time. Suggested next class: phone extension / alternate phone punctuation, because current README lists phone baseline but coverage is not yet complete enough for production claims.
-
-Run targeted RED commands:
+Added bounded phone-extension tests for the Python runner plus runtime HTTP summary behavior. RED evidence from this round:
 
 ```bash
-python3 -m pytest scripts/privacy_filter/test_run_privacy_filter.py::PrivacyFilterRunnerDetectionTests::test_detects_phone_extensions_without_leaking_raw_values -q
-source "$HOME/.cargo/env" && cargo test -p mdid-cli privacy_filter_text_detects_phone_extensions_without_raw_phone_leaks --test cli_smoke -- --nocapture
+python3 -m pytest scripts/privacy_filter/test_run_privacy_filter.py::PrivacyFilterRunnerTests::test_detects_phone_extensions_without_leaking_raw_values scripts/privacy_filter/test_run_privacy_filter.py::PrivacyFilterRunnerTests::test_phone_extension_detector_rejects_embedded_or_unbounded_tokens -q
+# initial result: failed before detector support / overlong-extension redaction hardening
+source "$HOME/.cargo/env" && cargo test -p mdid-runtime privacy_filter_text_endpoint_counts_phone_extensions_without_echoing_phone -- --nocapture
+# RED result after switching the runtime test to `(555) 222-3333 ext. 44`: category_counts.PHONE was null
 ```
 
-Expected RED: missing test or category/count mismatch.
+The phone-extension hardening treats overlong extension-like suffixes as PHI to redact instead of leaving the base phone in cleartext.
 
-- [ ] **Step 2: Implement minimal detector and CLI/runtime category acceptance**
+- [x] **Step 2: Implement minimal detector and runtime category acceptance**
 
-Keep previews redacted, keep `network_api_called: false`, and bound adjacent-token false positives.
+Implemented bounded extension-aware phone detection in `scripts/privacy_filter/run_privacy_filter.py`, including:
+- valid extension forms such as `555-123-4567 x890` and `(555) 222-3333 ext. 44`
+- overlong extension-like values redacted as whole `PHONE` spans so raw phone values do not remain in `masked_text`
+- embedded-token boundaries to avoid matching `ID555-123-4567` and adjacent alphanumeric forms
+
+Runtime `/privacy-filter/text` remains a PHI-safe aggregate summary surface and now counts the deterministic extension fixture without echoing raw phone input.
 
 - [ ] **Step 3: Surface parity**
 

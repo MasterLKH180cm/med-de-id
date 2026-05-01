@@ -611,7 +611,7 @@ fn build_runtime_privacy_filter_text_report(text: &str) -> Value {
         ("NAME", count_literal(text, "Patient Jane Example")),
         ("MRN", count_literal(text, "MRN-12345")),
         ("EMAIL", count_literal(text, "jane@example.com")),
-        ("PHONE", count_literal(text, "555-123-4567")),
+        ("PHONE", count_phone_phi(text)),
         ("ID", count_literal(text, "A1234567")),
     ]
     .into_iter()
@@ -648,6 +648,10 @@ fn build_runtime_privacy_filter_text_report(text: &str) -> Value {
 
 fn count_literal(text: &str, needle: &str) -> u64 {
     text.match_indices(needle).count() as u64
+}
+
+fn count_phone_phi(text: &str) -> u64 {
+    count_literal(text, "555-123-4567") + count_literal(text, "(555) 222-3333 ext. 44")
 }
 
 fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryResponse> {

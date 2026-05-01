@@ -3,7 +3,9 @@ import argparse, json, re, shutil, subprocess, sys
 from pathlib import Path
 
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
-PHONE_RE = re.compile(r'(?<!\d)(?:\+\d{1,3}-)?\d{3}-\d{3}-\d{4}(?!\d)')
+PHONE_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})(?![A-Za-z0-9-])')
+PHONE_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{1,5}(?![A-Za-z0-9-])', re.I)
+PHONE_OVERLONG_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{6,}(?![A-Za-z0-9-])', re.I)
 DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
 SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
 PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
@@ -45,6 +47,7 @@ def _has_identifier_prefix(text: str, start: int) -> bool:
     return bool(re.search(r'(?:MRN|ID)[- ]$', text[max(0, start - 5):start], re.I))
 
 
+
 def _zip_has_phi_identifier_prefix(text: str, start: int) -> bool:
     return _has_identifier_prefix(text, start)
 
@@ -73,7 +76,16 @@ def heuristic_detect(text: str):
         add_span(spans, 'NAME', m.start(1), m.end(1))
     for m in EMAIL_RE.finditer(text):
         add_span(spans, 'EMAIL', m.start(), m.end())
+    occupied_phone_ranges = []
+    for m in PHONE_OVERLONG_EXTENSION_RE.finditer(text):
+        add_span(spans, 'PHONE', m.start(), m.end())
+        occupied_phone_ranges.append((m.start(), m.end()))
+    for m in PHONE_EXTENSION_RE.finditer(text):
+        add_span(spans, 'PHONE', m.start(), m.end())
+        occupied_phone_ranges.append((m.start(), m.end()))
     for m in PHONE_RE.finditer(text):
+        if any(start <= m.start() < end for start, end in occupied_phone_ranges):
+            continue
         add_span(spans, 'PHONE', m.start(), m.end())
     for m in DATE_RE.finditer(text):
         add_span(spans, 'DATE', m.start(), m.end())
