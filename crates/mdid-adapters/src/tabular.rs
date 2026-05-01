@@ -52,6 +52,18 @@ pub struct ExtractedTabularData {
     pub columns: Vec<TabularColumn>,
     pub rows: Vec<Vec<String>>,
     pub candidates: Vec<PhiCandidate>,
+    pub xlsx_disclosure: Option<XlsxSheetDisclosure>,
+}
+
+pub const XLSX_FIRST_NON_EMPTY_WORKSHEET_DISCLOSURE: &str =
+    "XLSX processing used the first non-empty worksheet; other worksheets were not processed.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XlsxSheetDisclosure {
+    pub selected_sheet_name: String,
+    pub selected_sheet_index: usize,
+    pub total_sheet_count: usize,
+    pub disclosure: &'static str,
 }
 
 impl std::fmt::Debug for ExtractedTabularData {
@@ -114,12 +126,16 @@ impl XlsxTabularAdapter {
         let mut workbook = open_workbook_from_rs::<Xlsx<_>, _>(Cursor::new(bytes))?;
         let sheet_names = workbook.sheet_names().to_owned();
         let mut selected_rows = None;
+        let mut selected_sheet_name = None;
+        let mut selected_sheet_index = 0;
 
         for (sheet_index, sheet_name) in sheet_names.iter().enumerate() {
             let rows = worksheet_rows(workbook.worksheet_range(sheet_name)?);
             let has_non_blank_cells = worksheet_has_non_blank_cells(&rows);
 
             if sheet_index == 0 {
+                selected_sheet_name = Some(sheet_name.clone());
+                selected_sheet_index = sheet_index;
                 selected_rows = Some(rows);
                 if has_non_blank_cells {
                     break;
@@ -128,12 +144,16 @@ impl XlsxTabularAdapter {
             }
 
             if has_non_blank_cells {
+                selected_sheet_name = Some(sheet_name.clone());
+                selected_sheet_index = sheet_index;
                 selected_rows = Some(rows);
                 break;
             }
         }
 
         let mut rows = selected_rows.ok_or(TabularAdapterError::MissingWorksheet)?;
+        let selected_sheet_name =
+            selected_sheet_name.ok_or(TabularAdapterError::MissingWorksheet)?;
         let headers = rows.first().cloned().unwrap_or_default();
         let data_rows = if rows.is_empty() {
             Vec::new()
@@ -142,12 +162,15 @@ impl XlsxTabularAdapter {
             rows
         };
 
-        Ok(build_extracted_data(
-            TabularFormat::Xlsx,
-            headers,
-            data_rows,
-            &self.policies,
-        ))
+        let mut extracted =
+            build_extracted_data(TabularFormat::Xlsx, headers, data_rows, &self.policies);
+        extracted.xlsx_disclosure = Some(XlsxSheetDisclosure {
+            selected_sheet_name,
+            selected_sheet_index,
+            total_sheet_count: sheet_names.len(),
+            disclosure: XLSX_FIRST_NON_EMPTY_WORKSHEET_DISCLOSURE,
+        });
+        Ok(extracted)
     }
 }
 
@@ -215,6 +238,7 @@ fn build_extracted_data(
         columns,
         rows,
         candidates,
+        xlsx_disclosure: None,
     }
 }
 

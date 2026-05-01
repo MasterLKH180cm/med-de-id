@@ -258,9 +258,9 @@ impl DesktopWorkflowMode {
     pub fn disclosure(self) -> &'static str {
         match self {
             Self::CsvText => "CSV text de-identification uses the bounded local runtime route /tabular/deidentify; it stays limited to this local de-identification request surface.",
-            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it stays limited to this local de-identification request surface.",
+            Self::XlsxBase64 => "XLSX base64 de-identification uses the bounded local runtime route /tabular/deidentify/xlsx; it processes the first non-empty worksheet only. Sheet selection is not supported in this desktop flow; it stays limited to this local de-identification request surface.",
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
-            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification; it stays limited to this local de-identification request surface.",
+            Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
         }
     }
@@ -503,11 +503,16 @@ fn parse_portable_record_ids_json(
     if record_ids.is_empty() {
         return Err(DesktopPortableValidationError::EmptyRecordIds);
     }
+    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
     for record_id in &record_ids {
         if record_id.trim().is_empty() {
             return Err(error("record id must not be blank".to_string()));
         }
-        uuid::Uuid::parse_str(record_id).map_err(|parse_error| error(parse_error.to_string()))?;
+        let record_id = uuid::Uuid::parse_str(record_id)
+            .map_err(|parse_error| error(parse_error.to_string()))?;
+        if !seen_record_ids.insert(record_id) {
+            return Err(error("duplicate record id is not allowed".to_string()));
+        }
     }
     Ok(serde_json::json!(record_ids))
 }
@@ -559,6 +564,7 @@ pub struct DesktopVaultRequestState {
     pub audit_kind: Option<String>,
     pub audit_actor: Option<String>,
     pub audit_limit: Option<String>,
+    pub audit_offset: Option<String>,
 }
 
 impl std::fmt::Debug for DesktopVaultRequestState {
@@ -574,6 +580,7 @@ impl std::fmt::Debug for DesktopVaultRequestState {
             .field("audit_kind", &self.audit_kind)
             .field("audit_actor", &self.audit_actor)
             .field("audit_limit", &self.audit_limit)
+            .field("audit_offset", &self.audit_offset)
             .finish()
     }
 }
@@ -591,6 +598,7 @@ impl Default for DesktopVaultRequestState {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         }
     }
 }
@@ -625,6 +633,15 @@ impl DesktopVaultRequestState {
                 if record_ids.is_empty() {
                     return Err(DesktopVaultValidationError::EmptyRecordIds);
                 }
+                let mut seen_record_ids =
+                    std::collections::HashSet::with_capacity(record_ids.len());
+                for record_id in &record_ids {
+                    if !seen_record_ids.insert(*record_id) {
+                        return Err(DesktopVaultValidationError::InvalidRecordIdsJson(
+                            "duplicate record id is not allowed".to_string(),
+                        ));
+                    }
+                }
 
                 serde_json::json!({
                     "vault_path": vault_path,
@@ -641,6 +658,10 @@ impl DesktopVaultRequestState {
                     DesktopVaultValidationError::InvalidAuditLimit,
                     DesktopVaultValidationError::ZeroAuditLimit,
                 )?;
+                let offset = parse_optional_non_negative_usize(
+                    self.audit_offset.as_deref(),
+                    DesktopVaultValidationError::InvalidAuditOffset,
+                )?;
                 let mut body = serde_json::json!({
                     "vault_path": vault_path,
                     "vault_passphrase": self.vault_passphrase.clone(),
@@ -649,6 +670,9 @@ impl DesktopVaultRequestState {
                 });
                 if let Some(limit) = limit {
                     body["limit"] = serde_json::json!(limit);
+                }
+                if let Some(offset) = offset.filter(|offset| *offset > 0) {
+                    body["offset"] = serde_json::json!(offset);
                 }
                 body
             }
@@ -685,6 +709,22 @@ fn parse_optional_positive_usize<E>(
     Ok(Some(parsed))
 }
 
+fn parse_optional_non_negative_usize<E>(
+    value: Option<&str>,
+    invalid: fn(String) -> E,
+) -> Result<Option<usize>, E> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.starts_with('-') {
+        return Err(invalid("negative values are not allowed".to_string()));
+    }
+    value
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|_| invalid("expected non-negative integer".to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopVaultValidationError {
     BlankVaultPath,
@@ -695,6 +735,7 @@ pub enum DesktopVaultValidationError {
     InvalidRecordIdsJson(String),
     InvalidAuditLimit(String),
     ZeroAuditLimit,
+    InvalidAuditOffset(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -770,10 +811,631 @@ impl std::fmt::Display for DesktopPortableArtifactSaveError {
 
 impl std::error::Error for DesktopPortableArtifactSaveError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopDecodedValuesExportError {
+    NotVaultDecode,
+    MissingDecodedValues,
+    Io(String),
+    InvalidJson(String),
+}
+
+impl std::fmt::Display for DesktopDecodedValuesExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVaultDecode => write!(
+                f,
+                "decoded values export is only available for successful vault decode responses"
+            ),
+            Self::MissingDecodedValues => write!(f, "decoded values are unavailable"),
+            Self::Io(_) => write!(f, "decoded values JSON could not be written"),
+            Self::InvalidJson(_) => write!(f, "decoded values JSON could not be prepared"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopDecodedValuesExportError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopAuditEventsExportError {
+    NotVaultAudit,
+    MissingAuditEvents,
+    Io(String),
+    InvalidJson(String),
+}
+
+impl std::fmt::Display for DesktopAuditEventsExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVaultAudit => write!(
+                f,
+                "audit events export is only available for successful vault audit responses"
+            ),
+            Self::MissingAuditEvents => write!(f, "audit events are unavailable"),
+            Self::Io(_) => write!(f, "audit events JSON could not be written"),
+            Self::InvalidJson(_) => write!(f, "audit events JSON could not be prepared"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopAuditEventsExportError {}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct DesktopVaultResponseReportDownload {
     pub file_name: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopPortableReportSavePayload {
+    pub suggested_file_name: String,
+    pub mime_type: &'static str,
+    pub contents: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopPortableReportSaveError {
+    InvalidResponseJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopPdfReviewReportSave {
+    pub file_name: String,
+    pub contents: String,
+    pub status: String,
+}
+
+impl std::fmt::Display for DesktopPortableReportSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidResponseJson => write!(f, "portable response JSON must be an object"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopPortableReportSaveError {}
+
+pub fn build_desktop_ocr_handoff_summary_save(
+    handoff_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let handoff: serde_json::Value = serde_json::from_str(handoff_json)
+        .map_err(|_| "OCR handoff summary requires a JSON object report".to_string())?;
+    if !handoff.is_object() {
+        return Err("OCR handoff summary requires a JSON object report".to_string());
+    }
+    let contents = serde_json::to_string_pretty(&desktop_ocr_handoff_summary(&handoff))
+        .map_err(|_| "OCR handoff summary could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-ocr-handoff".to_string());
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-ocr-handoff-summary.json"),
+        contents,
+        status: "OCR handoff summary ready to save; normalized text and OCR line text are redacted from this report.".to_string(),
+    })
+}
+
+pub fn build_desktop_privacy_filter_summary_save(
+    response_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "Privacy Filter summary requires a JSON object report".to_string())?;
+    if !response.is_object() {
+        return Err("Privacy Filter summary requires a JSON object report".to_string());
+    }
+    let contents = serde_json::to_string_pretty(&desktop_privacy_filter_summary(&response))
+        .map_err(|_| "Privacy Filter summary could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-privacy-filter".to_string());
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-privacy-filter-summary.json"),
+        contents,
+        status: "Privacy Filter summary ready to save; masked text, spans, previews, and raw input text are redacted from this report.".to_string(),
+    })
+}
+
+pub fn build_desktop_ocr_to_privacy_filter_summary_save(
+    response_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "OCR to Privacy Filter summary requires a JSON object report".to_string())?;
+    if !response.is_object() {
+        return Err("OCR to Privacy Filter summary requires a JSON object report".to_string());
+    }
+    let contents = serde_json::to_string_pretty(&desktop_ocr_to_privacy_filter_summary(&response))
+        .map_err(|_| "OCR to Privacy Filter summary could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-ocr-to-privacy-filter".to_string());
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-ocr-to-privacy-filter-summary.json"),
+        contents,
+        status: "OCR to Privacy Filter summary ready to save; OCR text, masked text, spans, previews, paths, visual redaction data, and source document bytes are redacted from this report.".to_string(),
+    })
+}
+
+fn desktop_ocr_to_privacy_filter_summary(response: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "mode".to_string(),
+        serde_json::json!("ocr_to_privacy_filter_summary"),
+    );
+
+    for (key, expected) in [
+        ("ocr_candidate", "PP-OCRv5_mobile_rec"),
+        ("ocr_engine", "PP-OCRv5-mobile-bounded-spike"),
+        ("ocr_scope", "printed_text_line_extraction_only"),
+        ("privacy_scope", "text_only_pii_detection"),
+        ("privacy_filter_engine", "fallback_synthetic_patterns"),
+        ("privacy_filter_contract", "text_only_normalized_input"),
+    ] {
+        if response.get(key).and_then(serde_json::Value::as_str) == Some(expected) {
+            report.insert(key.to_string(), serde_json::json!(expected));
+        }
+    }
+
+    for (key, expected) in [
+        ("ready_for_text_pii_eval", true),
+        ("network_api_called", false),
+    ] {
+        if response.get(key).and_then(serde_json::Value::as_bool) == Some(expected) {
+            report.insert(key.to_string(), serde_json::json!(expected));
+        }
+    }
+
+    if let Some(value) = response
+        .get("privacy_filter_detected_span_count")
+        .and_then(serde_json::Value::as_u64)
+    {
+        report.insert(
+            "privacy_filter_detected_span_count".to_string(),
+            serde_json::json!(value),
+        );
+    }
+
+    report.insert(
+        "privacy_filter_category_counts".to_string(),
+        desktop_privacy_filter_category_counts(response.get("privacy_filter_category_counts")),
+    );
+    serde_json::Value::Object(report)
+}
+
+fn desktop_privacy_filter_summary(response: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert(
+        "mode".to_string(),
+        serde_json::json!("privacy_filter_summary"),
+    );
+    let metadata = response.get("metadata").unwrap_or(response);
+    let summary = response.get("summary").unwrap_or(response);
+    for key in ["engine", "preview_policy"] {
+        if let Some(value) = metadata
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| is_safe_privacy_filter_metadata_string(value))
+        {
+            report.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    if let Some(value) = metadata
+        .get("network_api_called")
+        .and_then(serde_json::Value::as_bool)
+    {
+        report.insert("network_api_called".to_string(), serde_json::json!(value));
+    }
+    for key in ["input_char_count", "detected_span_count"] {
+        if let Some(value) = summary.get(key).and_then(serde_json::Value::as_u64) {
+            report.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    report.insert(
+        "category_counts".to_string(),
+        desktop_privacy_filter_category_counts(summary.get("category_counts")),
+    );
+    serde_json::Value::Object(report)
+}
+
+fn desktop_privacy_filter_category_counts(value: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut counts = serde_json::Map::new();
+    if let Some(object) = value.and_then(serde_json::Value::as_object) {
+        for (label, count) in object {
+            if matches!(label.as_str(), "NAME" | "MRN" | "ID" | "EMAIL" | "PHONE")
+                && count.as_u64().is_some()
+            {
+                counts.insert(label.to_string(), count.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(counts)
+}
+
+fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
+    ![
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+    ]
+    .iter()
+    .any(|sentinel| value.contains(sentinel))
+        && !value.is_empty()
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == ':'
+        })
+}
+
+fn desktop_ocr_handoff_summary(handoff: &serde_json::Value) -> serde_json::Value {
+    let mut report = serde_json::Map::new();
+    report.insert("mode".to_string(), serde_json::json!("ocr_handoff_summary"));
+    for key in [
+        "candidate",
+        "engine",
+        "engine_status",
+        "scope",
+        "ready_for_text_pii_eval",
+    ] {
+        if let Some(value) = handoff.get(key).filter(|value| is_json_primitive(value)) {
+            report.insert(key.to_string(), value.clone());
+        }
+    }
+    for key in ["line_count", "char_count"] {
+        if let Some(value) = handoff.get(key).filter(|value| value.is_number()) {
+            report.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = handoff
+        .get("privacy_filter_contract")
+        .and_then(serde_json::Value::as_str)
+    {
+        report.insert(
+            "privacy_filter_contract".to_string(),
+            serde_json::json!(value),
+        );
+    }
+    report.insert(
+        "non_goals".to_string(),
+        serde_json::Value::Array(
+            handoff
+                .get("non_goals")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(|text| serde_json::json!(text)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
+    );
+    serde_json::Value::Object(report)
+}
+
+pub fn build_desktop_pdf_review_report_save(
+    response_json: &str,
+    source_name: Option<&str>,
+) -> Result<DesktopPdfReviewReportSave, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "PDF review report requires a JSON object response".to_string())?;
+    let object = response
+        .as_object()
+        .ok_or_else(|| "PDF review report requires a JSON object response".to_string())?;
+
+    let report = serde_json::json!({
+        "mode": "pdf_review_report",
+        "summary": sanitize_desktop_pdf_review_report_summary(object.get("summary")),
+        "review_queue": sanitize_desktop_pdf_review_report_queue(object.get("review_queue")),
+        "page_statuses": sanitize_desktop_pdf_page_statuses(object.get("page_statuses")),
+        "ocr_blockers": sanitize_desktop_pdf_ocr_blockers(&response),
+        "visual_redaction_blockers": sanitize_desktop_pdf_visual_redaction_blockers(&response),
+        "actionability": sanitize_desktop_pdf_review_actionability(&response),
+    });
+    let contents = serde_json::to_string_pretty(&report)
+        .map_err(|_| "PDF review report could not be prepared".to_string())?;
+    let stem = source_name
+        .and_then(portable_report_source_stem)
+        .unwrap_or_else(|| "mdid-desktop-pdf".to_string());
+
+    Ok(DesktopPdfReviewReportSave {
+        file_name: format!("{stem}-pdf-review-report.json"),
+        contents,
+        status: "PDF review report ready to save; text content and PDF bytes are redacted from this report.".to_string(),
+    })
+}
+
+fn sanitize_desktop_pdf_review_report_summary(
+    value: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(serde_json::Value::Object(object)) = value else {
+        return serde_json::json!({});
+    };
+    let mut sanitized = serde_json::Map::new();
+    for key in [
+        "total_pages",
+        "pages_with_text",
+        "ocr_required_pages",
+        "candidate_count",
+        "requires_ocr",
+        "status",
+    ] {
+        if let Some(value) = object.get(key).filter(|value| {
+            matches!(
+                value,
+                serde_json::Value::Null
+                    | serde_json::Value::Bool(_)
+                    | serde_json::Value::Number(_)
+                    | serde_json::Value::String(_)
+            )
+        }) {
+            sanitized.insert(key.to_string(), value.clone());
+        }
+    }
+    serde_json::Value::Object(sanitized)
+}
+
+fn sanitize_desktop_pdf_review_report_queue(
+    value: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(serde_json::Value::Array(items)) = value else {
+        return serde_json::json!([]);
+    };
+    serde_json::Value::Array(
+        items
+            .iter()
+            .filter_map(|item| {
+                let object = item.as_object()?;
+                let mut sanitized = serde_json::Map::new();
+                if let Some(page) = object.get("page").filter(|value| is_json_primitive(value)) {
+                    sanitized.insert("page".to_string(), page.clone());
+                }
+                if let Some(kind) = object.get("kind").filter(|value| is_json_primitive(value)) {
+                    sanitized.insert("kind".to_string(), kind.clone());
+                }
+                if let Some(status) = object
+                    .get("status")
+                    .filter(|value| is_json_primitive(value))
+                {
+                    sanitized.insert("status".to_string(), status.clone());
+                }
+                Some(serde_json::Value::Object(sanitized))
+            })
+            .collect(),
+    )
+}
+
+fn sanitize_desktop_pdf_page_statuses(value: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(serde_json::Value::Array(items)) = value else {
+        return serde_json::json!([]);
+    };
+    serde_json::Value::Array(
+        items
+            .iter()
+            .filter_map(|item| {
+                let object = item.as_object()?;
+                let mut sanitized = serde_json::Map::new();
+                for key in ["page", "status", "requires_ocr", "candidate_count"] {
+                    if let Some(value) = object.get(key).filter(|value| is_json_primitive(value)) {
+                        sanitized.insert(key.to_string(), value.clone());
+                    }
+                }
+                Some(serde_json::Value::Object(sanitized))
+            })
+            .collect(),
+    )
+}
+
+fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value {
+    let mut requires_ocr_pages = 0_u64;
+    let mut visual_review_pages = 0_u64;
+    let mut blocked_page_count = 0_u64;
+
+    if let Some(statuses) = response
+        .get("page_statuses")
+        .and_then(serde_json::Value::as_array)
+    {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            let requires_ocr = status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let visual_review_required = status
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+
+            if requires_ocr {
+                requires_ocr_pages += 1;
+            }
+            if visual_review_required {
+                visual_review_pages += 1;
+            }
+            if requires_ocr || visual_review_required {
+                blocked_page_count += 1;
+            }
+        }
+    }
+
+    serde_json::json!({
+        "requires_ocr_pages": requires_ocr_pages,
+        "visual_review_pages": visual_review_pages,
+        "blocked_page_count": blocked_page_count,
+        "rewrite_available": response
+            .get("no_rewritten_pdf")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false),
+    })
+}
+
+fn sanitize_desktop_pdf_visual_redaction_blockers(
+    response: &serde_json::Value,
+) -> serde_json::Value {
+    let mut visual_review_pages = 0_u64;
+    let mut ocr_required_pages = 0_u64;
+    let mut blocked_page_count = 0_u64;
+
+    if let Some(statuses) = response
+        .get("page_statuses")
+        .and_then(serde_json::Value::as_array)
+    {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            let visual_review_required = status
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+            let requires_ocr = status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+
+            if visual_review_required {
+                visual_review_pages += 1;
+            }
+            if requires_ocr {
+                ocr_required_pages += 1;
+            }
+            if visual_review_required || requires_ocr {
+                blocked_page_count += 1;
+            }
+        }
+    }
+
+    let status = if blocked_page_count == 0 {
+        "no_visual_redaction_blockers_detected"
+    } else {
+        "blocked_pending_visual_redaction_or_ocr"
+    };
+
+    serde_json::json!({
+        "visual_review_pages": visual_review_pages,
+        "ocr_required_pages": ocr_required_pages,
+        "blocked_page_count": blocked_page_count,
+        "redaction_rewrite_available": response
+            .get("no_rewritten_pdf")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false),
+        "status": status,
+    })
+}
+
+fn desktop_pdf_review_page_statuses(
+    response: &serde_json::Value,
+) -> Option<&Vec<serde_json::Value>> {
+    response
+        .get("page_statuses")
+        .or_else(|| response.pointer("/metadata/page_statuses"))
+        .and_then(serde_json::Value::as_array)
+}
+
+fn desktop_pdf_redaction_rewrite_available(response: &serde_json::Value) -> bool {
+    response
+        .pointer("/metadata/redaction_rewrite_available")
+        .or_else(|| response.get("redaction_rewrite_available"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            response
+                .get("no_rewritten_pdf")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        })
+}
+
+fn desktop_pdf_review_actionability_blocked_page_count(response: &serde_json::Value) -> u64 {
+    let mut blocked_pages = std::collections::BTreeSet::new();
+    let mut blocked_without_page = 0_u64;
+
+    if let Some(statuses) = desktop_pdf_review_page_statuses(response) {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            let requires_ocr = status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let visual_review_required = status
+                .get("requires_visual_review")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || status
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+
+            if requires_ocr || visual_review_required {
+                if let Some(page) = status.get("page").and_then(serde_json::Value::as_u64) {
+                    blocked_pages.insert(page);
+                } else {
+                    blocked_without_page += 1;
+                }
+            }
+        }
+    }
+
+    blocked_pages.len() as u64 + blocked_without_page
+}
+
+fn sanitize_desktop_pdf_review_actionability(response: &serde_json::Value) -> serde_json::Value {
+    let mut ocr_required_pages = 0_u64;
+    let mut visual_review_pages = 0_u64;
+
+    if let Some(statuses) = desktop_pdf_review_page_statuses(response) {
+        for status in statuses.iter().filter_map(serde_json::Value::as_object) {
+            if status
+                .get("requires_ocr")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                ocr_required_pages += 1;
+            }
+            if status
+                .get("requires_visual_review")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || status
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"))
+            {
+                visual_review_pages += 1;
+            }
+        }
+    }
+
+    let blocked_page_count = desktop_pdf_review_actionability_blocked_page_count(response);
+    let automatic_rewrite_ready =
+        desktop_pdf_redaction_rewrite_available(response) && blocked_page_count == 0;
+
+    let mut next_steps = Vec::new();
+    if ocr_required_pages > 0 {
+        next_steps.push("Run OCR outside this tool before attempting PDF rewrite.");
+    }
+    if visual_review_pages > 0 {
+        next_steps.push("Review visual-only pages manually before exporting a redacted PDF.");
+    }
+    if automatic_rewrite_ready {
+        next_steps
+            .push("PDF review metadata indicates rewrite readiness; verify output before release.");
+    } else {
+        next_steps.push("Keep this PHI-safe report with the case audit trail.");
+    }
+
+    serde_json::json!({
+        "automatic_rewrite_ready": automatic_rewrite_ready,
+        "blocked_page_count": blocked_page_count,
+        "ocr_required_pages": ocr_required_pages,
+        "visual_review_pages": visual_review_pages,
+        "next_steps": next_steps,
+    })
+}
+
+fn is_json_primitive(value: &serde_json::Value) -> bool {
+    matches!(
+        value,
+        serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_)
+    )
 }
 
 impl std::fmt::Debug for DesktopVaultResponseReportDownload {
@@ -783,6 +1445,123 @@ impl std::fmt::Debug for DesktopVaultResponseReportDownload {
             .field("bytes", &"<redacted>")
             .finish()
     }
+}
+
+pub fn build_desktop_portable_response_report_save(
+    mode: DesktopPortableMode,
+    imported_file_name: Option<&str>,
+    response_json: &str,
+) -> Result<DesktopPortableReportSavePayload, DesktopPortableReportSaveError> {
+    let mut report: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| DesktopPortableReportSaveError::InvalidResponseJson)?;
+    let object = report
+        .as_object_mut()
+        .ok_or(DesktopPortableReportSaveError::InvalidResponseJson)?;
+    object.insert(
+        "mode".to_string(),
+        serde_json::Value::String(portable_report_mode(mode).to_string()),
+    );
+    redact_portable_report_value(&mut report);
+
+    let contents = serde_json::to_string_pretty(&report)
+        .map_err(|_| DesktopPortableReportSaveError::InvalidResponseJson)?;
+    let operation = portable_report_operation(mode);
+    let suggested_file_name = imported_file_name
+        .and_then(portable_report_source_stem)
+        .filter(|stem| !stem.is_empty())
+        .map(|stem| format!("{stem}-portable-artifact-{operation}-report.json"))
+        .unwrap_or_else(|| "desktop-portable-artifact-report.json".to_string());
+
+    Ok(DesktopPortableReportSavePayload {
+        suggested_file_name,
+        mime_type: "application/json",
+        contents,
+        status: portable_report_status(mode).to_string(),
+    })
+}
+
+fn portable_report_mode(mode: DesktopPortableMode) -> &'static str {
+    match mode {
+        DesktopPortableMode::VaultExport => "portable_artifact_export",
+        DesktopPortableMode::InspectArtifact => "portable_artifact_inspect",
+        DesktopPortableMode::ImportArtifact => "portable_artifact_import",
+    }
+}
+
+fn portable_report_operation(mode: DesktopPortableMode) -> &'static str {
+    match mode {
+        DesktopPortableMode::VaultExport => "export",
+        DesktopPortableMode::InspectArtifact => "inspect",
+        DesktopPortableMode::ImportArtifact => "import",
+    }
+}
+
+fn portable_report_status(mode: DesktopPortableMode) -> &'static str {
+    match mode {
+        DesktopPortableMode::VaultExport => "Portable artifact export report ready to save; artifact and decoded values are redacted from this report.",
+        DesktopPortableMode::InspectArtifact => "Portable artifact inspect report ready to save; artifact and decoded values are redacted from this report.",
+        DesktopPortableMode::ImportArtifact => "Portable artifact import report ready to save; artifact and decoded values are redacted from this report.",
+    }
+}
+
+fn redact_portable_report_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if matches!(
+                    key.as_str(),
+                    "artifact" | "decoded_values" | "records" | "vault_passphrase"
+                ) {
+                    *value = serde_json::Value::String("redacted".to_string());
+                } else {
+                    redact_portable_report_value(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_portable_report_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn portable_report_source_stem(source_name: &str) -> Option<String> {
+    let filename = source_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(source_name)
+        .trim();
+    let mut stem = filename;
+    for suffix in [".mdid-portable.json", "-mdid-portable.json"] {
+        if let Some(stripped) = stem.strip_suffix(suffix) {
+            stem = stripped;
+            break;
+        }
+    }
+    if stem == filename {
+        stem = stem.rsplit_once('.').map_or(stem, |(stem, _)| stem);
+    }
+
+    let mut safe = String::new();
+    let mut last_was_sep = false;
+    for ch in stem.trim().chars() {
+        if safe.len() >= 64 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            safe.push(ch);
+            last_was_sep = false;
+        } else if !last_was_sep && !safe.is_empty() {
+            safe.push('_');
+            last_was_sep = true;
+        }
+    }
+    while safe.ends_with(['_', '-']) {
+        safe.pop();
+    }
+    (!safe.is_empty()).then_some(safe)
 }
 
 impl DesktopVaultResponseState {
@@ -872,6 +1651,129 @@ impl DesktopVaultResponseState {
             .map_err(|error| DesktopPortableArtifactSaveError::InvalidJson(error.to_string()))
     }
 
+    pub fn decode_values_export_json(
+        &self,
+    ) -> Result<serde_json::Value, DesktopDecodedValuesExportError> {
+        if self.last_success_mode != Some(DesktopVaultResponseMode::VaultDecode) {
+            return Err(DesktopDecodedValuesExportError::NotVaultDecode);
+        }
+
+        let response = self
+            .last_success_response
+            .as_ref()
+            .ok_or(DesktopDecodedValuesExportError::NotVaultDecode)?;
+        let decoded_values = response
+            .get("decoded_values")
+            .filter(|decoded_values| decoded_values.is_object())
+            .ok_or(DesktopDecodedValuesExportError::MissingDecodedValues)?;
+        let decoded_value_count = response
+            .get("decoded_value_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| {
+                decoded_values
+                    .as_object()
+                    .map_or(0, |values| values.len() as u64)
+            });
+
+        Ok(serde_json::json!({
+            "mode": "vault_decode_values",
+            "decoded_value_count": decoded_value_count,
+            "disclosure": "high-risk decoded values; store only in an approved local workstation location",
+            "decoded_values": decoded_values,
+        }))
+    }
+
+    pub fn audit_events_export_json(
+        &self,
+    ) -> Result<serde_json::Value, DesktopAuditEventsExportError> {
+        if self.last_success_mode != Some(DesktopVaultResponseMode::VaultAudit) {
+            return Err(DesktopAuditEventsExportError::NotVaultAudit);
+        }
+
+        let response = self
+            .last_success_response
+            .as_ref()
+            .ok_or(DesktopAuditEventsExportError::NotVaultAudit)?;
+        let events = response
+            .get("events")
+            .filter(|events| events.is_array())
+            .ok_or(DesktopAuditEventsExportError::MissingAuditEvents)?;
+        let mut export = serde_json::json!({
+            "mode": "vault_audit_events",
+            "events": events,
+        });
+        if let Some(event_count) = response
+            .get("event_count")
+            .and_then(serde_json::Value::as_u64)
+        {
+            export["event_count"] = serde_json::Value::from(event_count);
+        }
+        if let Some(returned_event_count) = response
+            .get("returned_event_count")
+            .and_then(serde_json::Value::as_u64)
+        {
+            export["returned_event_count"] = serde_json::Value::from(returned_event_count);
+        }
+        if let Some(next_offset) = response
+            .get("next_offset")
+            .and_then(serde_json::Value::as_u64)
+        {
+            export["next_offset"] = serde_json::Value::from(next_offset);
+        }
+        Ok(export)
+    }
+
+    fn safe_metadata(&self) -> serde_json::Value {
+        const ALLOWLISTED_KEYS: &[&str] = &[
+            "artifact_record_count",
+            "decoded_count",
+            "decoded_value_count",
+            "audit_event_id",
+            "returned_event_count",
+            "total_event_count",
+            "offset",
+            "limit",
+            "imported_record_count",
+            "skipped_record_count",
+        ];
+
+        let mut metadata = serde_json::Map::new();
+        let Some(response) = self
+            .last_success_response
+            .as_ref()
+            .and_then(|value| value.as_object())
+        else {
+            return serde_json::Value::Object(metadata);
+        };
+
+        for key in ALLOWLISTED_KEYS {
+            if let Some(value) = response.get(*key).filter(|value| {
+                matches!(
+                    value,
+                    serde_json::Value::Null
+                        | serde_json::Value::Bool(_)
+                        | serde_json::Value::Number(_)
+                        | serde_json::Value::String(_)
+                )
+            }) {
+                metadata.insert((*key).to_string(), value.clone());
+            }
+        }
+
+        if !metadata.contains_key("total_event_count") {
+            if let Some(value) = response.get("event_count").filter(|value| {
+                matches!(
+                    value,
+                    serde_json::Value::Null | serde_json::Value::Number(_)
+                )
+            }) {
+                metadata.insert("total_event_count".to_string(), value.clone());
+            }
+        }
+
+        serde_json::Value::Object(metadata)
+    }
+
     pub fn safe_export_json(&self, mode: DesktopVaultResponseMode) -> serde_json::Value {
         serde_json::json!({
             "mode": mode.safe_export_label(),
@@ -879,6 +1781,7 @@ impl DesktopVaultResponseState {
             "summary": self.summary,
             "artifact_notice": self.artifact_notice,
             "error": self.error,
+            "metadata": self.safe_metadata(),
         })
     }
 }
@@ -892,6 +1795,30 @@ pub fn write_portable_artifact_json(
     let path = path.as_ref();
     std::fs::write(path, artifact_json)
         .map_err(|error| DesktopPortableArtifactSaveError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
+pub fn write_desktop_decode_values_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopDecodedValuesExportError> {
+    let decode_values_json = serde_json::to_string_pretty(&state.decode_values_export_json()?)
+        .map_err(|error| DesktopDecodedValuesExportError::InvalidJson(error.to_string()))?;
+    let path = path.as_ref();
+    std::fs::write(path, decode_values_json)
+        .map_err(|error| DesktopDecodedValuesExportError::Io(error.to_string()))?;
+    Ok(path.to_path_buf())
+}
+
+pub fn write_desktop_audit_events_json(
+    state: &DesktopVaultResponseState,
+    path: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, DesktopAuditEventsExportError> {
+    let audit_events_json = serde_json::to_string_pretty(&state.audit_events_export_json()?)
+        .map_err(|error| DesktopAuditEventsExportError::InvalidJson(error.to_string()))?;
+    let path = path.as_ref();
+    std::fs::write(path, audit_events_json)
+        .map_err(|error| DesktopAuditEventsExportError::Io(error.to_string()))?;
     Ok(path.to_path_buf())
 }
 
@@ -930,11 +1857,7 @@ fn vault_response_summary(mode: DesktopVaultResponseMode, response: &serde_json:
             "decoded values: {}",
             response_u64(response, "decoded_value_count")
         ),
-        DesktopVaultResponseMode::VaultAudit => format!(
-            "events returned: {} / {}",
-            response_u64(response, "returned_event_count"),
-            response_u64(response, "event_count")
-        ),
+        DesktopVaultResponseMode::VaultAudit => vault_audit_response_summary(response),
         DesktopVaultResponseMode::VaultExport | DesktopVaultResponseMode::InspectArtifact => {
             format!("records: {}", response_u64(response, "record_count"))
         }
@@ -943,6 +1866,34 @@ fn vault_response_summary(mode: DesktopVaultResponseMode, response: &serde_json:
             response_u64(response, "imported_record_count")
         ),
     }
+}
+
+fn vault_audit_response_summary(response: &serde_json::Value) -> String {
+    let total = response_u64(response, "event_count");
+    let returned = response
+        .get("returned_event_count")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            response
+                .get("events")
+                .and_then(serde_json::Value::as_array)
+                .map(|events| events.len() as u64)
+        })
+        .unwrap_or_default();
+    let offset = response_u64(response, "offset");
+    let limit = response.get("limit").and_then(serde_json::Value::as_u64);
+    let page_status = if returned == 0 || total == 0 || offset >= total {
+        format!("Audit events page: showing 0 of {total} from offset {offset}")
+    } else {
+        let first = offset.saturating_add(1);
+        let last = offset.saturating_add(returned).min(total);
+        format!("Audit events page: showing {first}-{last} of {total}")
+    };
+    let limit_status = limit
+        .map(|limit| format!("; limit {limit}"))
+        .unwrap_or_default();
+
+    format!("events returned: {returned} / {total}; {page_status}{limit_status}")
 }
 
 fn vault_response_artifact_notice(response: &serde_json::Value) -> String {
@@ -1070,6 +2021,10 @@ impl DesktopWorkflowRequestState {
                     return Err(DesktopWorkflowValidationError::InvalidMediaMetadataJson);
                 }
 
+                if media_metadata_json_contains_media_bytes(&body) {
+                    return Err(DesktopWorkflowValidationError::MediaBytesNotAccepted);
+                }
+
                 Ok(DesktopWorkflowRequest {
                     route: self.mode.route(),
                     body,
@@ -1077,6 +2032,16 @@ impl DesktopWorkflowRequestState {
             }
         }
     }
+}
+
+fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
+    const MEDIA_BYTE_FIELDS: &[&str] =
+        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
+    value.as_object().is_some_and(|object| {
+        MEDIA_BYTE_FIELDS
+            .iter()
+            .any(|field| object.contains_key(*field))
+    })
 }
 
 fn parse_field_policies(
@@ -1152,6 +2117,7 @@ pub enum DesktopWorkflowValidationError {
     InvalidFieldPolicyJson(String),
     BlankSourceName,
     InvalidMediaMetadataJson,
+    MediaBytesNotAccepted,
 }
 
 impl std::fmt::Display for DesktopWorkflowValidationError {
@@ -1165,6 +2131,9 @@ impl std::fmt::Display for DesktopWorkflowValidationError {
                 f,
                 "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
             ),
+            Self::MediaBytesNotAccepted => {
+                write!(f, "metadata-only media review does not accept media bytes")
+            }
         }
     }
 }
@@ -1764,7 +2733,7 @@ impl DesktopWorkflowResponseState {
         }
 
         let response = self.last_success_response.as_ref()?;
-        let report = serde_json::json!({
+        let mut report = serde_json::json!({
             "mode": match mode {
                 DesktopWorkflowMode::PdfBase64Review => "pdf_review",
                 DesktopWorkflowMode::MediaMetadataJson => "media_metadata_json",
@@ -1775,6 +2744,9 @@ impl DesktopWorkflowResponseState {
             "summary": sanitize_review_report_summary(response.get("summary")),
             "review_queue": sanitize_review_report_queue(response.get("review_queue")),
         });
+        if matches!(mode, DesktopWorkflowMode::PdfBase64Review) {
+            report["ocr_blockers"] = sanitize_desktop_pdf_ocr_blockers(response);
+        }
         let json = serde_json::to_string_pretty(&report).ok()?;
 
         Some(DesktopWorkflowReviewReportDownload {
@@ -1896,7 +2868,10 @@ impl DesktopWorkflowResponseState {
             }
         };
 
-        self.summary = pretty_json_field(&envelope, "summary");
+        self.summary = match mode {
+            DesktopWorkflowMode::XlsxBase64 => pretty_xlsx_summary(&envelope),
+            _ => pretty_json_field(&envelope, "summary"),
+        };
         self.review_queue = pretty_json_field(&envelope, "review_queue");
         self.error = None;
         self.last_success_mode = Some(mode);
@@ -1963,6 +2938,17 @@ fn pretty_json_field(envelope: &serde_json::Value, field: &str) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+fn pretty_xlsx_summary(envelope: &serde_json::Value) -> String {
+    let mut summary = pretty_json_field(envelope, "summary");
+    if let Some(disclosure) = envelope.get("worksheet_disclosure") {
+        if let Ok(disclosure) = serde_json::to_string_pretty(disclosure) {
+            summary.push_str("\nworksheet_disclosure: ");
+            summary.push_str(&disclosure);
+        }
+    }
+    summary
+}
+
 #[cfg(test)]
 mod tempfile {
     use std::path::{Path, PathBuf};
@@ -2005,6 +2991,426 @@ mod tests {
     use serde_json::json;
 
     const DEFAULT_POLICY_JSON: &str = r#"[{"header":"patient_name","phi_type":"Name","action":"encode"},{"header":"patient_id","phi_type":"RecordId","action":"review"}]"#;
+
+    #[test]
+    fn ocr_to_privacy_filter_summary_save_preserves_only_allowlisted_safe_fields() {
+        let response = json!({
+            "ocr_candidate": "PP-OCRv5_mobile_rec",
+            "ocr_engine": "PP-OCRv5-mobile-bounded-spike",
+            "ocr_scope": "printed_text_line_extraction_only",
+            "privacy_scope": "text_only_pii_detection",
+            "privacy_filter_engine": "fallback_synthetic_patterns",
+            "privacy_filter_contract": "text_only_normalized_input",
+            "ready_for_text_pii_eval": true,
+            "network_api_called": false,
+            "privacy_filter_detected_span_count": 4,
+            "privacy_filter_category_counts": {
+                "NAME": 1,
+                "MRN": 1,
+                "EMAIL": 1,
+                "PHONE": 1,
+                "ID": 0,
+                "ADDRESS": 9,
+                "Patient Jane Example": 8
+            },
+            "raw_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
+            "normalized_text": "Patient Jane Example MRN-12345",
+            "extracted_text": "Patient Jane Example",
+            "masked_text": "[NAME] [MRN]",
+            "spans": [{"text": "Patient Jane Example", "label": "NAME"}],
+            "preview": "Patient Jane Example",
+            "image_path": "/phi/Patient Jane Example.png",
+            "metadata": {"freeform": "MRN-12345"},
+            "visual_redaction": true,
+            "pdf_bytes_base64": "SHOULD_NOT_LEAK"
+        });
+
+        let payload = build_desktop_ocr_to_privacy_filter_summary_save(
+            &response.to_string(),
+            Some("ocr privacy report.json"),
+        )
+        .expect("ocr to privacy filter summary save");
+
+        assert_eq!(
+            payload.file_name,
+            "ocr_privacy_report-ocr-to-privacy-filter-summary.json"
+        );
+        assert_eq!(payload.status, "OCR to Privacy Filter summary ready to save; OCR text, masked text, spans, previews, paths, visual redaction data, and source document bytes are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "ocr_to_privacy_filter_summary");
+        assert_eq!(report["ocr_candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(report["ocr_engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(report["ocr_scope"], "printed_text_line_extraction_only");
+        assert_eq!(report["privacy_scope"], "text_only_pii_detection");
+        assert_eq!(
+            report["privacy_filter_engine"],
+            "fallback_synthetic_patterns"
+        );
+        assert_eq!(
+            report["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(report["ready_for_text_pii_eval"], true);
+        assert_eq!(report["network_api_called"], false);
+        assert_eq!(report["privacy_filter_detected_span_count"], 4);
+        assert_eq!(
+            report["privacy_filter_category_counts"],
+            json!({"EMAIL": 1, "ID": 0, "MRN": 1, "NAME": 1, "PHONE": 1})
+        );
+        for forbidden_key in [
+            "raw_text",
+            "normalized_text",
+            "extracted_text",
+            "masked_text",
+            "spans",
+            "preview",
+            "image_path",
+            "metadata",
+            "visual_redaction",
+            "pdf_bytes_base64",
+        ] {
+            assert!(
+                report.get(forbidden_key).is_none(),
+                "forbidden key leaked: {forbidden_key}"
+            );
+        }
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+            "SHOULD_NOT_LEAK",
+            "ADDRESS",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_to_privacy_filter_summary_save_omits_unsafe_values() {
+        let response = json!({
+            "ocr_candidate": "Patient Jane Example",
+            "ocr_engine": "unsafe-engine",
+            "ocr_scope": "printed_text_line_extraction_only;MRN-12345",
+            "privacy_scope": "text_only_pii_detection",
+            "privacy_filter_engine": "fallback_synthetic_patterns",
+            "privacy_filter_contract": "jane@example.com",
+            "ready_for_text_pii_eval": "true",
+            "network_api_called": true,
+            "privacy_filter_detected_span_count": -1,
+            "privacy_filter_category_counts": {
+                "NAME": "Patient Jane Example",
+                "PHONE": 1.5,
+                "DATE": 2,
+                "MRN": 2
+            },
+            "normalized_text": "555-123-4567"
+        });
+
+        let payload = build_desktop_ocr_to_privacy_filter_summary_save(
+            &response.to_string(),
+            Some("case.json"),
+        )
+        .expect("ocr to privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["mode"], "ocr_to_privacy_filter_summary");
+        assert!(report.get("ocr_candidate").is_none());
+        assert!(report.get("ocr_engine").is_none());
+        assert!(report.get("ocr_scope").is_none());
+        assert_eq!(report["privacy_scope"], "text_only_pii_detection");
+        assert_eq!(
+            report["privacy_filter_engine"],
+            "fallback_synthetic_patterns"
+        );
+        assert!(report.get("privacy_filter_contract").is_none());
+        assert!(report.get("ready_for_text_pii_eval").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("privacy_filter_detected_span_count").is_none());
+        assert_eq!(report["privacy_filter_category_counts"], json!({"MRN": 2}));
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+            "unsafe-engine",
+            "DATE",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_save_preserves_only_safe_aggregates_and_source_stem() {
+        let response = json!({
+            "summary": {
+                "input_char_count": 86,
+                "detected_span_count": 4,
+                "category_counts": {"NAME": 1, "MRN": 1, "EMAIL": 1, "PHONE": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_bracket_labels_only"
+            },
+            "masked_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
+            "preview": "Patient Jane Example",
+            "spans": [{"text": "MRN-12345"}],
+            "input_text": "jane@example.com"
+        });
+
+        let payload = build_desktop_privacy_filter_summary_save(
+            &response.to_string(),
+            Some("privacy-output.json"),
+        )
+        .expect("privacy filter summary save");
+
+        assert_eq!(
+            payload.file_name,
+            "privacy-output-privacy-filter-summary.json"
+        );
+        assert_eq!(payload.status, "Privacy Filter summary ready to save; masked text, spans, previews, and raw input text are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert_eq!(report["engine"], "fallback_synthetic_patterns");
+        assert_eq!(report["network_api_called"], false);
+        assert_eq!(report["preview_policy"], "redacted_bracket_labels_only");
+        assert_eq!(report["input_char_count"], 86);
+        assert_eq!(report["detected_span_count"], 4);
+        assert_eq!(
+            report["category_counts"],
+            json!({"EMAIL": 1, "MRN": 1, "NAME": 1, "PHONE": 1})
+        );
+        for forbidden in [
+            "\"masked_text\"",
+            "\"spans\"",
+            "\"preview\"",
+            "\"input_text\"",
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "forbidden value leaked: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn privacy_filter_summary_save_omits_unsafe_shapes_and_string_counts() {
+        let response = json!({
+            "metadata": {
+                "engine": {"name": "Patient Jane Example"},
+                "network_api_called": "false",
+                "preview_policy": ["masked_only"]
+            },
+            "summary": {
+                "input_char_count": "123",
+                "detected_span_count": -1,
+                "category_counts": {"NAME": "1", "MRN": -1, "EMAIL": 2.5, "PHONE": 0}
+            }
+        });
+
+        let payload =
+            build_desktop_privacy_filter_summary_save(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["mode"], "privacy_filter_summary");
+        assert!(report.get("engine").is_none());
+        assert!(report.get("network_api_called").is_none());
+        assert!(report.get("preview_policy").is_none());
+        assert!(report.get("input_char_count").is_none());
+        assert!(report.get("detected_span_count").is_none());
+        assert_eq!(report["category_counts"], json!({"PHONE": 0}));
+    }
+
+    #[test]
+    fn privacy_filter_summary_save_rejects_sentinel_metadata_and_unallowlisted_categories() {
+        let response = json!({
+            "metadata": {
+                "engine": "Patient Jane Example",
+                "preview_policy": "MRN-12345"
+            },
+            "summary": {
+                "category_counts": {"NAME": 1, "SSN": 9, "ADDRESS": 3, "EMAIL": 2}
+            }
+        });
+
+        let payload =
+            build_desktop_privacy_filter_summary_save(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert!(report.get("engine").is_none());
+        assert!(report.get("preview_policy").is_none());
+        assert_eq!(report["category_counts"], json!({"EMAIL": 2, "NAME": 1}));
+        assert!(!payload.contents.contains("Patient Jane Example"));
+        assert!(!payload.contents.contains("MRN-12345"));
+        assert!(!payload.contents.contains("SSN"));
+        assert!(!payload.contents.contains("ADDRESS"));
+    }
+
+    #[test]
+    fn privacy_filter_summary_save_preserves_runtime_safe_engine_and_id_category() {
+        let response = json!({
+            "metadata": {
+                "engine": "safe.rule:engine-v1",
+                "preview_policy": "redacted.bracket:labels-v1"
+            },
+            "summary": {
+                "category_counts": {"ID": 7, "BAD-LABEL": 2, "Patient Jane Example": 3}
+            }
+        });
+
+        let payload =
+            build_desktop_privacy_filter_summary_save(&response.to_string(), Some("case.json"))
+                .expect("privacy filter summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["engine"], "safe.rule:engine-v1");
+        assert_eq!(report["preview_policy"], "redacted.bracket:labels-v1");
+        assert_eq!(report["category_counts"], json!({"ID": 7}));
+        assert!(!payload.contents.contains("BAD-LABEL"));
+        assert!(!payload.contents.contains("Patient Jane Example"));
+    }
+
+    #[test]
+    fn ocr_handoff_summary_save_matches_existing_fixture_contract() {
+        let handoff =
+            include_str!("../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json");
+
+        let payload = build_desktop_ocr_handoff_summary_save(handoff, Some("case 7.json"))
+            .expect("ocr handoff summary save");
+
+        assert_eq!(payload.file_name, "case_7-ocr-handoff-summary.json");
+        assert_eq!(payload.status, "OCR handoff summary ready to save; normalized text and OCR line text are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "ocr_handoff_summary");
+        assert_eq!(report["candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(report["engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(
+            report["engine_status"],
+            "deterministic_synthetic_fixture_fallback"
+        );
+        assert_eq!(report["scope"], "printed_text_line_extraction_only");
+        assert_eq!(report["ready_for_text_pii_eval"], true);
+        assert_eq!(
+            report["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(report["non_goals"][0], "visual_redaction");
+        assert!(report.get("status").is_none());
+        assert!(report.get("line_count").is_none());
+        assert!(report.get("char_count").is_none());
+
+        for forbidden in [
+            "extracted_text",
+            "normalized_text",
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_handoff_summary_save_omits_non_string_privacy_filter_contract() {
+        for privacy_filter_contract in [
+            json!(true),
+            json!({
+                "scope": "text_only_normalized_input",
+                "network_api_called": false,
+                "text_only": true
+            }),
+        ] {
+            let handoff = json!({
+                "candidate": "PP-OCRv5_mobile_rec",
+                "engine": "PP-OCRv5-mobile-bounded-spike",
+                "scope": "printed_text_line_extraction_only",
+                "ready_for_text_pii_eval": true,
+                "privacy_filter_contract": privacy_filter_contract,
+                "non_goals": ["visual_redaction"],
+                "normalized_text": "Patient Jane Example MRN-12345"
+            });
+
+            let payload =
+                build_desktop_ocr_handoff_summary_save(&handoff.to_string(), Some("case.json"))
+                    .expect("ocr handoff summary save");
+            let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+            assert!(
+                report.get("privacy_filter_contract").is_none(),
+                "non-string privacy_filter_contract must be omitted: {report}"
+            );
+            assert!(!payload.contents.contains("Patient Jane Example"));
+        }
+    }
+
+    #[test]
+    fn ocr_handoff_summary_save_omits_phi_string_counts_but_preserves_numeric_counts() {
+        let handoff = json!({
+            "candidate": "PP-OCRv5_mobile_rec",
+            "engine": "PP-OCRv5-mobile-bounded-spike",
+            "scope": "printed_text_line_extraction_only",
+            "ready_for_text_pii_eval": true,
+            "line_count": "Patient Jane Example MRN-12345",
+            "char_count": "jane@example.com 555-123-4567",
+            "normalized_text": "Patient Jane Example MRN-12345"
+        });
+
+        let payload =
+            build_desktop_ocr_handoff_summary_save(&handoff.to_string(), Some("case.json"))
+                .expect("ocr handoff summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert!(report.get("line_count").is_none());
+        assert!(report.get("char_count").is_none());
+        for forbidden in [
+            "Patient Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !payload.contents.contains(forbidden),
+                "leaked {forbidden}: {}",
+                payload.contents
+            );
+        }
+
+        let handoff = json!({
+            "candidate": "PP-OCRv5_mobile_rec",
+            "engine": "PP-OCRv5-mobile-bounded-spike",
+            "scope": "printed_text_line_extraction_only",
+            "ready_for_text_pii_eval": true,
+            "line_count": 7,
+            "char_count": 1234
+        });
+        let payload =
+            build_desktop_ocr_handoff_summary_save(&handoff.to_string(), Some("case.json"))
+                .expect("ocr handoff summary save");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+
+        assert_eq!(report["line_count"], 7);
+        assert_eq!(report["char_count"], 1234);
+    }
 
     #[test]
     fn desktop_product_copy_avoids_scope_drift_terms() {
@@ -2072,6 +3478,37 @@ mod tests {
     }
 
     #[test]
+    fn workflow_response_state_renders_xlsx_worksheet_disclosure_without_cells() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::XlsxBase64,
+            json!({
+                "rewritten_workbook_base64": "d29ya2Jvb2s=",
+                "summary": {
+                    "total_rows": 2,
+                    "encoded_cells": 1,
+                    "review_required_cells": 0,
+                    "failed_rows": 0
+                },
+                "review_queue": [],
+                "worksheet_disclosure": {
+                    "selected_sheet_name": "Patients",
+                    "selected_sheet_index": 1,
+                    "total_sheet_count": 3,
+                    "disclosure": "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+                },
+                "patient_cell_value": "Alice Patient"
+            }),
+        );
+
+        assert!(state.summary.contains("worksheet_disclosure"));
+        assert!(state.summary.contains("selected_sheet_name"));
+        assert!(state.summary.contains("Patients"));
+        assert!(state.summary.contains("first non-empty worksheet"));
+        assert!(!state.summary.contains("Alice Patient"));
+    }
+
+    #[test]
     fn vault_runtime_success_handoff_uses_safe_summary_not_raw_response_values() {
         let response = serde_json::json!({
             "decoded_value_count": 1,
@@ -2092,7 +3529,410 @@ mod tests {
     }
 
     #[test]
-    fn desktop_portable_response_report_for_source_uses_safe_imported_artifact_filename() {
+    fn desktop_portable_response_report_save_uses_safe_source_name_and_redacts_artifact() {
+        let payload = build_desktop_portable_response_report_save(
+            DesktopPortableMode::ImportArtifact,
+            Some("Alice portable.mdid-portable.json"),
+            r#"{"artifact":{"records":[{"id":"phi-1"}]},"nested":{"decoded_values":{"patient":"Alice"}},"imported_record_count":1,"audit_event_count":2}"#,
+        )
+        .expect("portable import response should produce report save payload");
+
+        assert_eq!(
+            payload.suggested_file_name,
+            "Alice_portable-portable-artifact-import-report.json"
+        );
+        assert_eq!(payload.mime_type, "application/json");
+        assert_eq!(payload.status, "Portable artifact import report ready to save; artifact and decoded values are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&payload.contents).unwrap();
+        assert_eq!(report["mode"], "portable_artifact_import");
+        assert_eq!(report["imported_record_count"], 1);
+        assert_eq!(report["audit_event_count"], 2);
+        assert_eq!(report["artifact"], "redacted");
+        assert_eq!(report["nested"]["decoded_values"], "redacted");
+        assert!(!payload.contents.contains("phi-1"));
+        assert!(!payload.contents.contains("Alice"));
+    }
+
+    #[test]
+    fn desktop_portable_response_report_save_rejects_invalid_json() {
+        let error = build_desktop_portable_response_report_save(
+            DesktopPortableMode::InspectArtifact,
+            Some("portable.mdid-portable.json"),
+            "not-json",
+        )
+        .unwrap_err();
+
+        assert_eq!(error, DesktopPortableReportSaveError::InvalidResponseJson);
+    }
+
+    #[test]
+    fn desktop_portable_response_report_save_preserves_desktop_source_stem() {
+        let payload = build_desktop_portable_response_report_save(
+            DesktopPortableMode::InspectArtifact,
+            Some("desktop.mdid-portable.json"),
+            r#"{"artifact":{"records":[{"id":"phi-1"}]}}"#,
+        )
+        .expect("portable inspect response should produce report save payload");
+
+        assert_eq!(
+            payload.suggested_file_name,
+            "desktop-portable-artifact-inspect-report.json"
+        );
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_redacts_text_and_uses_source_stem() {
+        let response = serde_json::json!({
+            "summary": {
+                "total_pages": 3,
+                "pages_with_text": 2,
+                "ocr_required_pages": 1,
+                "sensitive_text": "Jane Roe DOB 1970"
+            },
+            "review_queue": [
+                {
+                    "page": 2,
+                    "kind": "ocr_required",
+                    "status": "needs_review",
+                    "text": "Jane Roe DOB 1970"
+                }
+            ],
+            "page_statuses": [
+                {
+                    "page": 1,
+                    "status": "VISUAL_REVIEW_REQUIRED",
+                    "requires_ocr": true,
+                    "candidate_count": 0,
+                    "raw_text": "Jane Roe DOB 1970",
+                    "bbox": [1, 2, 3, 4]
+                }
+            ],
+            "no_rewritten_pdf": true,
+            "filename": "hostile-patient-file.pdf",
+            "passphrase": "hostile-secret",
+            "pdf_bytes_base64": "SHOULD_NOT_LEAK"
+        });
+
+        let save = build_desktop_pdf_review_report_save(
+            &response.to_string(),
+            Some("workstation scan.pdf"),
+        )
+        .expect("desktop pdf report save");
+
+        assert_eq!(save.file_name, "workstation_scan-pdf-review-report.json");
+        assert_eq!(save.status, "PDF review report ready to save; text content and PDF bytes are redacted from this report.");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+        assert_eq!(report["mode"], "pdf_review_report");
+        assert_eq!(report["summary"]["total_pages"], 3);
+        assert_eq!(report["review_queue"][0]["page"], 2);
+        assert_eq!(report["review_queue"][0]["kind"], "ocr_required");
+        assert_eq!(
+            report["ocr_blockers"],
+            serde_json::json!({
+                "requires_ocr_pages": 1,
+                "visual_review_pages": 1,
+                "blocked_page_count": 1,
+                "rewrite_available": false
+            })
+        );
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("Jane"));
+        assert!(!serialized.contains("DOB"));
+        assert!(!serialized.contains("SHOULD_NOT_LEAK"));
+        assert!(!serialized.contains("hostile-patient-file.pdf"));
+        assert!(!serialized.contains("hostile-secret"));
+        assert!(!serialized.contains("pdf_bytes_base64"));
+        assert!(!serialized.contains("filename"));
+        assert!(!serialized.contains("passphrase"));
+        assert!(!serialized.contains("\"text\""));
+    }
+
+    fn build_pdf_review_report_save_bytes(response_json: &str) -> Result<Vec<u8>, String> {
+        build_desktop_pdf_review_report_save(response_json, Some("scan.pdf"))
+            .map(|save| save.contents.into_bytes())
+    }
+
+    #[test]
+    fn pdf_review_report_save_includes_visual_redaction_blockers_without_sensitive_payloads() {
+        let response = serde_json::json!({
+            "source": {"kind": "pdf", "status": "review_required"},
+            "page_statuses": [
+                {"page": 1, "status": "ok", "requires_ocr": false, "candidate_count": 2, "raw_text": "Patient Alice"},
+                {"page": 2, "status": "visual_review_required", "requires_ocr": false, "candidate_count": 0, "bbox": [1, 2, 3, 4]},
+                {"page": 2, "status": "requires_ocr", "requires_ocr": true, "candidate_count": 0, "pdf_bytes_base64": "JVBERi0="}
+            ],
+            "review_queue": [{"page": 2, "kind": "visual", "status": "review_required", "raw_text": "Alice"}],
+            "no_rewritten_pdf": true,
+            "pdf_bytes_base64": "JVBERi0="
+        });
+
+        let report = build_pdf_review_report_save_bytes(&response.to_string()).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
+
+        assert_eq!(
+            report["visual_redaction_blockers"]["visual_review_pages"],
+            1
+        );
+        assert_eq!(report["visual_redaction_blockers"]["ocr_required_pages"], 1);
+        assert_eq!(report["visual_redaction_blockers"]["blocked_page_count"], 2);
+        assert_eq!(
+            report["visual_redaction_blockers"]["redaction_rewrite_available"],
+            false
+        );
+        assert_eq!(
+            report["visual_redaction_blockers"]["status"],
+            "blocked_pending_visual_redaction_or_ocr"
+        );
+
+        let encoded = serde_json::to_string(&report).unwrap();
+        assert!(!encoded.contains("Patient Alice"));
+        assert!(!encoded.contains("pdf_bytes_base64"));
+        assert!(!encoded.contains("bbox"));
+    }
+
+    #[test]
+    fn pdf_review_report_save_includes_actionability_for_blocked_pdf() {
+        let response = serde_json::json!({
+            "ok": true,
+            "command": "pdf-review",
+            "metadata": {
+                "page_statuses": [
+                    {"page": 1, "status": "review_required", "requires_ocr": true, "can_rewrite": false, "raw_text": "Jane Roe"},
+                    {"page": 2, "status": "visual_review_required", "requires_visual_review": true, "can_rewrite": false}
+                ],
+                "redaction_rewrite_available": false
+            },
+            "raw_text": "patient name must not be copied"
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("intake.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], false);
+        assert_eq!(report["actionability"]["blocked_page_count"], 2);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 1);
+        assert_eq!(report["actionability"]["visual_review_pages"], 1);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "Run OCR outside this tool before attempting PDF rewrite.",
+                "Review visual-only pages manually before exporting a redacted PDF.",
+                "Keep this PHI-safe report with the case audit trail."
+            ])
+        );
+        assert!(!serde_json::to_string(&report["actionability"])
+            .unwrap()
+            .contains("patient name"));
+        assert!(!serde_json::to_string(&report["actionability"])
+            .unwrap()
+            .contains("Jane Roe"));
+    }
+
+    #[test]
+    fn pdf_review_report_save_marks_rewrite_ready_when_no_blockers_remain() {
+        let response = serde_json::json!({
+            "metadata": {
+                "page_statuses": [
+                    {"page": 1, "status": "rewrite_ready", "requires_ocr": false, "requires_visual_review": false, "can_rewrite": true}
+                ],
+                "redaction_rewrite_available": true
+            }
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("ready.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], true);
+        assert_eq!(report["actionability"]["blocked_page_count"], 0);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 0);
+        assert_eq!(report["actionability"]["visual_review_pages"], 0);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "PDF review metadata indicates rewrite readiness; verify output before release."
+            ])
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_save_actionability_supports_existing_no_rewritten_pdf_runtime_shape() {
+        let response = serde_json::json!({
+            "page_statuses": [
+                {"page": 1, "status": "rewrite_ready", "requires_ocr": false}
+            ],
+            "no_rewritten_pdf": false
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("ready.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], true);
+        assert_eq!(report["actionability"]["blocked_page_count"], 0);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "PDF review metadata indicates rewrite readiness; verify output before release."
+            ])
+        );
+    }
+
+    #[test]
+    fn pdf_review_report_save_actionability_deduplicates_overlapping_blocked_pages() {
+        let response = serde_json::json!({
+            "page_statuses": [
+                {"page": 1, "status": "visual_review_required", "requires_ocr": true, "requires_visual_review": true, "raw_text": "Jane Roe"},
+                {"page": 1, "status": "visual_review_required", "requires_ocr": true, "requires_visual_review": true},
+                {"page": 2, "status": "ocr_required", "requires_ocr": true},
+                {"status": "visual_review_required", "requires_visual_review": true}
+            ],
+            "redaction_rewrite_available": true
+        });
+
+        let save = build_desktop_pdf_review_report_save(&response.to_string(), Some("blocked.pdf"))
+            .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], false);
+        assert_eq!(report["actionability"]["blocked_page_count"], 3);
+        assert_eq!(report["actionability"]["ocr_required_pages"], 3);
+        assert_eq!(report["actionability"]["visual_review_pages"], 3);
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "Run OCR outside this tool before attempting PDF rewrite.",
+                "Review visual-only pages manually before exporting a redacted PDF.",
+                "Keep this PHI-safe report with the case audit trail."
+            ])
+        );
+        assert!(!serde_json::to_string(&report["actionability"])
+            .unwrap()
+            .contains("Jane Roe"));
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_includes_sanitized_page_statuses() {
+        let response = serde_json::json!({
+            "summary": {"total_pages": 2},
+            "page_statuses": [
+                {
+                    "page": 1,
+                    "status": "text_layer_reviewed",
+                    "requires_ocr": false,
+                    "candidate_count": 3,
+                    "raw_text": "Patient Alice",
+                    "bbox": [1, 2, 3, 4]
+                },
+                {
+                    "page": 2,
+                    "status": "ocr_required",
+                    "requires_ocr": true,
+                    "candidate_count": 0,
+                    "nested": {"patient": "Alice"}
+                },
+                42
+            ]
+        });
+
+        let save =
+            build_desktop_pdf_review_report_save(&response.to_string(), Some("scan.pdf")).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["page_statuses"][0]["page"], 1);
+        assert_eq!(report["page_statuses"][0]["status"], "text_layer_reviewed");
+        assert_eq!(report["page_statuses"][0]["requires_ocr"], false);
+        assert_eq!(report["page_statuses"][0]["candidate_count"], 3);
+        assert!(report["page_statuses"][0].get("raw_text").is_none());
+        assert!(report["page_statuses"][0].get("bbox").is_none());
+        assert_eq!(report["page_statuses"][1]["page"], 2);
+        assert!(report["page_statuses"][1].get("nested").is_none());
+        assert_eq!(report["page_statuses"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_rejects_non_object_runtime_response() {
+        let error = build_desktop_pdf_review_report_save("null", Some("scan.pdf")).unwrap_err();
+        assert!(error.contains("PDF review report requires a JSON object response"));
+    }
+
+    #[test]
+    fn desktop_pdf_review_report_save_defaults_missing_containers_and_preserves_primitive_queue_fields(
+    ) {
+        let missing_containers = build_desktop_pdf_review_report_save("{}", Some("scan.pdf"))
+            .expect("missing summary and queue should still save");
+        let missing_report: serde_json::Value =
+            serde_json::from_str(&missing_containers.contents).unwrap();
+        assert_eq!(missing_report["summary"], serde_json::json!({}));
+        assert_eq!(missing_report["review_queue"], serde_json::json!([]));
+
+        let non_container_response = serde_json::json!({
+            "summary": "not an object",
+            "review_queue": {"not": "an array"}
+        });
+        let non_containers = build_desktop_pdf_review_report_save(
+            &non_container_response.to_string(),
+            Some("scan.pdf"),
+        )
+        .expect("non-object summary and non-array queue should still save");
+        let non_container_report: serde_json::Value =
+            serde_json::from_str(&non_containers.contents).unwrap();
+        assert_eq!(non_container_report["summary"], serde_json::json!({}));
+        assert_eq!(non_container_report["review_queue"], serde_json::json!([]));
+
+        let primitive_queue_response = serde_json::json!({
+            "review_queue": [
+                {
+                    "page": null,
+                    "kind": 42,
+                    "status": false,
+                    "text": "Jane Roe should not leak",
+                    "details": {"text": "nested PHI"}
+                },
+                {
+                    "page": "front matter",
+                    "kind": null,
+                    "status": 7
+                }
+            ]
+        });
+        let primitive_queue = build_desktop_pdf_review_report_save(
+            &primitive_queue_response.to_string(),
+            Some("scan.pdf"),
+        )
+        .expect("primitive/null queue field values should still save");
+        let primitive_queue_report: serde_json::Value =
+            serde_json::from_str(&primitive_queue.contents).unwrap();
+        assert_eq!(
+            primitive_queue_report["review_queue"],
+            serde_json::json!([
+                {"page": null, "kind": 42, "status": false},
+                {"page": "front matter", "kind": null, "status": 7}
+            ])
+        );
+        let serialized = serde_json::to_string(&primitive_queue_report).unwrap();
+        assert!(!serialized.contains("Jane Roe"));
+        assert!(!serialized.contains("nested PHI"));
+
+        let mixed_queue_response = serde_json::json!({
+            "review_queue": [42, "x", null, {"page": 1}]
+        });
+        let mixed_queue = build_desktop_pdf_review_report_save(
+            &mixed_queue_response.to_string(),
+            Some("scan.pdf"),
+        )
+        .expect("non-object queue entries should be skipped");
+        let mixed_queue_report: serde_json::Value =
+            serde_json::from_str(&mixed_queue.contents).unwrap();
+        assert_eq!(
+            mixed_queue_report["review_queue"],
+            serde_json::json!([{ "page": 1 }])
+        );
+    }
+
+    #[test]
+    fn desktop_state_defaults_are_phi_safe() {
         let inspect_response = serde_json::json!({
             "record_count": 2,
             "records": [{
@@ -2205,7 +4045,35 @@ mod tests {
         assert_eq!(download.file_name, "audit-export-response-report.json");
         let report: serde_json::Value = serde_json::from_slice(&download.bytes).unwrap();
         assert_eq!(report["mode"], "vault_audit");
-        assert_eq!(report["summary"], "events returned: 3 / 8");
+        assert!(report["summary"]
+            .as_str()
+            .unwrap()
+            .contains("events returned: 3 / 8"));
+    }
+
+    #[test]
+    fn vault_audit_response_summary_includes_pagination_status() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "events": [
+                    {"id": "evt-1", "kind": "decode", "actor": "clinician-1"},
+                    {"id": "evt-2", "kind": "decode", "actor": "clinician-2"}
+                ],
+                "event_count": 7,
+                "returned_event_count": 2,
+                "offset": 5,
+                "limit": 2
+            }),
+        );
+
+        assert!(state
+            .summary
+            .contains("Audit events page: showing 6-7 of 7"));
+        assert!(state.summary.contains("limit 2"));
+        assert!(!state.summary.contains("evt-1"));
+        assert!(!state.summary.contains("decode"));
     }
 
     #[test]
@@ -2445,6 +4313,36 @@ mod tests {
     }
 
     #[test]
+    fn media_metadata_request_rejects_media_byte_payload_fields_phi_safely() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+            let state = DesktopWorkflowRequestState {
+                mode: DesktopWorkflowMode::MediaMetadataJson,
+                payload: serde_json::json!({
+                    "artifact_label": "patient-jane-image.png",
+                    "format": "image",
+                    "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+                    field: raw_media_value,
+                })
+                .to_string(),
+                field_policy_json: "{}".to_string(),
+                source_name: "local-media-metadata.json".to_string(),
+            };
+
+            let error = state.try_build_request().unwrap_err();
+            assert_eq!(error, DesktopWorkflowValidationError::MediaBytesNotAccepted);
+            let message = error.to_string();
+            assert_eq!(
+                message,
+                "metadata-only media review does not accept media bytes"
+            );
+            assert!(!message.contains(raw_media_value));
+            assert!(!message.contains("Jane Patient"));
+        }
+    }
+
+    #[test]
     fn media_metadata_request_debug_redacts_phi_payload() {
         let state = DesktopWorkflowRequestState {
             mode: DesktopWorkflowMode::MediaMetadataJson,
@@ -2531,6 +4429,31 @@ mod tests {
         assert_eq!(request.body["context"], "handoff to privacy office");
         assert_eq!(request.body["requested_by"], "desktop");
         assert!(request.body.get("export_context").is_none());
+    }
+
+    #[test]
+    fn desktop_portable_export_request_rejects_duplicate_record_ids() {
+        let state = DesktopPortableRequestState {
+            mode: DesktopPortableMode::VaultExport,
+            vault_path: "/safe/local.vault".to_string(),
+            vault_passphrase: "vault-secret".to_string(),
+            record_ids_json: "[\"550e8400-e29b-41d4-a716-446655440000\",\"550e8400-e29b-41d4-a716-446655440000\"]".to_string(),
+            export_passphrase: "portable-secret".to_string(),
+            export_context: "handoff to privacy office".to_string(),
+            artifact_json: String::new(),
+            portable_passphrase: String::new(),
+            destination_vault_path: String::new(),
+            destination_vault_passphrase: String::new(),
+            import_context: String::new(),
+            requested_by: "desktop".to_string(),
+        };
+
+        let err = state
+            .try_build_request()
+            .expect_err("desktop must reject duplicate export record ids");
+        let message = format!("{err:?}");
+        assert!(message.contains("duplicate record id"));
+        assert!(!message.contains("550e8400"));
     }
 
     #[test]
@@ -2825,6 +4748,311 @@ mod tests {
     }
 
     #[test]
+    fn safe_response_report_includes_allowlisted_decode_metadata_without_sensitive_values() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "artifact_record_count": 9,
+            "decoded_count": 4,
+            "decoded_value_count": 2,
+            "audit_event_id": "audit-123",
+            "decoded_values": {"record-1": {"name": "Jane Doe"}},
+            "events": [{"event_id": "evt-sensitive"}],
+            "vault_path": "/secret/Jane.vault",
+            "passphrase": "do-not-save",
+            "nested": {"decoded_values": "Jane Doe"}
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let report = state
+            .safe_response_report_json()
+            .expect("safe decode response report");
+        let serialized = serde_json::to_string(&report).expect("serialize report");
+
+        assert_eq!(report["mode"], "vault_decode");
+        assert_eq!(report["metadata"]["artifact_record_count"], 9);
+        assert_eq!(report["metadata"]["decoded_count"], 4);
+        assert_eq!(report["metadata"]["decoded_value_count"], 2);
+        assert_eq!(report["metadata"]["audit_event_id"], "audit-123");
+        assert!(!serialized.contains("decoded_values"));
+        assert!(!serialized.contains("\"events\""));
+        assert!(!serialized.contains("vault_path"));
+        assert!(!serialized.contains("passphrase"));
+        assert!(!serialized.contains("Jane Doe"));
+        assert!(!serialized.contains("/secret"));
+        assert!(!serialized.contains("do-not-save"));
+    }
+
+    #[test]
+    fn safe_response_report_includes_allowlisted_audit_metadata_without_sensitive_events() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "event_count": 200,
+            "returned_event_count": 2,
+            "offset": 10,
+            "limit": null,
+            "events": [
+                {"event_id": "evt-1", "kind": "decode", "record_id": "record-1"},
+                {"event_id": "evt-2", "kind": "encode", "record_id": "record-2"}
+            ],
+            "vault_path": "/secret/Alice.vault",
+            "passphrase": "do-not-save"
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultAudit, &response);
+
+        let report = state
+            .safe_response_report_json()
+            .expect("safe audit response report");
+        let serialized = serde_json::to_string(&report).expect("serialize report");
+
+        assert_eq!(report["mode"], "vault_audit");
+        assert_eq!(report["metadata"]["total_event_count"], 200);
+        assert_eq!(report["metadata"]["returned_event_count"], 2);
+        assert_eq!(report["metadata"]["offset"], 10);
+        assert!(report["metadata"].get("limit").is_some());
+        assert!(report["metadata"]["limit"].is_null());
+        assert!(report["metadata"].get("event_count").is_none());
+        assert!(!serialized.contains("\"events\""));
+        assert!(!serialized.contains("vault_path"));
+        assert!(!serialized.contains("passphrase"));
+        assert!(!serialized.contains("evt-1"));
+        assert!(!serialized.contains("/secret"));
+        assert!(!serialized.contains("do-not-save"));
+    }
+
+    #[test]
+    fn desktop_decode_values_export_contains_decoded_values_for_decode_response() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_value_count": 2,
+            "decoded_values": {
+                "record-1": {"name": "Jane Doe"},
+                "record-2": {"mrn": "12345"}
+            },
+            "audit_event_id": "audit-1"
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let json = state
+            .decode_values_export_json()
+            .expect("decode values export");
+
+        assert_eq!(json["mode"], "vault_decode_values");
+        assert_eq!(json["decoded_value_count"], 2);
+        assert_eq!(json["decoded_values"]["record-1"]["name"], "Jane Doe");
+        assert_eq!(json["decoded_values"]["record-2"]["mrn"], "12345");
+        assert_eq!(
+            json["disclosure"],
+            "high-risk decoded values; store only in an approved local workstation location"
+        );
+    }
+
+    #[test]
+    fn desktop_decode_values_export_uses_decoded_values_len_when_count_missing() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_values": {
+                "record-1": {"name": "Jane Doe"},
+                "record-2": {"mrn": "12345"},
+                "record-3": {"dob": "1970-01-01"}
+            }
+        });
+
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+
+        let json = state
+            .decode_values_export_json()
+            .expect("decode values export");
+
+        assert_eq!(json["decoded_value_count"], 3);
+        assert_eq!(json["decoded_values"]["record-3"]["dob"], "1970-01-01");
+    }
+
+    #[test]
+    fn write_desktop_decode_values_export_json_persists_successful_decode_export() {
+        let mut state = DesktopVaultResponseState::default();
+        let response = serde_json::json!({
+            "decoded_value_count": 1,
+            "decoded_values": {
+                "record-1": {"diagnosis": "asthma"}
+            }
+        });
+        state.apply_success(DesktopVaultResponseMode::VaultDecode, &response);
+        let path = std::env::temp_dir().join(format!(
+            "mdid-desktop-decode-values-export-{}-persisted.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let returned_path = write_desktop_decode_values_json(&state, &path).expect("write export");
+        let persisted = std::fs::read_to_string(&path).expect("read persisted export");
+        let persisted_json: serde_json::Value =
+            serde_json::from_str(&persisted).expect("persisted JSON parses");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(returned_path, path);
+        assert_eq!(persisted_json["mode"], "vault_decode_values");
+        assert_eq!(persisted_json["decoded_value_count"], 1);
+        assert_eq!(
+            persisted_json["decoded_values"]["record-1"]["diagnosis"],
+            "asthma"
+        );
+    }
+
+    #[test]
+    fn desktop_decode_values_export_is_cleared_after_decode_error() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultDecode,
+            &serde_json::json!({
+                "decoded_value_count": 1,
+                "decoded_values": {"record-1": {"name": "Jane Doe"}}
+            }),
+        );
+        assert!(state.decode_values_export_json().is_ok());
+
+        state.apply_error(
+            DesktopVaultResponseMode::VaultDecode,
+            "decode failed for Jane Doe",
+        );
+
+        let error = state
+            .decode_values_export_json()
+            .expect_err("stale decode values export cleared");
+        assert_eq!(
+            error.to_string(),
+            "decoded values export is only available for successful vault decode responses"
+        );
+    }
+
+    #[test]
+    fn desktop_decode_values_export_rejects_non_decode_response() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({"event_count": 0, "events": []}),
+        );
+
+        let error = state.decode_values_export_json().expect_err("not decode");
+
+        assert_eq!(
+            error.to_string(),
+            "decoded values export is only available for successful vault decode responses"
+        );
+    }
+
+    #[test]
+    fn desktop_decode_values_export_rejects_missing_decoded_values() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultDecode,
+            &serde_json::json!({"decoded_value_count": 0}),
+        );
+
+        let error = state
+            .decode_values_export_json()
+            .expect_err("missing values");
+
+        assert_eq!(error.to_string(), "decoded values are unavailable");
+    }
+
+    #[test]
+    fn audit_events_export_json_contains_events_and_metadata_without_request_secrets() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 200,
+                "returned_event_count": 2,
+                "next_offset": 2,
+                "events": [
+                    {"event_id": "evt-1", "kind": "decode", "record_id": "record-1"},
+                    {"event_id": "evt-2", "kind": "encode", "record_id": "record-2"}
+                ],
+                "vault_path": "/secret/Alice.vault",
+                "vault_passphrase": "do-not-save",
+                "passphrase": "also-secret",
+                "request": {"vault_path": "/secret/request.vault"}
+            }),
+        );
+
+        let json = state
+            .audit_events_export_json()
+            .expect("audit events export");
+        let serialized = serde_json::to_string(&json).expect("serialize export");
+
+        assert_eq!(json["mode"], "vault_audit_events");
+        assert_eq!(json["event_count"], 200);
+        assert_eq!(json["returned_event_count"], 2);
+        assert_eq!(json["next_offset"], 2);
+        assert_eq!(json["events"][0]["event_id"], "evt-1");
+        assert_eq!(json["events"][1]["kind"], "encode");
+        assert!(!serialized.contains("passphrase"));
+        assert!(!serialized.contains("vault_path"));
+        assert!(!serialized.contains("request"));
+        assert!(!serialized.contains("/secret"));
+        assert!(!serialized.contains("do-not-save"));
+    }
+
+    #[test]
+    fn audit_events_export_json_omits_absent_count_and_offset_metadata() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "events": [
+                    {"event_id": "evt-1", "kind": "decode", "record_id": "record-1"},
+                    {"event_id": "evt-2", "kind": "encode", "record_id": "record-2"}
+                ]
+            }),
+        );
+
+        let json = state
+            .audit_events_export_json()
+            .expect("audit events export");
+
+        assert_eq!(json["mode"], "vault_audit_events");
+        assert_eq!(json["events"][0]["event_id"], "evt-1");
+        assert_eq!(json["events"][1]["kind"], "encode");
+        assert!(json.get("event_count").is_none());
+        assert!(json.get("returned_event_count").is_none());
+        assert!(json.get("next_offset").is_none());
+    }
+
+    #[test]
+    fn write_desktop_audit_events_json_persists_successful_audit_export() {
+        let mut state = DesktopVaultResponseState::default();
+        state.apply_success(
+            DesktopVaultResponseMode::VaultAudit,
+            &serde_json::json!({
+                "event_count": 1,
+                "returned_event_count": 1,
+                "events": [{"event_id": "evt-1", "kind": "decode"}],
+                "vault_path": "/secret/Alice.vault"
+            }),
+        );
+        let path = std::env::temp_dir().join(format!(
+            "mdid-desktop-audit-events-export-{}-persisted.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let returned_path = write_desktop_audit_events_json(&state, &path).expect("write export");
+        let persisted = std::fs::read_to_string(&path).expect("read persisted export");
+        let persisted_json: serde_json::Value =
+            serde_json::from_str(&persisted).expect("persisted JSON parses");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(returned_path, path);
+        assert_eq!(persisted_json["mode"], "vault_audit_events");
+        assert_eq!(persisted_json["event_count"], 1);
+        assert_eq!(persisted_json["events"][0]["event_id"], "evt-1");
+        assert!(!persisted.contains("/secret"));
+    }
+
+    #[test]
     fn vault_response_state_renders_audit_counts_without_raw_details() {
         let mut state = DesktopVaultResponseState::default();
         let response = serde_json::json!({
@@ -2930,6 +5158,7 @@ mod tests {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         };
 
         let request = state
@@ -2964,6 +5193,7 @@ mod tests {
             audit_kind: Some("Decode".to_string()),
             audit_actor: Some("Desktop".to_string()),
             audit_limit: None,
+            audit_offset: None,
         };
 
         let request = state
@@ -3049,6 +5279,74 @@ mod tests {
     }
 
     #[test]
+    fn vault_audit_request_includes_positive_offset() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_limit: Some("25".to_string()),
+            audit_offset: Some("50".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("audit request should build");
+
+        assert_eq!(request.route, "/vault/audit/events");
+        assert_eq!(request.body["limit"], serde_json::json!(25));
+        assert_eq!(request.body["offset"], serde_json::json!(50));
+    }
+
+    #[test]
+    fn vault_audit_request_omits_blank_and_zero_offset() {
+        let blank_state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_offset: Some("   ".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+        let blank_request = blank_state
+            .try_build_request()
+            .expect("blank offset is omitted");
+        assert!(blank_request.body.get("offset").is_none());
+
+        let zero_state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_offset: Some("0".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+        let zero_request = zero_state
+            .try_build_request()
+            .expect("zero offset is omitted");
+        assert!(zero_request.body.get("offset").is_none());
+    }
+
+    #[test]
+    fn vault_audit_request_rejects_negative_offset_without_echoing_input() {
+        let state = DesktopVaultRequestState {
+            mode: DesktopVaultMode::AuditEvents,
+            vault_path: "C:/vaults/site.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            audit_offset: Some("-10".to_string()),
+            ..DesktopVaultRequestState::default()
+        };
+
+        let error = state
+            .try_build_request()
+            .expect_err("negative offset must fail");
+
+        assert!(matches!(
+            error,
+            DesktopVaultValidationError::InvalidAuditOffset(_)
+        ));
+        assert!(!format!("{error:?}").contains("-10"));
+    }
+
+    #[test]
     fn desktop_vault_request_state_debug_redacts_passphrase() {
         let state = DesktopVaultRequestState {
             vault_passphrase: "correct horse battery staple".to_string(),
@@ -3074,6 +5372,7 @@ mod tests {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         };
 
         let request = state
@@ -3085,6 +5384,27 @@ mod tests {
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("super secret passphrase"));
         assert_eq!(request.body["vault_passphrase"], "super secret passphrase");
+    }
+
+    #[test]
+    fn desktop_vault_decode_request_rejects_duplicate_record_ids() {
+        let state = DesktopVaultRequestState {
+            vault_path: "C:/vaults/local.mdid".to_string(),
+            vault_passphrase: "correct horse battery staple".to_string(),
+            record_ids_json:
+                r#"["550e8400-e29b-41d4-a716-446655440000","550e8400-e29b-41d4-a716-446655440000"]"#
+                    .to_string(),
+            output_target: "review-workbench".to_string(),
+            justification: "case review".to_string(),
+            ..Default::default()
+        };
+
+        let err = state
+            .try_build_request()
+            .expect_err("desktop must reject duplicate decode record ids");
+        let message = format!("{err:?}");
+        assert!(message.contains("duplicate record id"));
+        assert!(!message.contains("550e8400"));
     }
 
     #[test]
@@ -3134,6 +5454,7 @@ mod tests {
             audit_kind: None,
             audit_actor: None,
             audit_limit: None,
+            audit_offset: None,
         };
 
         assert_eq!(
@@ -3474,6 +5795,9 @@ mod tests {
             request.body,
             json!({"workbook_base64":"UEsDBAo=","field_policies":[{"header":"patient_name","phi_type":"Name","action":"review"}]})
         );
+        let disclosure = state.mode.disclosure();
+        assert!(disclosure.contains("first non-empty worksheet"));
+        assert!(disclosure.contains("Sheet selection is not supported"));
     }
 
     #[test]
@@ -3636,6 +5960,15 @@ mod tests {
         assert!(message.contains("vault/decode/audit workflow"));
         assert!(message.contains("full review workflow"));
         assert!(!message.contains(&["control", "ler workflow"].concat()));
+    }
+
+    #[test]
+    fn dicom_workflow_scope_note_discloses_no_pixel_redaction() {
+        let disclosure = DesktopWorkflowMode::DicomBase64.disclosure();
+
+        assert!(disclosure.contains("tag-level DICOM de-identification"));
+        assert!(disclosure.contains("DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."));
+        assert!(!disclosure.contains("visual redaction is performed"));
     }
 
     #[test]
@@ -3858,6 +6191,76 @@ mod tests {
         assert!(report.get("rewritten_pdf_bytes_base64").is_none());
         assert!(report.get("debug_raw_text").is_none());
         assert!(!text.contains("Alice Patient"));
+    }
+
+    #[test]
+    fn pdf_review_report_ocr_blockers_download_includes_phi_safe_counts() {
+        let mut state = DesktopWorkflowResponseState::default();
+        state.apply_success_json(
+            DesktopWorkflowMode::PdfBase64Review,
+            json!({
+                "summary": {"pages": 4, "ocr_required": true},
+                "page_statuses": [
+                    {
+                        "page": 1,
+                        "status": "text_layer_ready",
+                        "requires_ocr": false,
+                        "candidate_count": 1,
+                        "raw_text": "Alice Patient MRN 12345"
+                    },
+                    {
+                        "page": 2,
+                        "status": "ocr_required",
+                        "requires_ocr": true,
+                        "candidate_count": 0,
+                        "bbox": [1, 2, 3, 4]
+                    },
+                    {
+                        "page": 3,
+                        "status": "visual_review_required",
+                        "requires_ocr": false,
+                        "candidate_count": 2,
+                        "nested_payload": {"text": "Bob Patient"}
+                    },
+                    {
+                        "page": 4,
+                        "status": "VISUAL_REVIEW_REQUIRED",
+                        "requires_ocr": true,
+                        "candidate_count": 0,
+                        "raw_text": "Overlap Patient"
+                    }
+                ],
+                "review_queue": [{"page": 3, "reason": "contains face/photo"}],
+                "no_rewritten_pdf": true,
+                "rewritten_pdf_bytes_base64": "JVBERi0xLjQ=",
+                "filename": "patient-intake.pdf",
+                "passphrase": "secret"
+            }),
+        );
+
+        let download = state
+            .review_report_download(DesktopWorkflowMode::PdfBase64Review)
+            .expect("pdf review report download");
+        let text = std::str::from_utf8(&download.bytes).expect("report is utf8 json");
+        let report: serde_json::Value = serde_json::from_str(text).expect("report parses");
+
+        assert_eq!(
+            report["ocr_blockers"],
+            json!({
+                "requires_ocr_pages": 2,
+                "visual_review_pages": 2,
+                "blocked_page_count": 3,
+                "rewrite_available": false
+            })
+        );
+        assert!(!text.contains("Alice Patient"));
+        assert!(!text.contains("Bob Patient"));
+        assert!(!text.contains("JVBERi0xLjQ="));
+        assert!(!text.contains("patient-intake.pdf"));
+        assert!(!text.contains("secret"));
+        assert!(report.get("rewritten_pdf_bytes_base64").is_none());
+        assert!(report.get("filename").is_none());
+        assert!(report.get("passphrase").is_none());
     }
 
     #[test]

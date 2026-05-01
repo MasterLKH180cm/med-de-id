@@ -1,0 +1,1 @@
+Patient Jane Example visited on 2026-04-30. Contact jane@example.com or +1-555-123-4567. Medical record MRN-12345 is synthetic test data.

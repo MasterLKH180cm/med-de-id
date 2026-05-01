@@ -69,6 +69,779 @@ async fn pipelines_endpoint_registers_pipeline() {
 }
 
 #[tokio::test]
+async fn privacy_filter_text_endpoint_returns_phi_safe_summary() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "text": "Patient Jane Example has MRN-12345, email jane@example.com, phone 555-123-4567, and ID A1234567."
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    for forbidden in [
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "A1234567",
+        "masked_text",
+        "spans",
+        "detected_spans",
+        "input_text",
+        "normalized_text",
+    ] {
+        assert!(!body_text.contains(forbidden), "{body_text}");
+    }
+
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["artifact"], "privacy_filter_summary");
+    assert_eq!(json["mode"], "text");
+    assert_eq!(json["engine"], "runtime_text_mock");
+    assert_eq!(json["network_api_called"], false);
+    assert_eq!(json["preview_policy"], "redacted_placeholders_only");
+    assert_eq!(json["detected_span_count"], 5);
+    assert_eq!(json["category_counts"]["NAME"], 1);
+    assert_eq!(json["category_counts"]["MRN"], 1);
+    assert_eq!(json["category_counts"]["EMAIL"], 1);
+    assert_eq!(json["category_counts"]["PHONE"], 1);
+    assert_eq!(json["category_counts"]["ID"], 1);
+}
+
+#[tokio::test]
+async fn privacy_filter_text_endpoint_rejects_empty_text() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({"text": "  \n\t  "});
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_privacy_filter_text_request");
+    assert_eq!(
+        json["error"]["message"],
+        "Privacy Filter text request requires non-empty text no larger than 1048576 bytes."
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_text_endpoint_rejects_unknown_fields_without_echoing_phi() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "text": "Patient Jane Example",
+        "unexpected": "MRN-12345"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    for forbidden in ["Patient Jane Example", "MRN-12345"] {
+        assert!(!body_text.contains(forbidden), "{body_text}");
+    }
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_privacy_filter_text_request");
+    assert_eq!(
+        json["error"]["message"],
+        "Privacy Filter text request requires non-empty text no larger than 1048576 bytes."
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_text_endpoint_rejects_oversized_text_without_echoing_phi() {
+    let app = build_router(RuntimeState::default());
+    let oversized_text = format!(
+        "Patient Jane Example MRN-12345 jane@example.com 555-123-4567 A1234567 {}",
+        "x".repeat(1_048_577)
+    );
+    let request = json!({"text": oversized_text});
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    for forbidden in [
+        "Patient Jane Example",
+        "MRN-12345",
+        "jane@example.com",
+        "555-123-4567",
+        "A1234567",
+    ] {
+        assert!(!body_text.contains(forbidden), "{body_text}");
+    }
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_privacy_filter_text_request");
+    assert_eq!(
+        json["error"]["message"],
+        "Privacy Filter text request requires non-empty text no larger than 1048576 bytes."
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_returns_phi_safe_summary() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "safe-rule-engine",
+            "input_text": "Alice Smith has MRN-001 and needs follow-up.",
+            "normalized_text": "Alice Smith has MRN-001 and needs follow-up.",
+            "detected_spans": [
+                {"category": "NAME", "text": "Alice Smith", "start": 0, "end": 11},
+                {"category": "MRN", "value": "MRN-001", "start": 16, "end": 23}
+            ],
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "preview": "[NAME] has [MRN] and needs follow-up.",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN": 1},
+            "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("Alice Smith"), "{body_text}");
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    assert!(!body_text.contains("input_text"), "{body_text}");
+
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["artifact"], "privacy_filter_summary");
+    assert_eq!(json["mode"], "summary_only");
+    assert_eq!(json["engine"], "safe-rule-engine");
+    assert_eq!(json["network_api_called"], false);
+    assert_eq!(json["preview_policy"], "masked-only");
+    assert_eq!(json["input_char_count"], 45);
+    assert_eq!(json["detected_span_count"], 2);
+    assert_eq!(json["category_counts"]["NAME"], 1);
+    assert_eq!(json["category_counts"]["MRN"], 1);
+    assert_eq!(json["non_goals"].as_array().unwrap().len(), 3);
+    assert!(json.get("input_text").is_none());
+    assert!(json.get("normalized_text").is_none());
+    assert!(json.get("detected_spans").is_none());
+    assert!(json.get("preview").is_none());
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_accepts_nested_runner_report_without_phi_leakage() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"ID": 1, "NAME": 1}
+            },
+            "masked_text": "Patient [NAME] has [MRN].",
+            "spans": [
+                {"label": "NAME", "start": 8, "end": 13, "preview": "<redacted>", "text": "Alice"},
+                {"label": "ID", "start": 18, "end": 25, "preview": "<redacted>", "value": "MRN-001"}
+            ],
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_placeholders_only"
+            }
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("masked_text"), "{body_text}");
+    assert!(!body_text.contains("spans"), "{body_text}");
+    assert!(!body_text.contains("Alice"), "{body_text}");
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["artifact"], "privacy_filter_summary");
+    assert_eq!(json["mode"], "text");
+    assert_eq!(json["engine"], "fallback_synthetic_patterns");
+    assert_eq!(json["network_api_called"], false);
+    assert_eq!(json["preview_policy"], "redacted_placeholders_only");
+    assert_eq!(json["input_char_count"], 39);
+    assert_eq!(json["detected_span_count"], 2);
+    assert_eq!(json["category_counts"]["ID"], 1);
+    assert_eq!(json["category_counts"]["NAME"], 1);
+    assert_eq!(
+        json["non_goals"],
+        json!([
+            "No OCR",
+            "No image pixel redaction",
+            "No PDF rewrite/export"
+        ])
+    );
+    assert!(json.get("masked_text").is_none());
+    assert!(json.get("spans").is_none());
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_root_network_api_called_true_even_when_metadata_false(
+) {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "network_api_called": true,
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_placeholders_only"
+            }
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_any_nested_network_api_called_true() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_placeholders_only"
+            },
+            "extra": {
+                "audit": {"network_api_called": true}
+            }
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_nested_network_api_called_true() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": true,
+                "preview_policy": "redacted_placeholders_only"
+            }
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_incompatible_feature_markers() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "summary": {
+                "input_char_count": 39,
+                "detected_span_count": 2,
+                "category_counts": {"NAME": 1, "MRN": 1}
+            },
+            "metadata": {
+                "engine": "fallback_synthetic_patterns",
+                "network_api_called": false,
+                "preview_policy": "redacted_placeholders_only"
+            },
+            "ocr_output": "not supported in bounded local privacy filter summary",
+            "visual_redaction": true,
+            "pdf_rewrite": {"status": "complete"},
+            "agent_id": "agent-1"
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_non_object_report() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({"report": "not an object"});
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_phi_in_allowlisted_fields() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "Alice Smith",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "Alice Smith": 1},
+            "non_goals": ["No OCR", "No MRN-001 disclosure"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("Alice Smith"), "{body_text}");
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_phi_sentinel_engine_identifier() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "MRN-001",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN": 1},
+            "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_phi_sentinel_category_identifier() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "safe-rule-engine",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN-001": 1},
+            "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("MRN-001"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_freeform_non_goal() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "report": {
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "safe-rule-engine",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN": 1},
+            "non_goals": ["No OCR", "Call patient 555-1212"]
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/summary")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("555-1212"), "{body_text}");
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "invalid_privacy_filter_summary_request"
+    );
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_invalid_category_counts() {
+    let app = build_router(RuntimeState::default());
+
+    for category_counts in [json!({"NAME": -1}), json!({"NAME": "1"})] {
+        let request = json!({
+            "report": {
+                "artifact": "privacy_filter_report",
+                "mode": "summary_only",
+                "engine": "safe-rule-engine",
+                "network_api_called": false,
+                "preview_policy": "masked-only",
+                "input_char_count": 45,
+                "detected_span_count": 2,
+                "category_counts": category_counts,
+                "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+            }
+        });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["error"]["code"],
+            "invalid_privacy_filter_summary_request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_non_allowlisted_category_identifiers() {
+    let app = build_router(RuntimeState::default());
+
+    for category_counts in [
+        json!({"NAME": 1, "PATIENT_JANE_EXAMPLE": 1}),
+        json!({"NAME": 1, "DOB_1970_01_01": 1}),
+    ] {
+        let request = json!({
+            "report": {
+                "artifact": "privacy_filter_report",
+                "mode": "summary_only",
+                "engine": "safe-rule-engine",
+                "network_api_called": false,
+                "preview_policy": "masked-only",
+                "input_char_count": 45,
+                "detected_span_count": 2,
+                "category_counts": category_counts,
+                "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+            }
+        });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_text = std::str::from_utf8(&body).unwrap();
+        assert!(!body_text.contains("PATIENT_JANE_EXAMPLE"), "{body_text}");
+        assert!(!body_text.contains("DOB_1970_01_01"), "{body_text}");
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["error"]["code"],
+            "invalid_privacy_filter_summary_request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn privacy_filter_summary_endpoint_rejects_contract_phi_sentinels_in_safe_fields() {
+    let app = build_router(RuntimeState::default());
+
+    for patch in [
+        json!({"engine": "555-123-4567"}),
+        json!({"non_goals": ["No OCR", "Patient Jane Example"]}),
+    ] {
+        let mut report = json!({
+            "artifact": "privacy_filter_report",
+            "mode": "summary_only",
+            "engine": "safe-rule-engine",
+            "network_api_called": false,
+            "preview_policy": "masked-only",
+            "input_char_count": 45,
+            "detected_span_count": 2,
+            "category_counts": {"NAME": 1, "MRN": 1},
+            "non_goals": ["No OCR", "No image pixel redaction", "No PDF rewrite/export"]
+        });
+        for (key, value) in patch.as_object().unwrap() {
+            report[key] = value.clone();
+        }
+        let request = json!({"report": report});
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_text = std::str::from_utf8(&body).unwrap();
+        assert!(!body_text.contains("555-123-4567"), "{body_text}");
+        assert!(!body_text.contains("Patient Jane Example"), "{body_text}");
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["error"]["code"],
+            "invalid_privacy_filter_summary_request"
+        );
+    }
+}
+
+#[tokio::test]
 async fn tabular_deidentify_endpoint_returns_rewritten_csv_and_summary() {
     let app = build_router(RuntimeState::default());
     let request = json!({
@@ -265,6 +1038,17 @@ async fn tabular_xlsx_deidentify_endpoint_returns_rewritten_workbook_and_summary
     assert_eq!(json["summary"]["review_required_cells"], 2);
     assert_eq!(json["summary"]["failed_rows"], 0);
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
+    assert!(json.get("xlsx_disclosure").is_none());
+    assert_eq!(
+        json["worksheet_disclosure"]["selected_sheet_name"],
+        "Patients"
+    );
+    assert_eq!(json["worksheet_disclosure"]["selected_sheet_index"], 1);
+    assert_eq!(json["worksheet_disclosure"]["total_sheet_count"], 3);
+    assert_eq!(
+        json["worksheet_disclosure"]["disclosure"],
+        "XLSX processing used the first non-empty worksheet; other worksheets were not processed."
+    );
 }
 
 #[tokio::test]
@@ -491,6 +1275,93 @@ async fn conservative_media_deidentify_endpoint_reports_unsupported_payload_with
 }
 
 #[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_media_byte_payload_fields_phi_safely() {
+    let app = build_router(RuntimeState::default());
+    let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+
+    for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        let mut request = serde_json::json!({
+            "artifact_label": "patient-jane-image.png",
+            "format": "image",
+            "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}]
+        });
+        request[field] = serde_json::Value::String(raw_media_value.to_string());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media/conservative/deidentify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
+        assert_eq!(
+            json["error"]["message"],
+            "metadata-only media review does not accept media bytes"
+        );
+        let body_text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body_text.contains(raw_media_value));
+        assert!(!body_text.contains("Jane Patient"));
+        assert!(json.get("summary").is_none());
+        assert!(json.get("review_queue").is_none());
+        assert!(json.get("rewritten_media_bytes_base64").is_none());
+    }
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_null_media_byte_payload_fields_phi_safely()
+{
+    let app = build_router(RuntimeState::default());
+
+    for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        let mut request = serde_json::json!({
+            "artifact_label": "patient-jane-image.png",
+            "format": "image",
+            "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}]
+        });
+        request[field] = serde_json::Value::Null;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media/conservative/deidentify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
+        assert_eq!(
+            json["error"]["message"],
+            "metadata-only media review does not accept media bytes"
+        );
+        let body_text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body_text.contains("Jane Patient"));
+        assert!(json.get("summary").is_none());
+        assert!(json.get("review_queue").is_none());
+        assert!(json.get("rewritten_media_bytes_base64").is_none());
+    }
+}
+
+#[tokio::test]
 async fn conservative_media_deidentify_endpoint_rejects_blank_artifact_label() {
     let app = build_router(RuntimeState::default());
     let request = json!({
@@ -555,6 +1426,15 @@ async fn pdf_deidentify_endpoint_routes_text_layer_candidates_to_review_without_
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 1);
     assert_eq!(json["review_queue"][0]["phi_type"], "extracted_text");
     assert_eq!(json["review_queue"][0]["decision"], "needs_review");
+    assert_eq!(json["rewrite_status"], "review_only_no_rewritten_pdf");
+    assert_eq!(json["no_rewritten_pdf"], true);
+    assert_eq!(json["review_only"], true);
+    assert_eq!(
+        json["summary"]["rewrite_status"],
+        "review_only_no_rewritten_pdf"
+    );
+    assert_eq!(json["summary"]["no_rewritten_pdf"], true);
+    assert_eq!(json["summary"]["review_only"], true);
     assert_eq!(json["rewritten_pdf_bytes_base64"], Value::Null);
 }
 
@@ -675,6 +1555,16 @@ async fn dicom_deidentify_endpoint_returns_rewritten_bytes_and_summary() {
     assert_eq!(json["summary"]["removed_private_tags"], 0);
     assert_eq!(json["summary"]["remapped_uids"], 3);
     assert_eq!(json["summary"]["burned_in_suspicions"], 1);
+    assert_eq!(json["summary"]["pixel_redaction_performed"], false);
+    assert_eq!(json["summary"]["burned_in_review_required"], true);
+    assert_eq!(
+        json["summary"]["burned_in_annotation_notice"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
+    assert_eq!(
+        json["summary"]["burned_in_disclosure"],
+        "DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review."
+    );
     assert!(json["review_queue"].is_array());
     assert_eq!(json["review_queue"].as_array().unwrap().len(), 2);
 
@@ -939,6 +1829,38 @@ async fn vault_decode_endpoint_rejects_invalid_decode_request_payload() {
 }
 
 #[tokio::test]
+async fn vault_decode_endpoint_rejects_duplicate_record_ids_with_phi_safe_bad_request() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let duplicate = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [duplicate, duplicate],
+        "output_target": "investigator export",
+        "justification": "incident review",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/decode")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_duplicate_record_id_bad_request_response(response, &["values", "audit_event"]).await;
+}
+
+#[tokio::test]
 async fn vault_decode_endpoint_rejects_unusable_vault_target() {
     let dir = tempdir().unwrap();
     let vault_path = dir.path().join("not-a-vault.mdid");
@@ -1142,6 +2064,191 @@ async fn audit_events_endpoint_returns_filtered_events_in_reverse_chronological_
 }
 
 #[tokio::test]
+async fn vault_audit_events_endpoint_paginates_with_offset() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    for index in 0..5 {
+        vault
+            .store_mapping(
+                NewMappingRecord {
+                    scope: sample_scope(&format!("patient.field{index}")),
+                    phi_type: "patient_id".into(),
+                    original_value: format!("MRN-{index:03}"),
+                },
+                SurfaceKind::Cli,
+            )
+            .unwrap();
+    }
+
+    let app = build_router(RuntimeState::default());
+    for (offset, expected_fields, expected_next_offset, expected_has_more) in [
+        (
+            0usize,
+            vec!["patient.field4", "patient.field3"],
+            Some(2usize),
+            true,
+        ),
+        (2, vec!["patient.field2", "patient.field1"], Some(4), true),
+        (4, vec!["patient.field0"], None, false),
+    ] {
+        let mut request = json!({
+            "vault_path": vault_path,
+            "vault_passphrase": "correct horse battery staple",
+            "kind": "encode",
+            "limit": 2,
+        });
+        if offset > 0 {
+            request["offset"] = json!(offset);
+        }
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/vault/audit/events")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let events = json["events"].as_array().unwrap();
+
+        assert_eq!(events.len(), expected_fields.len());
+        for (event, expected_field) in events.iter().zip(expected_fields) {
+            assert!(event["detail"].as_str().unwrap().contains(expected_field));
+        }
+        assert_eq!(json["limit"], 2);
+        assert_eq!(json["offset"], offset);
+        assert_eq!(json["total_matching_events"], 5);
+        assert_eq!(json["next_offset"], json!(expected_next_offset));
+        assert_eq!(json["has_more"], expected_has_more);
+    }
+}
+
+#[tokio::test]
+async fn vault_audit_events_endpoint_applies_offset_after_filters() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let mut vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let first_encode = vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.encode_oldest"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-001".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    vault
+        .decode(
+            mdid_domain::DecodeRequest::new(
+                vec![first_encode.id],
+                "clinician".into(),
+                "decode interleave".into(),
+                SurfaceKind::Desktop,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.encode_middle"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-002".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+    vault
+        .store_mapping(
+            NewMappingRecord {
+                scope: sample_scope("patient.encode_newest"),
+                phi_type: "patient_id".into(),
+                original_value: "MRN-003".into(),
+            },
+            SurfaceKind::Cli,
+        )
+        .unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "kind": "encode",
+                        "limit": 1,
+                        "offset": 1
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let events = json["events"].as_array().unwrap();
+    assert_eq!(json["total_matching_events"], 3);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["kind"], "encode");
+    assert!(events[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("patient.encode_middle"));
+}
+
+#[tokio::test]
+async fn vault_audit_events_endpoint_rejects_invalid_offset_type() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "offset": "1"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_audit_events_request");
+    assert!(json.get("events").is_none());
+}
+
+#[tokio::test]
 async fn audit_events_endpoint_rejects_wrong_passphrase() {
     let dir = tempdir().unwrap();
     let vault_path = dir.path().join("runtime-vault.mdid");
@@ -1249,6 +2356,27 @@ async fn audit_events_endpoint_rejects_invalid_filter_payload() {
         .await
         .unwrap();
     assert_invalid_audit_events_request_response(blank_passphrase_response).await;
+
+    let bad_offset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/audit/events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "vault_path": vault_path,
+                        "vault_passphrase": "correct horse battery staple",
+                        "offset": "2"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_invalid_audit_events_request_response(bad_offset_response).await;
 
     let bad_enum_response = app
         .oneshot(
@@ -1533,6 +2661,38 @@ async fn vault_export_endpoint_rejects_invalid_export_payload() {
 
         assert_invalid_export_request_response(response).await;
     }
+}
+
+#[tokio::test]
+async fn vault_export_endpoint_rejects_duplicate_record_ids_with_phi_safe_bad_request() {
+    let dir = tempdir().unwrap();
+    let vault_path = dir.path().join("runtime-vault.mdid");
+    let _vault = LocalVaultStore::create(&vault_path, "correct horse battery staple").unwrap();
+    let duplicate = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "vault_path": vault_path,
+        "vault_passphrase": "correct horse battery staple",
+        "record_ids": [duplicate, duplicate],
+        "export_passphrase": "portable-passphrase",
+        "context": "partner-site transfer package",
+        "requested_by": "desktop"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vault/export")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_duplicate_record_id_bad_request_response(response, &["artifact"]).await;
 }
 
 #[tokio::test]
@@ -2362,7 +3522,7 @@ fn cell_to_string(cell: &Data) -> String {
 }
 
 async fn assert_invalid_audit_events_request_response(response: axum::response::Response) {
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
@@ -2469,6 +3629,27 @@ async fn assert_invalid_decode_request_response(response: axum::response::Respon
     );
     assert!(json.get("values").is_none());
     assert!(json.get("audit_event").is_none());
+}
+
+async fn assert_duplicate_record_id_bad_request_response(
+    response: axum::response::Response,
+    absent_fields: &[&str],
+) {
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body_text.contains("duplicate record id"));
+    assert!(!body_text.contains("550e8400"));
+    let json: Value = serde_json::from_str(&body_text).unwrap();
+    assert_eq!(json["error"]["code"], "duplicate_record_id");
+    assert_eq!(
+        json["error"]["message"],
+        "duplicate record id is not allowed"
+    );
+    for field in absent_fields {
+        assert!(json.get(*field).is_none());
+    }
 }
 
 async fn assert_invalid_export_request_response(response: axum::response::Response) {

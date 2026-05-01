@@ -261,6 +261,12 @@ impl LocalVaultStore {
         if record_ids.is_empty() {
             return Err(VaultError::EmptyExportScope);
         }
+        let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
+        for record_id in record_ids {
+            if !seen_record_ids.insert(*record_id) {
+                return Err(VaultError::DuplicateRecordId);
+            }
+        }
 
         let records = record_ids
             .iter()
@@ -531,6 +537,8 @@ pub enum VaultError {
     UnknownRecord(Uuid),
     #[error("portable export must include at least one mapping record")]
     EmptyExportScope,
+    #[error("duplicate record id is not allowed")]
+    DuplicateRecordId,
 }
 
 #[derive(Debug, Clone)]

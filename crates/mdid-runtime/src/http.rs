@@ -19,13 +19,15 @@ use mdid_application::{
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaCandidate, ConservativeMediaFormat,
-    ConservativeMediaSummary, DecodeRequest, DicomDeidentificationSummary, DicomPhiCandidate,
-    DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary, PdfPageRef,
-    PdfPhiCandidate, PdfScanStatus, PhiCandidate, SurfaceKind,
+    ConservativeMediaSummary, DecodeRequest, DecodeRequestError, DicomDeidentificationSummary,
+    DicomPhiCandidate, DicomPrivateTagPolicy, MappingRecord, MappingScope, PdfExtractionSummary,
+    PdfPageRef, PdfPhiCandidate, PdfRewriteStatus, PdfScanStatus, PhiCandidate, SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact, VaultError};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 use std::{
+    collections::BTreeMap,
     io::{Cursor, Read, Write},
     path::PathBuf,
 };
@@ -84,6 +86,8 @@ struct VaultAuditEventsRequest {
     actor: Option<SurfaceKind>,
     #[serde(default, deserialize_with = "deserialize_optional_limit")]
     limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +127,74 @@ struct ConservativeMediaDeidentifyRequest {
     ocr_or_visual_review_required: bool,
     #[serde(default)]
     unsupported_payload: bool,
+    #[serde(
+        default,
+        rename = "media_bytes_base64",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    media_bytes_base64_present: bool,
+    #[serde(
+        default,
+        rename = "image_bytes",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    image_bytes_present: bool,
+    #[serde(
+        default,
+        rename = "file_bytes",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    file_bytes_present: bool,
+    #[serde(
+        default,
+        rename = "base64",
+        deserialize_with = "deserialize_field_presence"
+    )]
+    base64_present: bool,
+}
+
+impl ConservativeMediaDeidentifyRequest {
+    fn contains_media_byte_payload(&self) -> bool {
+        self.media_bytes_base64_present
+            || self.image_bytes_present
+            || self.file_bytes_present
+            || self.base64_present
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PrivacyFilterSummaryRequest {
+    report: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyFilterTextRequest {
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OcrHandoffSummaryRequest {
+    handoff: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OcrToPrivacyFilterSummaryRequest {
+    handoff: Value,
+}
+
+const PRIVACY_FILTER_TEXT_MAX_BYTES: usize = 1_048_576;
+const INVALID_PRIVACY_FILTER_TEXT_REQUEST_MESSAGE: &str =
+    "Privacy Filter text request requires non-empty text no larger than 1048576 bytes.";
+
+fn deserialize_field_presence<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde_json::Value::deserialize(deserializer)?;
+    Ok(true)
 }
 
 #[derive(Deserialize)]
@@ -164,6 +236,9 @@ struct PdfDeidentifyResponse {
     summary: PdfExtractionSummary,
     page_statuses: Vec<PdfPageStatusResponse>,
     review_queue: Vec<PdfPhiCandidate>,
+    rewrite_status: PdfRewriteStatus,
+    no_rewritten_pdf: bool,
+    review_only: bool,
     rewritten_pdf_bytes_base64: Option<String>,
 }
 
@@ -187,6 +262,11 @@ struct VaultExportResponse {
 #[derive(Debug, Serialize)]
 struct VaultAuditEventsResponse {
     events: Vec<AuditEvent>,
+    limit: usize,
+    offset: usize,
+    total_matching_events: usize,
+    next_offset: Option<usize>,
+    has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,6 +304,15 @@ struct TabularXlsxDeidentifyResponse {
     rewritten_workbook_base64: String,
     summary: BatchSummary,
     review_queue: Vec<PhiCandidate>,
+    worksheet_disclosure: Option<XlsxSheetDisclosureResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct XlsxSheetDisclosureResponse {
+    selected_sheet_name: String,
+    selected_sheet_index: usize,
+    total_sheet_count: usize,
+    disclosure: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -231,6 +320,36 @@ struct ConservativeMediaDeidentifyResponse {
     summary: ConservativeMediaSummary,
     review_queue: Vec<ConservativeMediaCandidate>,
     rewritten_media_bytes_base64: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PrivacyFilterSummaryResponse {
+    artifact: &'static str,
+    mode: String,
+    engine: String,
+    network_api_called: bool,
+    preview_policy: String,
+    input_char_count: u64,
+    detected_span_count: u64,
+    category_counts: BTreeMap<String, u64>,
+    non_goals: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OcrHandoffSummaryResponse {
+    artifact: &'static str,
+    candidate: String,
+    engine: String,
+    engine_status: String,
+    scope: &'static str,
+    privacy_filter_contract: &'static str,
+    ready_for_text_pii_eval: bool,
+    network_api_called: bool,
+    non_goals: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    char_count: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,6 +367,13 @@ pub fn build_router(state: RuntimeState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/pipelines", post(create_pipeline))
+        .route("/ocr-handoff/summary", post(ocr_handoff_summary))
+        .route(
+            "/ocr-to-privacy-filter/summary",
+            post(ocr_to_privacy_filter_summary),
+        )
+        .route("/privacy-filter/summary", post(privacy_filter_summary))
+        .route("/privacy-filter/text", post(privacy_filter_text))
         .route("/tabular/deidentify", post(tabular_deidentify))
         .route("/tabular/deidentify/xlsx", post(tabular_xlsx_deidentify))
         .route(
@@ -281,6 +407,429 @@ async fn create_pipeline(
 ) -> impl IntoResponse {
     let pipeline = state.application.register_pipeline(payload.name);
     (StatusCode::CREATED, Json(pipeline))
+}
+
+async fn ocr_handoff_summary(
+    payload: Result<Json<OcrHandoffSummaryRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_ocr_handoff_summary_request_response().into_response(),
+    };
+
+    match build_ocr_handoff_summary(&payload.handoff) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => invalid_ocr_handoff_summary_request_response().into_response(),
+    }
+}
+
+async fn ocr_to_privacy_filter_summary(
+    payload: Result<Json<OcrToPrivacyFilterSummaryRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_ocr_to_privacy_filter_summary_request_response().into_response(),
+    };
+
+    if build_ocr_handoff_summary(&payload.handoff).is_none() {
+        return invalid_ocr_to_privacy_filter_summary_request_response().into_response();
+    }
+
+    let normalized_text = match payload
+        .handoff
+        .get("normalized_text")
+        .and_then(Value::as_str)
+    {
+        Some(text) if !text.trim().is_empty() && text.len() <= PRIVACY_FILTER_TEXT_MAX_BYTES => {
+            text
+        }
+        _ => return invalid_ocr_to_privacy_filter_summary_request_response().into_response(),
+    };
+
+    let report = build_runtime_privacy_filter_text_report(normalized_text);
+    match build_privacy_filter_summary(&report) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => internal_error_response().into_response(),
+    }
+}
+
+fn build_ocr_handoff_summary(handoff: &Value) -> Option<OcrHandoffSummaryResponse> {
+    let handoff = handoff.as_object()?;
+    if contains_incompatible_ocr_handoff_marker(handoff) {
+        return None;
+    }
+
+    if !handoff.get("ready_for_text_pii_eval")?.as_bool()? {
+        return None;
+    }
+    if handoff.get("privacy_filter_contract")?.as_str()? != "text_only_normalized_input" {
+        return None;
+    }
+    if handoff.get("scope")?.as_str()? != "printed_text_line_extraction_only" {
+        return None;
+    }
+
+    let candidate = safe_identifier(handoff.get("candidate")?.as_str()?)?.to_owned();
+    let engine = safe_identifier(handoff.get("engine")?.as_str()?)?.to_owned();
+    let engine_status = safe_identifier(handoff.get("engine_status")?.as_str()?)?.to_owned();
+    let input_non_goals = handoff.get("non_goals")?.as_array()?;
+    if !input_non_goals.iter().all(|non_goal| {
+        non_goal
+            .as_str()
+            .and_then(safe_ocr_handoff_non_goal)
+            .is_some()
+    }) {
+        return None;
+    }
+
+    let line_count = optional_u64(handoff, "line_count")?;
+    let char_count = optional_u64(handoff, "char_count")?;
+
+    Some(OcrHandoffSummaryResponse {
+        artifact: "ocr_handoff_summary",
+        candidate,
+        engine,
+        engine_status,
+        scope: "printed_text_line_extraction_only",
+        privacy_filter_contract: "text_only_normalized_input",
+        ready_for_text_pii_eval: true,
+        network_api_called: false,
+        non_goals: vec![
+            "visual_redaction".to_owned(),
+            "image_pixel_redaction".to_owned(),
+            "final_pdf_rewrite_export".to_owned(),
+        ],
+        line_count,
+        char_count,
+    })
+}
+
+fn optional_u64(report: &Map<String, Value>, field: &str) -> Option<Option<u64>> {
+    match report.get(field) {
+        Some(value) => value.as_u64().map(Some),
+        None => Some(None),
+    }
+}
+
+fn contains_incompatible_ocr_handoff_marker(report: &Map<String, Value>) -> bool {
+    contains_incompatible_ocr_handoff_value(&Value::Object(report.clone()), true)
+}
+
+fn contains_incompatible_ocr_handoff_value(value: &Value, is_top_level: bool) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            is_incompatible_ocr_handoff_field(key, value, is_top_level)
+                || contains_incompatible_ocr_handoff_value(value, false)
+        }),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contains_incompatible_ocr_handoff_value(value, false)),
+        _ => false,
+    }
+}
+
+fn is_incompatible_ocr_handoff_field(key: &str, value: &Value, is_top_level: bool) -> bool {
+    const INCOMPATIBLE_MARKERS: &[&str] = &[
+        "image_bytes",
+        "image_bytes_base64",
+        "masked_text",
+        "spans",
+        "preview",
+        "previews",
+        "bbox",
+        "image",
+        "pdf_rewrite",
+        "pdf_export",
+        "visual_redaction",
+        "visual_redaction_result",
+        "pixel_redaction",
+        "agent_id",
+        "controller_step",
+        "complete_command",
+        "claim",
+        "raw_text",
+        "text",
+        "ocr_output",
+        "path",
+        "file_path",
+    ];
+
+    (key == "network_api_called" && value.as_bool() == Some(true))
+        || INCOMPATIBLE_MARKERS.contains(&key)
+        || (!is_top_level && matches!(key, "extracted_text" | "normalized_text" | "source"))
+}
+
+fn safe_ocr_handoff_non_goal(non_goal: &str) -> Option<&str> {
+    (!contains_phi_sentinel(non_goal)
+        && matches!(
+            non_goal,
+            "visual_redaction"
+                | "image_pixel_redaction"
+                | "final_pdf_rewrite_export"
+                | "handwriting_recognition"
+                | "full_page_detection_or_segmentation"
+                | "complete_ocr_pipeline"
+        ))
+    .then_some(non_goal)
+}
+
+async fn privacy_filter_summary(
+    payload: Result<Json<PrivacyFilterSummaryRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_privacy_filter_summary_request_response().into_response(),
+    };
+
+    match build_privacy_filter_summary(&payload.report) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => invalid_privacy_filter_summary_request_response().into_response(),
+    }
+}
+
+async fn privacy_filter_text(
+    payload: Result<Json<PrivacyFilterTextRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_privacy_filter_text_request_response().into_response(),
+    };
+
+    if payload.text.trim().is_empty() || payload.text.len() > PRIVACY_FILTER_TEXT_MAX_BYTES {
+        return invalid_privacy_filter_text_request_response().into_response();
+    }
+
+    let report = build_runtime_privacy_filter_text_report(&payload.text);
+    match build_privacy_filter_summary(&report) {
+        Some(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        None => internal_error_response().into_response(),
+    }
+}
+
+fn build_runtime_privacy_filter_text_report(text: &str) -> Value {
+    let category_counts = [
+        ("NAME", count_literal(text, "Patient Jane Example")),
+        ("MRN", count_literal(text, "MRN-12345")),
+        ("EMAIL", count_literal(text, "jane@example.com")),
+        ("PHONE", count_literal(text, "555-123-4567")),
+        ("ID", count_literal(text, "A1234567")),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count > 0)
+    .map(|(category, count)| (category.to_owned(), count))
+    .collect::<BTreeMap<_, _>>();
+    let detected_span_count = category_counts.values().sum::<u64>();
+
+    json!({
+        "artifact": "privacy_filter_report",
+        "mode": "text",
+        "summary": {
+            "input_char_count": text.chars().count() as u64,
+            "detected_span_count": detected_span_count,
+            "category_counts": category_counts,
+        },
+        "metadata": {
+            "engine": "runtime_text_mock",
+            "network_api_called": false,
+            "preview_policy": "redacted_placeholders_only"
+        },
+        "non_goals": [
+            "text-only candidate",
+            "No OCR",
+            "No visual redaction",
+            "No image pixel redaction",
+            "No handwriting recognition",
+            "No PDF rewrite/export",
+            "browser_ui",
+            "desktop_ui"
+        ]
+    })
+}
+
+fn count_literal(text: &str, needle: &str) -> u64 {
+    text.match_indices(needle).count() as u64
+}
+
+fn build_privacy_filter_summary(report: &Value) -> Option<PrivacyFilterSummaryResponse> {
+    let report = report.as_object()?;
+    if contains_incompatible_privacy_filter_marker(report) {
+        return None;
+    }
+    if contains_true_network_api_called(report) {
+        return None;
+    }
+    if let Some(artifact) = report.get("artifact") {
+        let artifact = artifact.as_str()?;
+        if artifact != "privacy_filter_report" {
+            return None;
+        }
+    }
+
+    let summary = report
+        .get("summary")
+        .and_then(Value::as_object)
+        .unwrap_or(report);
+    let metadata = report
+        .get("metadata")
+        .and_then(Value::as_object)
+        .unwrap_or(report);
+
+    let input_char_count = required_u64(summary, "input_char_count")?;
+    let detected_span_count = required_u64(summary, "detected_span_count")?;
+    let category_counts = extract_category_counts(summary)?;
+    let non_goals = extract_non_goals(report)?;
+    let network_api_called = metadata.get("network_api_called")?.as_bool()?;
+    if network_api_called {
+        return None;
+    }
+
+    Some(PrivacyFilterSummaryResponse {
+        artifact: "privacy_filter_summary",
+        mode: safe_mode(report.get("mode").and_then(Value::as_str).unwrap_or("text"))?.to_owned(),
+        engine: safe_identifier(metadata.get("engine")?.as_str()?)?.to_owned(),
+        network_api_called,
+        preview_policy: safe_preview_policy(metadata.get("preview_policy")?.as_str()?)?.to_owned(),
+        input_char_count,
+        detected_span_count,
+        category_counts,
+        non_goals,
+    })
+}
+
+fn contains_incompatible_privacy_filter_marker(report: &Map<String, Value>) -> bool {
+    const INCOMPATIBLE_MARKERS: &[&str] = &[
+        "ocr_output",
+        "image_bytes",
+        "visual_redaction",
+        "pixel_redaction",
+        "pdf_rewrite",
+        "pdf_export",
+        "agent_id",
+        "controller_step",
+        "complete_command",
+        "claim",
+    ];
+
+    report.iter().any(|(key, value)| {
+        INCOMPATIBLE_MARKERS.contains(&key.as_str())
+            || match value {
+                Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
+                Value::Array(values) => values.iter().any(|value| match value {
+                    Value::Object(object) => contains_incompatible_privacy_filter_marker(object),
+                    _ => false,
+                }),
+                _ => false,
+            }
+    })
+}
+
+fn contains_true_network_api_called(report: &Map<String, Value>) -> bool {
+    report.iter().any(|(key, value)| {
+        (key == "network_api_called" && value.as_bool() == Some(true))
+            || match value {
+                Value::Object(object) => contains_true_network_api_called(object),
+                Value::Array(values) => values.iter().any(|value| match value {
+                    Value::Object(object) => contains_true_network_api_called(object),
+                    _ => false,
+                }),
+                _ => false,
+            }
+    })
+}
+
+fn required_u64(report: &Map<String, Value>, field: &str) -> Option<u64> {
+    report.get(field)?.as_u64()
+}
+
+fn extract_category_counts(report: &Map<String, Value>) -> Option<BTreeMap<String, u64>> {
+    report
+        .get("category_counts")?
+        .as_object()?
+        .iter()
+        .map(|(category, count)| {
+            Some((
+                safe_category_identifier(category)?.to_owned(),
+                count.as_u64()?,
+            ))
+        })
+        .collect::<Option<BTreeMap<String, u64>>>()
+}
+
+fn extract_non_goals(report: &Map<String, Value>) -> Option<Vec<String>> {
+    match report.get("non_goals") {
+        Some(non_goals) => non_goals
+            .as_array()?
+            .iter()
+            .map(|non_goal| safe_non_goal(non_goal.as_str()?).map(ToOwned::to_owned))
+            .collect::<Option<Vec<_>>>(),
+        None => Some(default_privacy_filter_non_goals()),
+    }
+}
+
+fn default_privacy_filter_non_goals() -> Vec<String> {
+    vec![
+        "No OCR".to_owned(),
+        "No image pixel redaction".to_owned(),
+        "No PDF rewrite/export".to_owned(),
+    ]
+}
+
+fn safe_mode(mode: &str) -> Option<&str> {
+    matches!(mode, "text" | "mock" | "summary_only").then_some(mode)
+}
+
+fn safe_preview_policy(preview_policy: &str) -> Option<&str> {
+    matches!(
+        preview_policy,
+        "redacted_preview_only" | "masked-only" | "masked_only" | "redacted_placeholders_only"
+    )
+    .then_some(preview_policy)
+}
+
+fn safe_identifier(identifier: &str) -> Option<&str> {
+    (!identifier.is_empty()
+        && identifier.len() <= 128
+        && !contains_phi_sentinel(identifier)
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')))
+    .then_some(identifier)
+}
+
+fn safe_category_identifier(category: &str) -> Option<&str> {
+    matches!(category, "NAME" | "MRN" | "EMAIL" | "PHONE" | "ID").then_some(category)
+}
+
+fn safe_non_goal(non_goal: &str) -> Option<&str> {
+    (!contains_phi_sentinel(non_goal)
+        && matches!(
+            non_goal,
+            "text-only candidate"
+                | "No OCR"
+                | "ocr"
+                | "No visual redaction"
+                | "visual_redaction"
+                | "No image pixel redaction"
+                | "image_pixel_redaction"
+                | "No handwriting recognition"
+                | "handwriting_recognition"
+                | "No PDF rewrite/export"
+                | "final_pdf_rewrite_export"
+                | "No network call unless explicitly configured"
+                | "browser_ui"
+                | "desktop_ui"
+        ))
+    .then_some(non_goal)
+}
+
+fn contains_phi_sentinel(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("patient jane example")
+        || lower.contains("mrn-")
+        || lower.contains("jane@example.com")
+        || lower.contains("555-123-4567")
+        || lower.contains("555-")
+        || lower.contains("alice smith")
 }
 
 async fn tabular_deidentify(
@@ -377,6 +926,10 @@ async fn conservative_media_deidentify(
         Err(_) => return invalid_conservative_media_request_response().into_response(),
     };
 
+    if payload.contains_media_byte_payload() {
+        return conservative_media_bytes_not_accepted_response().into_response();
+    }
+
     let input = ConservativeMediaInput::from(payload);
     let output =
         match ConservativeMediaDeidentificationService::default().deidentify_metadata(input) {
@@ -453,6 +1006,9 @@ async fn vault_decode(payload: Result<Json<VaultDecodeRequest>, JsonRejection>) 
         payload.requested_by,
     ) {
         Ok(request) => request,
+        Err(DecodeRequestError::DuplicateRecordId) => {
+            return duplicate_record_id_response().into_response();
+        }
         Err(_) => return invalid_decode_request_response().into_response(),
     };
 
@@ -479,6 +1035,10 @@ async fn vault_export(payload: Result<Json<VaultExportRequest>, JsonRejection>) 
         Ok(payload) => payload,
         Err(_) => return invalid_export_request_response().into_response(),
     };
+
+    if has_duplicate_record_id(&payload.record_ids) {
+        return duplicate_record_id_response().into_response();
+    }
 
     let mut vault = match LocalVaultStore::unlock(&payload.vault_path, &payload.vault_passphrase) {
         Ok(vault) => vault,
@@ -510,17 +1070,40 @@ async fn vault_audit_events(
     };
 
     let limit = payload.limit.unwrap_or(100).min(100);
-    let events = vault
+    let offset = payload.offset.unwrap_or(0);
+    let filtered = vault
         .audit_events()
         .iter()
         .rev()
         .filter(|event| payload.kind.is_none_or(|kind| event.kind == kind))
         .filter(|event| payload.actor.is_none_or(|actor| event.actor == actor))
-        .take(limit)
         .cloned()
         .collect::<Vec<_>>();
+    let total_matching_events = filtered.len();
+    let mut filtered_events = filtered
+        .into_iter()
+        .skip(offset)
+        .take(limit.saturating_add(1))
+        .collect::<Vec<_>>();
+    let has_more = filtered_events.len() > limit;
+    if has_more {
+        filtered_events.truncate(limit);
+    }
+    let returned_events = filtered_events.len();
+    let next_offset = has_more.then_some(offset.saturating_add(returned_events));
 
-    (StatusCode::OK, Json(VaultAuditEventsResponse { events })).into_response()
+    (
+        StatusCode::OK,
+        Json(VaultAuditEventsResponse {
+            events: filtered_events,
+            limit,
+            offset,
+            total_matching_events,
+            next_offset,
+            has_more,
+        }),
+    )
+        .into_response()
 }
 
 async fn portable_artifact_inspect(
@@ -680,6 +1263,7 @@ fn map_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope>) {
         VaultError::UnlockFailed => vault_unlock_failed_response(),
         VaultError::BlankPassphrase
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext => invalid_decode_request_response(),
         VaultError::Io(_)
@@ -705,6 +1289,7 @@ fn map_export_vault_error(error: &VaultError) -> (StatusCode, Json<ErrorEnvelope
     match error {
         VaultError::BlankPassphrase
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext => invalid_export_request_response(),
         VaultError::UnknownRecord(_) => unknown_export_record_response(),
         _ => map_vault_error(error),
@@ -725,6 +1310,7 @@ fn map_portable_artifact_inspection_error(error: &VaultError) -> (StatusCode, Js
         | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext
         | VaultError::AlreadyExists(_)
@@ -750,6 +1336,7 @@ fn map_portable_artifact_import_vault_error(
         | VaultError::InvalidArtifact => invalid_portable_artifact_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::AlreadyExists(_)
         | VaultError::Encrypt => internal_error_response(),
@@ -772,6 +1359,7 @@ fn map_portable_artifact_import_unlock_error(
         | VaultError::InvalidArtifact => invalid_vault_target_response(),
         VaultError::UnknownRecord(_)
         | VaultError::EmptyExportScope
+        | VaultError::DuplicateRecordId
         | VaultError::BlankExportContext
         | VaultError::BlankImportContext
         | VaultError::AlreadyExists(_)
@@ -834,6 +1422,14 @@ fn tabular_xlsx_success_response(
             )?),
             summary: output.summary,
             review_queue: output.review_queue,
+            worksheet_disclosure: output.worksheet_disclosure.map(|disclosure| {
+                XlsxSheetDisclosureResponse {
+                    selected_sheet_name: disclosure.selected_sheet_name,
+                    selected_sheet_index: disclosure.selected_sheet_index,
+                    total_sheet_count: disclosure.total_sheet_count,
+                    disclosure: disclosure.disclosure,
+                }
+            }),
         }),
     ))
 }
@@ -867,6 +1463,9 @@ fn pdf_success_response(
                 })
                 .collect(),
             review_queue: output.review_queue,
+            rewrite_status: output.rewrite_status,
+            no_rewritten_pdf: output.no_rewritten_pdf,
+            review_only: output.review_only,
             rewritten_pdf_bytes_base64: output
                 .rewritten_pdf_bytes
                 .map(|bytes| STANDARD.encode(bytes)),
@@ -893,6 +1492,54 @@ fn invalid_pdf_response() -> (StatusCode, Json<ErrorEnvelope>) {
             error: ErrorBody {
                 code: "invalid_pdf",
                 message: "request body did not contain a valid PDF payload",
+            },
+        }),
+    )
+}
+
+fn invalid_privacy_filter_summary_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_privacy_filter_summary_request",
+                message: "request body did not contain a valid privacy filter report object",
+            },
+        }),
+    )
+}
+
+fn invalid_ocr_handoff_summary_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_ocr_handoff_summary_request",
+                message: "request body did not contain a valid OCR handoff report object",
+            },
+        }),
+    )
+}
+
+fn invalid_ocr_to_privacy_filter_summary_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_ocr_to_privacy_filter_summary_request",
+                message: "request body did not contain a valid OCR handoff report for text-only Privacy Filter summary",
+            },
+        }),
+    )
+}
+
+fn invalid_privacy_filter_text_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_privacy_filter_text_request",
+                message: INVALID_PRIVACY_FILTER_TEXT_REQUEST_MESSAGE,
             },
         }),
     )
@@ -935,6 +1582,18 @@ fn invalid_conservative_media_request_response() -> (StatusCode, Json<ErrorEnvel
     )
 }
 
+fn conservative_media_bytes_not_accepted_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "invalid_conservative_media_request",
+                message: "metadata-only media review does not accept media bytes",
+            },
+        }),
+    )
+}
+
 fn invalid_decode_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -959,9 +1618,28 @@ fn invalid_export_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
     )
 }
 
+fn duplicate_record_id_response() -> (StatusCode, Json<ErrorEnvelope>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorEnvelope {
+            error: ErrorBody {
+                code: "duplicate_record_id",
+                message: "duplicate record id is not allowed",
+            },
+        }),
+    )
+}
+
+fn has_duplicate_record_id(record_ids: &[uuid::Uuid]) -> bool {
+    let mut seen_record_ids = std::collections::HashSet::with_capacity(record_ids.len());
+    record_ids
+        .iter()
+        .any(|record_id| !seen_record_ids.insert(*record_id))
+}
+
 fn invalid_audit_events_request_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         Json(ErrorEnvelope {
             error: ErrorBody {
                 code: "invalid_audit_events_request",
@@ -1376,9 +2054,326 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
     use mdid_adapters::{DicomAdapter, DicomAdapterError};
     use mdid_domain::DicomPrivateTagPolicy;
     use std::backtrace::Backtrace;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_accepts_fixture_handoff_without_raw_phi() {
+        let handoff: Value = serde_json::from_str(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-to-privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let body_text = String::from_utf8(body.to_vec()).expect("response should be utf8");
+        assert!(!body_text.contains("Jane Example"));
+        assert!(!body_text.contains("MRN-12345"));
+        assert!(!body_text.contains("jane@example.com"));
+        assert!(!body_text.contains("555-123-4567"));
+        let value: Value = serde_json::from_str(&body_text).expect("response should be json");
+        assert_eq!(value["artifact"], "privacy_filter_summary");
+        assert_eq!(value["network_api_called"], false);
+        assert_eq!(value["category_counts"]["NAME"], 1);
+        assert_eq!(value["category_counts"]["MRN"], 1);
+        assert_eq!(value["category_counts"]["EMAIL"], 1);
+        assert_eq!(value["category_counts"]["PHONE"], 1);
+    }
+
+    #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_rejects_unknown_request_fields_without_phi_echo() {
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-to-privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "handoff": {},
+                            "Patient Jane Example": "MRN-12345"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_text.contains("invalid_ocr_to_privacy_filter_summary_request"));
+        assert!(!body_text.contains("Patient Jane Example"));
+        assert!(!body_text.contains("MRN-12345"));
+    }
+
+    #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_rejects_visual_redaction_marker_without_phi_echo() {
+        let mut handoff: Value = serde_json::from_str(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        handoff["visual_redaction"] = json!({ "preview": "Patient Jane Example MRN-12345" });
+
+        let body_text = post_ocr_to_privacy_filter_summary(handoff, StatusCode::BAD_REQUEST).await;
+        assert!(body_text.contains("invalid_ocr_to_privacy_filter_summary_request"));
+        assert!(!body_text.contains("Patient Jane Example"));
+        assert!(!body_text.contains("MRN-12345"));
+    }
+
+    #[tokio::test]
+    async fn ocr_to_privacy_filter_summary_rejects_empty_normalized_text() {
+        let mut handoff: Value = serde_json::from_str(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        handoff["normalized_text"] = json!("   ");
+
+        let body_text = post_ocr_to_privacy_filter_summary(handoff, StatusCode::BAD_REQUEST).await;
+        assert!(body_text.contains("invalid_ocr_to_privacy_filter_summary_request"));
+        assert!(!body_text.contains("Jane Example"));
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_accepts_existing_fixture_contract() {
+        let handoff = serde_json::from_str::<Value>(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON");
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-handoff/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should buffer");
+        let summary = serde_json::from_slice::<Value>(&body).expect("response should be JSON");
+        assert_eq!(summary["artifact"], "ocr_handoff_summary");
+        assert_eq!(summary["candidate"], "PP-OCRv5_mobile_rec");
+        assert_eq!(summary["engine"], "PP-OCRv5-mobile-bounded-spike");
+        assert_eq!(summary["scope"], "printed_text_line_extraction_only");
+        assert_eq!(
+            summary["privacy_filter_contract"],
+            "text_only_normalized_input"
+        );
+        assert_eq!(summary["ready_for_text_pii_eval"], true);
+        assert_eq!(summary["network_api_called"], false);
+        assert!(summary["non_goals"]
+            .as_array()
+            .expect("non_goals should be an array")
+            .iter()
+            .any(|non_goal| non_goal == "visual_redaction"));
+
+        let serialized_summary = serde_json::to_string(&summary).expect("summary should serialize");
+        for allowed_input_raw_field in ["extracted_text", "normalized_text"] {
+            assert!(
+                handoff.get(allowed_input_raw_field).is_some(),
+                "official fixture should include top-level {allowed_input_raw_field} as input"
+            );
+        }
+
+        for forbidden in [
+            "Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+            "extracted_text",
+            "normalized_text",
+            "bbox",
+        ] {
+            assert!(
+                !serialized_summary.contains(forbidden),
+                "summary must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_raw_text_and_incompatible_markers_without_echoing_phi() {
+        let mut handoff = valid_ocr_handoff_fixture();
+        handoff["spans"] = json!([{ "preview": "Jane Example MRN-12345" }]);
+        handoff["line_count"] = json!("Jane Example");
+        let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+
+        assert!(body.contains("invalid_ocr_handoff_summary_request"));
+        for forbidden in [
+            "Jane Example",
+            "MRN-12345",
+            "jane@example.com",
+            "555-123-4567",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "error body must not echo {forbidden}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_network_api_called_true_without_echoing_phi() {
+        for mutation in [
+            json!({"network_api_called": true}),
+            json!({"metadata": {"network_api_called": true, "note": "Jane Example MRN-12345"}}),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            let mutation = mutation
+                .as_object()
+                .expect("mutation should be an object")
+                .clone();
+            handoff
+                .as_object_mut()
+                .expect("handoff should be an object")
+                .extend(mutation);
+
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in [
+                "Jane Example",
+                "MRN-12345",
+                "jane@example.com",
+                "555-123-4567",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_unsafe_non_contract_fields_recursively() {
+        for mutation in [
+            json!({"raw_text": "Jane Example MRN-12345"}),
+            json!({"metadata": {"file_path": "/tmp/Jane Example.pdf"}}),
+            json!({"metadata": {"source": "Jane Example.pdf"}}),
+            json!({"metadata": [{"ocr_output": "jane@example.com"}]}),
+            json!({"previews": [{"text": "Jane Example MRN-12345"}]}),
+            json!({"metadata": {"bbox": [1, 2, 3, 4], "note": "jane@example.com"}}),
+            json!({"metadata": [{"image": "555-123-4567"}]}),
+            json!({"visual_redaction": "Jane Example overlay MRN-12345"}),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            let mutation = mutation
+                .as_object()
+                .expect("mutation should be an object")
+                .clone();
+            handoff
+                .as_object_mut()
+                .expect("handoff should be an object")
+                .extend(mutation);
+
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in ["Jane Example", "MRN-12345", "jane@example.com"] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ocr_handoff_summary_rejects_not_ready_or_wrong_contract() {
+        for mutation in [
+            ("ready_for_text_pii_eval", json!(false)),
+            ("privacy_filter_contract", json!("visual_redaction")),
+            ("scope", json!("full_pdf_ocr")),
+            ("line_count", json!("Jane Example")),
+        ] {
+            let mut handoff = valid_ocr_handoff_fixture();
+            handoff[mutation.0] = mutation.1;
+            let body = post_ocr_handoff_summary(handoff, StatusCode::BAD_REQUEST).await;
+            assert!(body.contains("invalid_ocr_handoff_summary_request"));
+            for forbidden in [
+                "Jane Example",
+                "MRN-12345",
+                "jane@example.com",
+                "555-123-4567",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "error body must not echo {forbidden}"
+                );
+            }
+        }
+    }
+
+    fn valid_ocr_handoff_fixture() -> Value {
+        serde_json::from_str::<Value>(include_str!(
+            "../../../scripts/ocr_eval/fixtures/ocr_handoff_expected_shape.json"
+        ))
+        .expect("fixture should be valid JSON")
+    }
+
+    async fn post_ocr_to_privacy_filter_summary(
+        handoff: Value,
+        expected_status: StatusCode,
+    ) -> String {
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-to-privacy-filter/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(response.status(), expected_status);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    async fn post_ocr_handoff_summary(handoff: Value, expected_status: StatusCode) -> String {
+        let response = build_default_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ocr-handoff/summary")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "handoff": handoff }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(response.status(), expected_status);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should buffer");
+        String::from_utf8(body.to_vec()).expect("body should be UTF-8")
+    }
 
     #[test]
     fn classifies_parse_errors_as_invalid_dicom() {

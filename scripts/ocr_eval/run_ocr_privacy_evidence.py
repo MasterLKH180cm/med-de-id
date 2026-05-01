@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Aggregate-only OCR-to-Privacy-Filter evidence runner.
+
+Composes the checked-in bounded PP-OCRv5 mobile synthetic OCR runner with the
+checked-in text-only Privacy Filter runner, then emits only PHI-safe aggregate
+metadata/counts.
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Sequence
+
+TIMEOUT_SECONDS = 15
+GENERIC_ERROR = "OCR Privacy evidence runner failed"
+MISSING_IMAGE_ERROR = "OCR Privacy evidence input image is missing"
+CLEANUP_ERROR = "OCR Privacy evidence output cleanup failed"
+OUTPUT_WRITE_ERROR = "OCR Privacy evidence output write failed"
+NON_GOALS = [
+    "browser_ui",
+    "complete_ocr_pipeline",
+    "desktop_ui",
+    "final_pdf_rewrite_export",
+    "handwriting_recognition",
+    "image_pixel_redaction",
+    "visual_redaction",
+]
+EXPECTED_CATEGORIES = {"EMAIL", "MRN", "NAME", "PHONE"}
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_OCR_RUNNER = SCRIPT_DIR / "run_small_ocr.py"
+DEFAULT_PRIVACY_RUNNER = SCRIPT_DIR.parent / "privacy_filter" / "run_privacy_filter.py"
+DEFAULT_OCR_VALIDATOR = SCRIPT_DIR / "validate_ocr_handoff.py"
+DEFAULT_PRIVACY_VALIDATOR = SCRIPT_DIR.parent / "privacy_filter" / "validate_privacy_filter_output.py"
+
+
+class EvidenceError(Exception):
+    pass
+
+
+class CleanupError(Exception):
+    pass
+
+
+class OutputWriteError(EvidenceError):
+    pass
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image-path", required=True)
+    parser.add_argument("--ocr-runner-path", default=str(DEFAULT_OCR_RUNNER))
+    parser.add_argument("--privacy-runner-path", default=str(DEFAULT_PRIVACY_RUNNER))
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--mock", action="store_true")
+    return parser
+
+
+def remove_stale(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except Exception as exc:  # keep PHI/path details out of user-visible errors
+        raise CleanupError() from exc
+
+
+def run_child(args: list[str], *, input_text: str | None = None) -> str:
+    try:
+        proc = subprocess.run(
+            args,
+            input=input_text,
+            text=True,
+            capture_output=True,
+            timeout=TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # keep PHI/path details out of user-visible errors
+        raise EvidenceError() from exc
+    if proc.returncode != 0:
+        raise EvidenceError()
+    return proc.stdout
+
+
+def parse_json(raw: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except Exception as exc:
+        raise EvidenceError() from exc
+    if not isinstance(value, dict):
+        raise EvidenceError()
+    return value
+
+
+def validate_json_stdout(python: str, validator: Path, raw: str) -> None:
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=True) as tmp:
+            tmp.write(raw)
+            tmp.flush()
+            run_child([python, str(validator), tmp.name])
+    except EvidenceError:
+        raise
+    except Exception as exc:  # keep validator/temp details out of user-visible errors
+        raise EvidenceError() from exc
+
+
+def load_ocr_contract(python: str, runner: Path, image: Path, mock: bool) -> dict:
+    args = [python, str(runner), "--json"]
+    if mock:
+        args.append("--mock")
+    args.append(str(image))
+    raw = run_child(args)
+    validate_json_stdout(python, DEFAULT_OCR_VALIDATOR, raw)
+    ocr = parse_json(raw)
+    expected = {
+        "candidate": "PP-OCRv5_mobile_rec",
+        "engine": "PP-OCRv5-mobile-bounded-spike",
+        "scope": "printed_text_line_extraction_only",
+        "privacy_filter_contract": "text_only_normalized_input",
+    }
+    for key, value in expected.items():
+        if ocr.get(key) != value:
+            raise EvidenceError()
+    normalized_text = ocr.get("normalized_text")
+    if not isinstance(normalized_text, str) or not normalized_text.strip():
+        raise EvidenceError()
+    if ocr.get("ready_for_text_pii_eval") is not True:
+        raise EvidenceError()
+    engine_status = ocr.get("engine_status")
+    if not isinstance(engine_status, str) or not engine_status:
+        raise EvidenceError()
+    return ocr
+
+
+def load_privacy_contract(python: str, runner: Path, normalized_text: str, mock: bool) -> dict:
+    args = [python, str(runner), "--stdin"]
+    if mock:
+        args.append("--mock")
+    raw = run_child(args, input_text=normalized_text)
+    validate_json_stdout(python, DEFAULT_PRIVACY_VALIDATOR, raw)
+    privacy = parse_json(raw)
+    metadata = privacy.get("metadata")
+    summary = privacy.get("summary")
+    if not isinstance(metadata, dict) or not isinstance(summary, dict):
+        raise EvidenceError()
+    if metadata.get("network_api_called") is not False:
+        raise EvidenceError()
+    if metadata.get("engine") != "fallback_synthetic_patterns":
+        raise EvidenceError()
+    category_counts = summary.get("category_counts")
+    detected_span_count = summary.get("detected_span_count")
+    if not isinstance(category_counts, dict) or not isinstance(detected_span_count, int):
+        raise EvidenceError()
+    safe_counts: dict[str, int] = {}
+    for key, value in category_counts.items():
+        if key not in EXPECTED_CATEGORIES or not isinstance(value, int) or value < 0:
+            raise EvidenceError()
+        safe_counts[key] = value
+    if sum(safe_counts.values()) != detected_span_count:
+        raise EvidenceError()
+    return privacy
+
+
+def build_evidence(ocr: dict, privacy: dict) -> dict:
+    summary = privacy["summary"]
+    counts = dict(summary["category_counts"])
+    detected_span_count = summary["detected_span_count"]
+    return {
+        "artifact": "ocr_privacy_evidence",
+        "ocr_candidate": ocr["candidate"],
+        "ocr_engine": ocr["engine"],
+        "ocr_scope": ocr["scope"],
+        "ocr_engine_status": ocr["engine_status"],
+        "privacy_filter_engine": privacy["metadata"]["engine"],
+        "privacy_filter_contract": ocr["privacy_filter_contract"],
+        "privacy_scope": "text_only_pii_detection",
+        "ready_for_text_pii_eval": True,
+        "network_api_called": False,
+        "detected_span_count": detected_span_count,
+        "category_counts": {"EMAIL": counts.get("EMAIL", 0), "MRN": counts.get("MRN", 0), "NAME": counts.get("NAME", 0), "PHONE": counts.get("PHONE", 0)},
+        "non_goals": NON_GOALS,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    output = Path(args.output)
+    try:
+        remove_stale(output)
+    except CleanupError:
+        print(CLEANUP_ERROR, file=sys.stderr)
+        return 4
+    image = Path(args.image_path)
+    if not image.is_file():
+        print(MISSING_IMAGE_ERROR, file=sys.stderr)
+        return 2
+    try:
+        ocr = load_ocr_contract(sys.executable, Path(args.ocr_runner_path), image, args.mock)
+        privacy = load_privacy_contract(sys.executable, Path(args.privacy_runner_path), ocr["normalized_text"], args.mock)
+        evidence = build_evidence(ocr, privacy)
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise OutputWriteError() from exc
+    except OutputWriteError:
+        print(OUTPUT_WRITE_ERROR, file=sys.stderr)
+        return 5
+    except EvidenceError:
+        try:
+            remove_stale(output)
+        except CleanupError:
+            print(CLEANUP_ERROR, file=sys.stderr)
+            return 4
+        print(GENERIC_ERROR, file=sys.stderr)
+        return 3
+    print(json.dumps({"artifact": "ocr_privacy_evidence", "report_path": "<redacted>", "report_written": True}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

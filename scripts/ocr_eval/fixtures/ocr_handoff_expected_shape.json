@@ -1,0 +1,18 @@
+{
+  "source": "synthetic_printed_phi_line.png",
+  "extracted_text": "Patient Jane Example jane@example.com +1-555-123-4567 MRN-12345",
+  "normalized_text": "Patient Jane Example jane@example.com +1-555-123-4567 MRN-12345",
+  "ready_for_text_pii_eval": true,
+  "candidate": "PP-OCRv5_mobile_rec",
+  "engine": "PP-OCRv5-mobile-bounded-spike",
+  "engine_status": "deterministic_synthetic_fixture_fallback",
+  "scope": "printed_text_line_extraction_only",
+  "privacy_filter_contract": "text_only_normalized_input",
+  "non_goals": [
+    "visual_redaction",
+    "final_pdf_rewrite_export",
+    "handwriting_recognition",
+    "full_page_detection_or_segmentation",
+    "complete_ocr_pipeline"
+  ]
+}

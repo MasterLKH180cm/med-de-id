@@ -14,5 +14,5 @@ pub use dicom::{
 pub use pdf::{ExtractedPdfData, PdfAdapter, PdfAdapterError, PdfPageExtraction};
 pub use tabular::{
     CsvTabularAdapter, ExtractedTabularData, FieldPolicy, FieldPolicyAction, TabularAdapterError,
-    XlsxTabularAdapter,
+    XlsxSheetDisclosure, XlsxTabularAdapter, XLSX_FIRST_NON_EMPTY_WORKSHEET_DISCLOSURE,
 };
