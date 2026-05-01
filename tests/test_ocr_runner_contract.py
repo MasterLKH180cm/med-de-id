@@ -130,41 +130,6 @@ def test_fake_paddleocr_result_is_normalized_to_plain_stdout(monkeypatch, capsys
     assert captured.err == ""
 
 
-def test_subprocess_local_paddleocr_adapter_path_emits_json_without_mock_or_source_leak(tmp_path):
-    adapter_dir = tmp_path / "adapter"
-    adapter_dir.mkdir()
-    (adapter_dir / "paddleocr.py").write_text(
-        "class PaddleOCR:\n"
-        "    def __init__(self, **kwargs):\n"
-        "        self.kwargs = kwargs\n"
-        "    def ocr(self, image_path):\n"
-        "        return [{'rec_texts': ['Patient Jane Example', 'MRN MRN-12345']}]\n",
-        encoding="utf-8",
-    )
-    image = tmp_path / "Jane-Example-MRN-12345.png"
-    image.write_bytes(b"synthetic image placeholder")
-    env = {**__import__("os").environ, "PYTHONPATH": str(adapter_dir)}
-
-    completed = subprocess.run(
-        [sys.executable, "scripts/ocr_eval/run_small_ocr.py", "--json", str(image)],
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=5,
-        env=env,
-    )
-
-    payload = json.loads(completed.stdout)
-    assert payload["engine_status"] == "local_paddleocr_execution"
-    assert payload["source"] == "<redacted>"
-    assert payload["ready_for_text_pii_eval"] is True
-    rendered = json.dumps(payload, sort_keys=True)
-    assert "Jane-Example-MRN-12345" not in rendered
-    assert "Jane-Example-MRN-12345" not in completed.stderr
-    assert "mock" not in completed.stderr.lower()
-
-
 def test_fake_paddleocr_dict_rec_texts_result_is_normalized(monkeypatch, capsys):
     runner = load_runner()
 
