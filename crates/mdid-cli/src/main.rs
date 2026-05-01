@@ -2438,6 +2438,7 @@ fn validate_ocr_small_json_report(value: &Value) -> Result<(), String> {
         ("candidate", "PP-OCRv5_mobile_rec"),
         ("engine", "PP-OCRv5-mobile-bounded-spike"),
         ("scope", "printed_text_line_extraction_only"),
+        ("source", "<redacted>"),
         ("privacy_filter_contract", "text_only_normalized_input"),
     ] {
         if value[key] != expected {
