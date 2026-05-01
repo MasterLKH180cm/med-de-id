@@ -41,7 +41,31 @@ def detect_pii(text):
     return run_text(text)
 
 
+def run_privacy_filter_payload(text):
+    return run_text(text)
+
+
 class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_fallback_detects_context_required_fax_numbers(self):
+        text = 'Patient Jane Example fax 555-222-3333 and fax: (555) 444-5555.'
+        payload = run_privacy_filter_payload(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('FAX'), 2)
+        self.assertEqual(payload['masked_text'].count('[FAX]'), 2)
+        self.assertNotIn('555-222-3333', payload['masked_text'])
+        self.assertNotIn('(555) 444-5555', payload['masked_text'])
+        fax_spans = [span for span in payload['spans'] if span['label'] == 'FAX']
+        self.assertEqual(len(fax_spans), 2)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in fax_spans))
+        self.assertFalse(payload['metadata']['network_api_called'])
+
+    def test_fallback_does_not_classify_plain_phone_or_overlong_fax_as_fax(self):
+        text = 'Phone 555-222-3333. fax 555-222-333333. ID555-222-3333'
+        payload = run_privacy_filter_payload(text)
+
+        self.assertNotIn('FAX', payload['summary']['category_counts'])
+        self.assertNotIn('[FAX]', payload['masked_text'])
+
     def test_detects_phone_extensions_without_leaking_raw_values(self):
         text = 'Patient Jane Example call 555-123-4567 x890 or (555) 222-3333 ext. 44 for MRN-12345.'
         payload = detect_pii(text)

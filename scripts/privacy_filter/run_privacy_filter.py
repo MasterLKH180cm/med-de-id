@@ -6,6 +6,7 @@ EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})(?![A-Za-z0-9-])')
 PHONE_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{1,5}(?![A-Za-z0-9-])', re.I)
 PHONE_OVERLONG_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{6,}(?![A-Za-z0-9-])', re.I)
+FAX_RE = re.compile(r'\b(?:fax|facsimile)(?:\s+(?:number|no\.))?\s*:?\s*((?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4}))(?![A-Za-z0-9-])', re.I)
 DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
 SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
 PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
@@ -36,7 +37,7 @@ PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'IP_ADDRESS', 'URL'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'FAX', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'IP_ADDRESS', 'URL'}
 
 
 def add_span(spans, label, start, end):
@@ -77,6 +78,9 @@ def heuristic_detect(text: str):
     for m in EMAIL_RE.finditer(text):
         add_span(spans, 'EMAIL', m.start(), m.end())
     occupied_phone_ranges = []
+    for m in FAX_RE.finditer(text):
+        add_span(spans, 'FAX', m.start(1), m.end(1))
+        occupied_phone_ranges.append((m.start(1), m.end(1)))
     for m in PHONE_OVERLONG_EXTENSION_RE.finditer(text):
         add_span(spans, 'PHONE', m.start(), m.end())
         occupied_phone_ranges.append((m.start(), m.end()))
