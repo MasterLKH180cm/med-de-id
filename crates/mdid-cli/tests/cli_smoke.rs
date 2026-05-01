@@ -1147,6 +1147,18 @@ fn ocr_to_privacy_filter_corpus_help_mentions_command() {
 }
 
 #[test]
+fn ocr_to_privacy_filter_single_help_mentions_command() {
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "mdid-cli ocr-to-privacy-filter --image-path <path> --ocr-runner-path <path> --privacy-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] --mock",
+        ));
+}
+
+#[test]
 fn ocr_to_privacy_filter_single_runs_fixture_chain_without_phi_leaks() {
     let dir = tempdir().expect("tempdir");
     let report_path = dir.path().join("ocr-to-privacy-filter.json");
