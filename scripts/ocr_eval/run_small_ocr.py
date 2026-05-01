@@ -21,6 +21,7 @@ MOCK_ENGINE_STATUS = "deterministic_synthetic_fixture_fallback"
 REAL_ENGINE_STATUS = "local_paddleocr_execution"
 SCOPE = "printed_text_line_extraction_only"
 PRIVACY_FILTER_CONTRACT = "text_only_normalized_input"
+REDACTED_SOURCE = "<redacted>"
 NON_GOALS = sorted(
     {
         "visual_redaction",
@@ -66,7 +67,7 @@ def build_extraction_contract(input_path: Path, extracted_text: str, engine_stat
         "engine": ENGINE,
         "engine_status": engine_status,
         "scope": SCOPE,
-        "source": input_path.name,
+        "source": REDACTED_SOURCE,
         "extracted_text": extracted_text,
         "normalized_text": normalized_text,
         "ready_for_text_pii_eval": bool(normalized_text),
