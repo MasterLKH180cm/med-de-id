@@ -168,6 +168,7 @@ struct PrivacyFilterSummaryRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PrivacyFilterTextRequest {
     text: String,
 }

@@ -148,6 +148,40 @@ async fn privacy_filter_text_endpoint_rejects_empty_text() {
 }
 
 #[tokio::test]
+async fn privacy_filter_text_endpoint_rejects_unknown_fields_without_echoing_phi() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "text": "Patient Jane Example",
+        "unexpected": "MRN-12345"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/privacy-filter/text")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    for forbidden in ["Patient Jane Example", "MRN-12345"] {
+        assert!(!body_text.contains(forbidden), "{body_text}");
+    }
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_privacy_filter_text_request");
+    assert_eq!(
+        json["error"]["message"],
+        "Privacy Filter text request requires non-empty text no larger than 1048576 bytes."
+    );
+}
+
+#[tokio::test]
 async fn privacy_filter_text_endpoint_rejects_oversized_text_without_echoing_phi() {
     let app = build_router(RuntimeState::default());
     let oversized_text = format!(
