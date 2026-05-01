@@ -2090,6 +2090,119 @@ fn privacy_filter_text_accepts_stdin_without_leaking_input_path() {
 }
 
 #[test]
+fn privacy_filter_text_cleans_stdin_temp_file_on_runner_failure_without_leaking_phi() {
+    let dir = tempdir().unwrap();
+    let temp_root = dir.path().join("isolated-tmp");
+    fs::create_dir(&temp_root).unwrap();
+    let runner_path = dir.path().join("failing_privacy_runner.py");
+    let report_path = dir.path().join("privacy-filter-report.json");
+    let marker_path = dir.path().join("runner-input-path.txt");
+    let mode_marker_path = dir.path().join("runner-input-mode.txt");
+    fs::write(
+        &runner_path,
+        format!(
+            "import pathlib, stat, sys\npathlib.Path({marker:?}).write_text(sys.argv[1], encoding='utf-8')\npathlib.Path({mode_marker:?}).write_text(oct(pathlib.Path(sys.argv[1]).stat().st_mode & 0o777), encoding='utf-8')\npathlib.Path(sys.argv[1]).read_text(encoding='utf-8')\nsys.exit(42)\n",
+            marker = marker_path.to_string_lossy(),
+            mode_marker = mode_marker_path.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let stdin_phi = "Patient Jane Example MRN-12345 phone 555-123-4567\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .env("TMPDIR", &temp_root)
+        .env("TEMP", &temp_root)
+        .env("TMP", &temp_root)
+        .write_stdin(stdin_phi)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for unsafe_text in ["Jane Example", "MRN-12345", "555-123-4567"] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+    let materialized_input_path = fs::read_to_string(&marker_path).unwrap();
+    assert!(
+        Path::new(&materialized_input_path).starts_with(&temp_root),
+        "stdin temp file was not created under isolated TMPDIR: {materialized_input_path}"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        fs::read_to_string(&mode_marker_path).unwrap(),
+        "0o600",
+        "stdin temp file should be owner-readable/writable only"
+    );
+    let leaked_temp_files = fs::read_dir(&temp_root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("mdid-privacy-filter-stdin-")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leaked_temp_files.is_empty(),
+        "stdin temp files were not cleaned up: {leaked_temp_files:?}"
+    );
+}
+
+#[test]
+fn privacy_filter_text_rejects_empty_stdin() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-report.json");
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing stdin input"));
+}
+
+#[test]
+fn privacy_filter_text_rejects_oversized_stdin() {
+    let dir = tempdir().unwrap();
+    let report_path = dir.path().join("privacy-filter-report.json");
+    let oversized_stdin = "x".repeat(1024 * 1024 + 1);
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .write_stdin(oversized_stdin)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "stdin input exceeds 1048576 byte limit",
+        ));
+}
+
+#[test]
 fn privacy_filter_text_rejects_missing_input_source() {
     let dir = tempdir().unwrap();
     let report_path = dir.path().join("privacy-filter-report.json");

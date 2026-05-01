@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
-    fs,
-    io::Read,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     process,
     sync::mpsc,
@@ -26,6 +26,9 @@ use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 const DEFAULT_VAULT_AUDIT_LIMIT: usize = 100;
 const MAX_VAULT_AUDIT_LIMIT: usize = 100;
@@ -2150,12 +2153,13 @@ fn run_privacy_filter_text(args: PrivacyFilterTextArgs) -> Result<(), String> {
             require_regular_file(&args.runner_path, "missing runner file")?;
             let temp_path = write_privacy_filter_stdin_temp_file()?;
             let run_result = run_privacy_filter_text_inner(&args, &temp_path);
-            let remove_result = fs::remove_file(&temp_path);
-            if run_result.is_ok() {
-                remove_result
-                    .map_err(|err| format!("failed to remove temporary stdin input file: {err}"))?;
+            let cleanup_result = fs::remove_file(&temp_path)
+                .map_err(|err| format!("failed to remove temporary stdin input file: {err}"));
+            match (run_result, cleanup_result) {
+                (Err(run_err), _) => Err(run_err),
+                (Ok(()), Err(cleanup_err)) => Err(cleanup_err),
+                (Ok(()), Ok(())) => Ok(()),
             }
-            run_result
         }
     })();
     if result.is_err() {
@@ -2180,10 +2184,26 @@ fn write_privacy_filter_stdin_temp_file() -> Result<PathBuf, String> {
     if bytes.len() > PRIVACY_FILTER_STDIN_MAX_BYTES {
         return Err("stdin input exceeds 1048576 byte limit".to_string());
     }
-    let path =
-        std::env::temp_dir().join(format!("mdid-privacy-filter-stdin-{}.txt", Uuid::new_v4()));
-    fs::write(&path, bytes).map_err(|err| format!("failed to write stdin input: {err}"))?;
-    Ok(path)
+    let temp_dir = std::env::temp_dir();
+    for _ in 0..16 {
+        let path = temp_dir.join(format!("mdid-privacy-filter-stdin-{}.txt", Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&path) {
+            Ok(mut file) => {
+                file.write_all(&bytes)
+                    .map_err(|err| format!("failed to write stdin input: {err}"))?;
+                file.sync_all()
+                    .map_err(|err| format!("failed to write stdin input: {err}"))?;
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!("failed to write stdin input: {err}")),
+        }
+    }
+    Err("failed to create unique stdin input file".to_string())
 }
 
 fn run_privacy_filter_text_inner(
