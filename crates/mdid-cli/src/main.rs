@@ -2023,7 +2023,7 @@ fn build_ocr_privacy_evidence_summary(report: &Value) -> Result<Value, String> {
             category_counts.insert(category.to_string(), json!(count));
         }
     }
-    let mut summary = json!({
+    let summary = json!({
         "artifact": "ocr_privacy_evidence_summary",
         "ocr_scope": report["ocr_scope"],
         "privacy_scope": report["privacy_scope"],
@@ -2041,9 +2041,6 @@ fn build_ocr_privacy_evidence_summary(report: &Value) -> Result<Value, String> {
             "final_pdf_rewrite_export"
         ]
     });
-    if let Some(status) = report.get("ocr_engine_status") {
-        summary["ocr_engine_status"] = status.clone();
-    }
     if contains_unsafe_string_value(&summary) {
         return Err("OCR privacy evidence failed".to_string());
     }

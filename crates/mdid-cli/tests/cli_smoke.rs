@@ -4869,7 +4869,7 @@ fn ocr_privacy_evidence_runs_checked_in_fixture_without_phi_or_path_leaks() {
 }
 
 #[test]
-fn ocr_privacy_evidence_summary_output_writes_phi_safe_aggregate_summary() {
+fn ocr_privacy_evidence_writes_phi_safe_summary_output() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir
         .path()
@@ -4903,6 +4903,26 @@ fn ocr_privacy_evidence_summary_output_writes_phi_safe_aggregate_summary() {
     assert!(stderr.is_empty());
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    let mut actual_keys = summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    actual_keys.sort_unstable();
+    let mut expected_keys = vec![
+        "artifact",
+        "category_counts",
+        "network_api_called",
+        "non_goals",
+        "ocr_scope",
+        "privacy_filter_contract",
+        "privacy_scope",
+        "ready_for_text_pii_eval",
+        "total_detected_span_count",
+    ];
+    expected_keys.sort_unstable();
+    assert_eq!(actual_keys, expected_keys);
     assert_eq!(summary["artifact"], "ocr_privacy_evidence_summary");
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
@@ -4917,6 +4937,19 @@ fn ocr_privacy_evidence_summary_output_writes_phi_safe_aggregate_summary() {
         "normalized_text",
         "masked_text",
         "spans",
+        "raw_ocr_text",
+        "raw_text",
+        "text",
+        "preview",
+        "previews",
+        "fixture_ids",
+        "fixture_filenames",
+        "filenames",
+        "paths",
+        "image_path",
+        "runner_path",
+        "output",
+        "summary_output",
     ] {
         assert!(
             summary.get(forbidden_key).is_none(),
