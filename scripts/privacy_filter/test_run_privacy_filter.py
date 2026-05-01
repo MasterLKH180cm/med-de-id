@@ -88,6 +88,109 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
         self.assertNotIn('SSN', payload['summary']['category_counts'])
         self.assertNotIn('[SSN]', payload['masked_text'])
 
+    def test_stdin_mock_detects_zip_codes_without_phi_previews(self):
+        phi = 'Patient Jane Example lives in ZIP 02139 and alternate 02139-4307\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / 'privacy-filter-output.json'
+            output_path.write_text(result.stdout, encoding='utf-8')
+            validator = subprocess.run(
+                [sys.executable, str(REPO_ROOT / 'scripts' / 'privacy_filter' / 'validate_privacy_filter_output.py'), str(output_path)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+        self.assertEqual(validator.returncode, 0, validator.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['metadata']['engine'], 'fallback_synthetic_patterns')
+        self.assertEqual(payload['metadata']['network_api_called'], False)
+        self.assertEqual(payload['summary']['category_counts'].get('ZIP'), 2)
+        self.assertIn('[ZIP]', payload['masked_text'])
+        rendered = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('02139', rendered)
+        self.assertNotIn('02139-4307', rendered)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in payload['spans']))
+
+    def test_stdin_mock_does_not_detect_id_numbers_as_zip(self):
+        phi = 'Patient Jane Example ID 12345 and ID-67890\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['summary']['category_counts'].get('ID'), 2)
+        self.assertNotIn('ZIP', payload['summary']['category_counts'])
+        self.assertNotIn('[ZIP]', payload['masked_text'])
+
+    def test_stdin_mock_does_not_detect_address_street_number_as_zip(self):
+        phi = 'Patient Jane Example lives at 12345 Main St\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['summary']['category_counts'].get('ADDRESS'), 1)
+        self.assertNotIn('ZIP', payload['summary']['category_counts'])
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / 'privacy-filter-output.json'
+            output_path.write_text(result.stdout, encoding='utf-8')
+            validator = subprocess.run(
+                [sys.executable, str(REPO_ROOT / 'scripts' / 'privacy_filter' / 'validate_privacy_filter_output.py'), str(output_path)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+        self.assertEqual(validator.returncode, 0, validator.stderr)
+
+    def test_stdin_mock_does_not_detect_embedded_zip_like_tokens(self):
+        phi = 'Codes A02139 02139B 02139-4307-extra and ID02139 remain ordinary text\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        payload = json.loads(result.stdout)
+        self.assertNotIn('ZIP', payload['summary']['category_counts'])
+        self.assertNotIn('[ZIP]', payload['masked_text'])
+
     def test_stdin_rejects_oversized_input_without_stdout_or_phi(self):
         phi_prefix = 'Patient Jane Example has MRN-12345\n'
         result = subprocess.run(
