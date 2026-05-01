@@ -4118,11 +4118,14 @@ fn cli_privacy_filter_text_detects_fax_without_phi_or_path_leaks() {
         .unwrap()
         .contains("[FAX]"));
     assert_eq!(report_json["metadata"]["network_api_called"], false);
-    for span in report_json["spans"].as_array().unwrap() {
-        if span["label"] == "FAX" {
-            assert_eq!(span["preview"], "<redacted>");
-        }
-    }
+    let fax_spans: Vec<_> = report_json["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|span| span["label"] == "FAX")
+        .collect();
+    assert_eq!(fax_spans.len(), 1);
+    assert_eq!(fax_spans[0]["preview"], "<redacted>");
 }
 
 #[test]
