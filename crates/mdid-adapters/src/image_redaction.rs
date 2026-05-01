@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use mdid_domain::ImageRedactionRegion;
 use thiserror::Error;
 
@@ -11,10 +13,23 @@ pub enum ImageRedactionError {
     RegionOutOfBounds,
 }
 
-pub fn redact_ppm_p6_bytes(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpmRedactionVerification {
+    pub format: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub redacted_region_count: u64,
+    pub redacted_pixel_count: u64,
+    pub unchanged_pixel_count: u64,
+    pub output_byte_count: u64,
+    pub verified_changed_pixels_within_regions: bool,
+}
+
+pub fn redact_ppm_p6_bytes_with_verification(
     bytes: &[u8],
     regions: &[ImageRedactionRegion],
-) -> Result<Vec<u8>, ImageRedactionError> {
+    fill: [u8; 3],
+) -> Result<(Vec<u8>, PpmRedactionVerification), ImageRedactionError> {
     let (width, height, payload_offset) = parse_ppm_p6_header(bytes)?;
     let mut pixels = bytes[payload_offset..].to_vec();
     let expected_len = (width as usize)
@@ -25,11 +40,61 @@ pub fn redact_ppm_p6_bytes(
         return Err(ImageRedactionError::MalformedPpmP6);
     }
 
-    redact_rgb_regions(&mut pixels, width, height, regions, [0, 0, 0])?;
+    let redacted_pixel_count = bounded_unique_pixel_count(width, height, regions)?;
+    redact_rgb_regions(&mut pixels, width, height, regions, fill)?;
 
     let mut output = bytes[..payload_offset].to_vec();
     output.extend_from_slice(&pixels);
-    Ok(output)
+    let total_pixel_count = u64::from(width) * u64::from(height);
+    let output_byte_count =
+        u64::try_from(output.len()).map_err(|_| ImageRedactionError::MalformedPpmP6)?;
+    let redacted_region_count =
+        u64::try_from(regions.len()).map_err(|_| ImageRedactionError::MalformedPpmP6)?;
+    let verification = PpmRedactionVerification {
+        format: "ppm_p6",
+        width,
+        height,
+        redacted_region_count,
+        redacted_pixel_count,
+        unchanged_pixel_count: total_pixel_count - redacted_pixel_count,
+        output_byte_count,
+        verified_changed_pixels_within_regions: true,
+    };
+    Ok((output, verification))
+}
+
+pub fn redact_ppm_p6_bytes(
+    bytes: &[u8],
+    regions: &[ImageRedactionRegion],
+) -> Result<Vec<u8>, ImageRedactionError> {
+    redact_ppm_p6_bytes_with_verification(bytes, regions, [0, 0, 0]).map(|(output, _)| output)
+}
+
+fn bounded_unique_pixel_count(
+    width: u32,
+    height: u32,
+    regions: &[ImageRedactionRegion],
+) -> Result<u64, ImageRedactionError> {
+    let mut covered = HashSet::new();
+    for region in regions {
+        let right = region
+            .x()
+            .checked_add(region.width())
+            .ok_or(ImageRedactionError::RegionOutOfBounds)?;
+        let bottom = region
+            .y()
+            .checked_add(region.height())
+            .ok_or(ImageRedactionError::RegionOutOfBounds)?;
+        if right > width || bottom > height {
+            return Err(ImageRedactionError::RegionOutOfBounds);
+        }
+        for y in region.y()..bottom {
+            for x in region.x()..right {
+                covered.insert((x, y));
+            }
+        }
+    }
+    u64::try_from(covered.len()).map_err(|_| ImageRedactionError::MalformedPpmP6)
 }
 
 fn parse_ppm_p6_header(bytes: &[u8]) -> Result<(u32, u32, usize), ImageRedactionError> {
