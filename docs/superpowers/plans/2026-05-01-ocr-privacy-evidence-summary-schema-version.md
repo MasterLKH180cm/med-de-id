@@ -118,7 +118,7 @@ git commit -m "feat(cli): version OCR privacy evidence summary"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-05-01-ocr-privacy-evidence-summary-schema-version.md`
 
-- [ ] **Step 1: Update README current snapshot**
+- [x] **Step 1: Update README current snapshot**
 
 Update `README.md` current status text so the top snapshot says this round adds `schema_version: 1` to `ocr_privacy_evidence_summary`. Use this completion arithmetic:
 
@@ -131,11 +131,11 @@ Overall remains 97%
 
 The README must say this is CLI/runtime summary-contract hardening only and not Browser/Web execution, Desktop execution, OCR model-quality proof, visual redaction, image pixel redaction, handwriting recognition, or final PDF rewrite/export.
 
-- [ ] **Step 2: Mark plan checkboxes complete**
+- [x] **Step 2: Mark plan checkboxes complete**
 
 In this plan file, change every completed checkbox from `- [ ]` to `- [x]` after the matching code/test/docs step is actually done.
 
-- [ ] **Step 3: Run formatting and verification**
+- [x] **Step 3: Run formatting and verification**
 
 Run:
 
@@ -147,7 +147,7 @@ git diff --check
 
 Expected: all PASS / no output from `git diff --check`.
 
-- [ ] **Step 4: Commit README truth-sync**
+- [x] **Step 4: Commit README truth-sync**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-05-01-ocr-privacy-evidence-summary-schema-version.md
