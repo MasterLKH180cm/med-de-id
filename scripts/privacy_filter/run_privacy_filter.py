@@ -9,6 +9,7 @@ ID_RE = re.compile(r'\bID[- ]?\d+\b', re.I)
 PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
+STDIN_INPUT_MAX_BYTES = 1024 * 1024
 
 
 def add_span(spans, label, start, end):
@@ -158,6 +159,26 @@ def run_opf_with_stdin(opf: str, text: str) -> str:
     return stdout
 
 
+def read_bounded_stdin_text() -> str:
+    stdin_buffer = getattr(sys.stdin, 'buffer', None)
+    if stdin_buffer is not None:
+        data = stdin_buffer.read(STDIN_INPUT_MAX_BYTES + 1)
+        if len(data) > STDIN_INPUT_MAX_BYTES:
+            print('stdin input exceeds 1048576 byte limit', file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            return data.decode('utf-8')
+        except UnicodeDecodeError:
+            print('stdin input must be valid UTF-8 text', file=sys.stderr)
+            raise SystemExit(2)
+
+    text = sys.stdin.read(STDIN_INPUT_MAX_BYTES + 1)
+    if len(text.encode('utf-8')) > STDIN_INPUT_MAX_BYTES:
+        print('stdin input exceeds 1048576 byte limit', file=sys.stderr)
+        raise SystemExit(2)
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('input_path', nargs='?')
@@ -168,7 +189,7 @@ def main():
     if (args.input_path is None) == (not args.stdin):
         ap.error('exactly one input source is required')
     if args.stdin:
-        text = sys.stdin.read()
+        text = read_bounded_stdin_text()
     else:
         text = Path(args.input_path).read_text(encoding='utf-8')
     if args.mock or not args.use_opf:

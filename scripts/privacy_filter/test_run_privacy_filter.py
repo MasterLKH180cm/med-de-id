@@ -47,6 +47,24 @@ class PrivacyFilterRunnerFailureTests(unittest.TestCase):
         self.assertIn('[NAME]', payload['masked_text'])
         self.assertIn('[MRN]', payload['masked_text'])
 
+    def test_stdin_rejects_oversized_input_without_stdout_or_phi(self):
+        phi_prefix = 'Patient Jane Example has MRN-12345\n'
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), '--stdin', '--mock'],
+            input=phi_prefix + ('x' * (1024 * 1024 + 1)),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('stdin input exceeds 1048576 byte limit', result.stderr)
+        self.assertNotIn('Jane Example', result.stderr)
+        self.assertNotIn('MRN-12345', result.stderr)
+
     def test_positional_input_plus_stdin_is_rejected_phi_safely(self):
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / 'input.txt'

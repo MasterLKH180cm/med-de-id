@@ -2490,7 +2490,8 @@ fn run_privacy_filter_text_inner(
         .spawn()
         .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
 
-    finish_privacy_filter_text_child(args, &mut child)
+    let (stdout, value) = finish_privacy_filter_text_child(args, &mut child)?;
+    emit_privacy_filter_text_success(args, stdout, &value)
 }
 
 fn run_privacy_filter_text_stdin_inner(
@@ -2517,13 +2518,11 @@ fn run_privacy_filter_text_stdin_inner(
         stdin_bytes,
     );
 
-    let result = finish_privacy_filter_text_child(args, &mut child);
-    if result.is_ok() {
-        stdin_writer
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "failed to write privacy filter runner stdin".to_string())??;
-    }
-    result
+    let (stdout, value) = finish_privacy_filter_text_child(args, &mut child)?;
+    stdin_writer
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|_| "failed to write privacy filter runner stdin".to_string())??;
+    emit_privacy_filter_text_success(args, stdout, &value)
 }
 
 fn spawn_privacy_filter_stdin_writer(
@@ -2544,7 +2543,7 @@ fn spawn_privacy_filter_stdin_writer(
 fn finish_privacy_filter_text_child(
     args: &PrivacyFilterTextArgs,
     child: &mut std::process::Child,
-) -> Result<(), String> {
+) -> Result<(String, Value), String> {
     let (status, stdout_bytes) = wait_for_privacy_filter_runner(
         child,
         PRIVACY_FILTER_RUNNER_TIMEOUT,
@@ -2562,6 +2561,14 @@ fn finish_privacy_filter_text_child(
     if args.summary_output.is_some() {
         validate_privacy_filter_text_summary_artifact_fields(&value)?;
     }
+    Ok((stdout, value))
+}
+
+fn emit_privacy_filter_text_success(
+    args: &PrivacyFilterTextArgs,
+    stdout: String,
+    value: &Value,
+) -> Result<(), String> {
     fs::write(&args.report_path, stdout)
         .map_err(|err| format!("failed to write privacy filter report: {err}"))?;
 

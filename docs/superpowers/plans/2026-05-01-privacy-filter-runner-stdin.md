@@ -1,7 +1,5 @@
 # Privacy Filter Runner Stdin Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Let the bounded text-only Privacy Filter runner and `mdid-cli privacy-filter-text --stdin` stream PHI-bearing text through stdin instead of materializing a temporary runner input file.
 
 **Architecture:** Extend the existing Python Privacy Filter runner with an exactly-one-source contract: positional UTF-8 text file or `--stdin`. Update the Rust CLI wrapper so its `--stdin` mode invokes the runner with `--stdin` and pipes the bounded captured stdin into the child process while preserving all existing JSON validation, stale artifact cleanup, timeout/stdout caps, and PHI-safe stdout/stderr behavior.
@@ -37,7 +35,7 @@ Expected before implementation: at least one failure because `run_privacy_filter
 
 - [ ] **Step 3: Implement minimal runner stdin support**
 
-Update `run_privacy_filter.py` so the parser accepts optional positional `input_path` and `--stdin`. Reject missing input and conflicting input with generic PHI-safe parser errors. When `--stdin` is present, read all text from `sys.stdin` and feed it into the existing detection path. Do not pass stdin text as a command-line argument to OPF.
+Update `run_privacy_filter.py` so the parser accepts optional positional `input_path` and `--stdin`. Reject missing input and conflicting input with generic PHI-safe parser errors. When `--stdin` is present, read at most 1 MiB of UTF-8 text from stdin and feed it into the existing detection path. Do not pass stdin text as a command-line argument to OPF.
 
 - [ ] **Step 4: Run Python GREEN tests**
 

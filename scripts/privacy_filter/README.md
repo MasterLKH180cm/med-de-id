@@ -54,7 +54,7 @@ python scripts/privacy_filter/run_privacy_filter.py --stdin --mock < scripts/pri
 python scripts/privacy_filter/validate_privacy_filter_output.py /tmp/privacy-filter-stdin-output.json
 ```
 
-`run_privacy_filter.py --stdin` is bounded text-only Privacy Filter input plumbing. It reads UTF-8 text from stdin and feeds the same local text-only PII detection/masking contract used by file input while avoiding temporary runner input file materialization. It is not OCR, not visual redaction, not image pixel redaction, not handwriting recognition, not final PDF rewrite/export, not Browser/Web execution, and not Desktop execution.
+`run_privacy_filter.py --stdin` is bounded text-only Privacy Filter input plumbing. It reads at most 1 MiB of UTF-8 text from stdin and feeds the same local text-only PII detection/masking contract used by file input while avoiding temporary runner input file materialization. It is not OCR, not visual redaction, not image pixel redaction, not handwriting recognition, not final PDF rewrite/export, not Browser/Web execution, and not Desktop execution.
 
 ### Exercise the Rust CLI wrapper against the checked-in Python runner
 ```bash

@@ -3242,6 +3242,58 @@ fn privacy_filter_text_times_out_silent_hanging_runner_and_removes_stale_report(
 }
 
 #[test]
+fn privacy_filter_text_stdin_fails_when_runner_exits_before_reading_stdin_without_false_success() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir
+        .path()
+        .join("Jane-Example-MRN-12345-jane@example.com-555-123-4567");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let runner_path = phi_named_dir.join("privacy_runner.py");
+    let report_path = phi_named_dir.join("privacy-report.json");
+    fs::write(&report_path, "stale report must be removed").unwrap();
+    write_privacy_runner(
+        &runner_path,
+        r#"import json
+import sys
+json.dump({
+    "summary": {"input_char_count": 0, "detected_span_count": 0, "category_counts": {}},
+    "masked_text": "",
+    "spans": [],
+    "metadata": {"engine": "fake_quick_no_stdin_runner", "network_api_called": False, "preview_policy": "masked"}
+}, sys.stdout)
+"#,
+    );
+    let stdin_text = format!(
+        "Patient Jane Example has MRN-12345. {}\n",
+        "x".repeat(1024 * 1024 - 42)
+    );
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .write_stdin(stdin_text)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stdout.contains("report_written"));
+    assert!(!stdout.contains("fake_quick_no_stdin_runner"));
+    for unsafe_text in ["Jane Example", "MRN-12345", phi_named_dir.to_str().unwrap()] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+    }
+    assert!(!report_path.exists());
+}
+
+#[test]
 fn privacy_filter_text_stdin_times_out_when_runner_does_not_read_stdin_and_removes_stale_report() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir
