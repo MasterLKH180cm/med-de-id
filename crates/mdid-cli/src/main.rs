@@ -2028,7 +2028,7 @@ fn has_windows_drive_prefix(text: &str) -> bool {
 fn is_allowed_privacy_filter_label(label: &str) -> bool {
     matches!(
         label,
-        "NAME" | "MRN" | "EMAIL" | "PHONE" | "ID" | "DATE" | "ADDRESS" | "SSN" | "ZIP"
+        "NAME" | "MRN" | "EMAIL" | "PHONE" | "ID" | "DATE" | "ADDRESS" | "SSN" | "ZIP" | "PASSPORT"
     )
 }
 
