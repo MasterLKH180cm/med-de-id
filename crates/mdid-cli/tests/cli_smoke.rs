@@ -4980,11 +4980,13 @@ fn ocr_privacy_evidence_writes_phi_safe_summary_output() {
         "privacy_filter_contract",
         "privacy_scope",
         "ready_for_text_pii_eval",
+        "schema_version",
         "total_detected_span_count",
     ];
     expected_keys.sort_unstable();
     assert_eq!(actual_keys, expected_keys);
     assert_eq!(summary["artifact"], "ocr_privacy_evidence_summary");
+    assert_eq!(summary["schema_version"], 1);
     assert_eq!(summary["ocr_scope"], "printed_text_line_extraction_only");
     assert_eq!(summary["privacy_scope"], "text_only_pii_detection");
     assert_eq!(summary["network_api_called"], false);

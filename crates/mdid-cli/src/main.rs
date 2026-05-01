@@ -2136,6 +2136,7 @@ fn build_ocr_privacy_evidence_summary(report: &Value) -> Result<Value, String> {
     }
     let summary = json!({
         "artifact": "ocr_privacy_evidence_summary",
+        "schema_version": 1,
         "ocr_scope": report["ocr_scope"],
         "privacy_scope": report["privacy_scope"],
         "privacy_filter_contract": report["privacy_filter_contract"],
