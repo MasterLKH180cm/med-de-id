@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ImageRedactionRegion {
     x: u32,
     y: u32,
@@ -39,6 +39,25 @@ impl ImageRedactionRegion {
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+}
+
+impl<'de> Deserialize<'de> for ImageRedactionRegion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct ImageRedactionRegionDto {
+            x: u32,
+            y: u32,
+            width: u32,
+            height: u32,
+        }
+
+        let dto = ImageRedactionRegionDto::deserialize(deserializer)?;
+        ImageRedactionRegion::new(dto.x, dto.y, dto.width, dto.height)
+            .map_err(serde::de::Error::custom)
     }
 }
 
