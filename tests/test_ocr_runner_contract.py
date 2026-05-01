@@ -89,6 +89,29 @@ def test_json_output_redacts_phi_bearing_source_filename(tmp_path):
     assert "Jane-Example-MRN-12345" not in completed.stderr
 
 
+def test_json_output_includes_phi_safe_text_metrics(tmp_path):
+    source = tmp_path / "Jane-Example-MRN-12345.png"
+    source.write_bytes(b"synthetic image placeholder")
+    expected = tmp_path / "synthetic_printed_phi_expected.txt"
+    expected.write_text("Patient Jane Example\nMRN MRN-12345\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/ocr_eval/run_small_ocr.py", "--mock", "--json", str(source)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    payload = json.loads(completed.stdout)
+    assert payload["line_count"] == 2
+    assert payload["normalized_char_count"] == len("Patient Jane Example MRN MRN-12345")
+    assert payload["ready_for_text_pii_eval"] is True
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "Jane-Example-MRN-12345" not in rendered
+    assert "Jane-Example-MRN-12345" not in completed.stderr
+
+
 def test_missing_paddleocr_without_mock_exits_3_without_fixture_text(monkeypatch, capsys):
     runner = load_runner()
     monkeypatch.setitem(sys.modules, "paddleocr", None)
