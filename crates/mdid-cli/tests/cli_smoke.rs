@@ -3241,6 +3241,43 @@ fn privacy_filter_text_times_out_silent_hanging_runner_and_removes_stale_report(
     assert!(!report_path.exists());
 }
 
+#[test]
+fn privacy_filter_text_stdin_times_out_when_runner_does_not_read_stdin_and_removes_stale_report() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir
+        .path()
+        .join("Jane-Example-MRN-12345-jane@example.com-555-123-4567");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let runner_path = phi_named_dir.join("privacy_runner.py");
+    let report_path = phi_named_dir.join("privacy-report.json");
+    fs::write(&report_path, "stale report must be removed").unwrap();
+    write_privacy_runner(&runner_path, "import time\ntime.sleep(30)\n");
+    let stdin_text = format!(
+        "Patient Jane Example has MRN-12345. {}\n",
+        "x".repeat(1024 * 1024 - 42)
+    );
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .write_stdin(stdin_text)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("privacy filter runner timed out"))
+        .stderr(predicate::str::contains("Jane Example").not())
+        .stderr(predicate::str::contains(phi_named_dir.to_str().unwrap()).not())
+        .stdout(predicate::str::contains("Jane Example").not())
+        .stdout(predicate::str::contains(phi_named_dir.to_str().unwrap()).not());
+
+    assert!(!report_path.exists());
+}
+
 fn assert_privacy_filter_rejects(
     input_path: &Path,
     runner_path: &Path,

@@ -2509,14 +2509,36 @@ fn run_privacy_filter_text_stdin_inner(
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|err| format!("failed to run privacy filter runner: {err}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| "failed to write privacy filter runner stdin".to_string())?
-        .write_all(&stdin_bytes)
-        .map_err(|err| format!("failed to write privacy filter runner stdin: {err}"))?;
+    let stdin_writer = spawn_privacy_filter_stdin_writer(
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "failed to write privacy filter runner stdin".to_string())?,
+        stdin_bytes,
+    );
 
-    finish_privacy_filter_text_child(args, &mut child)
+    let result = finish_privacy_filter_text_child(args, &mut child);
+    if result.is_ok() {
+        stdin_writer
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| "failed to write privacy filter runner stdin".to_string())??;
+    }
+    result
+}
+
+fn spawn_privacy_filter_stdin_writer(
+    mut child_stdin: std::process::ChildStdin,
+    stdin_bytes: Vec<u8>,
+) -> mpsc::Receiver<Result<(), String>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = child_stdin
+            .write_all(&stdin_bytes)
+            .map_err(|err| format!("failed to write privacy filter runner stdin: {err}"));
+        drop(child_stdin);
+        let _ = tx.send(result);
+    });
+    rx
 }
 
 fn finish_privacy_filter_text_child(
