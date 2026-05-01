@@ -24,7 +24,7 @@
 - Modify: `scripts/ocr_eval/run_small_ocr.py`
 - Modify: `scripts/ocr_eval/README.md`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add this test to `tests/test_ocr_handoff_contract.py` after `test_ppocrv5_mobile_bounded_spike_handoff_metadata_and_privacy_filter_text_contract`:
 
@@ -59,13 +59,13 @@ def test_small_ocr_json_mode_emits_bounded_extraction_contract_and_feeds_privacy
     assert pii_obj["metadata"]["network_api_called"] is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_ocr_handoff_contract.py::test_small_ocr_json_mode_emits_bounded_extraction_contract_and_feeds_privacy_filter -q`
 
 Expected: FAIL because `run_small_ocr.py` does not accept `--json` yet.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `scripts/ocr_eval/run_small_ocr.py`:
 
@@ -117,13 +117,13 @@ def build_output_payload(input_path: Path, extracted_text: str, engine_status: s
 
 4. Refactor `run_mock` and `run_real` to return `(return_code, extracted_text, engine_status)` internally, and make `main()` either print raw text or `json.dumps(payload, indent=2, sort_keys=True) + "\n"`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_ocr_handoff_contract.py::test_small_ocr_json_mode_emits_bounded_extraction_contract_and_feeds_privacy_filter -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run broader tests**
+- [x] **Step 5: Run broader tests**
 
 Run: `pytest tests/test_ocr_handoff_contract.py -q`
 
@@ -137,7 +137,7 @@ Run: `git diff --check`
 
 Expected: PASS.
 
-- [ ] **Step 6: Update local OCR README**
+- [x] **Step 6: Update local OCR README**
 
 Add a JSON mode example to `scripts/ocr_eval/README.md`:
 
@@ -153,7 +153,7 @@ python scripts/ocr_eval/run_small_ocr.py --mock --json scripts/ocr_eval/fixtures
 This emits a bounded printed-text-line extraction object with `candidate: PP-OCRv5_mobile_rec`, `scope: printed_text_line_extraction_only`, normalized text for downstream text-only Privacy Filter evaluation, and explicit non-goals. It is not visual redaction, image pixel redaction, handwriting recognition, full OCR quality proof, browser/desktop OCR execution, or final PDF rewrite/export.
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add tests/test_ocr_handoff_contract.py scripts/ocr_eval/run_small_ocr.py scripts/ocr_eval/README.md
