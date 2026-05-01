@@ -64,6 +64,7 @@ enum CliCommand {
     VaultExport(VaultExportArgs),
     VaultImport(VaultImportArgs),
     VaultInspectArtifact(VaultInspectArtifactArgs),
+    PortableTransferSummary(VaultInspectArtifactArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -114,6 +115,7 @@ struct ReviewMediaArgs {
     requires_visual_review: bool,
     unsupported_payload: bool,
     report_path: PathBuf,
+    export_report: Option<PathBuf>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -345,6 +347,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [command, rest @ ..] if command == "vault-inspect-artifact" => {
             parse_vault_inspect_artifact_args(rest).map(CliCommand::VaultInspectArtifact)
         }
+        [command, rest @ ..] if command == "portable-transfer-summary" => {
+            parse_vault_inspect_artifact_args(rest).map(CliCommand::PortableTransferSummary)
+        }
         _ => Err("unknown command".to_string()),
     }
 }
@@ -535,6 +540,7 @@ fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
     let mut requires_visual_review = None;
     let mut unsupported_payload = None;
     let mut report_path = None;
+    let mut export_report = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -549,6 +555,7 @@ fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
             "--requires-visual-review" => requires_visual_review = Some(parse_bool_flag(value)?),
             "--unsupported-payload" => unsupported_payload = Some(parse_bool_flag(value)?),
             "--report-path" => report_path = Some(PathBuf::from(value)),
+            "--export-report" => export_report = Some(non_blank_path(value, "--export-report")?),
             _ => return Err("unknown flag".to_string()),
         }
         index += 2;
@@ -568,6 +575,7 @@ fn parse_review_media_args(args: &[String]) -> Result<ReviewMediaArgs, String> {
         unsupported_payload: unsupported_payload
             .ok_or_else(|| "missing --unsupported-payload".to_string())?,
         report_path: report_path.ok_or_else(|| "missing --report-path".to_string())?,
+        export_report,
     })
 }
 
@@ -1228,6 +1236,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultExport(args) => run_vault_export(args),
         CliCommand::VaultImport(args) => run_vault_import(args),
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
+        CliCommand::PortableTransferSummary(args) => run_portable_transfer_summary(args),
     }
 }
 
@@ -3599,6 +3608,9 @@ fn run_review_media(args: ReviewMediaArgs) -> Result<(), String> {
     let report = json!({
         "summary": output.summary,
         "review_queue_len": review_queue_len,
+        "rewrite_available": false,
+        "rewrite_status": "metadata_only_export",
+        "review_only": true,
         "rewritten_media_bytes": serde_json::Value::Null,
         "review_queue": review_queue,
     });
@@ -3610,10 +3622,36 @@ fn run_review_media(args: ReviewMediaArgs) -> Result<(), String> {
     )
     .map_err(|err| format!("failed to write media report: {err}"))?;
 
+    let export_report_written = if let Some(export_path) = args.export_report.as_ref() {
+        let export_report = json!({
+            "artifact": "conservative_media_metadata_only_export",
+            "schema_version": 1,
+            "summary": report["summary"].clone(),
+            "review_queue_len": report["review_queue_len"].clone(),
+            "rewrite_available": false,
+            "rewrite_status": "metadata_only_export",
+            "raw_source_included": false,
+            "rewritten_media_bytes": serde_json::Value::Null,
+            "non_goals": ["media_byte_rewrite", "visual_redaction", "ocr"],
+        });
+        fs::write(
+            export_path,
+            serde_json::to_string_pretty(&export_report)
+                .map_err(|err| format!("failed to render media export report: {err}"))?,
+        )
+        .map_err(|err| format!("failed to write media export report: {err}"))?;
+        true
+    } else {
+        false
+    };
+
     let stdout = json!({
         "report_path": args.report_path,
         "summary": report["summary"].clone(),
         "review_queue_len": report["review_queue_len"].clone(),
+        "rewrite_available": false,
+        "rewrite_status": report["rewrite_status"].clone(),
+        "export_report_written": export_report_written,
         "rewritten_media_bytes": serde_json::Value::Null,
     });
     println!(
@@ -3736,6 +3774,11 @@ fn run_vault_inspect_artifact(args: VaultInspectArtifactArgs) -> Result<(), Stri
     Ok(())
 }
 
+fn run_portable_transfer_summary(args: VaultInspectArtifactArgs) -> Result<(), String> {
+    println!("{}", run_portable_transfer_summary_for_summary(args)?);
+    Ok(())
+}
+
 fn read_bounded_portable_artifact(path: &Path) -> Result<Vec<u8>, String> {
     let file = fs::File::open(path)
         .map_err(|err| format!("failed to read vault import artifact: {err}"))?;
@@ -3765,6 +3808,27 @@ fn run_vault_inspect_artifact_for_summary(
     });
     serde_json::to_string(&stdout)
         .map_err(|err| format!("failed to render portable inspect summary: {err}"))
+}
+
+fn run_portable_transfer_summary_for_summary(
+    args: VaultInspectArtifactArgs,
+) -> Result<String, String> {
+    let artifact_bytes = read_bounded_portable_artifact(&args.artifact_path)?;
+    let artifact: PortableVaultArtifact = serde_json::from_slice(&artifact_bytes)
+        .map_err(|err| format!("failed to parse portable artifact: {err}"))?;
+    let snapshot = artifact
+        .unlock(&args.portable_passphrase)
+        .map_err(|err| format!("failed to inspect portable artifact: {err}"))?;
+    let stdout = json!({
+        "command": "portable-transfer-summary",
+        "workflow": "portable_vault_transfer",
+        "record_count": snapshot.records.len(),
+        "artifact_encrypted": true,
+        "phi_safe_summary": true,
+        "next_steps": ["vault-import", "vault-audit"],
+    });
+    serde_json::to_string(&stdout)
+        .map_err(|err| format!("failed to render portable transfer summary: {err}"))
 }
 
 fn run_vault_import_for_summary(args: VaultImportArgs) -> Result<String, String> {
@@ -4105,7 +4169,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json>\n       mdid-cli offline-readiness --privacy-runner-path <path> --ocr-runner-path <path> --ocr-fixture-path <path> [--python-command <cmd>]\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter --image-path <path> --ocr-runner-path <path> --privacy-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-small-json --image-path <path> --ocr-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-handoff --image-path <path> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-privacy-evidence Run local OCR privacy evidence and write a bounded PHI-safe JSON report.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json>\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json> [--export-report <export.json>]\n       mdid-cli offline-readiness --privacy-runner-path <path> --ocr-runner-path <path> --ocr-fixture-path <path> [--python-command <cmd>]\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter --image-path <path> --ocr-runner-path <path> --privacy-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-small-json --image-path <path> --ocr-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-handoff --image-path <path> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n       mdid-cli portable-transfer-summary --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF and write a PHI-safe JSON report; no OCR or PDF rewrite/export.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-privacy-evidence Run local OCR privacy evidence and write a bounded PHI-safe JSON report.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count.\n  portable-transfer-summary Print a PHI-safe portable transfer workflow summary for an encrypted artifact."
 }
 
 #[cfg(test)]
@@ -4682,6 +4746,27 @@ mod tests {
                 "summary leaked {secret}: {summary}"
             );
         }
+    }
+
+    #[test]
+    fn parses_portable_transfer_summary_command() {
+        let args = vec![
+            "portable-transfer-summary".to_string(),
+            "--artifact-path".to_string(),
+            "portable-export.json".to_string(),
+            "--portable-passphrase".to_string(),
+            "portable-secret".to_string(),
+        ];
+
+        assert!(
+            parse_command(&args)
+                == Ok(CliCommand::PortableTransferSummary(
+                    VaultInspectArtifactArgs {
+                        artifact_path: PathBuf::from("portable-export.json"),
+                        portable_passphrase: "portable-secret".to_string(),
+                    }
+                ))
+        );
     }
 
     #[test]
