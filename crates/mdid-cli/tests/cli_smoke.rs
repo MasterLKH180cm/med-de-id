@@ -471,6 +471,59 @@ fn ocr_small_json_rejects_non_existing_alias_report_and_summary_path_without_cle
 }
 
 #[test]
+fn ocr_small_json_rejects_relative_same_parent_alias_without_cleanup() {
+    let dir = tempdir().unwrap();
+    let output_dir = dir.path().join("relative-alias-Jane-Example-MRN-12345");
+    fs::create_dir(&output_dir).unwrap();
+    let report_path = output_dir.join("report.json");
+    let summary_path = output_dir.join("report.json");
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .current_dir(&output_dir)
+        .args([
+            "ocr-small-json",
+            "--image-path",
+            &repo_path("scripts/ocr_eval/fixtures/synthetic_printed_phi_line.png"),
+            "--ocr-runner-path",
+            &repo_path("scripts/ocr_eval/run_small_ocr.py"),
+            "--report-path",
+            "./report.json",
+            "--summary-output",
+            "report.json",
+            "--python-command",
+            default_python_command(),
+            "--mock",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "OCR small JSON summary path must differ from report path",
+        ))
+        .get_output()
+        .clone();
+
+    assert!(!report_path.exists());
+    assert!(!summary_path.exists());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for sentinel in [
+        report_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        output_dir.to_str().unwrap(),
+        "Jane Example",
+        "MRN-12345",
+        "success",
+    ] {
+        assert!(!stdout.contains(sentinel), "stdout leaked {sentinel}");
+        assert!(!stderr.contains(sentinel), "stderr leaked {sentinel}");
+    }
+}
+
+#[test]
 fn ocr_small_json_rejects_unsafe_engine_status_without_phi_or_path_leaks() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir.path().join("Jane-Example-MRN-12345");

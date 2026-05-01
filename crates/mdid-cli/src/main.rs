@@ -1667,24 +1667,28 @@ fn paths_are_same_existing_or_lexical(left: &Path, right: &Path) -> bool {
         return left == right;
     }
 
-    let (Some(left_parent), Some(right_parent), Some(left_file_name), Some(right_file_name)) = (
-        left.parent(),
-        right.parent(),
-        left.file_name(),
-        right.file_name(),
-    ) else {
+    let (Some(left_file_name), Some(right_file_name)) = (left.file_name(), right.file_name())
+    else {
         return false;
     };
     if !path_file_names_same_lexical(left_file_name, right_file_name) {
         return false;
     }
     match (
-        fs::canonicalize(left_parent),
-        fs::canonicalize(right_parent),
+        canonicalize_parent_or_current(left),
+        canonicalize_parent_or_current(right),
     ) {
         (Ok(left_parent), Ok(right_parent)) => left_parent == right_parent,
         _ => false,
     }
+}
+
+fn canonicalize_parent_or_current(path: &Path) -> std::io::Result<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::canonicalize(parent)
 }
 
 fn path_file_names_same_lexical(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
