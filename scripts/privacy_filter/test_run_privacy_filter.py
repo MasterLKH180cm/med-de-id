@@ -103,6 +103,33 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
             self.assertNotIn(raw_phone, payload['masked_text'])
         self.assertEqual(payload['masked_text'].count('[PHONE]'), 2)
 
+    def test_fallback_detects_contextual_vin_without_raw_previews(self):
+        text = 'Patient Jane Example vehicle VIN 1HGCM82633A004352 for transport billing.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('VIN'), 1)
+        self.assertIn('[VIN]', payload['masked_text'])
+        self.assertNotIn('1HGCM82633A004352', payload['masked_text'])
+        vin_spans = [span for span in payload['spans'] if span['label'] == 'VIN']
+        self.assertEqual(len(vin_spans), 1)
+        self.assertEqual(text[vin_spans[0]['start']:vin_spans[0]['end']], '1HGCM82633A004352')
+        self.assertEqual(vin_spans[0]['preview'], '<redacted>')
+        self.assertNotIn('1HGCM82633A004352', json.dumps(payload, sort_keys=True))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_detect_invalid_uncontextual_or_embedded_vin_like_tokens(self):
+        text = ' '.join([
+            '1HGCM82633A004352 appears without context.',
+            'VIN 1HGCM82633A00435I uses forbidden I.',
+            'VIN X1HGCM82633A004352Y is embedded.',
+            'MRN 1HGCM82633A004352 stays bounded.',
+        ])
+        payload = detect_pii(text)
+
+        self.assertNotIn('VIN', payload['summary']['category_counts'])
+        self.assertNotIn('[VIN]', payload['masked_text'])
+
     def test_fallback_detects_ipv4_address_without_raw_previews(self):
         text = 'Patient Jane Example remote login from 192.168.10.42 for MRN-12345'
         payload = detect_pii(text)
