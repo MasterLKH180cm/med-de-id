@@ -6,6 +6,7 @@ EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
 PHONE_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})(?![A-Za-z0-9-])')
 PHONE_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{1,5}(?![A-Za-z0-9-])', re.I)
 PHONE_OVERLONG_EXTENSION_RE = re.compile(r'(?<![A-Za-z0-9-])(?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})\s+(?:x|ext\.?|extension)\s*\d{6,}(?![A-Za-z0-9-])', re.I)
+FAX_RE = re.compile(r'\b(?:fax|facsimile)(?:\s+(?:number|no\.))?\s*:?\s*((?:\+\d{1,3}[-.\s]?)?(?:\d{3}[-.]\d{3}[-.]\d{4}|\(\d{3}\)\s?\d{3}[-.]\d{4})(?!\s+(?:x|ext\.?|extension)\s*\d{6,}(?![A-Za-z0-9-]))(?:\s+(?:x|ext\.?|extension)\s*\d{1,5})?)(?![A-Za-z0-9-])', re.I)
 DATE_RE = re.compile(r'(?<!\d)(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})(?!\d)')
 SSN_RE = re.compile(r'(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{4}(?![A-Za-z0-9-])')
 PASSPORT_ALNUM_RE = re.compile(r'(?<![A-Za-z0-9-])[A-Z]\d{8}(?![A-Za-z0-9-])')
@@ -17,6 +18,9 @@ INSURANCE_ID_RE = re.compile(
     r'\b(?:insurance(?:\s+(?:id|number|policy))?|member(?:\s+(?:id|number))?|policy(?:\s+(?:id|number))?)\s+(?:ID\s+)?([A-Z]{2,4}-?\d{6,10}|[A-Z]{3}\d{6,10})(?![A-Za-z0-9-])',
     re.I,
 )
+DEA_NUMBER_RE = re.compile(
+    r'\b(?:DEA|DEA\s+(?:number|no\.?|registration(?:\s+number)?))\s+([A-Z]{2}\d{7})(?![A-Za-z0-9-])'
+)
 AGE_RE = re.compile(r'\b(?:age|aged|patient\s+age)\s+(\d{1,3})\b', re.I)
 FACILITY_RE = re.compile(
     r'\b(?:facility|hospital|clinic|site|location)\s+([A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,5}\s+(?:Hospital|Clinic|Medical\s+Center|Health\s+Center|Facility))\b'
@@ -24,6 +28,14 @@ FACILITY_RE = re.compile(
 NPI_RE = re.compile(r'\bNPI\s*(?:number|no\.)?\s*(\d{10})(?!\d)', re.I)
 LICENSE_PLATE_RE = re.compile(
     r'\b(?:license\s+plate|plate(?:\s+(?:number|no\.))?)\s+([A-Z0-9]{2,4}-[A-Z0-9]{2,4})(?![A-Za-z0-9-])',
+    re.I,
+)
+VIN_RE = re.compile(
+    r'\b(?:VIN|vehicle(?:\s+(?:id|identification(?:\s+number)?|VIN))?)\s+([A-HJ-NPR-Z0-9]{17})(?![A-Za-z0-9-])',
+    re.I,
+)
+DRIVER_LICENSE_RE = re.compile(
+    r"\b(?:(?:driver(?:'s|s)?[-\s]+license)|DL(?:\s+(?:no\.?|number))?)(?:\s*(?:#|:)\s*|\s+)([A-Z]\d{7,8}|[A-Z]{1,2}-?\d{6,8})(?![A-Za-z0-9-])",
     re.I,
 )
 IPV4_RE = re.compile(r'(?<![A-Za-z0-9.])(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?![A-Za-z0-9.])')
@@ -36,7 +48,7 @@ PERSON_RE = re.compile(r'\bPatient\s+([A-Z][a-z]+\s+[A-Z][a-z]+)')
 OPF_TIMEOUT_SECONDS = 15
 OPF_OUTPUT_MAX_BYTES = 1024 * 1024
 STDIN_INPUT_MAX_BYTES = 1024 * 1024
-ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'IP_ADDRESS', 'URL'}
+ALLOWED_LABELS = {'NAME', 'MRN', 'EMAIL', 'PHONE', 'FAX', 'ID', 'DATE', 'ADDRESS', 'SSN', 'PASSPORT', 'ZIP', 'INSURANCE_ID', 'DEA_NUMBER', 'AGE', 'FACILITY', 'NPI', 'LICENSE_PLATE', 'VIN', 'DRIVER_LICENSE', 'IP_ADDRESS', 'URL'}
 
 
 def add_span(spans, label, start, end):
@@ -70,6 +82,16 @@ def _is_valid_npi(value: str) -> bool:
     return total % 10 == 0
 
 
+def _is_valid_dea_number(value: str) -> bool:
+    digits = value[2:]
+    if len(value) != 9 or not value[:2].isupper() or not digits.isdigit():
+        return False
+    total = (int(digits[0]) + int(digits[2]) + int(digits[4])) + 2 * (
+        int(digits[1]) + int(digits[3]) + int(digits[5])
+    )
+    return int(digits[6]) == total % 10
+
+
 def heuristic_detect(text: str):
     spans = []
     for m in PERSON_RE.finditer(text):
@@ -77,10 +99,17 @@ def heuristic_detect(text: str):
     for m in EMAIL_RE.finditer(text):
         add_span(spans, 'EMAIL', m.start(), m.end())
     occupied_phone_ranges = []
+    for m in FAX_RE.finditer(text):
+        add_span(spans, 'FAX', m.start(1), m.end(1))
+        occupied_phone_ranges.append((m.start(1), m.end(1)))
     for m in PHONE_OVERLONG_EXTENSION_RE.finditer(text):
+        if any(start <= m.start() < end for start, end in occupied_phone_ranges):
+            continue
         add_span(spans, 'PHONE', m.start(), m.end())
         occupied_phone_ranges.append((m.start(), m.end()))
     for m in PHONE_EXTENSION_RE.finditer(text):
+        if any(start <= m.start() < end for start, end in occupied_phone_ranges):
+            continue
         add_span(spans, 'PHONE', m.start(), m.end())
         occupied_phone_ranges.append((m.start(), m.end()))
     for m in PHONE_RE.finditer(text):
@@ -99,6 +128,9 @@ def heuristic_detect(text: str):
         add_span(spans, 'PASSPORT', m.start(1), m.end(1))
     for m in INSURANCE_ID_RE.finditer(text):
         add_span(spans, 'INSURANCE_ID', m.start(1), m.end(1))
+    for m in DEA_NUMBER_RE.finditer(text):
+        if _is_valid_dea_number(m.group(1)):
+            add_span(spans, 'DEA_NUMBER', m.start(1), m.end(1))
     for m in AGE_RE.finditer(text):
         age = int(m.group(1))
         if 0 <= age <= 120:
@@ -110,6 +142,10 @@ def heuristic_detect(text: str):
             add_span(spans, 'NPI', m.start(1), m.end(1))
     for m in LICENSE_PLATE_RE.finditer(text):
         add_span(spans, 'LICENSE_PLATE', m.start(1), m.end(1))
+    for m in VIN_RE.finditer(text):
+        add_span(spans, 'VIN', m.start(1), m.end(1))
+    for m in DRIVER_LICENSE_RE.finditer(text):
+        add_span(spans, 'DRIVER_LICENSE', m.start(1), m.end(1))
     for m in IPV4_RE.finditer(text):
         add_span(spans, 'IP_ADDRESS', m.start(), m.end())
     for m in URL_RE.finditer(text):

@@ -41,7 +41,44 @@ def detect_pii(text):
     return run_text(text)
 
 
+def run_privacy_filter_payload(text):
+    return run_text(text)
+
+
 class PrivacyFilterRunnerTests(unittest.TestCase):
+    def test_fallback_detects_context_required_fax_numbers(self):
+        text = 'Patient Jane Example fax 555-222-3333 and fax: (555) 444-5555.'
+        payload = run_privacy_filter_payload(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('FAX'), 2)
+        self.assertEqual(payload['masked_text'].count('[FAX]'), 2)
+        self.assertNotIn('555-222-3333', payload['masked_text'])
+        self.assertNotIn('(555) 444-5555', payload['masked_text'])
+        fax_spans = [span for span in payload['spans'] if span['label'] == 'FAX']
+        self.assertEqual(len(fax_spans), 2)
+        self.assertTrue(all(span['preview'] == '<redacted>' for span in fax_spans))
+        self.assertFalse(payload['metadata']['network_api_called'])
+
+    def test_fallback_does_not_classify_plain_phone_or_overlong_fax_as_fax(self):
+        text = 'Phone 555-222-3333. fax 555-222-333333. ID555-222-3333'
+        payload = run_privacy_filter_payload(text)
+
+        self.assertNotIn('FAX', payload['summary']['category_counts'])
+        self.assertNotIn('[FAX]', payload['masked_text'])
+
+    def test_fallback_detects_fax_extension_as_single_fax_span(self):
+        text = 'Please fax 555-123-4567 x890 today.'
+        payload = run_privacy_filter_payload(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('FAX'), 1)
+        self.assertNotIn('PHONE', payload['summary']['category_counts'])
+        self.assertIn('[FAX]', payload['masked_text'])
+        self.assertNotIn('555-123-4567', payload['masked_text'])
+        self.assertNotIn('x890', payload['masked_text'])
+        fax_spans = [span for span in payload['spans'] if span['label'] == 'FAX']
+        self.assertEqual(len(fax_spans), 1)
+        self.assertEqual(fax_spans[0]['preview'], '<redacted>')
+
     def test_detects_phone_extensions_without_leaking_raw_values(self):
         text = 'Patient Jane Example call 555-123-4567 x890 or (555) 222-3333 ext. 44 for MRN-12345.'
         payload = detect_pii(text)
@@ -65,6 +102,87 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
         for raw_phone in ['555-123-4567 x 123456', '(555) 222-3333 extension 123456']:
             self.assertNotIn(raw_phone, payload['masked_text'])
         self.assertEqual(payload['masked_text'].count('[PHONE]'), 2)
+
+    def test_fallback_detects_contextual_vin_without_raw_previews(self):
+        text = 'Patient Jane Example vehicle VIN 1HGCM82633A004352 for transport billing.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('VIN'), 1)
+        self.assertIn('[VIN]', payload['masked_text'])
+        self.assertNotIn('1HGCM82633A004352', payload['masked_text'])
+        vin_spans = [span for span in payload['spans'] if span['label'] == 'VIN']
+        self.assertEqual(len(vin_spans), 1)
+        self.assertEqual(text[vin_spans[0]['start']:vin_spans[0]['end']], '1HGCM82633A004352')
+        self.assertEqual(vin_spans[0]['preview'], '<redacted>')
+        self.assertNotIn('1HGCM82633A004352', json.dumps(payload, sort_keys=True))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_detect_invalid_uncontextual_or_embedded_vin_like_tokens(self):
+        text = ' '.join([
+            '1HGCM82633A004352 appears without context.',
+            'VIN 1HGCM82633A00435I uses forbidden I.',
+            'VIN 1HGCM82633A00435O uses forbidden O.',
+            'VIN 1HGCM82633A00435Q uses forbidden Q.',
+            'VIN X1HGCM82633A004352Y is embedded.',
+            'MRN 1HGCM82633A004352 stays bounded.',
+        ])
+        payload = detect_pii(text)
+
+        self.assertNotIn('VIN', payload['summary']['category_counts'])
+        self.assertNotIn('[VIN]', payload['masked_text'])
+
+    def test_fallback_detects_mixed_case_contextual_vin_without_raw_previews(self):
+        text = 'Patient Jane Example vin 1hgcm82633a004352 for transport billing.'
+        payload = detect_pii(text)
+
+        self.assertEqual(payload['summary']['category_counts'].get('VIN'), 1)
+        self.assertIn('[VIN]', payload['masked_text'])
+        self.assertNotIn('1hgcm82633a004352', payload['masked_text'])
+        vin_spans = [span for span in payload['spans'] if span['label'] == 'VIN']
+        self.assertEqual(len(vin_spans), 1)
+        self.assertEqual(text[vin_spans[0]['start']:vin_spans[0]['end']], '1hgcm82633a004352')
+        self.assertEqual(vin_spans[0]['preview'], '<redacted>')
+        self.assertNotIn('1hgcm82633a004352', json.dumps(payload, sort_keys=True))
+
+    def test_fallback_detects_contextual_driver_license_without_raw_previews(self):
+        text = 'Patient Jane Example driver license D1234567 for transport billing.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('DRIVER_LICENSE'), 1)
+        self.assertIn('[DRIVER_LICENSE]', payload['masked_text'])
+        self.assertNotIn('D1234567', payload['masked_text'])
+        driver_license_spans = [span for span in payload['spans'] if span['label'] == 'DRIVER_LICENSE']
+        self.assertEqual(len(driver_license_spans), 1)
+        self.assertEqual(text[driver_license_spans[0]['start']:driver_license_spans[0]['end']], 'D1234567')
+        self.assertEqual(driver_license_spans[0]['preview'], '<redacted>')
+        self.assertNotIn('D1234567', json.dumps(payload, sort_keys=True))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_detect_standalone_or_embedded_driver_license_like_tokens(self):
+        text = ' '.join([
+            'D1234567 appears without context.',
+            'driver license XD1234567Y is embedded.',
+            'MRN D1234567 stays medical-record context.',
+            'ID D1234567 stays generic-ID context.',
+            'driver license ABC123 is not a supported driver-license identifier.',
+        ])
+        payload = detect_pii(text)
+
+        self.assertNotIn('DRIVER_LICENSE', payload['summary']['category_counts'])
+        self.assertNotIn('[DRIVER_LICENSE]', payload['masked_text'])
+
+    def test_fallback_does_not_detect_generic_license_contexts_as_driver_license(self):
+        text = ' '.join([
+            'medical license number A1234567 remains a professional credential.',
+            'professional license A1234567 should not be classified as driver-license PHI.',
+            'software license A1234567 should not be classified as driver-license PHI.',
+        ])
+        payload = detect_pii(text)
+
+        self.assertNotIn('DRIVER_LICENSE', payload['summary']['category_counts'])
+        self.assertNotIn('[DRIVER_LICENSE]', payload['masked_text'])
 
     def test_fallback_detects_ipv4_address_without_raw_previews(self):
         text = 'Patient Jane Example remote login from 192.168.10.42 for MRN-12345'
@@ -133,6 +251,28 @@ class PrivacyFilterRunnerTests(unittest.TestCase):
             self.assertEqual(span['preview'], '<redacted>')
         self.assertNotIn('ABC1234567', json.dumps(payload))
         self.assertNotIn('MBR-7654321', json.dumps(payload))
+
+    def test_fallback_detects_contextual_valid_dea_number_without_raw_previews(self):
+        text = 'Patient Jane Example DEA AB1234563 for MRN-12345.'
+        payload = detect_pii(text)
+        validator = load_validator_module()
+
+        self.assertEqual(payload['summary']['category_counts'].get('DEA_NUMBER'), 1)
+        self.assertIn('[DEA_NUMBER]', payload['masked_text'])
+        self.assertNotIn('AB1234563', payload['masked_text'])
+        dea_spans = [span for span in payload['spans'] if span['label'] == 'DEA_NUMBER']
+        self.assertEqual(len(dea_spans), 1)
+        self.assertEqual(text[dea_spans[0]['start']:dea_spans[0]['end']], 'AB1234563')
+        self.assertEqual(dea_spans[0]['preview'], '<redacted>')
+        self.assertNotIn('AB1234563', json.dumps(payload, sort_keys=True))
+        validator.validate_privacy_filter_output(payload)
+
+    def test_fallback_does_not_detect_invalid_uncontextual_or_wrong_context_dea_like_tokens(self):
+        text = 'AB1234563 no context. DEA AB1234564. MRN AB1234563. ID AB1234563. xAB1234563 DEA ZZAB1234563Y.'
+        payload = detect_pii(text)
+
+        self.assertNotIn('DEA_NUMBER', payload['summary']['category_counts'])
+        self.assertNotIn('[DEA_NUMBER]', payload['masked_text'])
 
     def test_fallback_does_not_detect_standalone_or_embedded_insurance_like_tokens(self):
         text = 'Standalone ABC1234567 should not match; embedded XABC1234567 and MRN ABC1234567 stay bounded.'

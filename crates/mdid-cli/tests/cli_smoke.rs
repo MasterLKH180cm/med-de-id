@@ -3449,6 +3449,127 @@ with open(args.output, "w", encoding="utf-8") as handle:
 }
 
 #[test]
+fn cli_privacy_filter_text_detects_dea_number() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-DEA-AB1234563");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("privacy-filter-report.json");
+    let text = "Patient Jane Example DEA AB1234563 for MRN-12345.\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(text)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+
+    assert_eq!(report["summary"]["category_counts"]["DEA_NUMBER"], 1);
+    assert!(report["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[DEA_NUMBER]"));
+    assert!(report["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|span| span["label"] == "DEA_NUMBER")
+        .all(|span| span["preview"] == "<redacted>"));
+    assert_eq!(report["metadata"]["network_api_called"], false);
+    for unsafe_text in [
+        "AB1234563",
+        "Jane Example",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn cli_privacy_filter_text_detects_driver_license_from_stdin_without_raw_value_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-D1234567");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("privacy-filter-report.json");
+    let text = "Patient Jane Example driver license D1234567 for MRN-12345.\n";
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(repo_path("scripts/privacy_filter/run_privacy_filter.py"))
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(text)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report: Value = serde_json::from_str(&report_text).unwrap();
+
+    assert_eq!(report["summary"]["category_counts"]["DRIVER_LICENSE"], 1);
+    assert!(report["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[DRIVER_LICENSE]"));
+    let spans = report["spans"].as_array().unwrap();
+    assert!(
+        spans
+            .iter()
+            .any(|span| span["label"] == "DRIVER_LICENSE" && span["preview"] == "<redacted>"),
+        "expected at least one DRIVER_LICENSE span with redacted preview: {spans:?}"
+    );
+    assert_eq!(report["metadata"]["network_api_called"], false);
+
+    for unsafe_text in [
+        "D1234567",
+        "Patient Jane Example",
+        "Jane Example",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn privacy_filter_text_detects_ip_address_from_stdin_without_raw_ip_leaks() {
     let dir = tempdir().unwrap();
     let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-192.168.10.42");
@@ -4066,6 +4187,129 @@ fn privacy_filter_text_detects_ssns_from_stdin_without_raw_ssn_leaks() {
             "report leaked {unsafe_text}"
         );
     }
+}
+
+#[test]
+fn cli_privacy_filter_text_accepts_vin_without_phi_or_path_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-vin");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("vin-report.json");
+    let runner_path = repo_path("scripts/privacy_filter/run_privacy_filter.py");
+    let raw_vin = "1HGCM82633A004352";
+    let stdin_phi = format!("Patient Jane Example MRN-12345 vehicle VIN {raw_vin}\n");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .arg("privacy-filter-text")
+        .arg("--stdin")
+        .arg("--runner-path")
+        .arg(&runner_path)
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--python-command")
+        .arg(default_python_command())
+        .arg("--mock")
+        .write_stdin(stdin_phi)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    let report_json: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report_json["summary"]["category_counts"]["VIN"], 1);
+    assert_eq!(report_json["summary"]["category_counts"]["NAME"], 1);
+    assert_eq!(report_json["summary"]["category_counts"]["MRN"], 1);
+    assert!(report_json["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[VIN]"));
+    let vin_spans: Vec<_> = report_json["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|span| span["label"] == "VIN")
+        .collect();
+    assert_eq!(vin_spans.len(), 1);
+    assert_eq!(vin_spans[0]["preview"], "<redacted>");
+    for unsafe_text in [
+        raw_vin,
+        "Jane Example",
+        "MRN-12345",
+        report_path.to_str().unwrap(),
+        phi_named_dir.to_str().unwrap(),
+        dir.path().to_str().unwrap(),
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !report_text.contains(unsafe_text),
+            "report leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn cli_privacy_filter_text_detects_fax_without_phi_or_path_leaks() {
+    let dir = tempdir().unwrap();
+    let phi_named_dir = dir.path().join("Jane-Example-MRN-12345-fax");
+    fs::create_dir(&phi_named_dir).unwrap();
+    let report_path = phi_named_dir.join("fax-report.json");
+    let raw_fax = "555-222-3333";
+    let input = format!("Patient Jane Example fax {raw_fax} MRN MRN-12345");
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "privacy-filter-text",
+            "--stdin",
+            "--runner-path",
+            &repo_path("scripts/privacy_filter/run_privacy_filter.py"),
+            "--python-command",
+            default_python_command(),
+            "--report-path",
+            report_path.to_str().unwrap(),
+            "--mock",
+        ])
+        .write_stdin(input)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("\"report_path\":\"<redacted>\""));
+    assert!(!stdout.contains(raw_fax));
+    assert!(!stdout.contains("Jane Example"));
+    assert!(!stdout.contains("MRN-12345"));
+    assert!(!stdout.contains(report_path.to_str().unwrap()));
+    assert!(!stdout.contains(phi_named_dir.to_str().unwrap()));
+
+    let report_text = fs::read_to_string(&report_path).unwrap();
+    assert!(!report_text.contains(raw_fax));
+    assert!(!report_text.contains("Jane Example"));
+    assert!(!report_text.contains("MRN-12345"));
+    assert!(!report_text.contains(report_path.to_str().unwrap()));
+    assert!(!report_text.contains(phi_named_dir.to_str().unwrap()));
+    let report_json: Value = serde_json::from_str(&report_text).unwrap();
+    assert_eq!(report_json["summary"]["category_counts"]["FAX"], 1);
+    assert!(report_json["masked_text"]
+        .as_str()
+        .unwrap()
+        .contains("[FAX]"));
+    assert_eq!(report_json["metadata"]["network_api_called"], false);
+    let fax_spans: Vec<_> = report_json["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|span| span["label"] == "FAX")
+        .collect();
+    assert_eq!(fax_spans.len(), 1);
+    assert_eq!(fax_spans[0]["preview"], "<redacted>");
 }
 
 #[test]
