@@ -4553,8 +4553,10 @@ mod tests {
     #[test]
     fn visual_redaction_png_import_disclosure_mentions_png_base64_payloads() {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("PNG"));
-        assert!(BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG files load as base64 payloads")
-            || BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG payloads remain base64"));
+        assert!(
+            BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG files load as base64 payloads")
+                || BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG payloads remain base64")
+        );
     }
 
     #[test]
