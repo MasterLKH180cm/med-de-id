@@ -146,6 +146,91 @@ fn redact_image_ppm_writes_redacted_bytes_and_phi_safe_summary() {
 }
 
 #[test]
+fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
+    let dir = tempdir().unwrap();
+    let input_ok = dir.path().join("patient-jane-face.ppm");
+    let input_bad = dir.path().join("patient-jane-bad.ppm");
+    let output_ok = dir.path().join("patient-jane-face-redacted.ppm");
+    let output_bad = dir.path().join("patient-jane-bad-redacted.ppm");
+    let summary_path = dir.path().join("patient-jane-summary.json");
+
+    fs::write(
+        &input_ok,
+        [b"P6\n2 1\n255\n".as_slice(), &[1, 2, 3, 4, 5, 6]].concat(),
+    )
+    .unwrap();
+    fs::write(&input_bad, b"not a ppm").unwrap();
+
+    let manifest = serde_json::json!([
+        {
+            "input": input_ok,
+            "output": output_ok,
+            "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+        },
+        {
+            "input": input_bad,
+            "output": output_bad,
+            "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+        }
+    ]);
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm-batch",
+            "--manifest-json",
+            &manifest.to_string(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let redacted = fs::read(&output_ok).unwrap();
+    assert_eq!(&redacted[11..14], &[0, 0, 0]);
+    assert!(!output_bad.exists(), "failed item must not write output");
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("image_redaction_batch_summary"));
+    assert!(stderr.is_empty());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "image_redaction_batch_summary");
+    assert_eq!(summary["total_item_count"], 2);
+    assert_eq!(summary["succeeded_item_count"], 1);
+    assert_eq!(summary["failed_item_count"], 1);
+    assert_eq!(summary["items"][0]["status"], "redacted");
+    assert_eq!(summary["items"][1]["status"], "failed");
+    assert_eq!(summary["items"][1]["error_code"], "invalid_ppm_redaction");
+    for unsafe_text in [
+        "patient-jane",
+        input_ok.to_str().unwrap(),
+        input_bad.to_str().unwrap(),
+        output_ok.to_str().unwrap(),
+        output_bad.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        "regions",
+        "bbox",
+        "P6",
+        "1,2,3",
+        "4,5,6",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn redact_image_ppm_summary_counts_unique_pixels_for_overlapping_regions() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("source.ppm");

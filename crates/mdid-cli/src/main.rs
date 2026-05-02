@@ -66,6 +66,7 @@ enum CliCommand {
     VaultInspectArtifact(VaultInspectArtifactArgs),
     PortableTransferSummary(VaultInspectArtifactArgs),
     RedactImagePpm(RedactImagePpmArgs),
+    RedactImagePpmBatch(RedactImagePpmBatchArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -74,6 +75,19 @@ struct RedactImagePpmArgs {
     regions_json: String,
     output: PathBuf,
     summary_output: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RedactImagePpmBatchArgs {
+    manifest_json: String,
+    summary_output: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImageRedactionBatchManifestItem {
+    input: PathBuf,
+    output: PathBuf,
+    regions: Vec<ImageRedactionRegion>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -365,8 +379,33 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [command, rest @ ..] if command == "redact-image-ppm" => {
             parse_redact_image_ppm_args(rest).map(CliCommand::RedactImagePpm)
         }
+        [command, rest @ ..] if command == "redact-image-ppm-batch" => {
+            parse_redact_image_ppm_batch_args(rest).map(CliCommand::RedactImagePpmBatch)
+        }
         _ => Err("unknown command".to_string()),
     }
+}
+
+fn parse_redact_image_ppm_batch_args(args: &[String]) -> Result<RedactImagePpmBatchArgs, String> {
+    let mut manifest_json = None;
+    let mut summary_output = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--manifest-json" => manifest_json = Some(non_blank_value(value, "--manifest-json")?),
+            "--summary-output" => summary_output = Some(non_blank_path(value, "--summary-output")?),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+    Ok(RedactImagePpmBatchArgs {
+        manifest_json: manifest_json.ok_or_else(|| "missing --manifest-json".to_string())?,
+        summary_output: summary_output.ok_or_else(|| "missing --summary-output".to_string())?,
+    })
 }
 
 fn parse_redact_image_ppm_args(args: &[String]) -> Result<RedactImagePpmArgs, String> {
@@ -1317,7 +1356,87 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
         CliCommand::PortableTransferSummary(args) => run_portable_transfer_summary(args),
         CliCommand::RedactImagePpm(args) => run_redact_image_ppm(args),
+        CliCommand::RedactImagePpmBatch(args) => run_redact_image_ppm_batch(args),
     }
+}
+
+fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), String> {
+    let items: Vec<ImageRedactionBatchManifestItem> = serde_json::from_str(&args.manifest_json)
+        .map_err(|_| "invalid image redaction batch manifest".to_string())?;
+    let mut summary_items = Vec::with_capacity(items.len());
+    let mut succeeded_item_count = 0usize;
+    let mut failed_item_count = 0usize;
+
+    for (index, item) in items.iter().enumerate() {
+        let item_index = index + 1;
+        let result = (|| {
+            let input = fs::read(&item.input).map_err(|_| ())?;
+            let (redacted, verification) =
+                redact_ppm_p6_bytes_with_verification(&input, &item.regions, [0, 0, 0])
+                    .map_err(|_| ())?;
+            fs::write(&item.output, &redacted).map_err(|_| ())?;
+            Ok::<Value, ()>(json!({
+                "item_index": item_index,
+                "status": "redacted",
+                "visual_verification": {
+                    "format": verification.format,
+                    "width": verification.width,
+                    "height": verification.height,
+                    "redacted_area_count": verification.redacted_region_count,
+                    "redacted_pixel_count": verification.redacted_pixel_count,
+                    "unchanged_pixel_count": verification.unchanged_pixel_count,
+                    "output_byte_count": verification.output_byte_count,
+                    "verified_changed_pixels_within_redaction_areas": verification.verified_changed_pixels_within_regions,
+                }
+            }))
+        })();
+        match result {
+            Ok(item_summary) => {
+                succeeded_item_count += 1;
+                summary_items.push(item_summary);
+            }
+            Err(()) => {
+                failed_item_count += 1;
+                let _ = fs::remove_file(&item.output);
+                summary_items.push(json!({
+                    "item_index": item_index,
+                    "status": "failed",
+                    "error_code": "invalid_ppm_redaction",
+                }));
+            }
+        }
+    }
+
+    let summary = json!({
+        "artifact": "image_redaction_batch_summary",
+        "schema_version": 1,
+        "format": "ppm_p6",
+        "total_item_count": items.len(),
+        "succeeded_item_count": succeeded_item_count,
+        "failed_item_count": failed_item_count,
+        "raw_paths_included": false,
+        "raw_bounding_boxes_included": false,
+        "image_bytes_included": false,
+        "items": summary_items,
+    });
+    write_json_artifact(
+        &args.summary_output,
+        &summary,
+        "image redaction batch summary",
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "artifact": "image_redaction_batch_summary",
+            "format": "ppm_p6",
+            "total_item_count": items.len(),
+            "succeeded_item_count": succeeded_item_count,
+            "failed_item_count": failed_item_count,
+            "summary_written": true,
+        }))
+        .map_err(|err| format!("failed to render image redaction batch summary: {err}"))?
+    );
+    Ok(())
 }
 
 fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {
