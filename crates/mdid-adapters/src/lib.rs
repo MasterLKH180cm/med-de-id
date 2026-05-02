@@ -6,7 +6,8 @@ mod tabular;
 
 pub use conservative_media::{
     ConservativeMediaAdapter, ConservativeMediaAdapterError, ConservativeMediaInput,
-    ConservativeMediaMetadataEntry, ExtractedConservativeMediaData,
+    ConservativeMediaMetadataEntry, ExtractedConservativeMediaData, FcsTextRewriteOutput,
+    FcsTextRewriteRequest, FcsTextRewriteSummary,
 };
 pub use dicom::{
     sanitize_output_name, DicomAdapter, DicomAdapterError, DicomRewritePlan, DicomTagReplacement,
