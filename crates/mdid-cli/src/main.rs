@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
@@ -10,8 +10,9 @@ use std::{
 };
 
 use mdid_adapters::{
-    redact_ppm_p6_bytes_with_verification, ConservativeMediaInput, ConservativeMediaMetadataEntry,
-    CsvTabularAdapter, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
+    redact_ppm_p6_bytes_with_verification, ConservativeMediaAdapter, ConservativeMediaInput,
+    ConservativeMediaMetadataEntry, CsvTabularAdapter, FcsTextRewriteRequest, FieldPolicy,
+    FieldPolicyAction, XlsxTabularAdapter,
 };
 use mdid_application::{
     ConservativeMediaDeidentificationService, DicomDeidentificationService,
@@ -68,6 +69,15 @@ enum CliCommand {
     PortableTransferSummary(VaultInspectArtifactArgs),
     RedactImagePpm(RedactImagePpmArgs),
     RedactImagePpmBatch(RedactImagePpmBatchArgs),
+    RedactFcsText(RedactFcsTextArgs),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RedactFcsTextArgs {
+    fcs_path: PathBuf,
+    replacements_json: String,
+    output_path: PathBuf,
+    summary_output: PathBuf,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -383,8 +393,42 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [command, rest @ ..] if command == "redact-image-ppm-batch" => {
             parse_redact_image_ppm_batch_args(rest).map(CliCommand::RedactImagePpmBatch)
         }
+        [command, rest @ ..] if command == "redact-fcs-text" => {
+            parse_redact_fcs_text_args(rest).map(CliCommand::RedactFcsText)
+        }
         _ => Err("unknown command".to_string()),
     }
+}
+
+fn parse_redact_fcs_text_args(args: &[String]) -> Result<RedactFcsTextArgs, String> {
+    let mut fcs_path = None;
+    let mut replacements_json = None;
+    let mut output_path = None;
+    let mut summary_output = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--fcs-path" => fcs_path = Some(non_blank_path(value, "--fcs-path")?),
+            "--replacements-json" => {
+                replacements_json = Some(non_blank_value(value, "--replacements-json")?)
+            }
+            "--output-path" => output_path = Some(non_blank_path(value, "--output-path")?),
+            "--summary-output" => summary_output = Some(non_blank_path(value, "--summary-output")?),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+    Ok(RedactFcsTextArgs {
+        fcs_path: fcs_path.ok_or_else(|| "missing --fcs-path".to_string())?,
+        replacements_json: replacements_json
+            .ok_or_else(|| "missing --replacements-json".to_string())?,
+        output_path: output_path.ok_or_else(|| "missing --output-path".to_string())?,
+        summary_output: summary_output.ok_or_else(|| "missing --summary-output".to_string())?,
+    })
 }
 
 fn parse_redact_image_ppm_batch_args(args: &[String]) -> Result<RedactImagePpmBatchArgs, String> {
@@ -1358,7 +1402,45 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::PortableTransferSummary(args) => run_portable_transfer_summary(args),
         CliCommand::RedactImagePpm(args) => run_redact_image_ppm(args),
         CliCommand::RedactImagePpmBatch(args) => run_redact_image_ppm_batch(args),
+        CliCommand::RedactFcsText(args) => run_redact_fcs_text(args),
     }
+}
+
+fn run_redact_fcs_text(args: RedactFcsTextArgs) -> Result<(), String> {
+    let replacements: BTreeMap<String, String> = serde_json::from_str(&args.replacements_json)
+        .map_err(|_| "invalid replacements JSON".to_string())?;
+    let input = fs::read(&args.fcs_path).map_err(|_| "failed to read FCS input".to_string())?;
+    let output = ConservativeMediaAdapter::rewrite_fcs_text_segment(
+        &input,
+        FcsTextRewriteRequest { replacements },
+    )
+    .map_err(|_| "failed to rewrite FCS TEXT segment".to_string())?;
+    fs::write(&args.output_path, &output.bytes)
+        .map_err(|_| "failed to write redacted FCS output".to_string())?;
+    let summary = json!({
+        "artifact": "fcs_text_rewrite_export_summary",
+        "schema_version": 1,
+        "format": "fcs",
+        "replacement_count": output.summary.replacement_count,
+        "input_text_byte_len": output.summary.input_text_byte_len,
+        "output_text_byte_len": output.summary.output_text_byte_len,
+        "input_byte_len": output.summary.input_byte_len,
+        "output_byte_len": output.summary.output_byte_len,
+        "rewritten_keys": output.summary.rewritten_keys,
+        "raw_values_included": false,
+        "fcs_bytes_included": false,
+    });
+    write_json_artifact(&args.summary_output, &summary, "FCS TEXT rewrite summary")?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "artifact": "fcs_text_rewrite_export_summary",
+            "output_written": true,
+            "summary_written": true,
+        }))
+        .map_err(|err| format!("failed to render FCS TEXT rewrite summary: {err}"))?
+    );
+    Ok(())
 }
 
 fn create_unique_ppm_batch_sidecar(path: &Path, purpose: &str) -> std::io::Result<PathBuf> {

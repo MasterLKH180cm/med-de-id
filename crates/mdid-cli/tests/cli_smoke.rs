@@ -35,6 +35,83 @@ fn write_xlsx(path: &Path) {
     workbook.save(path).unwrap();
 }
 
+fn fcs_fixture(text: &str, data: &[u8]) -> Vec<u8> {
+    let text_start = 58usize;
+    let text_end = text_start + text.len() - 1;
+    let data_start = text_end + 1;
+    let data_end = data_start + data.len() - 1;
+    let mut header = b"FCS3.1    000000000000000000000000000000000000000000000000".to_vec();
+    header[10..18].copy_from_slice(format!("{text_start:>8}").as_bytes());
+    header[18..26].copy_from_slice(format!("{text_end:>8}").as_bytes());
+    header[26..34].copy_from_slice(format!("{data_start:>8}").as_bytes());
+    header[34..42].copy_from_slice(format!("{data_end:>8}").as_bytes());
+    [header, text.as_bytes().to_vec(), data.to_vec()].concat()
+}
+
+#[test]
+fn redact_fcs_text_writes_redacted_bytes_and_phi_safe_summary() {
+    let dir = tempdir().unwrap();
+    let input_path = dir.path().join("input.fcs");
+    let output_path = dir.path().join("redacted.fcs");
+    let summary_path = dir.path().join("summary.json");
+    let data = [9, 8, 7, 6, 5, 4];
+    fs::write(
+        &input_path,
+        fcs_fixture(
+            "|$SMNO|MRN-12345|$OP|Dr. Alice Example|$SRC|Bone Marrow|",
+            &data,
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-fcs-text",
+            "--fcs-path",
+            input_path.to_str().unwrap(),
+            "--replacements-json",
+            r#"{"$SMNO":"[FCS_SAMPLE]","$OP":"[FCS_OPERATOR]"}"#,
+            "--output-path",
+            output_path.to_str().unwrap(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let redacted = fs::read(&output_path).unwrap();
+    assert!(redacted
+        .windows(b"[FCS_SAMPLE]".len())
+        .any(|w| w == b"[FCS_SAMPLE]"));
+    assert!(redacted
+        .windows(b"[FCS_OPERATOR]".len())
+        .any(|w| w == b"[FCS_OPERATOR]"));
+    assert!(!redacted
+        .windows(b"MRN-12345".len())
+        .any(|w| w == b"MRN-12345"));
+    assert!(!redacted
+        .windows(b"Dr. Alice Example".len())
+        .any(|w| w == b"Dr. Alice Example"));
+    assert_eq!(&redacted[redacted.len() - data.len()..], data);
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "fcs_text_rewrite_export_summary");
+    assert_eq!(summary["replacement_count"], 2);
+    assert_eq!(summary["raw_values_included"], false);
+    for sentinel in [
+        "MRN-12345",
+        "Dr. Alice Example",
+        input_path.to_str().unwrap(),
+        output_path.to_str().unwrap(),
+    ] {
+        assert!(
+            !summary_text.contains(sentinel),
+            "summary leaked {sentinel}"
+        );
+    }
+}
+
 fn dicom_fixture() -> Vec<u8> {
     let mut obj = InMemDicomObject::new_empty();
     obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.7");
