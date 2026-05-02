@@ -995,6 +995,8 @@ fn is_media_byte_payload_key(key: &str) -> bool {
             | "mediabytesbase64"
             | "bytes"
             | "bytesbase64"
+            | "filebytes"
+            | "base64"
             | "payload"
             | "payloadbase64"
             | "imagebytes"

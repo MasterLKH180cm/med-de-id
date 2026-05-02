@@ -1417,6 +1417,32 @@ async fn conservative_media_deidentify_endpoint_rejects_raw_media_bytes_field() 
 }
 
 #[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_raw_legacy_file_bytes_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+        "file-bytes": [1, 2, 3, 4]
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_raw_legacy_base64_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+        "base-64": "SmFuZSBQYXRpZW50IGZhY2U="
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
 async fn conservative_media_deidentify_endpoint_rejects_metadata_value_that_declares_base64_payload() {
     let app = build_router(RuntimeState::default());
     let request = json!({
@@ -1425,6 +1451,36 @@ async fn conservative_media_deidentify_endpoint_rejects_metadata_value_that_decl
         "metadata": [
             {"key": "CameraOwner", "value": "Jane Patient"},
             {"key": "payload_base64", "value": "SmFuZSBQYXRpZW50IGZhY2U="}
+        ]
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_metadata_legacy_file_bytes_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [
+            {"key": "CameraOwner", "value": "Jane Patient"},
+            {"key": "file_bytes", "value": "SmFuZSBQYXRpZW50IGZhY2U="}
+        ]
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_metadata_legacy_base64_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [
+            {"key": "CameraOwner", "value": "Jane Patient"},
+            {"key": "base64", "value": "SmFuZSBQYXRpZW50IGZhY2U="}
         ]
     });
 
