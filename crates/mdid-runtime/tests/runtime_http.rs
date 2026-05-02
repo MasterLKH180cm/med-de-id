@@ -1443,7 +1443,8 @@ async fn conservative_media_deidentify_endpoint_rejects_raw_legacy_base64_alias(
 }
 
 #[tokio::test]
-async fn conservative_media_deidentify_endpoint_rejects_metadata_value_that_declares_base64_payload() {
+async fn conservative_media_deidentify_endpoint_rejects_metadata_value_that_declares_base64_payload(
+) {
     let app = build_router(RuntimeState::default());
     let request = json!({
         "artifact_label": "patient-jane-face.jpg",

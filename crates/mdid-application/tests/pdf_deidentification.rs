@@ -11,6 +11,23 @@ const MIXED_MULTIPAGE_PDF: &[u8] =
 const INVALID_PDF_BYTES: &[u8] = b"not a pdf";
 
 #[test]
+fn pdf_deidentification_routes_handwriting_suspicion_to_manual_review_without_rewrite() {
+    let output = PdfDeidentificationService
+        .deidentify_bytes(NO_TEXT_PDF, "handwritten-intake.pdf")
+        .expect("handwriting-suspected pdf should parse");
+
+    assert_eq!(output.summary.handwriting_review_required_pages, 1);
+    assert!(output.summary.requires_review());
+    assert_eq!(
+        output.page_statuses[0].status,
+        PdfScanStatus::HandwritingReviewRequired
+    );
+    assert!(output.no_rewritten_pdf);
+    assert!(output.review_only);
+    assert_eq!(output.rewritten_pdf_bytes, None);
+}
+
+#[test]
 fn pdf_deidentification_reports_ocr_required_pages_honestly() {
     let service = PdfDeidentificationService;
 

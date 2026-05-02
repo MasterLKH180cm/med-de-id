@@ -985,6 +985,7 @@ fn sanitized_pdf_review_summary(response: &serde_json::Value) -> serde_json::Val
             "total_pages",
             "pages_with_text",
             "ocr_required_pages",
+            "handwriting_review_required_pages",
             "candidate_count",
             "requires_ocr",
             "status",
@@ -1031,7 +1032,13 @@ fn sanitized_pdf_page_statuses(response: &serde_json::Value) -> serde_json::Valu
                 .filter_map(|item| {
                     let object = item.as_object()?;
                     let mut sanitized = serde_json::Map::new();
-                    for key in ["page", "status", "requires_ocr", "candidate_count"] {
+                    for key in [
+                        "page",
+                        "status",
+                        "requires_ocr",
+                        "requires_handwriting_review",
+                        "candidate_count",
+                    ] {
                         if let Some(value) = object.get(key).and_then(pdf_review_report_primitive) {
                             sanitized.insert(key.to_string(), value);
                         }
@@ -1051,9 +1058,23 @@ fn pdf_review_page_statuses(response: &serde_json::Value) -> Option<&Vec<serde_j
         .and_then(serde_json::Value::as_array)
 }
 
+fn pdf_status_requires_handwriting_review(
+    status: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    status
+        .get("requires_handwriting_review")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        || status
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("handwriting_review_required"))
+}
+
 fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value {
     let mut requires_ocr_pages = 0_u64;
     let mut visual_review_pages = 0_u64;
+    let mut handwriting_review_required_pages = 0_u64;
     let mut blocked_page_count = 0_u64;
 
     if let Some(statuses) = pdf_review_page_statuses(response) {
@@ -1077,7 +1098,11 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
             if visual_review_required {
                 visual_review_pages += 1;
             }
-            if requires_ocr || visual_review_required {
+            let handwriting_review_required = pdf_status_requires_handwriting_review(status);
+            if handwriting_review_required {
+                handwriting_review_required_pages += 1;
+            }
+            if requires_ocr || visual_review_required || handwriting_review_required {
                 blocked_page_count += 1;
             }
         }
@@ -1086,6 +1111,7 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
     serde_json::json!({
         "requires_ocr_pages": requires_ocr_pages,
         "visual_review_pages": visual_review_pages,
+        "handwriting_review_required_pages": handwriting_review_required_pages,
         "blocked_page_count": blocked_page_count,
         "rewrite_available": response
             .get("no_rewritten_pdf")
@@ -1097,6 +1123,7 @@ fn sanitized_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value
 fn sanitized_pdf_visual_redaction_blockers(response: &serde_json::Value) -> serde_json::Value {
     let mut ocr_required_pages = 0_u64;
     let mut visual_review_pages = 0_u64;
+    let mut handwriting_review_required_pages = 0_u64;
     let mut blocked_page_count = 0_u64;
 
     if let Some(statuses) = pdf_review_page_statuses(response) {
@@ -1120,7 +1147,11 @@ fn sanitized_pdf_visual_redaction_blockers(response: &serde_json::Value) -> serd
             if requires_ocr {
                 ocr_required_pages += 1;
             }
-            if visual_review_required || requires_ocr {
+            let handwriting_review_required = pdf_status_requires_handwriting_review(status);
+            if handwriting_review_required {
+                handwriting_review_required_pages += 1;
+            }
+            if visual_review_required || requires_ocr || handwriting_review_required {
                 blocked_page_count += 1;
             }
         }
@@ -1129,6 +1160,7 @@ fn sanitized_pdf_visual_redaction_blockers(response: &serde_json::Value) -> serd
     serde_json::json!({
         "visual_review_pages": visual_review_pages,
         "ocr_required_pages": ocr_required_pages,
+        "handwriting_review_required_pages": handwriting_review_required_pages,
         "blocked_page_count": blocked_page_count,
         "redaction_rewrite_available": response
             .get("no_rewritten_pdf")
@@ -1174,7 +1206,9 @@ fn pdf_review_actionability_blocked_page_count(response: &serde_json::Value) -> 
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
 
-            if requires_ocr || visual_review_required {
+            let handwriting_review_required = pdf_status_requires_handwriting_review(status);
+
+            if requires_ocr || visual_review_required || handwriting_review_required {
                 if let Some(page) = status.get("page").and_then(serde_json::Value::as_u64) {
                     blocked_pages.insert(page);
                 } else {
@@ -1192,6 +1226,9 @@ fn sanitized_pdf_review_actionability(response: &serde_json::Value) -> serde_jso
     let visual_blockers = sanitized_pdf_visual_redaction_blockers(response);
     let ocr_required_pages = ocr_blockers["requires_ocr_pages"].as_u64().unwrap_or(0);
     let visual_review_pages = visual_blockers["visual_review_pages"].as_u64().unwrap_or(0);
+    let handwriting_review_required_pages = visual_blockers["handwriting_review_required_pages"]
+        .as_u64()
+        .unwrap_or(0);
     let blocked_page_count = pdf_review_actionability_blocked_page_count(response);
     let automatic_rewrite_ready =
         pdf_redaction_rewrite_available(response) && blocked_page_count == 0;
@@ -1202,6 +1239,9 @@ fn sanitized_pdf_review_actionability(response: &serde_json::Value) -> serde_jso
     }
     if visual_review_pages > 0 {
         next_steps.push("Review visual-only pages manually before exporting a redacted PDF.");
+    }
+    if handwriting_review_required_pages > 0 {
+        next_steps.push("Handwriting recognition is pending/manual; route suspected handwritten pages to human review unless a verified local recognizer is installed later.");
     }
     if automatic_rewrite_ready {
         next_steps
@@ -1215,6 +1255,7 @@ fn sanitized_pdf_review_actionability(response: &serde_json::Value) -> serde_jso
         "blocked_page_count": blocked_page_count,
         "ocr_required_pages": ocr_required_pages,
         "visual_review_pages": visual_review_pages,
+        "handwriting_review_required_pages": handwriting_review_required_pages,
         "next_steps": next_steps,
     })
 }
@@ -2728,6 +2769,8 @@ struct PdfExtractionSummary {
     total_pages: usize,
     text_layer_pages: usize,
     ocr_required_pages: usize,
+    #[serde(default)]
+    handwriting_review_required_pages: usize,
     extracted_candidates: usize,
     review_required_candidates: usize,
     rewrite_status: String,
@@ -2904,8 +2947,9 @@ fn build_submit_request(
         }
 
         if media_metadata_json_contains_media_bytes(&value) {
-            return Err("Media byte payloads are not accepted by this metadata-only route."
-                .to_string());
+            return Err(
+                "Media byte payloads are not accepted by this metadata-only route.".to_string(),
+            );
         }
 
         let body_json = serde_json::to_string(&value)
@@ -3385,6 +3429,10 @@ fn format_pdf_summary(
         format!("total_pages: {}", summary.total_pages),
         format!("text_layer_pages: {}", summary.text_layer_pages),
         format!("ocr_required_pages: {}", summary.ocr_required_pages),
+        format!(
+            "handwriting_review_required_pages: {}",
+            summary.handwriting_review_required_pages
+        ),
         format!("extracted_candidates: {}", summary.extracted_candidates),
         format!(
             "review_required_candidates: {}",
@@ -4682,7 +4730,10 @@ mod tests {
         assert_eq!(report["privacy_filter_category_counts"]["FACILITY"], 1);
         assert_eq!(report["privacy_filter_category_counts"]["NPI"], 1);
         assert_eq!(report["privacy_filter_category_counts"]["LICENSE_PLATE"], 1);
-        assert_eq!(report["privacy_filter_category_counts"]["DRIVER_LICENSE"], 1);
+        assert_eq!(
+            report["privacy_filter_category_counts"]["DRIVER_LICENSE"],
+            1
+        );
         assert_eq!(report["privacy_filter_category_counts"]["IP_ADDRESS"], 1);
         assert_eq!(report["privacy_filter_category_counts"]["URL"], 1);
         assert_eq!(report["privacy_filter_category_counts"]["FAX"], 1);

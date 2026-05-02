@@ -412,6 +412,7 @@ impl ReviewDecision {
 pub enum PdfScanStatus {
     TextLayerPresent,
     OcrRequired,
+    HandwritingReviewRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -468,6 +469,8 @@ pub struct PdfExtractionSummary {
     pub total_pages: usize,
     pub text_layer_pages: usize,
     pub ocr_required_pages: usize,
+    #[serde(default)]
+    pub handwriting_review_required_pages: usize,
     pub extracted_candidates: usize,
     pub review_required_candidates: usize,
     #[serde(default)]
@@ -484,6 +487,7 @@ impl Default for PdfExtractionSummary {
             total_pages: 0,
             text_layer_pages: 0,
             ocr_required_pages: 0,
+            handwriting_review_required_pages: 0,
             extracted_candidates: 0,
             review_required_candidates: 0,
             rewrite_status: PdfRewriteStatus::ReviewOnlyNoRewrittenPdf,
@@ -499,7 +503,9 @@ fn default_true() -> bool {
 
 impl PdfExtractionSummary {
     pub fn requires_review(&self) -> bool {
-        self.ocr_required_pages > 0 || self.review_required_candidates > 0
+        self.ocr_required_pages > 0
+            || self.handwriting_review_required_pages > 0
+            || self.review_required_candidates > 0
     }
 }
 
