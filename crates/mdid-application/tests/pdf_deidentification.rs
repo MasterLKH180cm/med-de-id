@@ -10,6 +10,42 @@ const MIXED_MULTIPAGE_PDF: &[u8] =
     include_bytes!("../../mdid-adapters/tests/fixtures/pdf/mixed-multipage.pdf");
 const INVALID_PDF_BYTES: &[u8] = b"not a pdf";
 
+fn clinic_note_text_layer_pdf() -> Vec<u8> {
+    text_layer_pdf_with_fragment(b"ClinicNote ")
+}
+
+fn text_layer_pdf_with_fragment(fragment: &[u8; 11]) -> Vec<u8> {
+    let mut pdf = TEXT_LAYER_PDF.to_vec();
+    let needle = b"Alice Smith";
+    let offset = pdf
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("fixture should contain Alice Smith text fragment");
+    pdf[offset..offset + needle.len()].copy_from_slice(fragment);
+    pdf
+}
+
+fn zero_page_parseable_pdf_bytes() -> Vec<u8> {
+    b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\nxref\n0 3\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n110\n%%EOF\n".to_vec()
+}
+
+#[test]
+fn pdf_deidentification_routes_handwriting_suspicion_to_manual_review_without_rewrite() {
+    let output = PdfDeidentificationService
+        .deidentify_bytes(NO_TEXT_PDF, "handwritten-intake.pdf")
+        .expect("handwriting-suspected pdf should parse");
+
+    assert_eq!(output.summary.handwriting_review_required_pages, 1);
+    assert!(output.summary.requires_review());
+    assert_eq!(
+        output.page_statuses[0].status,
+        PdfScanStatus::HandwritingReviewRequired
+    );
+    assert!(output.no_rewritten_pdf);
+    assert!(output.review_only);
+    assert_eq!(output.rewritten_pdf_bytes, None);
+}
+
 #[test]
 fn pdf_deidentification_reports_ocr_required_pages_honestly() {
     let service = PdfDeidentificationService;
@@ -65,6 +101,81 @@ fn pdf_deidentification_routes_text_layer_candidates_to_review() {
         .review_queue
         .iter()
         .any(|candidate| candidate.source_text.contains("Alice Smith")));
+}
+
+#[test]
+fn pdf_deidentification_exports_clean_one_page_text_layer_without_review_queue() {
+    let service = PdfDeidentificationService;
+    let pdf = clinic_note_text_layer_pdf();
+
+    let output = service
+        .deidentify_bytes(&pdf, "clinic-note.pdf")
+        .expect("clean one-page text layer pdf should parse");
+
+    assert_eq!(output.summary.total_pages, 1);
+    assert!(output.summary.total_pages > 0);
+    assert_eq!(output.summary.text_layer_pages, 1);
+    assert_eq!(output.summary.ocr_required_pages, 0);
+    assert_eq!(output.summary.extracted_candidates, 0);
+    assert_eq!(output.summary.review_required_candidates, 0);
+    assert!(!output.summary.requires_review());
+    assert_eq!(output.page_statuses.len(), 1);
+    assert_eq!(
+        output.page_statuses[0].status,
+        PdfScanStatus::TextLayerPresent
+    );
+    assert_eq!(output.review_queue.len(), 0);
+    assert_eq!(
+        output.rewrite_status,
+        PdfRewriteStatus::CleanTextLayerPdfBytesAvailable
+    );
+    assert!(!output.no_rewritten_pdf);
+    assert!(!output.review_only);
+    assert_eq!(output.rewritten_pdf_bytes.as_deref(), Some(pdf.as_slice()));
+}
+
+#[test]
+fn pdf_deidentification_routes_single_token_or_mixed_suspicious_fragments_to_review() {
+    let service = PdfDeidentificationService;
+
+    for fragment in [
+        b"Cher Smith?",
+        b"SSN12345678",
+        b"5551234567 ",
+        b"A1234567   ",
+    ] {
+        let pdf = text_layer_pdf_with_fragment(fragment);
+        let output = service
+            .deidentify_bytes(&pdf, "suspicious-fragment.pdf")
+            .expect("suspicious text-layer pdf should parse");
+
+        assert_eq!(
+            output.rewrite_status,
+            PdfRewriteStatus::ReviewOnlyNoRewrittenPdf,
+            "fragment {fragment:?} must fail closed to review"
+        );
+        assert!(output.no_rewritten_pdf);
+        assert!(output.review_only);
+        assert_eq!(output.rewritten_pdf_bytes, None);
+        assert_eq!(output.review_queue.len(), 1, "fragment {fragment:?}");
+        assert!(output.summary.requires_review());
+    }
+}
+
+#[test]
+fn pdf_deidentification_refuses_zero_page_parseable_pdf_export() {
+    let output = PdfDeidentificationService
+        .deidentify_bytes(&zero_page_parseable_pdf_bytes(), "zero-page.pdf")
+        .expect("zero-page pdf should parse");
+
+    assert_eq!(output.summary.total_pages, 0);
+    assert_eq!(
+        output.rewrite_status,
+        PdfRewriteStatus::ReviewOnlyNoRewrittenPdf
+    );
+    assert!(output.no_rewritten_pdf);
+    assert!(output.review_only);
+    assert_eq!(output.rewritten_pdf_bytes, None);
 }
 
 #[test]

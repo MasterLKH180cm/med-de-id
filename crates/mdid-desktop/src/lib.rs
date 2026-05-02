@@ -1054,14 +1054,39 @@ fn desktop_privacy_filter_category_counts(value: Option<&serde_json::Value>) -> 
     let mut counts = serde_json::Map::new();
     if let Some(object) = value.and_then(serde_json::Value::as_object) {
         for (label, count) in object {
-            if matches!(label.as_str(), "NAME" | "MRN" | "ID" | "EMAIL" | "PHONE")
-                && count.as_u64().is_some()
-            {
-                counts.insert(label.to_string(), count.clone());
+            if is_safe_privacy_filter_category_label(label) && count.as_u64().is_some() {
+                counts.insert(label.clone(), count.clone());
             }
         }
     }
     serde_json::Value::Object(counts)
+}
+
+fn is_safe_privacy_filter_category_label(label: &str) -> bool {
+    matches!(
+        label,
+        "NAME"
+            | "MRN"
+            | "ID"
+            | "EMAIL"
+            | "PHONE"
+            | "DATE"
+            | "ADDRESS"
+            | "ZIP"
+            | "SSN"
+            | "PASSPORT"
+            | "INSURANCE_ID"
+            | "DEA_NUMBER"
+            | "VIN"
+            | "AGE"
+            | "FACILITY"
+            | "NPI"
+            | "LICENSE_PLATE"
+            | "DRIVER_LICENSE"
+            | "IP_ADDRESS"
+            | "URL"
+            | "FAX"
+    )
 }
 
 fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
@@ -1168,6 +1193,7 @@ fn sanitize_desktop_pdf_review_report_summary(
         "total_pages",
         "pages_with_text",
         "ocr_required_pages",
+        "handwriting_review_required_pages",
         "candidate_count",
         "requires_ocr",
         "status",
@@ -1227,7 +1253,13 @@ fn sanitize_desktop_pdf_page_statuses(value: Option<&serde_json::Value>) -> serd
             .filter_map(|item| {
                 let object = item.as_object()?;
                 let mut sanitized = serde_json::Map::new();
-                for key in ["page", "status", "requires_ocr", "candidate_count"] {
+                for key in [
+                    "page",
+                    "status",
+                    "requires_ocr",
+                    "requires_handwriting_review",
+                    "candidate_count",
+                ] {
                     if let Some(value) = object.get(key).filter(|value| is_json_primitive(value)) {
                         sanitized.insert(key.to_string(), value.clone());
                     }
@@ -1238,9 +1270,23 @@ fn sanitize_desktop_pdf_page_statuses(value: Option<&serde_json::Value>) -> serd
     )
 }
 
+fn desktop_pdf_status_requires_handwriting_review(
+    status: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    status
+        .get("requires_handwriting_review")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        || status
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("handwriting_review_required"))
+}
+
 fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json::Value {
     let mut requires_ocr_pages = 0_u64;
     let mut visual_review_pages = 0_u64;
+    let mut handwriting_review_required_pages = 0_u64;
     let mut blocked_page_count = 0_u64;
 
     if let Some(statuses) = response
@@ -1256,6 +1302,8 @@ fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json
                 .get("status")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
+            let handwriting_review_required =
+                desktop_pdf_status_requires_handwriting_review(status);
 
             if requires_ocr {
                 requires_ocr_pages += 1;
@@ -1263,7 +1311,10 @@ fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json
             if visual_review_required {
                 visual_review_pages += 1;
             }
-            if requires_ocr || visual_review_required {
+            if handwriting_review_required {
+                handwriting_review_required_pages += 1;
+            }
+            if requires_ocr || visual_review_required || handwriting_review_required {
                 blocked_page_count += 1;
             }
         }
@@ -1272,6 +1323,7 @@ fn sanitize_desktop_pdf_ocr_blockers(response: &serde_json::Value) -> serde_json
     serde_json::json!({
         "requires_ocr_pages": requires_ocr_pages,
         "visual_review_pages": visual_review_pages,
+        "handwriting_review_required_pages": handwriting_review_required_pages,
         "blocked_page_count": blocked_page_count,
         "rewrite_available": response
             .get("no_rewritten_pdf")
@@ -1285,6 +1337,7 @@ fn sanitize_desktop_pdf_visual_redaction_blockers(
 ) -> serde_json::Value {
     let mut visual_review_pages = 0_u64;
     let mut ocr_required_pages = 0_u64;
+    let mut handwriting_review_required_pages = 0_u64;
     let mut blocked_page_count = 0_u64;
 
     if let Some(statuses) = response
@@ -1300,6 +1353,8 @@ fn sanitize_desktop_pdf_visual_redaction_blockers(
                 .get("requires_ocr")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            let handwriting_review_required =
+                desktop_pdf_status_requires_handwriting_review(status);
 
             if visual_review_required {
                 visual_review_pages += 1;
@@ -1307,7 +1362,10 @@ fn sanitize_desktop_pdf_visual_redaction_blockers(
             if requires_ocr {
                 ocr_required_pages += 1;
             }
-            if visual_review_required || requires_ocr {
+            if handwriting_review_required {
+                handwriting_review_required_pages += 1;
+            }
+            if visual_review_required || requires_ocr || handwriting_review_required {
                 blocked_page_count += 1;
             }
         }
@@ -1316,12 +1374,13 @@ fn sanitize_desktop_pdf_visual_redaction_blockers(
     let status = if blocked_page_count == 0 {
         "no_visual_redaction_blockers_detected"
     } else {
-        "blocked_pending_visual_redaction_or_ocr"
+        "blocked_pending_visual_redaction_ocr_or_handwriting_review"
     };
 
     serde_json::json!({
         "visual_review_pages": visual_review_pages,
         "ocr_required_pages": ocr_required_pages,
+        "handwriting_review_required_pages": handwriting_review_required_pages,
         "blocked_page_count": blocked_page_count,
         "redaction_rewrite_available": response
             .get("no_rewritten_pdf")
@@ -1372,7 +1431,10 @@ fn desktop_pdf_review_actionability_blocked_page_count(response: &serde_json::Va
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|value| value.eq_ignore_ascii_case("visual_review_required"));
 
-            if requires_ocr || visual_review_required {
+            let handwriting_review_required =
+                desktop_pdf_status_requires_handwriting_review(status);
+
+            if requires_ocr || visual_review_required || handwriting_review_required {
                 if let Some(page) = status.get("page").and_then(serde_json::Value::as_u64) {
                     blocked_pages.insert(page);
                 } else {
@@ -1388,6 +1450,7 @@ fn desktop_pdf_review_actionability_blocked_page_count(response: &serde_json::Va
 fn sanitize_desktop_pdf_review_actionability(response: &serde_json::Value) -> serde_json::Value {
     let mut ocr_required_pages = 0_u64;
     let mut visual_review_pages = 0_u64;
+    let mut handwriting_review_required_pages = 0_u64;
 
     if let Some(statuses) = desktop_pdf_review_page_statuses(response) {
         for status in statuses.iter().filter_map(serde_json::Value::as_object) {
@@ -1409,6 +1472,9 @@ fn sanitize_desktop_pdf_review_actionability(response: &serde_json::Value) -> se
             {
                 visual_review_pages += 1;
             }
+            if desktop_pdf_status_requires_handwriting_review(status) {
+                handwriting_review_required_pages += 1;
+            }
         }
     }
 
@@ -1423,6 +1489,9 @@ fn sanitize_desktop_pdf_review_actionability(response: &serde_json::Value) -> se
     if visual_review_pages > 0 {
         next_steps.push("Review visual-only pages manually before exporting a redacted PDF.");
     }
+    if handwriting_review_required_pages > 0 {
+        next_steps.push("Handwriting recognition is pending/manual; route suspected handwritten pages to human review unless a verified local recognizer is installed later.");
+    }
     if automatic_rewrite_ready {
         next_steps
             .push("PDF review metadata indicates rewrite readiness; verify output before release.");
@@ -1435,6 +1504,7 @@ fn sanitize_desktop_pdf_review_actionability(response: &serde_json::Value) -> se
         "blocked_page_count": blocked_page_count,
         "ocr_required_pages": ocr_required_pages,
         "visual_review_pages": visual_review_pages,
+        "handwriting_review_required_pages": handwriting_review_required_pages,
         "next_steps": next_steps,
     })
 }
@@ -2065,13 +2135,38 @@ impl DesktopWorkflowRequestState {
 }
 
 fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
-    const MEDIA_BYTE_FIELDS: &[&str] =
-        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
     value.as_object().is_some_and(|object| {
-        MEDIA_BYTE_FIELDS
-            .iter()
-            .any(|field| object.contains_key(*field))
+        object.keys().any(|key| is_media_byte_payload_key(key))
+            || object
+                .get("metadata")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|metadata| {
+                    metadata.iter().any(|entry| {
+                        entry
+                            .get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_media_byte_payload_key)
+                    })
+                })
     })
+}
+
+fn is_media_byte_payload_key(key: &str) -> bool {
+    let normalized = key.replace(['-', '_'], "").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "mediabytes"
+            | "mediabytesbase64"
+            | "filebytes"
+            | "bytes"
+            | "bytesbase64"
+            | "base64"
+            | "payload"
+            | "payloadbase64"
+            | "imagebytes"
+            | "audiobytes"
+            | "videobytes"
+    )
 }
 
 fn parse_visual_redaction_regions(
@@ -2201,7 +2296,7 @@ impl std::fmt::Display for DesktopWorkflowValidationError {
                 "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
             ),
             Self::MediaBytesNotAccepted => {
-                write!(f, "metadata-only media review does not accept media bytes")
+                write!(f, "Media byte payloads are not accepted by this metadata-only route.")
             }
         }
     }
@@ -3184,6 +3279,21 @@ mod tests {
                 "PHONE": 1,
                 "ID": 0,
                 "ADDRESS": 9,
+                "DATE": 2,
+                "ZIP": 1,
+                "SSN": 1,
+                "PASSPORT": 1,
+                "INSURANCE_ID": 1,
+                "DEA_NUMBER": 1,
+                "VIN": 1,
+                "AGE": 1,
+                "FACILITY": 1,
+                "NPI": 1,
+                "LICENSE_PLATE": 1,
+                "DRIVER_LICENSE": 1,
+                "IP_ADDRESS": 1,
+                "URL": 1,
+                "FAX": 1,
                 "Patient Jane Example": 8
             },
             "raw_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
@@ -3228,7 +3338,29 @@ mod tests {
         assert_eq!(report["privacy_filter_detected_span_count"], 4);
         assert_eq!(
             report["privacy_filter_category_counts"],
-            json!({"EMAIL": 1, "ID": 0, "MRN": 1, "NAME": 1, "PHONE": 1})
+            json!({
+                "ADDRESS": 9,
+                "AGE": 1,
+                "DATE": 2,
+                "DEA_NUMBER": 1,
+                "DRIVER_LICENSE": 1,
+                "EMAIL": 1,
+                "FACILITY": 1,
+                "FAX": 1,
+                "ID": 0,
+                "INSURANCE_ID": 1,
+                "IP_ADDRESS": 1,
+                "LICENSE_PLATE": 1,
+                "MRN": 1,
+                "NAME": 1,
+                "NPI": 1,
+                "PASSPORT": 1,
+                "PHONE": 1,
+                "SSN": 1,
+                "URL": 1,
+                "VIN": 1,
+                "ZIP": 1
+            })
         );
         for forbidden_key in [
             "raw_text",
@@ -3253,7 +3385,6 @@ mod tests {
             "jane@example.com",
             "555-123-4567",
             "SHOULD_NOT_LEAK",
-            "ADDRESS",
         ] {
             assert!(
                 !payload.contents.contains(forbidden),
@@ -3304,14 +3435,16 @@ mod tests {
         assert!(report.get("ready_for_text_pii_eval").is_none());
         assert!(report.get("network_api_called").is_none());
         assert!(report.get("privacy_filter_detected_span_count").is_none());
-        assert_eq!(report["privacy_filter_category_counts"], json!({"MRN": 2}));
+        assert_eq!(
+            report["privacy_filter_category_counts"],
+            json!({"DATE": 2, "MRN": 2})
+        );
         for forbidden in [
             "Patient Jane Example",
             "MRN-12345",
             "jane@example.com",
             "555-123-4567",
             "unsafe-engine",
-            "DATE",
         ] {
             assert!(
                 !payload.contents.contains(forbidden),
@@ -3427,11 +3560,12 @@ mod tests {
 
         assert!(report.get("engine").is_none());
         assert!(report.get("preview_policy").is_none());
-        assert_eq!(report["category_counts"], json!({"EMAIL": 2, "NAME": 1}));
+        assert_eq!(
+            report["category_counts"],
+            json!({"ADDRESS": 3, "EMAIL": 2, "NAME": 1, "SSN": 9})
+        );
         assert!(!payload.contents.contains("Patient Jane Example"));
         assert!(!payload.contents.contains("MRN-12345"));
-        assert!(!payload.contents.contains("SSN"));
-        assert!(!payload.contents.contains("ADDRESS"));
     }
 
     #[test]
@@ -3804,6 +3938,7 @@ mod tests {
             serde_json::json!({
                 "requires_ocr_pages": 1,
                 "visual_review_pages": 1,
+                "handwriting_review_required_pages": 0,
                 "blocked_page_count": 1,
                 "rewrite_available": false
             })
@@ -3854,13 +3989,88 @@ mod tests {
         );
         assert_eq!(
             report["visual_redaction_blockers"]["status"],
-            "blocked_pending_visual_redaction_or_ocr"
+            "blocked_pending_visual_redaction_ocr_or_handwriting_review"
         );
 
         let encoded = serde_json::to_string(&report).unwrap();
         assert!(!encoded.contains("Patient Alice"));
         assert!(!encoded.contains("pdf_bytes_base64"));
         assert!(!encoded.contains("bbox"));
+    }
+
+    #[test]
+    fn pdf_review_report_save_counts_handwriting_as_desktop_blocker() {
+        let response = serde_json::json!({
+            "metadata": {
+                "page_statuses": [
+                    {"page": 7, "status": "handwriting_review_required", "requires_ocr": false, "requires_visual_review": false, "requires_handwriting_review": true, "raw_text": "Patient Alice"}
+                ],
+                "redaction_rewrite_available": true
+            },
+            "raw_text": "Patient Alice must not leak"
+        });
+
+        let save =
+            build_desktop_pdf_review_report_save(&response.to_string(), Some("handwriting.pdf"))
+                .expect("desktop pdf report save");
+        let report: serde_json::Value = serde_json::from_str(&save.contents).unwrap();
+
+        assert_eq!(report["actionability"]["automatic_rewrite_ready"], false);
+        assert_eq!(report["actionability"]["blocked_page_count"], 1);
+        assert_eq!(
+            report["actionability"]["handwriting_review_required_pages"],
+            1
+        );
+        assert_eq!(
+            report["actionability"]["next_steps"],
+            serde_json::json!([
+                "Handwriting recognition is pending/manual; route suspected handwritten pages to human review unless a verified local recognizer is installed later.",
+                "Keep this PHI-safe report with the case audit trail."
+            ])
+        );
+        assert!(!serde_json::to_string(&report["actionability"])
+            .unwrap()
+            .contains("Patient Alice"));
+    }
+
+    #[test]
+    fn pdf_review_report_save_blocker_summaries_include_handwriting_review_pages() {
+        let response = serde_json::json!({
+            "page_statuses": [
+                {"page": 3, "status": "handwriting_review_required", "requires_handwriting_review": true, "requires_ocr": false, "raw_text": "Patient Alice"}
+            ],
+            "no_rewritten_pdf": false,
+            "pdf_bytes_base64": "JVBERi0="
+        });
+
+        let report = build_pdf_review_report_save_bytes(&response.to_string()).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
+
+        assert_eq!(report["ocr_blockers"]["requires_ocr_pages"], 0);
+        assert_eq!(report["ocr_blockers"]["visual_review_pages"], 0);
+        assert_eq!(
+            report["ocr_blockers"]["handwriting_review_required_pages"],
+            1
+        );
+        assert_eq!(report["ocr_blockers"]["blocked_page_count"], 1);
+        assert_eq!(
+            report["visual_redaction_blockers"]["visual_review_pages"],
+            0
+        );
+        assert_eq!(report["visual_redaction_blockers"]["ocr_required_pages"], 0);
+        assert_eq!(
+            report["visual_redaction_blockers"]["handwriting_review_required_pages"],
+            1
+        );
+        assert_eq!(report["visual_redaction_blockers"]["blocked_page_count"], 1);
+        assert_eq!(
+            report["visual_redaction_blockers"]["status"],
+            "blocked_pending_visual_redaction_ocr_or_handwriting_review"
+        );
+
+        let encoded = serde_json::to_string(&report).unwrap();
+        assert!(!encoded.contains("Patient Alice"));
+        assert!(!encoded.contains("pdf_bytes_base64"));
     }
 
     #[test]
@@ -4486,10 +4696,16 @@ mod tests {
     }
 
     #[test]
-    fn media_metadata_request_rejects_media_byte_payload_fields_phi_safely() {
-        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+    fn media_metadata_workflow_rejects_byte_payload_keys_before_submit() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IGZhY2U=";
 
-        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        for field in [
+            "media_bytes_base64",
+            "payload_base64",
+            "media-bytes",
+            "file_bytes",
+            "base64",
+        ] {
             let state = DesktopWorkflowRequestState {
                 mode: DesktopWorkflowMode::MediaMetadataJson,
                 payload: serde_json::json!({
@@ -4508,7 +4724,7 @@ mod tests {
             let message = error.to_string();
             assert_eq!(
                 message,
-                "metadata-only media review does not accept media bytes"
+                "Media byte payloads are not accepted by this metadata-only route."
             );
             assert!(!message.contains(raw_media_value));
             assert!(!message.contains("Jane Patient"));
@@ -6643,6 +6859,7 @@ mod tests {
             json!({
                 "requires_ocr_pages": 2,
                 "visual_review_pages": 2,
+                "handwriting_review_required_pages": 0,
                 "blocked_page_count": 3,
                 "rewrite_available": false
             })

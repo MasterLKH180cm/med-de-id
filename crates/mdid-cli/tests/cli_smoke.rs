@@ -218,13 +218,54 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stdout.contains("image_redaction_batch_summary"));
     assert!(stderr.is_empty());
+    let stdout_summary: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(stdout_summary["artifact"], "image_redaction_batch_summary");
+    assert_eq!(stdout_summary["schema_version"], 1);
+    assert_eq!(stdout_summary["format"], "ppm_p6");
+    assert_eq!(stdout_summary["total_item_count"], 3);
+    assert_eq!(stdout_summary["succeeded_item_count"], 1);
+    assert_eq!(stdout_summary["failed_item_count"], 2);
+    assert_eq!(stdout_summary["raw_paths_included"], false);
+    assert_eq!(stdout_summary["raw_regions_included"], false);
+    assert_eq!(stdout_summary["image_bytes_included"], false);
+    assert_eq!(stdout_summary["items"][0]["item_index"], 1);
+    assert_eq!(stdout_summary["items"][0]["status"], "redacted");
+    assert_eq!(
+        stdout_summary["items"][0]["visual_verification"]["verified_changed_pixels_within_regions"],
+        true
+    );
+    assert_eq!(stdout_summary["items"][1]["item_index"], 2);
+    assert_eq!(stdout_summary["items"][1]["status"], "failed");
+    assert_eq!(
+        stdout_summary["items"][1]["error_code"],
+        "invalid_ppm_redaction"
+    );
+    assert_eq!(stdout_summary["items"][2]["item_index"], 3);
+    assert_eq!(stdout_summary["items"][2]["status"], "failed");
+    assert_eq!(
+        stdout_summary["items"][2]["error_code"],
+        "unsafe_output_path"
+    );
+    assert!(
+        stdout_summary["items"][0]["visual_verification"]
+            .get("output_byte_count")
+            .is_none(),
+        "batch stdout visual verification must not include byte counts"
+    );
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary, stdout_summary);
     assert_eq!(summary["artifact"], "image_redaction_batch_summary");
     assert_eq!(summary["total_item_count"], 3);
     assert_eq!(summary["succeeded_item_count"], 1);
     assert_eq!(summary["failed_item_count"], 2);
     assert_eq!(summary["items"][0]["status"], "redacted");
+    assert!(
+        summary["items"][0]["visual_verification"]
+            .get("output_byte_count")
+            .is_none(),
+        "batch summary visual verification must not include byte counts"
+    );
     assert_eq!(
         summary["items"][0]["visual_verification"]["redacted_region_count"],
         1
@@ -256,6 +297,7 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
         output_ok.to_str().unwrap(),
         output_bad.to_str().unwrap(),
         summary_path.to_str().unwrap(),
+        "output_byte_count",
         "bbox",
         "P6",
         "1,2,3",
@@ -409,6 +451,62 @@ fn redact_image_ppm_batch_preserves_preexisting_temp_collision_files() {
     assert_eq!(summary["failed_item_count"], 1);
     assert_eq!(summary["items"][0]["status"], "failed");
     assert_eq!(summary["items"][0]["error_code"], "invalid_ppm_redaction");
+}
+
+#[test]
+fn redact_image_ppm_batch_rejects_summary_path_equal_to_manifest_input_or_output_and_preserves_files(
+) {
+    for collision in ["input", "output"] {
+        let dir = tempdir().unwrap();
+        let input_path = dir.path().join("patient-jane-source.ppm");
+        let output_path = dir.path().join("patient-jane-redacted.ppm");
+        let input_original = [b"P6\n1 1\n255\n".as_slice(), &[7, 8, 9]].concat();
+        let output_original = b"existing output must survive failed validation";
+        fs::write(&input_path, &input_original).unwrap();
+        fs::write(&output_path, output_original).unwrap();
+        let summary_path = if collision == "input" {
+            input_path.clone()
+        } else {
+            output_path.clone()
+        };
+        let manifest = serde_json::json!([
+            {
+                "input": input_path,
+                "output": output_path,
+                "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+            }
+        ]);
+
+        let output = Command::cargo_bin("mdid-cli")
+            .unwrap()
+            .args([
+                "redact-image-ppm-batch",
+                "--manifest-json",
+                &manifest.to_string(),
+                "--summary-output",
+                summary_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+
+        assert!(
+            !output.status.success(),
+            "{collision} collision should fail"
+        );
+        assert_eq!(fs::read(&input_path).unwrap(), input_original);
+        assert_eq!(fs::read(&output_path).unwrap(), output_original);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        for unsafe_text in [
+            "patient-jane",
+            input_path.to_str().unwrap(),
+            output_path.to_str().unwrap(),
+            "7,8,9",
+        ] {
+            assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+            assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        }
+    }
 }
 
 #[test]

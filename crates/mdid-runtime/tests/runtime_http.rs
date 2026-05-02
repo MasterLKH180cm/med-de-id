@@ -3,6 +3,7 @@ use std::io::{Cursor, Read, Write};
 use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
+    Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
@@ -1390,47 +1391,134 @@ async fn conservative_media_deidentify_endpoint_reports_unsupported_payload_with
 }
 
 #[tokio::test]
-async fn conservative_media_deidentify_endpoint_rejects_media_byte_payload_fields_phi_safely() {
+async fn conservative_media_deidentify_endpoint_rejects_media_bytes_base64_field() {
     let app = build_router(RuntimeState::default());
-    let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+        "media_bytes_base64": "SmFuZSBQYXRpZW50IGZhY2U="
+    });
 
-    for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
-        let mut request = serde_json::json!({
-            "artifact_label": "patient-jane-image.png",
-            "format": "image",
-            "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}]
-        });
-        request[field] = serde_json::Value::String(raw_media_value.to_string());
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
 
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/media/conservative/deidentify")
-                    .header("content-type", "application/json")
-                    .body(Body::from(request.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_raw_media_bytes_field() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+        "media_bytes": [1, 2, 3, 4]
+    });
 
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
 
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
-        assert_eq!(
-            json["error"]["message"],
-            "metadata-only media review does not accept media bytes"
-        );
-        let body_text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(!body_text.contains(raw_media_value));
-        assert!(!body_text.contains("Jane Patient"));
-        assert!(json.get("summary").is_none());
-        assert!(json.get("review_queue").is_none());
-        assert!(json.get("rewritten_media_bytes_base64").is_none());
-    }
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_raw_legacy_file_bytes_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+        "file-bytes": [1, 2, 3, 4]
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_raw_legacy_base64_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [{"key": "CameraOwner", "value": "Jane Patient"}],
+        "base-64": "SmFuZSBQYXRpZW50IGZhY2U="
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_metadata_value_that_declares_base64_payload(
+) {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [
+            {"key": "CameraOwner", "value": "Jane Patient"},
+            {"key": "payload_base64", "value": "SmFuZSBQYXRpZW50IGZhY2U="}
+        ]
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_metadata_legacy_file_bytes_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [
+            {"key": "CameraOwner", "value": "Jane Patient"},
+            {"key": "file_bytes", "value": "SmFuZSBQYXRpZW50IGZhY2U="}
+        ]
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+#[tokio::test]
+async fn conservative_media_deidentify_endpoint_rejects_metadata_legacy_base64_alias() {
+    let app = build_router(RuntimeState::default());
+    let request = json!({
+        "artifact_label": "patient-jane-face.jpg",
+        "format": "image",
+        "metadata": [
+            {"key": "CameraOwner", "value": "Jane Patient"},
+            {"key": "base64", "value": "SmFuZSBQYXRpZW50IGZhY2U="}
+        ]
+    });
+
+    assert_conservative_media_byte_payload_rejected(app, request).await;
+}
+
+async fn assert_conservative_media_byte_payload_rejected(app: Router, request: Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/media/conservative/deidentify")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
+    assert_eq!(
+        json["error"]["message"],
+        "Media byte payloads are not accepted by this metadata-only route."
+    );
+    let body_text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!body_text.contains("Jane"));
+    assert!(!body_text.contains("Patient"));
+    assert!(!body_text.contains("SmFu"));
+    assert!(!body_text.contains("[1,2,3,4]"));
+    assert!(!body_text.contains("[1, 2, 3, 4]"));
+    assert!(json.get("summary").is_none());
+    assert!(json.get("review_queue").is_none());
+    assert!(json.get("rewritten_media_bytes_base64").is_none());
 }
 
 #[tokio::test]
@@ -1459,14 +1547,14 @@ async fn conservative_media_deidentify_endpoint_rejects_null_media_byte_payload_
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "invalid_conservative_media_request");
         assert_eq!(
             json["error"]["message"],
-            "metadata-only media review does not accept media bytes"
+            "Media byte payloads are not accepted by this metadata-only route."
         );
         let body_text = String::from_utf8(body.to_vec()).unwrap();
         assert!(!body_text.contains("Jane Patient"));

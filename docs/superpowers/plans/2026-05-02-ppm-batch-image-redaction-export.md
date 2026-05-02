@@ -26,7 +26,7 @@
 - Modify: `crates/mdid-cli/src/main.rs`
 - Test: `crates/mdid-cli/tests/cli_smoke.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add a test named `redact_image_ppm_batch_continues_after_item_failure_without_path_leaks` to `crates/mdid-cli/tests/cli_smoke.rs`. The test should:
 
@@ -88,13 +88,13 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-cli redact_image_ppm_batch_continues_after_item_failure_without_path_leaks --test cli_smoke -- --nocapture`
 
 Expected: FAIL because `redact-image-ppm-batch` is an unknown command.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Implement:
 - `RedactImagePpmBatchArgs { manifest_json: String, summary_output: PathBuf }`
@@ -122,19 +122,19 @@ Summary schema:
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-cli redact_image_ppm_batch_continues_after_item_failure_without_path_leaks --test cli_smoke -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run regression tests**
+- [x] **Step 5: Run regression tests**
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-cli redact_image_ppm --test cli_smoke -- --nocapture`
 
 Expected: PASS for existing single-file and new batch PPM redaction smoke tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/mdid-cli/src/main.rs crates/mdid-cli/tests/cli_smoke.rs docs/superpowers/plans/2026-05-02-ppm-batch-image-redaction-export.md

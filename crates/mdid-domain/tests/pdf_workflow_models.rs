@@ -25,6 +25,10 @@ fn pdf_scan_status_wire_values_are_stable() {
         serde_json::to_string(&PdfScanStatus::OcrRequired).unwrap(),
         "\"ocr_required\""
     );
+    assert_eq!(
+        serde_json::to_string(&PdfScanStatus::HandwritingReviewRequired).unwrap(),
+        "\"handwriting_review_required\""
+    );
 }
 
 #[test]
@@ -75,5 +79,10 @@ fn pdf_summary_requires_review_when_ocr_or_candidates_need_it() {
 
     assert!(needs_ocr.requires_review());
     assert!(needs_review.requires_review());
+    let needs_handwriting_review = PdfExtractionSummary {
+        handwriting_review_required_pages: 1,
+        ..PdfExtractionSummary::default()
+    };
+    assert!(needs_handwriting_review.requires_review());
     assert!(!PdfExtractionSummary::default().requires_review());
 }

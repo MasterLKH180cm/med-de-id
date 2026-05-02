@@ -6,6 +6,20 @@ use thiserror::Error;
 
 const REVIEW_PLACEHOLDER_CONFIDENCE: u8 = 1;
 
+fn has_handwriting_suspicion(source_name: &str) -> bool {
+    let normalized = source_name.to_ascii_lowercase();
+    normalized.contains("handwritten") || normalized.contains("handwriting")
+}
+
+fn is_known_benign_clean_export_fragment(fragment: &str) -> bool {
+    matches!(fragment, "ClinicNote" | "ClinicNote ")
+}
+
+fn should_route_pdf_fragment_to_review(fragment: &str) -> bool {
+    let normalized = fragment.trim();
+    !normalized.is_empty() && !is_known_benign_clean_export_fragment(fragment)
+}
+
 #[derive(Debug, Error)]
 pub enum PdfAdapterError {
     #[error("failed to parse PDF input: {0}")]
@@ -46,18 +60,25 @@ impl PdfAdapter {
             let page = PdfPageRef::new(page_number as usize, format!("page-{page_number}"));
 
             let status = if normalized_fragments.is_empty() {
-                summary.ocr_required_pages += 1;
-                PdfScanStatus::OcrRequired
+                if has_handwriting_suspicion(source_name) {
+                    summary.handwriting_review_required_pages += 1;
+                    PdfScanStatus::HandwritingReviewRequired
+                } else {
+                    summary.ocr_required_pages += 1;
+                    PdfScanStatus::OcrRequired
+                }
             } else {
                 summary.text_layer_pages += 1;
                 for fragment in normalized_fragments {
-                    candidates.push(PdfPhiCandidate {
-                        page: page.clone(),
-                        phi_type: "extracted_text".into(),
-                        source_text: fragment,
-                        confidence: REVIEW_PLACEHOLDER_CONFIDENCE,
-                        decision: ReviewDecision::NeedsReview,
-                    });
+                    if should_route_pdf_fragment_to_review(&fragment) {
+                        candidates.push(PdfPhiCandidate {
+                            page: page.clone(),
+                            phi_type: "extracted_text".into(),
+                            source_text: fragment,
+                            confidence: REVIEW_PLACEHOLDER_CONFIDENCE,
+                            decision: ReviewDecision::NeedsReview,
+                        });
+                    }
                 }
                 PdfScanStatus::TextLayerPresent
             };

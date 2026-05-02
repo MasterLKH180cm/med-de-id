@@ -19,7 +19,8 @@ use mdid_application::{
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaFormat, DecodeRequest,
-    DicomPrivateTagPolicy, ImageRedactionRegion, PdfPageRef, PdfScanStatus, SurfaceKind,
+    DicomPrivateTagPolicy, ImageRedactionRegion, PdfPageRef, PdfRewriteStatus, PdfScanStatus,
+    SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact};
 use rust_xlsxwriter::Workbook;
@@ -1439,6 +1440,13 @@ fn write_ppm_batch_output_safely(path: &Path, bytes: &[u8]) -> std::io::Result<(
 fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), String> {
     let items: Vec<ImageRedactionBatchManifestItem> = serde_json::from_str(&args.manifest_json)
         .map_err(|_| "invalid image redaction batch manifest".to_string())?;
+    for item in &items {
+        if paths_are_same_existing_or_lexical(&args.summary_output, &item.input)
+            || paths_are_same_existing_or_lexical(&args.summary_output, &item.output)
+        {
+            return Err("image redaction batch summary path must differ from manifest input and output paths".to_string());
+        }
+    }
     let mut summary_items = Vec::with_capacity(items.len());
     let mut succeeded_item_count = 0usize;
     let mut failed_item_count = 0usize;
@@ -1470,7 +1478,6 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
                     "redacted_region_count": verification.redacted_region_count,
                     "redacted_pixel_count": verification.redacted_pixel_count,
                     "unchanged_pixel_count": verification.unchanged_pixel_count,
-                    "output_byte_count": verification.output_byte_count,
                     "verified_changed_pixels_within_regions": verification.verified_changed_pixels_within_regions,
                 }
             }))
@@ -1511,15 +1518,8 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
     )?;
     println!(
         "{}",
-        serde_json::to_string(&json!({
-            "artifact": "image_redaction_batch_summary",
-            "format": "ppm_p6",
-            "total_item_count": items.len(),
-            "succeeded_item_count": succeeded_item_count,
-            "failed_item_count": failed_item_count,
-            "summary_written": true,
-        }))
-        .map_err(|err| format!("failed to render image redaction batch summary: {err}"))?
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render image redaction batch summary: {err}"))?
     );
     Ok(())
 }
@@ -4047,13 +4047,42 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
 
     let review_queue_len = output.review_queue.len();
     let rewrite_available = output.rewritten_pdf_bytes.is_some();
+    let mut rewrite_validation = serde_json::Value::Null;
     if let Some(output_pdf_path) = args.output_pdf_path.as_ref() {
         let rewritten_pdf_bytes = output
             .rewritten_pdf_bytes
             .as_ref()
             .ok_or_else(|| "PDF rewrite/export unavailable for this input".to_string())?;
-        fs::write(output_pdf_path, rewritten_pdf_bytes)
-            .map_err(|err| format!("failed to write output PDF: {err}"))?;
+        if let Err(err) = fs::write(output_pdf_path, rewritten_pdf_bytes) {
+            let _ = fs::remove_file(output_pdf_path);
+            return Err(format!("failed to write output PDF: {err}"));
+        }
+        let written_bytes = fs::read(output_pdf_path).map_err(|_| {
+            let _ = fs::remove_file(output_pdf_path);
+            "PDF rewrite validation failed: exported bytes could not be read".to_string()
+        })?;
+        let validation = PdfDeidentificationService
+            .deidentify_bytes(&written_bytes, "exported.pdf")
+            .map_err(|_| {
+                let _ = fs::remove_file(output_pdf_path);
+                "PDF rewrite validation failed: exported bytes are not parseable".to_string()
+            })?;
+        if validation.summary.total_pages == 0
+            || validation.rewrite_status != PdfRewriteStatus::CleanTextLayerPdfBytesAvailable
+            || !validation.review_queue.is_empty()
+        {
+            let _ = fs::remove_file(output_pdf_path);
+            return Err(
+                "PDF rewrite validation failed: exported bytes are not eligible".to_string(),
+            );
+        }
+        rewrite_validation = json!({
+            "validated": true,
+            "parseable_pdf": true,
+            "page_count": validation.summary.total_pages,
+            "review_queue_len": validation.review_queue.len(),
+            "output_byte_count": written_bytes.len(),
+        });
     }
     let page_statuses: Vec<PdfPageStatusReport> = output
         .page_statuses
@@ -4072,13 +4101,18 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "no_rewritten_pdf": output.no_rewritten_pdf,
         "review_only": output.review_only,
         "rewritten_pdf_bytes": if args.output_pdf_path.is_some() && rewrite_available { json!("<written-to-output-pdf-path>") } else { serde_json::Value::Null },
+        "rewrite_validation": rewrite_validation.clone(),
     });
-    fs::write(
+    if let Err(err) = fs::write(
         &args.report_path,
         serde_json::to_string_pretty(&report)
             .map_err(|err| format!("failed to render PDF report: {err}"))?,
-    )
-    .map_err(|err| format!("failed to write PDF report: {err}"))?;
+    ) {
+        if let Some(output_pdf_path) = args.output_pdf_path.as_ref() {
+            let _ = fs::remove_file(output_pdf_path);
+        }
+        return Err(format!("failed to write PDF report: {err}"));
+    }
 
     let stdout = json!({
         "report_path": "<redacted>",
@@ -4086,6 +4120,7 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "review_queue_len": report["review_queue_len"].clone(),
         "rewrite_available": rewrite_available,
         "rewrite_status": report["rewrite_status"].clone(),
+        "rewrite_validation": report["rewrite_validation"].clone(),
         "no_rewritten_pdf": report["no_rewritten_pdf"].clone(),
         "review_only": report["review_only"].clone(),
     });

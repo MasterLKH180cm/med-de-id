@@ -936,10 +936,17 @@ async fn tabular_xlsx_deidentify(
     }
 }
 
-async fn conservative_media_deidentify(
-    payload: Result<Json<ConservativeMediaDeidentifyRequest>, JsonRejection>,
-) -> Response {
-    let Json(payload) = match payload {
+async fn conservative_media_deidentify(payload: Result<Json<Value>, JsonRejection>) -> Response {
+    let Json(raw_payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_conservative_media_request_response().into_response(),
+    };
+
+    if conservative_media_json_contains_byte_payload_key(&raw_payload) {
+        return conservative_media_bytes_not_accepted_response().into_response();
+    }
+
+    let payload: ConservativeMediaDeidentifyRequest = match serde_json::from_value(raw_payload) {
         Ok(payload) => payload,
         Err(_) => return invalid_conservative_media_request_response().into_response(),
     };
@@ -959,6 +966,43 @@ async fn conservative_media_deidentify(
         };
 
     conservative_media_success_response(output).into_response()
+}
+
+fn conservative_media_json_contains_byte_payload_key(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+
+    object.keys().any(|key| is_media_byte_payload_key(key))
+        || object
+            .get("metadata")
+            .and_then(Value::as_array)
+            .is_some_and(|metadata| {
+                metadata.iter().any(|entry| {
+                    entry
+                        .get("key")
+                        .and_then(Value::as_str)
+                        .is_some_and(is_media_byte_payload_key)
+                })
+            })
+}
+
+fn is_media_byte_payload_key(key: &str) -> bool {
+    let normalized = key.replace(['-', '_'], "").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "mediabytes"
+            | "mediabytesbase64"
+            | "bytes"
+            | "bytesbase64"
+            | "filebytes"
+            | "base64"
+            | "payload"
+            | "payloadbase64"
+            | "imagebytes"
+            | "audiobytes"
+            | "videobytes"
+    )
 }
 
 async fn dicom_deidentify(Json(payload): Json<DicomDeidentifyRequest>) -> Response {
@@ -1640,11 +1684,11 @@ fn invalid_conservative_media_request_response() -> (StatusCode, Json<ErrorEnvel
 
 fn conservative_media_bytes_not_accepted_response() -> (StatusCode, Json<ErrorEnvelope>) {
     (
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         Json(ErrorEnvelope {
             error: ErrorBody {
                 code: "invalid_conservative_media_request",
-                message: "metadata-only media review does not accept media bytes",
+                message: "Media byte payloads are not accepted by this metadata-only route.",
             },
         }),
     )
