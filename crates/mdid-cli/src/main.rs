@@ -1369,7 +1369,7 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
 
     for (index, item) in items.iter().enumerate() {
         let item_index = index + 1;
-        let temp_output = item.output.with_extension("ppm.mdid-redaction-tmp");
+        let mut created_temp_path: Option<PathBuf> = None;
         let result = (|| {
             let unsafe_same_path = match (item.input.canonicalize(), item.output.canonicalize()) {
                 (Ok(input), Ok(output)) => input == output,
@@ -1383,8 +1383,17 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
             let (redacted, verification) =
                 redact_ppm_p6_bytes_with_verification(&input, &item.regions, [0, 0, 0])
                     .map_err(|_| "invalid_ppm_redaction")?;
-            fs::write(&temp_output, &redacted).map_err(|_| "invalid_ppm_redaction")?;
+            let (temp_output, mut temp_file) =
+                create_unique_ppm_batch_temp_output(&item.output, item_index)
+                    .map_err(|_| "invalid_ppm_redaction")?;
+            created_temp_path = Some(temp_output.clone());
+            temp_file
+                .write_all(&redacted)
+                .map_err(|_| "invalid_ppm_redaction")?;
+            temp_file.sync_all().map_err(|_| "invalid_ppm_redaction")?;
+            drop(temp_file);
             fs::rename(&temp_output, &item.output).map_err(|_| "invalid_ppm_redaction")?;
+            created_temp_path = None;
             Ok::<Value, &'static str>(json!({
                 "item_index": item_index,
                 "status": "redacted",
@@ -1407,7 +1416,9 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
             }
             Err(error_code) => {
                 failed_item_count += 1;
-                let _ = fs::remove_file(&temp_output);
+                if let Some(temp_output) = created_temp_path {
+                    let _ = fs::remove_file(temp_output);
+                }
                 summary_items.push(json!({
                     "item_index": item_index,
                     "status": "failed",
@@ -1425,6 +1436,7 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
         "succeeded_item_count": succeeded_item_count,
         "failed_item_count": failed_item_count,
         "raw_paths_included": false,
+        "raw_regions_included": false,
         "raw_bounding_boxes_included": false,
         "image_bytes_included": false,
         "items": summary_items,
@@ -1447,6 +1459,38 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
         .map_err(|err| format!("failed to render image redaction batch summary: {err}"))?
     );
     Ok(())
+}
+
+fn create_unique_ppm_batch_temp_output(
+    output: &Path,
+    item_index: usize,
+) -> std::io::Result<(PathBuf, fs::File)> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("redacted.ppm");
+    let pid = process::id();
+
+    for attempt in 0..1000usize {
+        let candidate = parent.join(format!(
+            ".{file_name}.mdid-redaction-{pid}-{item_index}-{attempt}.tmp"
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no available PPM batch temporary output path",
+    ))
 }
 
 fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {

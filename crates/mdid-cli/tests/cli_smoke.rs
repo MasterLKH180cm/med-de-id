@@ -271,6 +271,57 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
 }
 
 #[test]
+fn redact_image_ppm_batch_preserves_preexisting_temp_collision_files() {
+    let dir = tempdir().unwrap();
+    let input_bad = dir.path().join("patient-jane-bad.ppm");
+    let output_path = dir.path().join("patient-jane-redacted.ppm");
+    let summary_path = dir.path().join("patient-jane-summary.json");
+    let old_deterministic_temp_path = output_path.with_extension("ppm.mdid-redaction-tmp");
+    let sentinel = b"pre-existing temp-like collision file must survive unchanged";
+
+    fs::write(&input_bad, b"not a ppm").unwrap();
+    fs::write(&old_deterministic_temp_path, sentinel).unwrap();
+
+    let manifest = serde_json::json!([
+        {
+            "input": input_bad,
+            "output": output_path,
+            "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+        }
+    ]);
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm-batch",
+            "--manifest-json",
+            &manifest.to_string(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&old_deterministic_temp_path).unwrap(),
+        sentinel,
+        "batch failure must not delete or overwrite pre-existing temp-like files"
+    );
+    assert!(!output_path.exists(), "failed item must not create output");
+
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["failed_item_count"], 1);
+    assert_eq!(summary["items"][0]["status"], "failed");
+    assert_eq!(summary["items"][0]["error_code"], "invalid_ppm_redaction");
+}
+
+#[test]
 fn redact_image_ppm_summary_counts_unique_pixels_for_overlapping_regions() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("source.ppm");
