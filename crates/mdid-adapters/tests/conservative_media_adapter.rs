@@ -67,11 +67,92 @@ fn fcs_text_rewrite_replaces_only_requested_text_values_and_preserves_data_bytes
         .any(|w| w == b"Bone Marrow"));
     assert_eq!(&output.bytes[output.bytes.len() - data.len()..], data);
     assert_eq!(output.summary.replacement_count, 2);
-    assert_eq!(output.summary.rewritten_keys, vec!["$SMNO", "$OP"]);
+    assert_eq!(output.summary.rewritten_key_count, 2);
     let debug = format!("{output:?}");
     assert!(debug.contains("<redacted>"));
     assert!(!debug.contains("MRN-12345"));
     assert!(!debug.contains("Dr. Alice Example"));
+}
+
+fn header_offset(bytes: &[u8], range: std::ops::Range<usize>) -> usize {
+    std::str::from_utf8(&bytes[range])
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn fcs_text_rewrite_shifts_data_offsets_when_text_length_changes() {
+    let data = [9, 8, 7, 6, 5];
+    let input = fcs_fixture("|$SMNO|MRN|$OP|Dr. Alice Example|", &data);
+    let old_text_end = header_offset(&input, 18..26);
+    let old_data_start = header_offset(&input, 26..34);
+    let old_data_end = header_offset(&input, 34..42);
+
+    let output = ConservativeMediaAdapter::rewrite_fcs_text_segment(
+        &input,
+        FcsTextRewriteRequest {
+            replacements: [("$SMNO".to_string(), "[MUCH_LONGER_FCS_SAMPLE]".to_string())]
+                .into_iter()
+                .collect(),
+        },
+    )
+    .unwrap();
+
+    let new_text_end = header_offset(&output.bytes, 18..26);
+    let delta = new_text_end as isize - old_text_end as isize;
+    assert_ne!(delta, 0);
+    assert_eq!(
+        header_offset(&output.bytes, 26..34),
+        (old_data_start as isize + delta) as usize
+    );
+    assert_eq!(
+        header_offset(&output.bytes, 34..42),
+        (old_data_end as isize + delta) as usize
+    );
+    let new_data_start = header_offset(&output.bytes, 26..34);
+    assert_eq!(
+        &output.bytes[new_data_start..new_data_start + data.len()],
+        data
+    );
+}
+
+#[test]
+fn fcs_text_rewrite_handles_doubled_delimiter_escaping_in_values_and_replacements() {
+    let input = fcs_fixture("|$SMNO|MRN||123|$OP|Dr. Alice|", &[1, 2, 3]);
+
+    let output = ConservativeMediaAdapter::rewrite_fcs_text_segment(
+        &input,
+        FcsTextRewriteRequest {
+            replacements: [("$OP".to_string(), "Tech|One".to_string())]
+                .into_iter()
+                .collect(),
+        },
+    )
+    .unwrap();
+
+    let text_start = header_offset(&output.bytes, 10..18);
+    let text_end = header_offset(&output.bytes, 18..26);
+    let rewritten_text = std::str::from_utf8(&output.bytes[text_start..=text_end]).unwrap();
+    assert!(rewritten_text.contains("|$SMNO|MRN||123|"));
+    assert!(rewritten_text.contains("|$OP|Tech||One|"));
+}
+
+#[test]
+fn fcs_text_rewrite_rejects_text_start_inside_header() {
+    let mut input = fcs_fixture("|$SMNO|MRN-12345|", &[1, 2, 3]);
+    input[10..18].copy_from_slice(b"      57");
+
+    let err = ConservativeMediaAdapter::rewrite_fcs_text_segment(
+        &input,
+        FcsTextRewriteRequest {
+            replacements: Default::default(),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(err, ConservativeMediaAdapterError::InvalidFcsTextSegment);
 }
 
 #[test]

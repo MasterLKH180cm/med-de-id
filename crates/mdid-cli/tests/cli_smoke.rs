@@ -98,6 +98,8 @@ fn redact_fcs_text_writes_redacted_bytes_and_phi_safe_summary() {
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
     assert_eq!(summary["artifact"], "fcs_text_rewrite_export_summary");
     assert_eq!(summary["replacement_count"], 2);
+    assert_eq!(summary["rewritten_key_count"], 2);
+    assert!(summary.get("rewritten_keys").is_none());
     assert_eq!(summary["raw_values_included"], false);
     for sentinel in [
         "MRN-12345",

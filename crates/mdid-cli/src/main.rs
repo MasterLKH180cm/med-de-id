@@ -1426,7 +1426,7 @@ fn run_redact_fcs_text(args: RedactFcsTextArgs) -> Result<(), String> {
         "output_text_byte_len": output.summary.output_text_byte_len,
         "input_byte_len": output.summary.input_byte_len,
         "output_byte_len": output.summary.output_byte_len,
-        "rewritten_keys": output.summary.rewritten_keys,
+        "rewritten_key_count": output.summary.rewritten_key_count,
         "raw_values_included": false,
         "fcs_bytes_included": false,
     });
