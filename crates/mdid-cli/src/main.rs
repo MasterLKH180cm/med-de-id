@@ -1369,24 +1369,34 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
 
     for (index, item) in items.iter().enumerate() {
         let item_index = index + 1;
+        let temp_output = item.output.with_extension("ppm.mdid-redaction-tmp");
         let result = (|| {
-            let input = fs::read(&item.input).map_err(|_| ())?;
+            let unsafe_same_path = match (item.input.canonicalize(), item.output.canonicalize()) {
+                (Ok(input), Ok(output)) => input == output,
+                _ => item.input == item.output,
+            };
+            if unsafe_same_path {
+                return Err("unsafe_output_path");
+            }
+
+            let input = fs::read(&item.input).map_err(|_| "invalid_ppm_redaction")?;
             let (redacted, verification) =
                 redact_ppm_p6_bytes_with_verification(&input, &item.regions, [0, 0, 0])
-                    .map_err(|_| ())?;
-            fs::write(&item.output, &redacted).map_err(|_| ())?;
-            Ok::<Value, ()>(json!({
+                    .map_err(|_| "invalid_ppm_redaction")?;
+            fs::write(&temp_output, &redacted).map_err(|_| "invalid_ppm_redaction")?;
+            fs::rename(&temp_output, &item.output).map_err(|_| "invalid_ppm_redaction")?;
+            Ok::<Value, &'static str>(json!({
                 "item_index": item_index,
                 "status": "redacted",
                 "visual_verification": {
                     "format": verification.format,
                     "width": verification.width,
                     "height": verification.height,
-                    "redacted_area_count": verification.redacted_region_count,
+                    "redacted_region_count": verification.redacted_region_count,
                     "redacted_pixel_count": verification.redacted_pixel_count,
                     "unchanged_pixel_count": verification.unchanged_pixel_count,
                     "output_byte_count": verification.output_byte_count,
-                    "verified_changed_pixels_within_redaction_areas": verification.verified_changed_pixels_within_regions,
+                    "verified_changed_pixels_within_regions": verification.verified_changed_pixels_within_regions,
                 }
             }))
         })();
@@ -1395,13 +1405,13 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
                 succeeded_item_count += 1;
                 summary_items.push(item_summary);
             }
-            Err(()) => {
+            Err(error_code) => {
                 failed_item_count += 1;
-                let _ = fs::remove_file(&item.output);
+                let _ = fs::remove_file(&temp_output);
                 summary_items.push(json!({
                     "item_index": item_index,
                     "status": "failed",
-                    "error_code": "invalid_ppm_redaction",
+                    "error_code": error_code,
                 }));
             }
         }

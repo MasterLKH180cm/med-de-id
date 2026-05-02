@@ -152,6 +152,7 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
     let input_bad = dir.path().join("patient-jane-bad.ppm");
     let output_ok = dir.path().join("patient-jane-face-redacted.ppm");
     let output_bad = dir.path().join("patient-jane-bad-redacted.ppm");
+    let input_same_as_output = dir.path().join("patient-jane-in-place.ppm");
     let summary_path = dir.path().join("patient-jane-summary.json");
 
     fs::write(
@@ -160,6 +161,10 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
     )
     .unwrap();
     fs::write(&input_bad, b"not a ppm").unwrap();
+    let pre_existing_bad_output = b"pre-existing redacted output must survive";
+    fs::write(&output_bad, pre_existing_bad_output).unwrap();
+    let same_path_original = [b"P6\n1 1\n255\n".as_slice(), &[9, 8, 7]].concat();
+    fs::write(&input_same_as_output, &same_path_original).unwrap();
 
     let manifest = serde_json::json!([
         {
@@ -170,7 +175,12 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
         {
             "input": input_bad,
             "output": output_bad,
-            "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+            "regions": [{"x": 0,"y":0,"width":1,"height":1}]
+        },
+        {
+            "input": input_same_as_output,
+            "output": input_same_as_output,
+            "regions": [{"x":0,"y":0,"width":1,"height":1}]
         }
     ]);
 
@@ -193,7 +203,16 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
     );
     let redacted = fs::read(&output_ok).unwrap();
     assert_eq!(&redacted[11..14], &[0, 0, 0]);
-    assert!(!output_bad.exists(), "failed item must not write output");
+    assert_eq!(
+        fs::read(&output_bad).unwrap(),
+        pre_existing_bad_output,
+        "failed item must preserve pre-existing output"
+    );
+    assert_eq!(
+        fs::read(&input_same_as_output).unwrap(),
+        same_path_original,
+        "input==output item must not corrupt source"
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -202,12 +221,34 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
     let summary_text = fs::read_to_string(&summary_path).unwrap();
     let summary: Value = serde_json::from_str(&summary_text).unwrap();
     assert_eq!(summary["artifact"], "image_redaction_batch_summary");
-    assert_eq!(summary["total_item_count"], 2);
+    assert_eq!(summary["total_item_count"], 3);
     assert_eq!(summary["succeeded_item_count"], 1);
-    assert_eq!(summary["failed_item_count"], 1);
+    assert_eq!(summary["failed_item_count"], 2);
     assert_eq!(summary["items"][0]["status"], "redacted");
+    assert_eq!(
+        summary["items"][0]["visual_verification"]["redacted_region_count"],
+        1
+    );
+    assert_eq!(
+        summary["items"][0]["visual_verification"]["verified_changed_pixels_within_regions"],
+        true
+    );
+    assert!(
+        summary["items"][0]["visual_verification"]
+            .get("redacted_area_count")
+            .is_none(),
+        "batch summary must not use area terminology"
+    );
+    assert!(
+        summary["items"][0]["visual_verification"]
+            .get("verified_changed_pixels_within_redaction_areas")
+            .is_none(),
+        "batch summary must use regions terminology"
+    );
     assert_eq!(summary["items"][1]["status"], "failed");
     assert_eq!(summary["items"][1]["error_code"], "invalid_ppm_redaction");
+    assert_eq!(summary["items"][2]["status"], "failed");
+    assert_eq!(summary["items"][2]["error_code"], "unsafe_output_path");
     for unsafe_text in [
         "patient-jane",
         input_ok.to_str().unwrap(),
@@ -215,7 +256,6 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
         output_ok.to_str().unwrap(),
         output_bad.to_str().unwrap(),
         summary_path.to_str().unwrap(),
-        "regions",
         "bbox",
         "P6",
         "1,2,3",
