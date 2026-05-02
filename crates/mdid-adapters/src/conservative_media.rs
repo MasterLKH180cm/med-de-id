@@ -6,6 +6,24 @@ use mdid_domain::{
 const CONSERVATIVE_METADATA_CONFIDENCE: f32 = 0.35;
 const METADATA_IDENTIFIER_PHI_TYPE: &str = "metadata_identifier";
 
+fn classify_conservative_media_phi_type(
+    format: ConservativeMediaFormat,
+    metadata_key: &str,
+) -> &'static str {
+    if format != ConservativeMediaFormat::Fcs {
+        return METADATA_IDENTIFIER_PHI_TYPE;
+    }
+
+    match metadata_key.trim().to_ascii_uppercase().as_str() {
+        "$FIL" | "FILENAME" | "FILE" => "fcs_filename_identifier",
+        "$SMNO" | "SMNO" | "SAMPLE_ID" | "SAMPLEID" | "SPECIMEN_ID" => "fcs_sample_identifier",
+        "$SRC" | "SRC" | "SOURCE" | "SPECIMEN_SOURCE" => "fcs_source_identifier",
+        "$OP" | "OP" | "OPERATOR" | "CREATOR" => "fcs_operator_identifier",
+        "$DATE" | "DATE" | "COLLECTION_DATE" | "ACQUISITION_DATE" => "fcs_collection_date",
+        _ => METADATA_IDENTIFIER_PHI_TYPE,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConservativeMediaAdapterError {
     EmptyArtifactLabel,
@@ -141,16 +159,21 @@ impl ConservativeMediaAdapter {
             .metadata
             .into_iter()
             .filter(|entry| !entry.key.trim().is_empty() && !entry.value.trim().is_empty())
-            .map(|entry| ConservativeMediaCandidate {
-                field_ref: ConservativeMediaRef {
-                    artifact_label: input.artifact_label.clone(),
-                    metadata_key: entry.key,
-                },
-                format: input.format,
-                phi_type: METADATA_IDENTIFIER_PHI_TYPE.to_string(),
-                source_value: entry.value,
-                confidence: CONSERVATIVE_METADATA_CONFIDENCE,
-                status,
+            .map(|entry| {
+                let phi_type =
+                    classify_conservative_media_phi_type(input.format, entry.key.as_str());
+
+                ConservativeMediaCandidate {
+                    field_ref: ConservativeMediaRef {
+                        artifact_label: input.artifact_label.clone(),
+                        metadata_key: entry.key,
+                    },
+                    format: input.format,
+                    phi_type: phi_type.to_string(),
+                    source_value: entry.value,
+                    confidence: CONSERVATIVE_METADATA_CONFIDENCE,
+                    status,
+                }
             })
             .collect::<Vec<_>>();
 
