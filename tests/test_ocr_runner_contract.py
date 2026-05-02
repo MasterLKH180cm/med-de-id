@@ -372,12 +372,115 @@ def test_batch_quality_manifest_groups_multi_page_documents_without_path_or_text
     assert payload["succeeded_count"] == 3
     assert payload["failed_count"] == 0
     assert payload["documents"] == [
-        {"document_id": "doc-a", "page_count": 2, "succeeded_count": 2, "failed_count": 0},
-        {"document_id": "doc-b", "page_count": 1, "succeeded_count": 1, "failed_count": 0},
+        {"document_id": "document-1", "page_count": 2, "succeeded_count": 2, "failed_count": 0},
+        {"document_id": "document-2", "page_count": 1, "succeeded_count": 1, "failed_count": 0},
     ]
     rendered = json.dumps(payload, sort_keys=True)
     assert "Jane-Example-MRN-12345" not in rendered
     assert "Patient Jane Example" not in rendered
+    assert completed.stderr == ""
+
+
+def test_batch_quality_manifest_generates_phi_safe_document_ids(tmp_path):
+    page = tmp_path / "Jane-Example-MRN-12345-page-1.png"
+    page.write_bytes(b"synthetic image placeholder")
+    (tmp_path / "synthetic_printed_phi_expected.txt").write_text(
+        "Patient Jane Example\nMRN MRN-12345\n", encoding="utf-8"
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {
+                        "document_id": "Jane-Example-MRN-12345",
+                        "pages": [{"page_number": 1, "image_path": str(page)}],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/ocr_eval/run_ocr_batch_quality.py",
+            "--mock",
+            "--runner-path",
+            "scripts/ocr_eval/run_small_ocr.py",
+            "--manifest",
+            str(manifest),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    payload = json.loads(completed.stdout)
+    assert payload["documents"] == [
+        {"document_id": "document-1", "page_count": 1, "succeeded_count": 1, "failed_count": 0}
+    ]
+    assert payload["items"][0]["document_id"] == "document-1"
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "Jane-Example-MRN-12345" not in rendered
+    assert "Patient Jane Example" not in rendered
+    assert completed.stderr == ""
+
+
+def test_batch_quality_manifest_duplicate_raw_document_ids_do_not_merge_or_leak(tmp_path):
+    page1 = tmp_path / "duplicate-patient-id-page-1.png"
+    page2 = tmp_path / "duplicate-patient-id-page-2.png"
+    for page in (page1, page2):
+        page.write_bytes(b"synthetic image placeholder")
+    (tmp_path / "synthetic_printed_phi_expected.txt").write_text(
+        "Patient Jane Example\nMRN MRN-12345\n", encoding="utf-8"
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {
+                        "document_id": "duplicate-patient-id",
+                        "pages": [{"page_number": 1, "image_path": str(page1)}],
+                    },
+                    {
+                        "document_id": "duplicate-patient-id",
+                        "pages": [{"page_number": 1, "image_path": str(page2)}],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/ocr_eval/run_ocr_batch_quality.py",
+            "--mock",
+            "--runner-path",
+            "scripts/ocr_eval/run_small_ocr.py",
+            "--manifest",
+            str(manifest),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    payload = json.loads(completed.stdout)
+    assert payload["document_count"] == 2
+    assert payload["documents"] == [
+        {"document_id": "document-1", "page_count": 1, "succeeded_count": 1, "failed_count": 0},
+        {"document_id": "document-2", "page_count": 1, "succeeded_count": 1, "failed_count": 0},
+    ]
+    assert [item["document_id"] for item in payload["items"]] == ["document-1", "document-2"]
+    rendered = json.dumps(payload, sort_keys=True)
+    assert "duplicate-patient-id" not in rendered
     assert completed.stderr == ""
 
 
@@ -428,10 +531,10 @@ def test_batch_quality_manifest_recovers_from_missing_page_without_path_leaks(tm
     assert payload["succeeded_count"] == 1
     assert payload["failed_count"] == 1
     assert payload["documents"] == [
-        {"document_id": "doc-a", "page_count": 2, "succeeded_count": 1, "failed_count": 1}
+        {"document_id": "document-1", "page_count": 2, "succeeded_count": 1, "failed_count": 1}
     ]
     assert payload["items"][1]["status"] == "failed"
-    assert payload["items"][1]["document_id"] == "doc-a"
+    assert payload["items"][1]["document_id"] == "document-1"
     assert payload["items"][1]["page_number"] == 2
     assert payload["items"][1]["error"] == "OCR input path does not exist"
     rendered = json.dumps(payload, sort_keys=True)

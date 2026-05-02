@@ -126,12 +126,14 @@ def load_manifest_pages(manifest_path: str) -> tuple[list[dict], list[dict]] | N
 
     pages: list[dict] = []
     document_specs: list[dict] = []
-    for document in documents:
+    for document_index, document in enumerate(documents, start=1):
         if not isinstance(document, dict):
             return None
-        document_id = safe_document_id(document.get("document_id"))
+        if safe_document_id(document.get("document_id")) is None:
+            return None
+        document_id = f"document-{document_index}"
         document_pages = document.get("pages")
-        if document_id is None or not isinstance(document_pages, list):
+        if not isinstance(document_pages, list):
             return None
         document_specs.append({"document_id": document_id, "page_count": len(document_pages)})
         for page in document_pages:
