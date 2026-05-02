@@ -2802,8 +2802,10 @@ fn is_media_byte_payload_key(key: &str) -> bool {
         normalized.as_str(),
         "mediabytes"
             | "mediabytesbase64"
+            | "filebytes"
             | "bytes"
             | "bytesbase64"
+            | "base64"
             | "payload"
             | "payloadbase64"
             | "imagebytes"
@@ -7733,7 +7735,13 @@ mod tests {
     fn media_metadata_json_rejects_byte_payload_keys_before_submit() {
         let raw_media_value = "SmFuZSBQYXRpZW50IGZhY2U=";
 
-        for field in ["media_bytes_base64", "payload_base64", "media-bytes"] {
+        for field in [
+            "media_bytes_base64",
+            "payload_base64",
+            "media-bytes",
+            "file_bytes",
+            "base64",
+        ] {
             let payload = serde_json::json!({
                 "artifact_label": "patient-jane-image.png",
                 "format": "image",

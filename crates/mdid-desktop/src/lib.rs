@@ -2087,8 +2087,10 @@ fn is_media_byte_payload_key(key: &str) -> bool {
         normalized.as_str(),
         "mediabytes"
             | "mediabytesbase64"
+            | "filebytes"
             | "bytes"
             | "bytesbase64"
+            | "base64"
             | "payload"
             | "payloadbase64"
             | "imagebytes"
@@ -4512,7 +4514,13 @@ mod tests {
     fn media_metadata_workflow_rejects_byte_payload_keys_before_submit() {
         let raw_media_value = "SmFuZSBQYXRpZW50IGZhY2U=";
 
-        for field in ["media_bytes_base64", "payload_base64", "media-bytes"] {
+        for field in [
+            "media_bytes_base64",
+            "payload_base64",
+            "media-bytes",
+            "file_bytes",
+            "base64",
+        ] {
             let state = DesktopWorkflowRequestState {
                 mode: DesktopWorkflowMode::MediaMetadataJson,
                 payload: serde_json::json!({
