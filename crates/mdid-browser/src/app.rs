@@ -1513,7 +1513,30 @@ fn sanitized_privacy_filter_category_counts(
 }
 
 fn is_safe_privacy_filter_category_label(label: &str) -> bool {
-    matches!(label, "NAME" | "MRN" | "ID" | "EMAIL" | "PHONE")
+    matches!(
+        label,
+        "NAME"
+            | "MRN"
+            | "ID"
+            | "EMAIL"
+            | "PHONE"
+            | "DATE"
+            | "ADDRESS"
+            | "ZIP"
+            | "SSN"
+            | "PASSPORT"
+            | "INSURANCE_ID"
+            | "DEA_NUMBER"
+            | "VIN"
+            | "AGE"
+            | "FACILITY"
+            | "NPI"
+            | "LICENSE_PLATE"
+            | "DRIVER_LICENSE"
+            | "IP_ADDRESS"
+            | "URL"
+            | "FAX"
+    )
 }
 
 fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
@@ -4582,7 +4605,22 @@ mod tests {
                 "EMAIL": 1,
                 "PHONE": 1,
                 "ID": 0,
+                "DATE": 2,
                 "ADDRESS": 9,
+                "ZIP": 1,
+                "SSN": 1,
+                "PASSPORT": 1,
+                "INSURANCE_ID": 1,
+                "DEA_NUMBER": 1,
+                "VIN": 1,
+                "AGE": 1,
+                "FACILITY": 1,
+                "NPI": 1,
+                "LICENSE_PLATE": 1,
+                "DRIVER_LICENSE": 1,
+                "IP_ADDRESS": 1,
+                "URL": 1,
+                "FAX": 1,
                 "Patient Jane Example": 8
             },
             "raw_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
@@ -4632,8 +4670,24 @@ mod tests {
         assert_eq!(report["privacy_filter_category_counts"]["EMAIL"], 1);
         assert_eq!(report["privacy_filter_category_counts"]["PHONE"], 1);
         assert_eq!(report["privacy_filter_category_counts"]["ID"], 0);
+        assert_eq!(report["privacy_filter_category_counts"]["DATE"], 2);
+        assert_eq!(report["privacy_filter_category_counts"]["ADDRESS"], 9);
+        assert_eq!(report["privacy_filter_category_counts"]["ZIP"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["SSN"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["PASSPORT"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["INSURANCE_ID"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["DEA_NUMBER"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["VIN"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["AGE"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["FACILITY"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["NPI"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["LICENSE_PLATE"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["DRIVER_LICENSE"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["IP_ADDRESS"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["URL"], 1);
+        assert_eq!(report["privacy_filter_category_counts"]["FAX"], 1);
         assert!(report["privacy_filter_category_counts"]
-            .get("ADDRESS")
+            .get("Patient Jane Example")
             .is_none());
         assert!(report.get("raw_text").is_none());
         assert!(report.get("normalized_text").is_none());
@@ -4706,9 +4760,7 @@ mod tests {
         assert!(report["privacy_filter_category_counts"]
             .get("PHONE")
             .is_none());
-        assert!(report["privacy_filter_category_counts"]
-            .get("DATE")
-            .is_none());
+        assert_eq!(report["privacy_filter_category_counts"]["DATE"], 2);
         assert_eq!(report["privacy_filter_category_counts"]["MRN"], 2);
         for forbidden in [
             "Patient Jane Example",
@@ -4935,8 +4987,8 @@ mod tests {
         assert_eq!(counts.get("ID"), Some(&json!(5)));
         assert_eq!(counts.get("EMAIL"), Some(&json!(0)));
         assert_eq!(counts.get("PHONE"), Some(&json!(1)));
+        assert_eq!(counts.get("ADDRESS"), Some(&json!(3)));
         for rejected in [
-            "ADDRESS",
             "ZIP_CODE_5",
             "DX2",
             "123",
@@ -5009,7 +5061,7 @@ mod tests {
         assert_eq!(report["mode"], "privacy_filter_summary");
         assert_eq!(report["category_counts"]["NAME"], 1);
         assert_eq!(report["category_counts"]["MRN"], 1);
-        assert!(report["category_counts"].get("DATE").is_none());
+        assert_eq!(report["category_counts"]["DATE"], 1);
         assert!(report.get("masked_text").is_none());
 
         state.payload = json!({"category_counts": {"PHONE": 99}}).to_string();
@@ -5042,7 +5094,8 @@ mod tests {
         assert_eq!(counts.get("MRN"), Some(&json!(2)));
         assert_eq!(counts.get("EMAIL"), Some(&json!(3)));
         assert_eq!(counts.get("PHONE"), Some(&json!(4)));
-        for rejected in ["JANE_DOE", "MRN_12345", "PATIENT_JANE_EXAMPLE", "DATE"] {
+        assert_eq!(counts.get("DATE"), Some(&json!(8)));
+        for rejected in ["JANE_DOE", "MRN_12345", "PATIENT_JANE_EXAMPLE"] {
             assert!(counts.get(rejected).is_none(), "accepted {rejected}");
         }
     }

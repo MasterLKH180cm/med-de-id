@@ -116,9 +116,18 @@ Implemented bounded extension-aware phone detection in `scripts/privacy_filter/r
 
 Runtime `/privacy-filter/text` remains a PHI-safe aggregate summary surface and now counts the deterministic extension fixture without echoing raw phone input.
 
-- [ ] **Step 3: Surface parity**
+- [x] **Step 3: Surface parity**
 
-Add browser/desktop tests proving imported/runtime summaries preserve safe phone category counts and omit raw phone strings.
+Browser and desktop privacy/OCR-to-privacy-filter summary exports now preserve the full safe aggregate category-count taxonomy used by the current text-only Privacy Filter surface (`DATE`, `ADDRESS`, `ZIP`, `SSN`, `PASSPORT`, `INSURANCE_ID`, `DEA_NUMBER`, `VIN`, `AGE`, `FACILITY`, `NPI`, `LICENSE_PLATE`, `DRIVER_LICENSE`, `IP_ADDRESS`, `URL`, `FAX`, plus the earlier `NAME`/`MRN`/`ID`/`EMAIL`/`PHONE`) while still omitting unsafe freeform labels and raw text/spans/paths. RED/GREEN evidence from this round:
+
+```bash
+source "$HOME/.cargo/env" && cargo test -p mdid-browser ocr_to_privacy_filter_summary_download_preserves_only_allowlisted_safe_fields -- --nocapture
+# RED before browser allowlist expansion: DATE/ADDRESS-style counts were null/omitted
+# GREEN after allowlist expansion: passed
+source "$HOME/.cargo/env" && cargo test -p mdid-desktop ocr_to_privacy_filter_summary_save_preserves_only_allowlisted_safe_fields -- --nocapture
+# RED before desktop allowlist expansion: report only contained EMAIL/ID/MRN/NAME/PHONE
+# GREEN after allowlist expansion: passed
+```
 
 - [ ] **Step 4: Verification**
 

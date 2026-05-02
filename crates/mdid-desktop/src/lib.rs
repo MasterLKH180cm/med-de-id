@@ -1054,14 +1054,39 @@ fn desktop_privacy_filter_category_counts(value: Option<&serde_json::Value>) -> 
     let mut counts = serde_json::Map::new();
     if let Some(object) = value.and_then(serde_json::Value::as_object) {
         for (label, count) in object {
-            if matches!(label.as_str(), "NAME" | "MRN" | "ID" | "EMAIL" | "PHONE")
-                && count.as_u64().is_some()
-            {
-                counts.insert(label.to_string(), count.clone());
+            if is_safe_privacy_filter_category_label(label) && count.as_u64().is_some() {
+                counts.insert(label.clone(), count.clone());
             }
         }
     }
     serde_json::Value::Object(counts)
+}
+
+fn is_safe_privacy_filter_category_label(label: &str) -> bool {
+    matches!(
+        label,
+        "NAME"
+            | "MRN"
+            | "ID"
+            | "EMAIL"
+            | "PHONE"
+            | "DATE"
+            | "ADDRESS"
+            | "ZIP"
+            | "SSN"
+            | "PASSPORT"
+            | "INSURANCE_ID"
+            | "DEA_NUMBER"
+            | "VIN"
+            | "AGE"
+            | "FACILITY"
+            | "NPI"
+            | "LICENSE_PLATE"
+            | "DRIVER_LICENSE"
+            | "IP_ADDRESS"
+            | "URL"
+            | "FAX"
+    )
 }
 
 fn is_safe_privacy_filter_metadata_string(value: &str) -> bool {
@@ -3209,6 +3234,21 @@ mod tests {
                 "PHONE": 1,
                 "ID": 0,
                 "ADDRESS": 9,
+                "DATE": 2,
+                "ZIP": 1,
+                "SSN": 1,
+                "PASSPORT": 1,
+                "INSURANCE_ID": 1,
+                "DEA_NUMBER": 1,
+                "VIN": 1,
+                "AGE": 1,
+                "FACILITY": 1,
+                "NPI": 1,
+                "LICENSE_PLATE": 1,
+                "DRIVER_LICENSE": 1,
+                "IP_ADDRESS": 1,
+                "URL": 1,
+                "FAX": 1,
                 "Patient Jane Example": 8
             },
             "raw_text": "Patient Jane Example MRN-12345 jane@example.com 555-123-4567",
@@ -3253,7 +3293,29 @@ mod tests {
         assert_eq!(report["privacy_filter_detected_span_count"], 4);
         assert_eq!(
             report["privacy_filter_category_counts"],
-            json!({"EMAIL": 1, "ID": 0, "MRN": 1, "NAME": 1, "PHONE": 1})
+            json!({
+                "ADDRESS": 9,
+                "AGE": 1,
+                "DATE": 2,
+                "DEA_NUMBER": 1,
+                "DRIVER_LICENSE": 1,
+                "EMAIL": 1,
+                "FACILITY": 1,
+                "FAX": 1,
+                "ID": 0,
+                "INSURANCE_ID": 1,
+                "IP_ADDRESS": 1,
+                "LICENSE_PLATE": 1,
+                "MRN": 1,
+                "NAME": 1,
+                "NPI": 1,
+                "PASSPORT": 1,
+                "PHONE": 1,
+                "SSN": 1,
+                "URL": 1,
+                "VIN": 1,
+                "ZIP": 1
+            })
         );
         for forbidden_key in [
             "raw_text",
@@ -3278,7 +3340,6 @@ mod tests {
             "jane@example.com",
             "555-123-4567",
             "SHOULD_NOT_LEAK",
-            "ADDRESS",
         ] {
             assert!(
                 !payload.contents.contains(forbidden),
@@ -3329,14 +3390,16 @@ mod tests {
         assert!(report.get("ready_for_text_pii_eval").is_none());
         assert!(report.get("network_api_called").is_none());
         assert!(report.get("privacy_filter_detected_span_count").is_none());
-        assert_eq!(report["privacy_filter_category_counts"], json!({"MRN": 2}));
+        assert_eq!(
+            report["privacy_filter_category_counts"],
+            json!({"DATE": 2, "MRN": 2})
+        );
         for forbidden in [
             "Patient Jane Example",
             "MRN-12345",
             "jane@example.com",
             "555-123-4567",
             "unsafe-engine",
-            "DATE",
         ] {
             assert!(
                 !payload.contents.contains(forbidden),
@@ -3452,11 +3515,12 @@ mod tests {
 
         assert!(report.get("engine").is_none());
         assert!(report.get("preview_policy").is_none());
-        assert_eq!(report["category_counts"], json!({"EMAIL": 2, "NAME": 1}));
+        assert_eq!(
+            report["category_counts"],
+            json!({"ADDRESS": 3, "EMAIL": 2, "NAME": 1, "SSN": 9})
+        );
         assert!(!payload.contents.contains("Patient Jane Example"));
         assert!(!payload.contents.contains("MRN-12345"));
-        assert!(!payload.contents.contains("SSN"));
-        assert!(!payload.contents.contains("ADDRESS"));
     }
 
     #[test]
