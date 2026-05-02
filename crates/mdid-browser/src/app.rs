@@ -638,6 +638,7 @@ struct BrowserFlowState {
     imported_file_name: Option<String>,
     field_policy_json: String,
     result_output: String,
+    raw_visual_redaction_ppm_response: Option<String>,
     decoded_values_output: Option<String>,
     safe_response_metadata: serde_json::Value,
     summary: String,
@@ -676,6 +677,7 @@ impl fmt::Debug for BrowserFlowState {
             )
             .field("field_policy_json", &"<redacted>")
             .field("result_output", &"<redacted>")
+            .field("raw_visual_redaction_ppm_response", &"<redacted>")
             .field(
                 "decoded_values_output",
                 &self.decoded_values_output.as_ref().map(|_| "<redacted>"),
@@ -803,6 +805,7 @@ impl Default for BrowserFlowState {
             imported_file_name: None,
             field_policy_json: DEFAULT_FIELD_POLICY_JSON.to_string(),
             result_output: String::new(),
+            raw_visual_redaction_ppm_response: None,
             decoded_values_output: None,
             safe_response_metadata: serde_json::json!({}),
             summary: IDLE_SUMMARY.to_string(),
@@ -1985,7 +1988,10 @@ impl BrowserFlowState {
 
     fn can_export_visual_redaction_ppm(&self) -> bool {
         self.input_mode == InputMode::PpmVisualRedaction
-            && visual_redaction_ppm_download_available(&self.result_output)
+            && self
+                .raw_visual_redaction_ppm_response
+                .as_deref()
+                .is_some_and(visual_redaction_ppm_download_available)
     }
 
     fn display_result_output(&self) -> String {
@@ -2023,7 +2029,14 @@ impl BrowserFlowState {
                     .to_string(),
             );
         }
-        build_visual_redaction_ppm_download(&self.result_output)
+        let response_json = self
+            .raw_visual_redaction_ppm_response
+            .as_deref()
+            .ok_or_else(|| {
+                "PPM visual redaction download is only available after a verified PPM response."
+                    .to_string()
+            })?;
+        build_visual_redaction_ppm_download(response_json)
     }
 
     fn prepared_tabular_report_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
@@ -2294,6 +2307,7 @@ impl BrowserFlowState {
 
     fn clear_generated_state(&mut self) {
         self.result_output.clear();
+        self.raw_visual_redaction_ppm_response = None;
         self.decoded_values_output = None;
         self.safe_response_metadata = serde_json::json!({});
         self.summary = IDLE_SUMMARY.to_string();
@@ -2430,6 +2444,7 @@ impl BrowserFlowState {
         }
 
         self.result_output.clear();
+        self.raw_visual_redaction_ppm_response = None;
         self.decoded_values_output = None;
         self.safe_response_metadata = serde_json::json!({});
         self.summary = "Submitting to runtime...".to_string();
@@ -2478,6 +2493,7 @@ impl BrowserFlowState {
         }
 
         self.result_output = response.rewritten_output;
+        self.raw_visual_redaction_ppm_response = response.raw_visual_redaction_ppm_response;
         self.decoded_values_output = response.decoded_values_output;
         self.safe_response_metadata = response.safe_response_metadata;
         self.summary = response.summary;
@@ -2498,6 +2514,7 @@ impl BrowserFlowState {
         }
 
         self.result_output.clear();
+        self.raw_visual_redaction_ppm_response = None;
         self.decoded_values_output = None;
         self.safe_response_metadata = serde_json::json!({});
         self.summary = IDLE_SUMMARY.to_string();
@@ -2757,6 +2774,7 @@ struct RuntimeResponseEnvelope {
     rewritten_output: String,
     decoded_values_output: Option<String>,
     safe_response_metadata: serde_json::Value,
+    raw_visual_redaction_ppm_response: Option<String>,
     summary: String,
     review_queue: String,
 }
@@ -2918,6 +2936,7 @@ fn parse_runtime_success(
                 rewritten_output: parsed.csv,
                 decoded_values_output: None,
                 safe_response_metadata: serde_json::json!({}),
+                raw_visual_redaction_ppm_response: None,
                 summary: format_summary(&parsed.summary),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
@@ -2929,6 +2948,7 @@ fn parse_runtime_success(
                 rewritten_output: parsed.rewritten_workbook_base64,
                 decoded_values_output: None,
                 safe_response_metadata: serde_json::json!({}),
+                raw_visual_redaction_ppm_response: None,
                 summary: format_xlsx_summary(&parsed.summary, parsed.worksheet_disclosure.as_ref()),
                 review_queue: format_review_queue(&parsed.review_queue),
             })
@@ -2953,6 +2973,7 @@ fn parse_runtime_success(
                 rewritten_output,
                 decoded_values_output: None,
                 safe_response_metadata: serde_json::json!({}),
+                raw_visual_redaction_ppm_response: None,
                 summary: format_pdf_summary(
                     &parsed.summary,
                     &parsed.page_statuses,
@@ -2970,6 +2991,7 @@ fn parse_runtime_success(
                 rewritten_output: parsed.rewritten_dicom_bytes_base64,
                 decoded_values_output: None,
                 safe_response_metadata: serde_json::json!({}),
+                raw_visual_redaction_ppm_response: None,
                 summary: format_dicom_summary(&parsed.summary),
                 review_queue: format_dicom_review_queue(&parsed.review_queue),
             })
@@ -2981,6 +3003,7 @@ fn parse_runtime_success(
                 rewritten_output: "Media rewrite/export unavailable: runtime returned metadata-only conservative review.".to_string(),
                 decoded_values_output: None,
                 safe_response_metadata: serde_json::json!({}),
+                raw_visual_redaction_ppm_response: None,
                 summary: format_media_summary(&parsed.summary),
                 review_queue: format_media_review_queue(&parsed.review_queue),
             })
@@ -2994,6 +3017,7 @@ fn parse_runtime_success(
                     "mode": "ppm_visual_redaction",
                     "download_available": download_available,
                 }),
+                raw_visual_redaction_ppm_response: Some(response_body.trim().to_string()),
                 summary: "PPM P6 visual redaction response received for explicit bbox regions."
                     .to_string(),
                 review_queue: if download_available {
@@ -3007,6 +3031,7 @@ fn parse_runtime_success(
             rewritten_output: response_body.trim().to_string(),
             decoded_values_output: None,
             safe_response_metadata: safe_runtime_response_metadata(response_body),
+            raw_visual_redaction_ppm_response: None,
             summary: "Vault audit events returned by read-only runtime endpoint.".to_string(),
             review_queue: "No review items returned.".to_string(),
         }),
@@ -3024,6 +3049,7 @@ fn parse_runtime_success(
                 ),
                 decoded_values_output: Some(decoded_values_output),
                 safe_response_metadata: safe_runtime_response_metadata(response_body),
+                raw_visual_redaction_ppm_response: None,
                 summary: format!("Vault decode completed for {value_count} value(s)."),
                 review_queue: format!("- {}", parsed.audit_event.kind),
             })
@@ -3055,6 +3081,7 @@ fn parse_runtime_success(
                 rewritten_output,
                 decoded_values_output: None,
                 safe_response_metadata: safe_runtime_response_metadata(response_body),
+                raw_visual_redaction_ppm_response: None,
                 summary: "Portable artifact created and available for local download.".to_string(),
                 review_queue: "encrypted portable artifact available. Decoded PHI is not rendered."
                     .to_string(),
@@ -3071,6 +3098,7 @@ fn parse_runtime_success(
                 rewritten_output: "Portable artifact inspect completed. Artifact records and values are hidden for PHI safety.".to_string(),
                 decoded_values_output: None,
                 safe_response_metadata: safe_runtime_response_metadata(response_body),
+                raw_visual_redaction_ppm_response: None,
                 summary: format!("{record_count} portable record(s) inspected."),
                 review_queue: "No record details rendered.".to_string(),
             })
@@ -3094,6 +3122,7 @@ fn parse_runtime_success(
                 rewritten_output: "Portable artifact import completed. Audit detail and artifact contents are hidden for PHI safety.".to_string(),
                 decoded_values_output: None,
                 safe_response_metadata: safe_runtime_response_metadata(response_body),
+                raw_visual_redaction_ppm_response: None,
                 summary: format!("{imported} imported portable record(s)."),
                 review_queue: format!("{duplicates} duplicate portable record(s). Generic audit notice recorded."),
             })
@@ -4116,10 +4145,10 @@ mod tests {
         build_vault_export_request_payload, build_visual_redaction_ppm_request_payload,
         file_import_payload_from_data_url, format_review_queue, format_summary,
         parse_runtime_error, parse_runtime_success, render_runtime_response,
-        validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
-        RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
-        DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY, FETCH_UNAVAILABLE_MESSAGE,
-        IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
+        render_visual_redaction_ppm_safe_output, validate_browser_import_size, BrowserFileReadMode,
+        BrowserFlowState, InputMode, RuntimeReviewCandidate, RuntimeSummary,
+        BROWSER_FILE_IMPORT_COPY, DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY,
+        FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
 
@@ -4237,7 +4266,8 @@ mod tests {
 
         let state = BrowserAppState {
             input_mode: InputMode::PpmVisualRedaction,
-            result_output: response,
+            result_output: render_visual_redaction_ppm_safe_output(&response).unwrap(),
+            raw_visual_redaction_ppm_response: Some(response),
             ..Default::default()
         };
         assert!(state.can_export_visual_redaction_ppm());
@@ -4274,6 +4304,50 @@ mod tests {
         assert!(state
             .prepared_visual_redaction_ppm_download_payload()
             .is_err());
+    }
+
+    #[test]
+    fn visual_redaction_ppm_normal_runtime_success_preserves_download_while_display_stays_safe() {
+        let redacted = b"P6\n2 1\n255\n\0\0\0\x01\x02\x03";
+        let raw = json!({
+            "rewritten_ppm_bytes_base64": base64::engine::general_purpose::STANDARD.encode(redacted),
+            "verification": {
+                "format": "ppm_p6",
+                "width": 2,
+                "height": 1,
+                "redacted_region_count": 1,
+                "redacted_pixel_count": 1,
+                "unchanged_pixel_count": 1,
+                "output_byte_count": 17,
+                "verified_changed_pixels_within_regions": true,
+                "source_name": "patient-face.ppm",
+                "bbox_regions": [{"x":0,"y":0,"width":1,"height":1}]
+            }
+        })
+        .to_string();
+        let envelope = parse_runtime_success(InputMode::PpmVisualRedaction, &raw).unwrap();
+        let mut state = BrowserAppState {
+            input_mode: InputMode::PpmVisualRedaction,
+            active_submission_token: Some(7),
+            ..Default::default()
+        };
+
+        state.apply_runtime_success(7, state.state_revision, envelope);
+
+        let display = state.display_result_output();
+        assert!(display.contains("ppm_p6"));
+        assert!(display.contains("redacted_region_count"));
+        assert!(!display.contains("rewritten_ppm_bytes_base64"));
+        assert!(!display.contains("patient-face.ppm"));
+        assert!(!display.contains("source_name"));
+        assert!(!display.contains("bbox_regions"));
+        assert!(state.can_export_visual_redaction_ppm());
+        let payload = state
+            .prepared_visual_redaction_ppm_download_payload()
+            .unwrap();
+        assert_eq!(payload.bytes, redacted);
+        assert_eq!(payload.mime_type, "image/x-portable-pixmap");
+        assert!(!payload.is_text);
     }
 
     #[test]
