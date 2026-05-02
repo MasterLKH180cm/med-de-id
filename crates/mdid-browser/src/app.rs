@@ -2780,13 +2780,36 @@ struct RuntimeResponseEnvelope {
 }
 
 fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
-    const MEDIA_BYTE_FIELDS: &[&str] =
-        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
     value.as_object().is_some_and(|object| {
-        MEDIA_BYTE_FIELDS
-            .iter()
-            .any(|field| object.contains_key(*field))
+        object.keys().any(|key| is_media_byte_payload_key(key))
+            || object
+                .get("metadata")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|metadata| {
+                    metadata.iter().any(|entry| {
+                        entry
+                            .get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_media_byte_payload_key)
+                    })
+                })
     })
+}
+
+fn is_media_byte_payload_key(key: &str) -> bool {
+    let normalized = key.replace(['-', '_'], "").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "mediabytes"
+            | "mediabytesbase64"
+            | "bytes"
+            | "bytesbase64"
+            | "payload"
+            | "payloadbase64"
+            | "imagebytes"
+            | "audiobytes"
+            | "videobytes"
+    )
 }
 
 fn build_submit_request(
@@ -2856,7 +2879,8 @@ fn build_submit_request(
         }
 
         if media_metadata_json_contains_media_bytes(&value) {
-            return Err("metadata-only media review does not accept media bytes".to_string());
+            return Err("Media byte payloads are not accepted by this metadata-only route."
+                .to_string());
         }
 
         let body_json = serde_json::to_string(&value)
@@ -7706,10 +7730,10 @@ mod tests {
     }
 
     #[test]
-    fn media_metadata_json_request_rejects_media_byte_payload_fields_phi_safely() {
-        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+    fn media_metadata_json_rejects_byte_payload_keys_before_submit() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IGZhY2U=";
 
-        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        for field in ["media_bytes_base64", "payload_base64", "media-bytes"] {
             let payload = serde_json::json!({
                 "artifact_label": "patient-jane-image.png",
                 "format": "image",
@@ -7723,7 +7747,7 @@ mod tests {
                     .unwrap_err();
             assert_eq!(
                 error,
-                "metadata-only media review does not accept media bytes"
+                "Media byte payloads are not accepted by this metadata-only route."
             );
             assert!(!error.contains(raw_media_value));
             assert!(!error.contains("Jane Patient"));

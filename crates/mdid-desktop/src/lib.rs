@@ -2065,13 +2065,36 @@ impl DesktopWorkflowRequestState {
 }
 
 fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
-    const MEDIA_BYTE_FIELDS: &[&str] =
-        &["media_bytes_base64", "image_bytes", "file_bytes", "base64"];
     value.as_object().is_some_and(|object| {
-        MEDIA_BYTE_FIELDS
-            .iter()
-            .any(|field| object.contains_key(*field))
+        object.keys().any(|key| is_media_byte_payload_key(key))
+            || object
+                .get("metadata")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|metadata| {
+                    metadata.iter().any(|entry| {
+                        entry
+                            .get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_media_byte_payload_key)
+                    })
+                })
     })
+}
+
+fn is_media_byte_payload_key(key: &str) -> bool {
+    let normalized = key.replace(['-', '_'], "").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "mediabytes"
+            | "mediabytesbase64"
+            | "bytes"
+            | "bytesbase64"
+            | "payload"
+            | "payloadbase64"
+            | "imagebytes"
+            | "audiobytes"
+            | "videobytes"
+    )
 }
 
 fn parse_visual_redaction_regions(
@@ -2201,7 +2224,7 @@ impl std::fmt::Display for DesktopWorkflowValidationError {
                 "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
             ),
             Self::MediaBytesNotAccepted => {
-                write!(f, "metadata-only media review does not accept media bytes")
+                write!(f, "Media byte payloads are not accepted by this metadata-only route.")
             }
         }
     }
@@ -4486,10 +4509,10 @@ mod tests {
     }
 
     #[test]
-    fn media_metadata_request_rejects_media_byte_payload_fields_phi_safely() {
-        let raw_media_value = "SmFuZSBQYXRpZW50IE1STi0wMDE=";
+    fn media_metadata_workflow_rejects_byte_payload_keys_before_submit() {
+        let raw_media_value = "SmFuZSBQYXRpZW50IGZhY2U=";
 
-        for field in ["media_bytes_base64", "image_bytes", "file_bytes", "base64"] {
+        for field in ["media_bytes_base64", "payload_base64", "media-bytes"] {
             let state = DesktopWorkflowRequestState {
                 mode: DesktopWorkflowMode::MediaMetadataJson,
                 payload: serde_json::json!({
@@ -4508,7 +4531,7 @@ mod tests {
             let message = error.to_string();
             assert_eq!(
                 message,
-                "metadata-only media review does not accept media bytes"
+                "Media byte payloads are not accepted by this metadata-only route."
             );
             assert!(!message.contains(raw_media_value));
             assert!(!message.contains("Jane Patient"));
