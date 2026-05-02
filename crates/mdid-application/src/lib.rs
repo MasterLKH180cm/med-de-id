@@ -1,10 +1,11 @@
 use chrono::Utc;
 use mdid_adapters::{
-    redact_ppm_p6_bytes_with_verification, sanitize_output_name, ConservativeMediaAdapter,
-    ConservativeMediaAdapterError, ConservativeMediaInput, CsvTabularAdapter, DicomAdapter,
-    DicomAdapterError, DicomRewritePlan, DicomTagReplacement, DicomUidReplacement,
-    ExtractedTabularData, FieldPolicy, ImageRedactionError, PdfAdapter, PdfAdapterError,
-    PdfPageExtraction, TabularAdapterError, XlsxSheetDisclosure,
+    redact_png_bytes_with_verification, redact_ppm_p6_bytes_with_verification,
+    sanitize_output_name, ConservativeMediaAdapter, ConservativeMediaAdapterError,
+    ConservativeMediaInput, CsvTabularAdapter, DicomAdapter, DicomAdapterError, DicomRewritePlan,
+    DicomTagReplacement, DicomUidReplacement, ExtractedTabularData, FieldPolicy,
+    ImageRedactionError, PdfAdapter, PdfAdapterError, PdfPageExtraction, TabularAdapterError,
+    XlsxSheetDisclosure,
 };
 use mdid_domain::{
     BatchSummary, BurnedInAnnotationStatus, ConservativeMediaCandidate, ConservativeMediaSummary,
@@ -89,14 +90,14 @@ pub struct VisualRedactionVerification {
 
 #[derive(Clone)]
 pub struct VisualRedactionOutput {
-    pub rewritten_ppm_bytes: Vec<u8>,
+    pub rewritten_bytes: Vec<u8>,
     pub verification: VisualRedactionVerification,
 }
 
 impl fmt::Debug for VisualRedactionOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VisualRedactionOutput")
-            .field("rewritten_ppm_bytes", &"[REDACTED]")
+            .field("rewritten_bytes", &"[REDACTED]")
             .field("verification", &self.verification)
             .finish()
     }
@@ -120,7 +121,36 @@ impl VisualRedactionService {
                 .map_err(VisualRedactionError::from)?;
 
         Ok(VisualRedactionOutput {
-            rewritten_ppm_bytes,
+            rewritten_bytes: rewritten_ppm_bytes,
+            verification: VisualRedactionVerification {
+                format: verification.format,
+                width: verification.width,
+                height: verification.height,
+                redacted_region_count: verification.redacted_region_count,
+                redacted_pixel_count: verification.redacted_pixel_count,
+                unchanged_pixel_count: verification.unchanged_pixel_count,
+                output_byte_count: verification.output_byte_count,
+                verified_changed_pixels_within_regions: verification
+                    .verified_changed_pixels_within_regions,
+            },
+        })
+    }
+
+    pub fn redact_png_bytes(
+        &self,
+        png_bytes: &[u8],
+        regions: &[ImageRedactionRegion],
+    ) -> Result<VisualRedactionOutput, ApplicationError> {
+        if regions.is_empty() {
+            return Err(VisualRedactionError::EmptyRegions.into());
+        }
+
+        let (rewritten_png_bytes, verification) =
+            redact_png_bytes_with_verification(png_bytes, regions, [0, 0, 0, 255])
+                .map_err(VisualRedactionError::from)?;
+
+        Ok(VisualRedactionOutput {
+            rewritten_bytes: rewritten_png_bytes,
             verification: VisualRedactionVerification {
                 format: verification.format,
                 width: verification.width,

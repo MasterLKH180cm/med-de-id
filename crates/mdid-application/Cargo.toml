@@ -17,4 +17,5 @@ uuid.workspace = true
 [dev-dependencies]
 dicom-core = "0.9.1"
 dicom-object = "0.9.1"
+image.workspace = true
 tempfile.workspace = true

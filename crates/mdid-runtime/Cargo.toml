@@ -24,6 +24,7 @@ zip.workspace = true
 [dev-dependencies]
 dicom-core = "0.9.0"
 dicom-object = "0.9.1"
+image.workspace = true
 mdid-adapters = { path = "../mdid-adapters" }
 rust_xlsxwriter = "0.94"
 tokio.workspace = true
