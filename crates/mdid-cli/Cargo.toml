@@ -18,6 +18,7 @@ rust_xlsxwriter = "0.94"
 assert_cmd = "2.0"
 dicom-core = "0.9.1"
 dicom-object = "0.9.1"
+image.workspace = true
 predicates = "3.1"
 serde_json.workspace = true
 tempfile.workspace = true

@@ -9,6 +9,7 @@ calamine.workspace = true
 csv.workspace = true
 dicom-core = "0.9.1"
 dicom-object = "0.9.1"
+image.workspace = true
 lopdf = "0.35"
 mdid-domain = { path = "../mdid-domain" }
 thiserror.workspace = true

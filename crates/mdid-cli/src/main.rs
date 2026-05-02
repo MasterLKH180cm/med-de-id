@@ -10,9 +10,9 @@ use std::{
 };
 
 use mdid_adapters::{
-    redact_ppm_p6_bytes_with_verification, ConservativeMediaAdapter, ConservativeMediaInput,
-    ConservativeMediaMetadataEntry, CsvTabularAdapter, FcsTextRewriteRequest, FieldPolicy,
-    FieldPolicyAction, XlsxTabularAdapter,
+    redact_png_bytes_with_verification, redact_ppm_p6_bytes_with_verification,
+    ConservativeMediaAdapter, ConservativeMediaInput, ConservativeMediaMetadataEntry,
+    CsvTabularAdapter, FcsTextRewriteRequest, FieldPolicy, FieldPolicyAction, XlsxTabularAdapter,
 };
 use mdid_application::{
     ConservativeMediaDeidentificationService, DicomDeidentificationService,
@@ -68,6 +68,7 @@ enum CliCommand {
     VaultInspectArtifact(VaultInspectArtifactArgs),
     PortableTransferSummary(VaultInspectArtifactArgs),
     RedactImagePpm(RedactImagePpmArgs),
+    RedactImagePng(RedactImagePpmArgs),
     RedactImagePpmBatch(RedactImagePpmBatchArgs),
     RedactFcsText(RedactFcsTextArgs),
 }
@@ -389,6 +390,9 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         }
         [command, rest @ ..] if command == "redact-image-ppm" => {
             parse_redact_image_ppm_args(rest).map(CliCommand::RedactImagePpm)
+        }
+        [command, rest @ ..] if command == "redact-image-png" => {
+            parse_redact_image_ppm_args(rest).map(CliCommand::RedactImagePng)
         }
         [command, rest @ ..] if command == "redact-image-ppm-batch" => {
             parse_redact_image_ppm_batch_args(rest).map(CliCommand::RedactImagePpmBatch)
@@ -1401,6 +1405,7 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
         CliCommand::PortableTransferSummary(args) => run_portable_transfer_summary(args),
         CliCommand::RedactImagePpm(args) => run_redact_image_ppm(args),
+        CliCommand::RedactImagePng(args) => run_redact_image_png(args),
         CliCommand::RedactImagePpmBatch(args) => run_redact_image_ppm_batch(args),
         CliCommand::RedactFcsText(args) => run_redact_fcs_text(args),
     }
@@ -1644,6 +1649,56 @@ fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {
         serde_json::to_string(&json!({
             "artifact": "image_redaction_export_summary",
             "format": "ppm_p6",
+            "summary_written": true,
+            "output_written": true,
+        }))
+        .map_err(|err| format!("failed to render image redaction summary: {err}"))?
+    );
+    Ok(())
+}
+
+fn run_redact_image_png(args: RedactImagePpmArgs) -> Result<(), String> {
+    let regions: Vec<ImageRedactionRegion> =
+        serde_json::from_str(&args.regions_json).map_err(|_| "invalid regions JSON".to_string())?;
+    let input = fs::read(&args.input).map_err(|_| "failed to read PNG input".to_string())?;
+    let (redacted, verification) =
+        redact_png_bytes_with_verification(&input, &regions, [0, 0, 0, 255])
+            .map_err(|_| "failed to redact PNG image".to_string())?;
+    fs::write(&args.output, &redacted)
+        .map_err(|_| "failed to write redacted PNG output".to_string())?;
+    let summary = json!({
+        "artifact": "image_redaction_export_summary",
+        "schema_version": 1,
+        "format": "png",
+        "redacted_region_count": verification.redacted_region_count,
+        "redacted_pixel_count": verification.redacted_pixel_count,
+        "bytes_written": redacted.len(),
+        "visual_verification": {
+            "format": verification.format,
+            "width": verification.width,
+            "height": verification.height,
+            "redacted_region_count": verification.redacted_region_count,
+            "redacted_pixel_count": verification.redacted_pixel_count,
+            "unchanged_pixel_count": verification.unchanged_pixel_count,
+            "output_byte_count": verification.output_byte_count,
+            "verified_changed_pixels_within_regions": verification.verified_changed_pixels_within_regions,
+        },
+        "raw_paths_included": false,
+        "raw_regions_included": false,
+        "raw_bounding_boxes_included": false,
+        "automatic_detection_claimed": false,
+        "non_goals": ["ocr", "automatic_visual_detection", "jpeg_pdf_video_rewrite"],
+    });
+    write_json_artifact(
+        &args.summary_output,
+        &summary,
+        "image redaction export summary",
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "artifact": "image_redaction_export_summary",
+            "format": "png",
             "summary_written": true,
             "output_written": true,
         }))

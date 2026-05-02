@@ -1,4 +1,5 @@
-use mdid_application::{ApplicationError, VisualRedactionService};
+use mdid_adapters::ImageRedactionError;
+use mdid_application::{ApplicationError, VisualRedactionError, VisualRedactionService};
 use mdid_domain::ImageRedactionRegion;
 
 fn sample_ppm() -> Vec<u8> {
@@ -49,6 +50,14 @@ fn visual_redaction_service_maps_malformed_ppm_without_raw_source_names() {
     assert!(rendered.contains("visual redaction failed"), "{rendered}");
     assert!(!rendered.contains("patient-face.ppm"), "{rendered}");
     assert!(!rendered.contains("not a ppm"), "{rendered}");
+}
+
+#[test]
+fn visual_redaction_error_mapping_distinguishes_malformed_png_from_ppm() {
+    let mapped = VisualRedactionError::from(ImageRedactionError::MalformedPng);
+
+    assert_eq!(mapped, VisualRedactionError::MalformedPng);
+    assert_eq!(mapped.to_string(), "malformed or unsupported PNG image");
 }
 
 #[test]
