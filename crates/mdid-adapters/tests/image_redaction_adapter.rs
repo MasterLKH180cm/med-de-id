@@ -1,8 +1,67 @@
 use mdid_adapters::{
-    redact_ppm_p6_bytes, redact_ppm_p6_bytes_with_verification, redact_rgb_regions,
-    verify_ppm_redaction_pixels, ImageRedactionError,
+    redact_png_bytes_with_verification, redact_ppm_p6_bytes, redact_ppm_p6_bytes_with_verification,
+    redact_rgb_regions, verify_ppm_redaction_pixels, ImageRedactionError,
 };
 use mdid_domain::ImageRedactionRegion;
+
+fn png_2x1_fixture() -> Vec<u8> {
+    let image = image::RgbaImage::from_raw(2, 1, vec![10, 11, 12, 255, 20, 21, 22, 255])
+        .expect("valid fixture pixels");
+    let mut output = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut output),
+            image::ImageFormat::Png,
+        )
+        .expect("encode png fixture");
+    output
+}
+
+#[test]
+fn png_redacts_approved_bbox_to_black_and_preserves_other_pixels() {
+    let input = png_2x1_fixture();
+    let region = ImageRedactionRegion::new(0, 0, 1, 1).expect("valid region");
+
+    let (output, verification) =
+        redact_png_bytes_with_verification(&input, &[region], [0, 0, 0, 255])
+            .expect("png redaction succeeds");
+
+    let decoded = image::load_from_memory_with_format(&output, image::ImageFormat::Png)
+        .expect("output is png")
+        .to_rgba8();
+    assert_eq!(decoded.dimensions(), (2, 1));
+    assert_eq!(decoded.get_pixel(0, 0).0, [0, 0, 0, 255]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [20, 21, 22, 255]);
+    assert_eq!(verification.format, "png");
+    assert_eq!(verification.width, 2);
+    assert_eq!(verification.height, 1);
+    assert_eq!(verification.redacted_region_count, 1);
+    assert_eq!(verification.redacted_pixel_count, 1);
+    assert_eq!(verification.unchanged_pixel_count, 1);
+    assert_eq!(verification.output_byte_count, output.len() as u64);
+    assert!(verification.verified_changed_pixels_within_regions);
+}
+
+#[test]
+fn png_malformed_bytes_fail_closed() {
+    let region = ImageRedactionRegion::new(0, 0, 1, 1).expect("valid region");
+
+    let err = redact_png_bytes_with_verification(b"not a png", &[region], [0, 0, 0, 255])
+        .expect_err("malformed png fails");
+
+    assert_eq!(err, ImageRedactionError::MalformedPng);
+}
+
+#[test]
+fn png_out_of_bounds_region_fails_closed() {
+    let input = png_2x1_fixture();
+    let region = ImageRedactionRegion::new(1, 0, 2, 1).expect("valid region shape");
+
+    let err = redact_png_bytes_with_verification(&input, &[region], [0, 0, 0, 255])
+        .expect_err("out of bounds fails");
+
+    assert_eq!(err, ImageRedactionError::RegionOutOfBounds);
+}
 
 #[test]
 fn ppm_visual_verification_counts_bounded_approved_pixels_without_phi_artifacts() {

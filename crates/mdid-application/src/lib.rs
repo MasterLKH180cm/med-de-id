@@ -59,9 +59,9 @@ impl From<ImageRedactionError> for VisualRedactionError {
     fn from(error: ImageRedactionError) -> Self {
         match error {
             ImageRedactionError::RegionOutOfBounds => Self::RegionOutOfBounds,
-            ImageRedactionError::MalformedRgbBuffer | ImageRedactionError::MalformedPpmP6 => {
-                Self::MalformedPpmP6
-            }
+            ImageRedactionError::MalformedRgbBuffer
+            | ImageRedactionError::MalformedPpmP6
+            | ImageRedactionError::MalformedPng => Self::MalformedPpmP6,
         }
     }
 }

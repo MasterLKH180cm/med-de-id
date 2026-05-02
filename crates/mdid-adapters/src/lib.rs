@@ -14,8 +14,9 @@ pub use dicom::{
     DicomUidReplacement, DicomUidValue, ExtractedDicomData,
 };
 pub use image_redaction::{
-    redact_ppm_p6_bytes, redact_ppm_p6_bytes_with_verification, redact_rgb_regions,
-    verify_ppm_redaction_pixels, ImageRedactionError, PpmRedactionVerification,
+    redact_png_bytes_with_verification, redact_ppm_p6_bytes, redact_ppm_p6_bytes_with_verification,
+    redact_rgb_regions, verify_ppm_redaction_pixels, ImageRedactionError, PngRedactionVerification,
+    PpmRedactionVerification,
 };
 pub use pdf::{ExtractedPdfData, PdfAdapter, PdfAdapterError, PdfPageExtraction};
 pub use tabular::{
