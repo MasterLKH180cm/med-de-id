@@ -157,6 +157,11 @@ impl DesktopFileImportPayload {
                 payload: encode_base64(bytes),
                 source_name: Some(source_name),
             }),
+            "ppm" => Ok(Self {
+                mode: DesktopWorkflowMode::PpmVisualRedaction,
+                payload: encode_base64(bytes),
+                source_name: Some(source_name),
+            }),
             "json" => Ok(Self {
                 mode: DesktopWorkflowMode::MediaMetadataJson,
                 payload: std::str::from_utf8(bytes)
@@ -220,15 +225,17 @@ pub enum DesktopWorkflowMode {
     PdfBase64Review,
     DicomBase64,
     MediaMetadataJson,
+    PpmVisualRedaction,
 }
 
 impl DesktopWorkflowMode {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::CsvText,
         Self::XlsxBase64,
         Self::PdfBase64Review,
         Self::DicomBase64,
         Self::MediaMetadataJson,
+        Self::PpmVisualRedaction,
     ];
 
     pub fn label(self) -> &'static str {
@@ -238,6 +245,7 @@ impl DesktopWorkflowMode {
             Self::PdfBase64Review => "PDF base64 review",
             Self::DicomBase64 => "DICOM base64",
             Self::MediaMetadataJson => "Media metadata JSON",
+            Self::PpmVisualRedaction => "PPM visual redaction",
         }
     }
 
@@ -252,6 +260,7 @@ impl DesktopWorkflowMode {
             Self::MediaMetadataJson => {
                 "Paste media metadata JSON for local media review request preparation"
             }
+            Self::PpmVisualRedaction => "Paste PPM P6 image bytes encoded as base64",
         }
     }
 
@@ -262,6 +271,7 @@ impl DesktopWorkflowMode {
             Self::PdfBase64Review => "PDF base64 review uses the bounded local runtime route /pdf/deidentify; it stays limited to this local review request surface and includes no OCR/PDF rewrite.",
             Self::DicomBase64 => "DICOM base64 de-identification uses the bounded local runtime route /dicom/deidentify for tag-level DICOM de-identification. DICOM pixel data was not inspected or redacted; burned-in annotations require separate visual review. It stays limited to this local de-identification request surface.",
             Self::MediaMetadataJson => "Media metadata JSON review uses the bounded local runtime route /media/conservative/deidentify with metadata-only JSON; it does not upload media bytes and performs no OCR.",
+            Self::PpmVisualRedaction => "PPM visual redaction uses the bounded local runtime route /visual-redaction/ppm with explicit user-approved bbox regions. It supports PPM P6 only and performs no OCR, automatic visual detection, PDF rewrite, PNG/JPEG rewrite, or video redaction.",
         }
     }
 
@@ -272,6 +282,7 @@ impl DesktopWorkflowMode {
             Self::PdfBase64Review => "/pdf/deidentify",
             Self::DicomBase64 => "/dicom/deidentify",
             Self::MediaMetadataJson => "/media/conservative/deidentify",
+            Self::PpmVisualRedaction => "/visual-redaction/ppm",
         }
     }
 
@@ -1938,10 +1949,14 @@ impl Default for DesktopWorkflowRequestState {
 impl DesktopWorkflowRequestState {
     pub fn status_message(&self) -> String {
         match self.try_build_request() {
-            Ok(request) => format!(
-                "Ready to submit to {}; this slice can submit prepared envelopes to a localhost runtime, use bounded file import/export helpers, and render runtime-shaped responses locally. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, vault/decode/audit workflow, or full review workflow.",
-                request.route
-            ),
+            Ok(request) => {
+                let boundary = if matches!(self.mode, DesktopWorkflowMode::PpmVisualRedaction) {
+                    "This workstation preview can submit explicit user-approved PPM P6 bbox redaction envelopes to a localhost runtime, then render and save verified redacted PPM bytes only. It performs no OCR, automatic visual detection, PDF rewrite/export, PNG/JPEG/video rewrite, vault/decode/audit workflow, or full review workflow."
+                } else {
+                    "This slice can submit prepared envelopes to a localhost runtime, use bounded file import/export helpers, and render runtime-shaped responses locally. This workstation preview performs no OCR, visual redaction, PDF rewrite/export, vault/decode/audit workflow, or full review workflow."
+                };
+                format!("Ready to submit to {}; {boundary}", request.route)
+            }
             Err(error) => format!("Not ready: {error}"),
         }
     }
@@ -1981,7 +1996,8 @@ impl DesktopWorkflowRequestState {
                     }),
                     DesktopWorkflowMode::PdfBase64Review
                     | DesktopWorkflowMode::DicomBase64
-                    | DesktopWorkflowMode::MediaMetadataJson => unreachable!(),
+                    | DesktopWorkflowMode::MediaMetadataJson
+                    | DesktopWorkflowMode::PpmVisualRedaction => unreachable!(),
                 };
 
                 Ok(DesktopWorkflowRequest {
@@ -2006,7 +2022,8 @@ impl DesktopWorkflowRequestState {
                     }),
                     DesktopWorkflowMode::CsvText
                     | DesktopWorkflowMode::XlsxBase64
-                    | DesktopWorkflowMode::MediaMetadataJson => unreachable!(),
+                    | DesktopWorkflowMode::MediaMetadataJson
+                    | DesktopWorkflowMode::PpmVisualRedaction => unreachable!(),
                 };
 
                 Ok(DesktopWorkflowRequest {
@@ -2030,6 +2047,19 @@ impl DesktopWorkflowRequestState {
                     body,
                 })
             }
+            DesktopWorkflowMode::PpmVisualRedaction => {
+                if self.field_policy_json.trim().is_empty() {
+                    return Err(DesktopWorkflowValidationError::BlankFieldPolicyJson);
+                }
+                let regions = parse_visual_redaction_regions(&self.field_policy_json)?;
+                Ok(DesktopWorkflowRequest {
+                    route: self.mode.route(),
+                    body: serde_json::json!({
+                        "ppm_bytes_base64": self.payload.trim(),
+                        "regions": regions,
+                    }),
+                })
+            }
         }
     }
 }
@@ -2042,6 +2072,45 @@ fn media_metadata_json_contains_media_bytes(value: &serde_json::Value) -> bool {
             .iter()
             .any(|field| object.contains_key(*field))
     })
+}
+
+fn parse_visual_redaction_regions(
+    regions_json: &str,
+) -> Result<serde_json::Value, DesktopWorkflowValidationError> {
+    let value: serde_json::Value = serde_json::from_str(regions_json.trim()).map_err(|error| {
+        DesktopWorkflowValidationError::InvalidFieldPolicyJson(format!(
+            "visual redaction regions must be a JSON array: {error}"
+        ))
+    })?;
+    let regions = value.as_array().ok_or_else(|| {
+        DesktopWorkflowValidationError::InvalidFieldPolicyJson(
+            "visual redaction regions must be a JSON array".to_string(),
+        )
+    })?;
+    if regions.is_empty() {
+        return Err(DesktopWorkflowValidationError::InvalidFieldPolicyJson(
+            "visual redaction regions must include at least one bbox".to_string(),
+        ));
+    }
+    for (index, region) in regions.iter().enumerate() {
+        let object = region.as_object().ok_or_else(|| {
+            DesktopWorkflowValidationError::InvalidFieldPolicyJson(format!(
+                "visual redaction region at index {index} must be an object"
+            ))
+        })?;
+        for field in ["x", "y", "width", "height"] {
+            if !object
+                .get(field)
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|value| field == "x" || field == "y" || value > 0)
+            {
+                return Err(DesktopWorkflowValidationError::InvalidFieldPolicyJson(format!(
+                    "visual redaction region at index {index} must include non-negative x/y and positive width/height"
+                )));
+            }
+        }
+    }
+    Ok(value)
 }
 
 fn parse_field_policies(
@@ -2629,6 +2698,33 @@ impl std::fmt::Debug for DesktopWorkflowOutputDownload {
     }
 }
 
+fn ppm_visual_redaction_download_available(response: &serde_json::Value) -> bool {
+    let Some(encoded) = response
+        .get("rewritten_ppm_bytes_base64")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    if encoded.trim().is_empty() {
+        return false;
+    }
+    let Some(verification) = response.get("verification") else {
+        return false;
+    };
+    verification
+        .get("format")
+        .and_then(serde_json::Value::as_str)
+        == Some("ppm_p6")
+        && verification
+            .get("redacted_region_count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count > 0)
+        && verification
+            .get("verified_changed_pixels_within_regions")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+}
+
 pub fn write_workflow_output_file(
     path: impl AsRef<std::path::Path>,
     download: &DesktopWorkflowOutputDownload,
@@ -2694,6 +2790,16 @@ impl DesktopWorkflowResponseState {
                     bytes: decode_base64(encoded)?,
                 })
             }
+            DesktopWorkflowMode::PpmVisualRedaction => {
+                if !ppm_visual_redaction_download_available(response) {
+                    return None;
+                }
+                let encoded = response.get("rewritten_ppm_bytes_base64")?.as_str()?;
+                Some(DesktopWorkflowOutputDownload {
+                    file_name: "desktop-redacted.ppm".to_string(),
+                    bytes: decode_base64(encoded)?,
+                })
+            }
             DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => None,
         }
     }
@@ -2711,11 +2817,15 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::CsvText => "csv",
             DesktopWorkflowMode::XlsxBase64 => "xlsx",
             DesktopWorkflowMode::DicomBase64 => "dcm",
+            DesktopWorkflowMode::PpmVisualRedaction => "ppm",
             DesktopWorkflowMode::PdfBase64Review | DesktopWorkflowMode::MediaMetadataJson => {
                 return None;
             }
         };
-        download.file_name = format!("{stem}-deidentified.{extension}");
+        download.file_name = match mode {
+            DesktopWorkflowMode::PpmVisualRedaction => format!("{stem}-redacted.ppm"),
+            _ => format!("{stem}-deidentified.{extension}"),
+        };
         Some(download)
     }
 
@@ -2739,7 +2849,8 @@ impl DesktopWorkflowResponseState {
                 DesktopWorkflowMode::MediaMetadataJson => "media_metadata_json",
                 DesktopWorkflowMode::CsvText
                 | DesktopWorkflowMode::XlsxBase64
-                | DesktopWorkflowMode::DicomBase64 => return None,
+                | DesktopWorkflowMode::DicomBase64
+                | DesktopWorkflowMode::PpmVisualRedaction => return None,
             },
             "summary": sanitize_review_report_summary(response.get("summary")),
             "review_queue": sanitize_review_report_queue(response.get("review_queue")),
@@ -2759,7 +2870,8 @@ impl DesktopWorkflowResponseState {
                 }
                 DesktopWorkflowMode::CsvText
                 | DesktopWorkflowMode::XlsxBase64
-                | DesktopWorkflowMode::DicomBase64 => return None,
+                | DesktopWorkflowMode::DicomBase64
+                | DesktopWorkflowMode::PpmVisualRedaction => return None,
             },
             bytes: json.into_bytes(),
         })
@@ -2779,7 +2891,8 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::MediaMetadataJson => format!("{stem}-media-review-report.json"),
             DesktopWorkflowMode::CsvText
             | DesktopWorkflowMode::XlsxBase64
-            | DesktopWorkflowMode::DicomBase64 => return None,
+            | DesktopWorkflowMode::DicomBase64
+            | DesktopWorkflowMode::PpmVisualRedaction => return None,
         };
         Some(download)
     }
@@ -2796,13 +2909,22 @@ impl DesktopWorkflowResponseState {
     }
 
     pub fn suggested_export_file_name(&self, mode: DesktopWorkflowMode) -> Option<&'static str> {
-        self.exportable_output()?;
         match mode {
-            DesktopWorkflowMode::CsvText => Some("desktop-deidentified.csv"),
-            DesktopWorkflowMode::XlsxBase64 => Some("desktop-deidentified.xlsx.base64.txt"),
-            DesktopWorkflowMode::PdfBase64Review => None,
-            DesktopWorkflowMode::DicomBase64 => Some("desktop-deidentified.dcm.base64.txt"),
-            DesktopWorkflowMode::MediaMetadataJson => None,
+            DesktopWorkflowMode::PpmVisualRedaction => {
+                self.workflow_output_download(mode)?;
+                Some("desktop-redacted.ppm")
+            }
+            _ => {
+                self.exportable_output()?;
+                match mode {
+                    DesktopWorkflowMode::CsvText => Some("desktop-deidentified.csv"),
+                    DesktopWorkflowMode::XlsxBase64 => Some("desktop-deidentified.xlsx.base64.txt"),
+                    DesktopWorkflowMode::PdfBase64Review => None,
+                    DesktopWorkflowMode::DicomBase64 => Some("desktop-deidentified.dcm.base64.txt"),
+                    DesktopWorkflowMode::MediaMetadataJson => None,
+                    DesktopWorkflowMode::PpmVisualRedaction => unreachable!(),
+                }
+            }
         }
     }
 
@@ -2811,7 +2933,11 @@ impl DesktopWorkflowResponseState {
         mode: DesktopWorkflowMode,
         source_name: Option<&str>,
     ) -> Option<String> {
-        self.exportable_output()?;
+        if matches!(mode, DesktopWorkflowMode::PpmVisualRedaction) {
+            self.workflow_output_download(mode)?;
+        } else {
+            self.exportable_output()?;
+        }
         let stem = source_name.and_then(safe_source_file_stem);
         let stem = stem.as_deref().unwrap_or("desktop");
 
@@ -2821,6 +2947,7 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::PdfBase64Review => None,
             DesktopWorkflowMode::DicomBase64 => Some(format!("{stem}-deidentified.dcm.base64.txt")),
             DesktopWorkflowMode::MediaMetadataJson => None,
+            DesktopWorkflowMode::PpmVisualRedaction => Some(format!("{stem}-redacted.ppm")),
         }
     }
 
@@ -2837,6 +2964,9 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::MediaMetadataJson => {
                 "Media metadata JSON runtime response rendered locally; no media bytes were uploaded."
                     .to_string()
+            }
+            DesktopWorkflowMode::PpmVisualRedaction => {
+                "PPM visual redaction runtime response rendered locally.".to_string()
             }
         };
 
@@ -2866,13 +2996,28 @@ impl DesktopWorkflowResponseState {
             DesktopWorkflowMode::MediaMetadataJson => {
                 "No media rewrite/export is available for metadata-only review.".to_string()
             }
+            DesktopWorkflowMode::PpmVisualRedaction => {
+                if ppm_visual_redaction_download_available(&envelope) {
+                    "Redacted PPM P6 bytes are available for save.".to_string()
+                } else {
+                    "No verified redacted PPM bytes are available for save; PPM P6 output is only saveable after nonempty bytes and verification.format == ppm_p6, redacted_region_count > 0, and verified_changed_pixels_within_regions == true.".to_string()
+                }
+            }
         };
 
         self.summary = match mode {
             DesktopWorkflowMode::XlsxBase64 => pretty_xlsx_summary(&envelope),
+            DesktopWorkflowMode::PpmVisualRedaction => {
+                pretty_ppm_visual_redaction_summary(&envelope)
+            }
             _ => pretty_json_field(&envelope, "summary"),
         };
-        self.review_queue = pretty_json_field(&envelope, "review_queue");
+        self.review_queue = match mode {
+            DesktopWorkflowMode::PpmVisualRedaction => {
+                "PPM visual redaction review display is limited to aggregate verification status; arbitrary runtime review_queue contents are not rendered.".to_string()
+            }
+            _ => pretty_json_field(&envelope, "review_queue"),
+        };
         self.error = None;
         self.last_success_mode = Some(mode);
         self.last_success_response = Some(envelope);
@@ -2947,6 +3092,34 @@ fn pretty_xlsx_summary(envelope: &serde_json::Value) -> String {
         }
     }
     summary
+}
+
+fn pretty_ppm_visual_redaction_summary(envelope: &serde_json::Value) -> String {
+    let verification = envelope.get("verification");
+    let summary = serde_json::json!({
+        "mode": "ppm_visual_redaction",
+        "scope": "PPM P6 only; explicit bbox regions only; no OCR, automatic detection, PDF rewrite, PNG/JPEG rewrite, or video redaction.",
+        "save_available": ppm_visual_redaction_download_available(envelope),
+        "verification": {
+            "format": verification
+                .and_then(|value| value.get("format"))
+                .and_then(serde_json::Value::as_str),
+            "region_count": verification
+                .and_then(|value| value.get("region_count"))
+                .and_then(serde_json::Value::as_u64),
+            "redacted_region_count": verification
+                .and_then(|value| value.get("redacted_region_count"))
+                .and_then(serde_json::Value::as_u64),
+            "redacted_pixel_count": verification
+                .and_then(|value| value.get("redacted_pixel_count"))
+                .and_then(serde_json::Value::as_u64),
+            "verified_changed_pixels_within_regions": verification
+                .and_then(|value| value.get("verified_changed_pixels_within_regions"))
+                .and_then(serde_json::Value::as_bool),
+        }
+    });
+
+    serde_json::to_string_pretty(&summary).unwrap_or_else(|_| "{}".to_string())
 }
 
 #[cfg(test)]
@@ -4394,6 +4567,227 @@ mod tests {
         assert!(DesktopPortableMode::VaultExport
             .disclosure()
             .contains("existing local /vault/export runtime route"));
+    }
+
+    #[test]
+    fn ppm_visual_redaction_request_builds_runtime_envelope() {
+        let state = DesktopWorkflowRequestState {
+            mode: DesktopWorkflowMode::PpmVisualRedaction,
+            payload: " UDYKAAAAAP8= ".to_string(),
+            field_policy_json: r#"[{"x":2,"y":3,"width":4,"height":5}]"#.to_string(),
+            source_name: " Patient Jane face.ppm ".to_string(),
+        };
+
+        let request = state
+            .try_build_request()
+            .expect("PPM visual request builds");
+
+        assert_eq!(request.route, "/visual-redaction/ppm");
+        assert_eq!(request.body["ppm_bytes_base64"], "UDYKAAAAAP8=");
+        assert_eq!(
+            request.body["regions"],
+            serde_json::json!([{ "x": 2, "y": 3, "width": 4, "height": 5 }])
+        );
+        assert!(request.body.get("source_name").is_none());
+        assert!(request.body.get("field_policies").is_none());
+        assert!(request.body.get("policies").is_none());
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("Patient Jane"));
+        assert!(!debug.contains("UDYKAAAAAP8="));
+    }
+
+    #[test]
+    fn ppm_visual_redaction_output_download_extracts_rewritten_ppm_bytes() {
+        let mut response_state = DesktopWorkflowResponseState::default();
+        response_state.apply_success_json(
+            DesktopWorkflowMode::PpmVisualRedaction,
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "ppm_p6",
+                    "region_count": 1,
+                    "redacted_region_count": 1,
+                    "redacted_pixel_count": 1,
+                    "verified_changed_pixels_within_regions": true
+                },
+                "patient": "Jane Roe should not leak"
+            }),
+        );
+
+        let download = response_state
+            .workflow_output_download_for_source(
+                DesktopWorkflowMode::PpmVisualRedaction,
+                Some("C:\\PHI\\Jane Roe Face.ppm"),
+            )
+            .expect("PPM visual output should be downloadable");
+
+        assert_eq!(download.file_name, "Jane-Roe-Face-redacted.ppm");
+        assert_eq!(download.bytes, b"P6\n\0\0\0\0\xff");
+        let debug = format!("{download:?}");
+        assert!(!debug.contains("Jane Roe"));
+        assert!(!debug.contains("P6"));
+    }
+
+    #[test]
+    fn ppm_visual_redaction_output_download_requires_verified_redaction() {
+        for envelope in [
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8="
+            }),
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "png",
+                    "redacted_region_count": 1,
+                    "verified_changed_pixels_within_regions": true
+                }
+            }),
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "ppm_p6",
+                    "redacted_region_count": 0,
+                    "verified_changed_pixels_within_regions": true
+                }
+            }),
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "ppm_p6",
+                    "redacted_region_count": 1,
+                    "verified_changed_pixels_within_regions": false
+                }
+            }),
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "",
+                "verification": {
+                    "format": "ppm_p6",
+                    "redacted_region_count": 1,
+                    "verified_changed_pixels_within_regions": true
+                }
+            }),
+        ] {
+            let mut response_state = DesktopWorkflowResponseState::default();
+            response_state.apply_success_json(DesktopWorkflowMode::PpmVisualRedaction, envelope);
+
+            assert!(response_state
+                .workflow_output_download(DesktopWorkflowMode::PpmVisualRedaction)
+                .is_none());
+            assert!(response_state
+                .suggested_export_file_name(DesktopWorkflowMode::PpmVisualRedaction)
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn ppm_visual_redaction_output_copy_does_not_advertise_unverified_save() {
+        for envelope in [
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "summary": {"status": "runtime returned bytes without verification"},
+                "review_queue": []
+            }),
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "png",
+                    "redacted_region_count": 1,
+                    "verified_changed_pixels_within_regions": true
+                }
+            }),
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "ppm_p6",
+                    "redacted_region_count": 0,
+                    "verified_changed_pixels_within_regions": true
+                }
+            }),
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "ppm_p6",
+                    "redacted_region_count": 1,
+                    "verified_changed_pixels_within_regions": false
+                }
+            }),
+        ] {
+            let mut response_state = DesktopWorkflowResponseState::default();
+            response_state.apply_success_json(DesktopWorkflowMode::PpmVisualRedaction, envelope);
+
+            assert!(
+                !response_state
+                    .output
+                    .contains("Redacted PPM P6 bytes are available for save."),
+                "unverified PPM response advertised save availability: {}",
+                response_state.output
+            );
+            assert!(
+                response_state
+                    .output
+                    .contains("No verified redacted PPM bytes are available"),
+                "unverified PPM response should explain no verified bytes are available: {}",
+                response_state.output
+            );
+        }
+    }
+
+    #[test]
+    fn ppm_visual_redaction_rendering_does_not_echo_summary_or_review_phi() {
+        let mut response_state = DesktopWorkflowResponseState::default();
+        response_state.apply_success_json(
+            DesktopWorkflowMode::PpmVisualRedaction,
+            serde_json::json!({
+                "rewritten_ppm_bytes_base64": "UDYKAAAAAP8=",
+                "verification": {
+                    "format": "ppm_p6",
+                    "region_count": 1,
+                    "redacted_region_count": 1,
+                    "redacted_pixel_count": 1,
+                    "verified_changed_pixels_within_regions": true
+                },
+                "summary": {
+                    "patient_name": "Patient Jane Example",
+                    "source_path": "C:\\PHI\\Patient Jane Example face.ppm"
+                },
+                "review_queue": [{
+                    "note": "MRN-12345 visible near Patient Jane Example",
+                    "source_text": "Patient Jane Example MRN-12345"
+                }]
+            }),
+        );
+
+        let rendered = format!(
+            "{}\n{}\n{}",
+            response_state.output, response_state.summary, response_state.review_queue
+        );
+        for forbidden in ["Patient Jane Example", "MRN-12345", "C:\\PHI"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "PPM visual redaction rendering leaked {forbidden}: {rendered}"
+            );
+        }
+        assert!(response_state.summary.contains("ppm_p6"));
+        assert!(response_state.summary.contains("redacted_region_count"));
+    }
+
+    #[test]
+    fn ppm_file_import_targets_visual_redaction_mode() {
+        let imported = DesktopFileImportPayload::from_bytes(
+            "C:\\PHI\\Patient Jane face.ppm",
+            b"P6\n1 1\n255\n\0\0\0",
+        )
+        .expect("PPM file import should be supported for visual redaction");
+
+        assert_eq!(imported.mode, DesktopWorkflowMode::PpmVisualRedaction);
+        assert_eq!(imported.payload, "UDYKMSAxCjI1NQoAAAA=");
+        assert_eq!(
+            imported.source_name.as_deref(),
+            Some("C:\\PHI\\Patient Jane face.ppm")
+        );
+        let debug = format!("{imported:?}");
+        assert!(!debug.contains("Patient Jane"));
+        assert!(!debug.contains("UDYK"));
     }
 
     #[test]

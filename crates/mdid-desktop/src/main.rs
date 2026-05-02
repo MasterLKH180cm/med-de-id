@@ -599,6 +599,14 @@ impl eframe::App for DesktopApp {
                     ui.label("Source name");
                     ui.text_edit_singleline(&mut self.request_state.source_name);
                 }
+                DesktopWorkflowMode::PpmVisualRedaction => {
+                    ui.label("Visual redaction bbox JSON");
+                    ui.label("Provide explicit user-approved PPM P6 regions as [{\"x\":0,\"y\":0,\"width\":1,\"height\":1}]. This does not auto-detect PHI.");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.request_state.field_policy_json)
+                            .desired_rows(4),
+                    );
+                }
             }
 
             ui.separator();
@@ -881,7 +889,7 @@ impl eframe::App for DesktopApp {
             }
 
             ui.label(
-                "Not implemented in this desktop slice: file picker upload/download UX beyond bounded helper import/export, vault browsing, full decode workflow execution UX, audit investigation, OCR, visual redaction, PDF rewrite/export, and full review workflows.",
+                "Not implemented in this desktop slice: file picker upload/download UX beyond bounded helper import/export, vault browsing, full decode workflow execution UX, audit investigation, OCR, generalized visual redaction beyond explicit PPM P6 bbox helpers, PDF rewrite/export, PNG/JPEG/video rewrite, and full review workflows.",
             );
         });
         self.poll_runtime_submission();
