@@ -271,6 +271,88 @@ fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
 }
 
 #[test]
+fn redact_image_ppm_batch_overwrites_existing_output_on_success() {
+    let dir = tempdir().unwrap();
+    let phi_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_dir).unwrap();
+    let input_path = phi_dir.join("Jane-source.ppm");
+    let output_path = phi_dir.join("Jane-redacted.ppm");
+    let summary_path = phi_dir.join("Jane-summary.json");
+    let input = [b"P6\n2 1\n255\n".as_slice(), &[11, 12, 13, 21, 22, 23]].concat();
+    let sentinel = b"existing output sentinel must be replaced";
+    fs::write(&input_path, input).unwrap();
+    fs::write(&output_path, sentinel).unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm-batch",
+            "--manifest-json",
+            &serde_json::json!([
+                {
+                    "input": input_path,
+                    "output": output_path,
+                    "regions": [{"x": 1, "y": 0, "width": 1, "height": 1}]
+                }
+            ])
+            .to_string(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let redacted = fs::read(&output_path).unwrap();
+    assert_ne!(
+        redacted, sentinel,
+        "successful batch item must replace output"
+    );
+    assert_eq!(
+        redacted,
+        [b"P6\n2 1\n255\n".as_slice(), &[11, 12, 13, 0, 0, 0]].concat()
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("image_redaction_batch_summary"));
+    assert!(stderr.is_empty());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "image_redaction_batch_summary");
+    assert_eq!(summary["total_item_count"], 1);
+    assert_eq!(summary["succeeded_item_count"], 1);
+    assert_eq!(summary["failed_item_count"], 0);
+    assert_eq!(summary["items"][0]["status"], "redacted");
+    assert_eq!(
+        summary["items"][0]["visual_verification"]["verified_changed_pixels_within_regions"],
+        true
+    );
+    for unsafe_text in [
+        "Jane",
+        "MRN-12345",
+        input_path.to_str().unwrap(),
+        output_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        phi_dir.to_str().unwrap(),
+        "11,12,13",
+        "21,22,23",
+        "existing output sentinel",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
 fn redact_image_ppm_batch_preserves_preexisting_temp_collision_files() {
     let dir = tempdir().unwrap();
     let input_bad = dir.path().join("patient-jane-bad.ppm");
