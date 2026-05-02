@@ -5613,6 +5613,7 @@ mod tests {
                 "requires_ocr_pages": 2,
                 "visual_review_pages": 2,
                 "blocked_page_count": 3,
+                "handwriting_review_required_pages": 0,
                 "rewrite_available": false
             })
         );
@@ -8288,9 +8289,8 @@ mod tests {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("media metadata JSON files also load as text"));
         assert!(BROWSER_FILE_IMPORT_COPY
             .contains("Media metadata JSON sends metadata only, not media bytes"));
-        assert!(
-            BROWSER_FILE_IMPORT_COPY.contains("XLSX, PDF, and PPM files load as base64 payloads")
-        );
+        assert!(BROWSER_FILE_IMPORT_COPY
+            .contains("XLSX, PDF, PPM and PNG files load as base64 payloads"));
         assert!(BROWSER_FILE_IMPORT_COPY.contains(
             "does not add OCR, automatic visual detection, vault browsing, or auth/session"
         ));
@@ -8302,9 +8302,13 @@ mod tests {
 
         assert!(source
             .contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
-        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.json\""));
-        assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/PPM/media metadata JSON payload"));
-        assert!(source.contains("validates CSV/XLSX/PDF/DICOM/PPM/media metadata JSON selection"));
+        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.png,.json\""));
+        assert!(
+            source.contains("Import local CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON payload")
+        );
+        assert!(
+            source.contains("validates CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON selection")
+        );
         assert!(source
             .contains("PPM payloads remain base64 text for explicit bbox PPM P6 visual redaction"));
         assert!(
