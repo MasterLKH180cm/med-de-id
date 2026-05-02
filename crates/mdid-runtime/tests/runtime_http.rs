@@ -77,6 +77,19 @@ fn sample_ppm_p6() -> Vec<u8> {
     ppm
 }
 
+fn sample_png() -> Vec<u8> {
+    let image = image::RgbaImage::from_raw(2, 1, vec![10, 11, 12, 255, 20, 21, 22, 255])
+        .expect("valid fixture pixels");
+    let mut output = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut output),
+            image::ImageFormat::Png,
+        )
+        .expect("encode png fixture");
+    output
+}
+
 #[tokio::test]
 async fn visual_redaction_ppm_endpoint_returns_rewritten_bytes_and_verification() {
     let app = build_router(RuntimeState::default());
@@ -150,6 +163,88 @@ async fn visual_redaction_ppm_endpoint_rejects_invalid_inputs_phi_safely() {
         assert!(!body_text.contains("patient-face.ppm"), "{body_text}");
         assert!(!body_text.contains("not a ppm"), "{body_text}");
         assert!(!body_text.contains("/tmp"), "{body_text}");
+    }
+}
+
+#[tokio::test]
+async fn visual_redaction_png_endpoint_returns_rewritten_bytes_and_verification() {
+    let app = build_router(RuntimeState::default());
+    let input = sample_png();
+    let request = json!({
+        "png_bytes_base64": STANDARD.encode(&input),
+        "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/visual-redaction/png")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_text = std::str::from_utf8(&body).unwrap();
+    assert!(!body_text.contains("Patient Jane Example"), "{body_text}");
+    assert!(!body_text.contains("[[0,0,1,1]]"), "{body_text}");
+    assert!(!body_text.contains("10,11,12"), "{body_text}");
+    assert!(!body_text.contains("rewritten_ppm"), "{body_text}");
+
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let rewritten = STANDARD
+        .decode(json["rewritten_png_bytes_base64"].as_str().unwrap())
+        .unwrap();
+    assert!(!rewritten.is_empty());
+    assert_ne!(rewritten, input);
+    assert_eq!(json["verification"]["format"], "png");
+    assert_eq!(json["verification"]["width"], 2);
+    assert_eq!(json["verification"]["height"], 1);
+    assert_eq!(json["verification"]["redacted_region_count"], 1);
+    assert_eq!(json["verification"]["redacted_pixel_count"], 1);
+    assert_eq!(
+        json["verification"]["verified_changed_pixels_within_regions"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn visual_redaction_png_endpoint_rejects_invalid_inputs_phi_safely() {
+    for request in [
+        json!({"png_bytes_base64": "not base64 Patient Jane Example.png", "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]}),
+        json!({"png_bytes_base64": STANDARD.encode(b"Patient Jane Example.png is not a png"), "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]}),
+        json!({"png_bytes_base64": STANDARD.encode(sample_png()), "regions": []}),
+        json!({"png_bytes_base64": STANDARD.encode(sample_png()), "regions": [{"x": 2, "y": 0, "width": 1, "height": 1}]}),
+    ] {
+        let app = build_router(RuntimeState::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/visual-redaction/png")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_text = std::str::from_utf8(&body).unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_visual_redaction");
+        assert!(
+            !body_text.contains("Patient Jane Example.png"),
+            "{body_text}"
+        );
+        assert!(!body_text.contains("not a png"), "{body_text}");
+        assert!(!body_text.contains("png_bytes_base64"), "{body_text}");
+        assert!(!body_text.contains("10,11,12"), "{body_text}");
     }
 }
 

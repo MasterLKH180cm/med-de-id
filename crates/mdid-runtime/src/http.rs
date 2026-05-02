@@ -66,6 +66,18 @@ struct VisualRedactionPpmResponse {
 }
 
 #[derive(Deserialize)]
+struct VisualRedactionPngRequest {
+    png_bytes_base64: String,
+    regions: Vec<ImageRedactionRegion>,
+}
+
+#[derive(Serialize)]
+struct VisualRedactionPngResponse {
+    rewritten_png_bytes_base64: String,
+    verification: mdid_application::VisualRedactionVerification,
+}
+
+#[derive(Deserialize)]
 struct PdfDeidentifyRequest {
     pdf_bytes_base64: String,
     source_name: String,
@@ -395,6 +407,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         )
         .route("/pdf/deidentify", post(pdf_deidentify))
         .route("/visual-redaction/ppm", post(visual_redaction_ppm))
+        .route("/visual-redaction/png", post(visual_redaction_png))
         .route("/dicom/deidentify", post(dicom_deidentify))
         .route("/vault/decode", post(vault_decode))
         .route("/vault/export", post(vault_export))
@@ -1053,6 +1066,32 @@ async fn visual_redaction_ppm(
             StatusCode::OK,
             Json(VisualRedactionPpmResponse {
                 rewritten_ppm_bytes_base64: STANDARD.encode(output.rewritten_ppm_bytes),
+                verification: output.verification,
+            }),
+        )
+            .into_response(),
+        Err(_) => invalid_visual_redaction_response().into_response(),
+    }
+}
+
+async fn visual_redaction_png(
+    payload: Result<Json<VisualRedactionPngRequest>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(_) => return invalid_visual_redaction_response().into_response(),
+    };
+
+    let png_bytes = match STANDARD.decode(payload.png_bytes_base64.as_bytes()) {
+        Ok(bytes) => bytes,
+        Err(_) => return invalid_visual_redaction_response().into_response(),
+    };
+
+    match VisualRedactionService.redact_png_bytes(&png_bytes, &payload.regions) {
+        Ok(output) => (
+            StatusCode::OK,
+            Json(VisualRedactionPngResponse {
+                rewritten_png_bytes_base64: STANDARD.encode(output.rewritten_png_bytes),
                 verification: output.verification,
             }),
         )
