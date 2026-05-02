@@ -2,6 +2,12 @@ use image::ImageEncoder;
 use mdid_domain::ImageRedactionRegion;
 use thiserror::Error;
 
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+pub const PNG_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+pub const PNG_MAX_PIXEL_COUNT: u64 = 16_000_000;
+pub const PNG_MAX_REGION_COUNT: usize = 4_096;
+pub const PNG_MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ImageRedactionError {
     #[error("rgb image buffer length does not match dimensions")]
@@ -12,6 +18,14 @@ pub enum ImageRedactionError {
     MalformedPng,
     #[error("image redaction region is outside image bounds")]
     RegionOutOfBounds,
+    #[error("PNG image input exceeds adapter limit")]
+    InputTooLarge,
+    #[error("PNG image dimensions exceed adapter limit")]
+    ImageTooLarge,
+    #[error("PNG redaction region count exceeds adapter limit")]
+    TooManyRegions,
+    #[error("PNG redaction output exceeds adapter limit")]
+    OutputTooLarge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,13 +47,12 @@ pub fn redact_png_bytes_with_verification(
     regions: &[ImageRedactionRegion],
     fill: [u8; 4],
 ) -> Result<(Vec<u8>, PngRedactionVerification), ImageRedactionError> {
+    validate_png_input_limits(bytes, regions)?;
     let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
         .map_err(|_| ImageRedactionError::MalformedPng)?;
     let mut pixels = decoded.to_rgba8();
     let (width, height) = pixels.dimensions();
-    if width == 0 || height == 0 {
-        return Err(ImageRedactionError::MalformedPng);
-    }
+    validate_png_dimensions(width, height)?;
 
     let original_pixels = pixels.as_raw().clone();
     let redacted_pixel_count = bounded_unique_pixel_count(width, height, regions)?;
@@ -63,8 +76,9 @@ pub fn redact_png_bytes_with_verification(
         )
         .map_err(|_| ImageRedactionError::MalformedPng)?;
     let total_pixel_count = u64::from(width) * u64::from(height);
-    let output_byte_count =
-        u64::try_from(output.len()).map_err(|_| ImageRedactionError::MalformedPng)?;
+    let output_byte_count = validate_png_output_byte_count(
+        u64::try_from(output.len()).map_err(|_| ImageRedactionError::MalformedPng)?,
+    )?;
     let redacted_region_count =
         u64::try_from(regions.len()).map_err(|_| ImageRedactionError::MalformedPng)?;
     Ok((
@@ -80,6 +94,57 @@ pub fn redact_png_bytes_with_verification(
             verified_changed_pixels_within_regions,
         },
     ))
+}
+
+fn validate_png_input_limits(
+    bytes: &[u8],
+    regions: &[ImageRedactionRegion],
+) -> Result<(), ImageRedactionError> {
+    if bytes.len() > PNG_MAX_INPUT_BYTES {
+        return Err(ImageRedactionError::InputTooLarge);
+    }
+    if regions.len() > PNG_MAX_REGION_COUNT {
+        return Err(ImageRedactionError::TooManyRegions);
+    }
+    if let Some((width, height)) = png_ihdr_dimensions(bytes)? {
+        validate_png_dimensions(width, height)?;
+    }
+    Ok(())
+}
+
+fn png_ihdr_dimensions(bytes: &[u8]) -> Result<Option<(u32, u32)>, ImageRedactionError> {
+    if bytes.len() < 24 {
+        return Ok(None);
+    }
+    if &bytes[..8] != PNG_SIGNATURE {
+        return Ok(None);
+    }
+    if &bytes[12..16] != b"IHDR" {
+        return Err(ImageRedactionError::MalformedPng);
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().expect("IHDR width slice length"));
+    let height = u32::from_be_bytes(bytes[20..24].try_into().expect("IHDR height slice length"));
+    Ok(Some((width, height)))
+}
+
+fn validate_png_dimensions(width: u32, height: u32) -> Result<(), ImageRedactionError> {
+    if width == 0 || height == 0 {
+        return Err(ImageRedactionError::MalformedPng);
+    }
+    let pixel_count = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or(ImageRedactionError::ImageTooLarge)?;
+    if pixel_count > PNG_MAX_PIXEL_COUNT {
+        return Err(ImageRedactionError::ImageTooLarge);
+    }
+    Ok(())
+}
+
+pub fn validate_png_output_byte_count(output_byte_count: u64) -> Result<u64, ImageRedactionError> {
+    if output_byte_count > PNG_MAX_OUTPUT_BYTES {
+        return Err(ImageRedactionError::OutputTooLarge);
+    }
+    Ok(output_byte_count)
 }
 
 fn redact_rgba_regions(

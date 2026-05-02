@@ -1685,6 +1685,7 @@ fn run_redact_image_png(args: RedactImagePpmArgs) -> Result<(), String> {
         },
         "raw_paths_included": false,
         "raw_regions_included": false,
+        "raw_bounding_boxes_included": false,
         "automatic_detection_claimed": false,
         "non_goals": ["ocr", "automatic_visual_detection", "jpeg_pdf_video_rewrite"],
     });

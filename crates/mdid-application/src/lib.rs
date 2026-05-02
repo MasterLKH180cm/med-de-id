@@ -49,6 +49,10 @@ pub enum ApplicationError {
 pub enum VisualRedactionError {
     #[error("malformed or unsupported PPM P6 image")]
     MalformedPpmP6,
+    #[error("malformed or unsupported PNG image")]
+    MalformedPng,
+    #[error("image exceeds redaction adapter limit")]
+    ImageLimitExceeded,
     #[error("at least one redaction region is required")]
     EmptyRegions,
     #[error("image redaction region is outside image bounds")]
@@ -59,9 +63,14 @@ impl From<ImageRedactionError> for VisualRedactionError {
     fn from(error: ImageRedactionError) -> Self {
         match error {
             ImageRedactionError::RegionOutOfBounds => Self::RegionOutOfBounds,
-            ImageRedactionError::MalformedRgbBuffer
-            | ImageRedactionError::MalformedPpmP6
-            | ImageRedactionError::MalformedPng => Self::MalformedPpmP6,
+            ImageRedactionError::MalformedPng => Self::MalformedPng,
+            ImageRedactionError::InputTooLarge
+            | ImageRedactionError::ImageTooLarge
+            | ImageRedactionError::TooManyRegions
+            | ImageRedactionError::OutputTooLarge => Self::ImageLimitExceeded,
+            ImageRedactionError::MalformedRgbBuffer | ImageRedactionError::MalformedPpmP6 => {
+                Self::MalformedPpmP6
+            }
         }
     }
 }

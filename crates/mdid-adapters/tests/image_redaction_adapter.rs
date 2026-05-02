@@ -1,6 +1,8 @@
 use mdid_adapters::{
     redact_png_bytes_with_verification, redact_ppm_p6_bytes, redact_ppm_p6_bytes_with_verification,
-    redact_rgb_regions, verify_ppm_redaction_pixels, ImageRedactionError,
+    redact_rgb_regions, validate_png_output_byte_count, verify_ppm_redaction_pixels,
+    ImageRedactionError, PNG_MAX_INPUT_BYTES, PNG_MAX_OUTPUT_BYTES, PNG_MAX_PIXEL_COUNT,
+    PNG_MAX_REGION_COUNT,
 };
 use mdid_domain::ImageRedactionRegion;
 
@@ -50,6 +52,54 @@ fn png_malformed_bytes_fail_closed() {
         .expect_err("malformed png fails");
 
     assert_eq!(err, ImageRedactionError::MalformedPng);
+}
+
+#[test]
+fn png_oversized_input_bytes_fail_closed_before_decode() {
+    let region = ImageRedactionRegion::new(0, 0, 1, 1).expect("valid region");
+    let input = vec![0; PNG_MAX_INPUT_BYTES + 1];
+
+    let err = redact_png_bytes_with_verification(&input, &[region], [0, 0, 0, 255])
+        .expect_err("oversized input fails closed");
+
+    assert_eq!(err, ImageRedactionError::InputTooLarge);
+}
+
+#[test]
+fn png_oversized_dimensions_fail_closed_before_pixel_allocation() {
+    let region = ImageRedactionRegion::new(0, 0, 1, 1).expect("valid region");
+    let mut input = Vec::new();
+    input.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    input.extend_from_slice(&13u32.to_be_bytes());
+    input.extend_from_slice(b"IHDR");
+    input.extend_from_slice(&(PNG_MAX_PIXEL_COUNT as u32 + 1).to_be_bytes());
+    input.extend_from_slice(&1u32.to_be_bytes());
+    input.extend_from_slice(&[8, 6, 0, 0, 0]);
+
+    let err = redact_png_bytes_with_verification(&input, &[region], [0, 0, 0, 255])
+        .expect_err("oversized dimensions fail closed");
+
+    assert_eq!(err, ImageRedactionError::ImageTooLarge);
+}
+
+#[test]
+fn png_too_many_regions_fail_closed_before_decode() {
+    let input = png_2x1_fixture();
+    let region = ImageRedactionRegion::new(0, 0, 1, 1).expect("valid region");
+    let regions = vec![region; PNG_MAX_REGION_COUNT + 1];
+
+    let err = redact_png_bytes_with_verification(&input, &regions, [0, 0, 0, 255])
+        .expect_err("too many regions fail closed");
+
+    assert_eq!(err, ImageRedactionError::TooManyRegions);
+}
+
+#[test]
+fn png_output_size_limit_is_enforced() {
+    let err = validate_png_output_byte_count(PNG_MAX_OUTPUT_BYTES + 1)
+        .expect_err("oversized output fails closed");
+
+    assert_eq!(err, ImageRedactionError::OutputTooLarge);
 }
 
 #[test]

@@ -277,6 +277,7 @@ fn redact_image_png_writes_redacted_bytes_and_phi_safe_summary() {
     assert_eq!(summary["bytes_written"], redacted.len());
     assert_eq!(summary["raw_paths_included"], false);
     assert_eq!(summary["raw_regions_included"], false);
+    assert_eq!(summary["raw_bounding_boxes_included"], false);
     assert_eq!(summary["automatic_detection_claimed"], false);
     assert_eq!(summary["visual_verification"]["format"], "png");
     assert_eq!(summary["visual_verification"]["unchanged_pixel_count"], 1);
