@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fs,
+    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     process,
@@ -66,6 +66,7 @@ enum CliCommand {
     VaultInspectArtifact(VaultInspectArtifactArgs),
     PortableTransferSummary(VaultInspectArtifactArgs),
     RedactImagePpm(RedactImagePpmArgs),
+    RedactImagePpmBatch(RedactImagePpmBatchArgs),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -74,6 +75,19 @@ struct RedactImagePpmArgs {
     regions_json: String,
     output: PathBuf,
     summary_output: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RedactImagePpmBatchArgs {
+    manifest_json: String,
+    summary_output: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImageRedactionBatchManifestItem {
+    input: PathBuf,
+    output: PathBuf,
+    regions: Vec<ImageRedactionRegion>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -365,8 +379,33 @@ fn parse_command(args: &[String]) -> Result<CliCommand, String> {
         [command, rest @ ..] if command == "redact-image-ppm" => {
             parse_redact_image_ppm_args(rest).map(CliCommand::RedactImagePpm)
         }
+        [command, rest @ ..] if command == "redact-image-ppm-batch" => {
+            parse_redact_image_ppm_batch_args(rest).map(CliCommand::RedactImagePpmBatch)
+        }
         _ => Err("unknown command".to_string()),
     }
+}
+
+fn parse_redact_image_ppm_batch_args(args: &[String]) -> Result<RedactImagePpmBatchArgs, String> {
+    let mut manifest_json = None;
+    let mut summary_output = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {flag}"))?;
+        match flag {
+            "--manifest-json" => manifest_json = Some(non_blank_value(value, "--manifest-json")?),
+            "--summary-output" => summary_output = Some(non_blank_path(value, "--summary-output")?),
+            _ => return Err("unknown flag".to_string()),
+        }
+        index += 2;
+    }
+    Ok(RedactImagePpmBatchArgs {
+        manifest_json: manifest_json.ok_or_else(|| "missing --manifest-json".to_string())?,
+        summary_output: summary_output.ok_or_else(|| "missing --summary-output".to_string())?,
+    })
 }
 
 fn parse_redact_image_ppm_args(args: &[String]) -> Result<RedactImagePpmArgs, String> {
@@ -1317,7 +1356,172 @@ fn run_command(command: CliCommand) -> Result<(), String> {
         CliCommand::VaultInspectArtifact(args) => run_vault_inspect_artifact(args),
         CliCommand::PortableTransferSummary(args) => run_portable_transfer_summary(args),
         CliCommand::RedactImagePpm(args) => run_redact_image_ppm(args),
+        CliCommand::RedactImagePpmBatch(args) => run_redact_image_ppm_batch(args),
     }
+}
+
+fn create_unique_ppm_batch_sidecar(path: &Path, purpose: &str) -> std::io::Result<PathBuf> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("output.ppm");
+
+    for _ in 0..32 {
+        let candidate = directory.join(format!(
+            ".{file_name}.mdid-redaction-{purpose}-{}",
+            Uuid::new_v4()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not reserve unique redaction sidecar path",
+    ))
+}
+
+fn write_ppm_batch_output_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp_path = create_unique_ppm_batch_sidecar(path, "tmp")?;
+    let mut temp_created = true;
+    let mut backup_sidecar_exists = false;
+
+    let write_result = (|| {
+        fs::write(&temp_path, bytes)?;
+
+        if !path.exists() {
+            match fs::rename(&temp_path, path) {
+                Ok(()) => {
+                    temp_created = false;
+                    return Ok(());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        let reserved_backup_path = create_unique_ppm_batch_sidecar(path, "backup")?;
+        fs::remove_file(&reserved_backup_path)?;
+        fs::rename(path, &reserved_backup_path)?;
+        backup_sidecar_exists = true;
+
+        if let Err(err) = fs::rename(&temp_path, path) {
+            if fs::rename(&reserved_backup_path, path).is_ok() {
+                backup_sidecar_exists = false;
+            }
+            return Err(err);
+        }
+        temp_created = false;
+        let _ = fs::remove_file(&reserved_backup_path);
+        backup_sidecar_exists = false;
+        Ok(())
+    })();
+
+    if write_result.is_err() && temp_created {
+        let _ = fs::remove_file(&temp_path);
+    }
+    // If backup_sidecar_exists is still true here, restore failed and the
+    // backup sidecar may be the only remaining copy of the original output.
+    // Intentionally leave it in place for operator recovery.
+    let _ = backup_sidecar_exists;
+
+    write_result
+}
+
+fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), String> {
+    let items: Vec<ImageRedactionBatchManifestItem> = serde_json::from_str(&args.manifest_json)
+        .map_err(|_| "invalid image redaction batch manifest".to_string())?;
+    let mut summary_items = Vec::with_capacity(items.len());
+    let mut succeeded_item_count = 0usize;
+    let mut failed_item_count = 0usize;
+
+    for (index, item) in items.iter().enumerate() {
+        let item_index = index + 1;
+        let result = (|| {
+            let unsafe_same_path = match (item.input.canonicalize(), item.output.canonicalize()) {
+                (Ok(input), Ok(output)) => input == output,
+                _ => item.input == item.output,
+            };
+            if unsafe_same_path {
+                return Err("unsafe_output_path");
+            }
+
+            let input = fs::read(&item.input).map_err(|_| "invalid_ppm_redaction")?;
+            let (redacted, verification) =
+                redact_ppm_p6_bytes_with_verification(&input, &item.regions, [0, 0, 0])
+                    .map_err(|_| "invalid_ppm_redaction")?;
+            write_ppm_batch_output_safely(&item.output, &redacted)
+                .map_err(|_| "invalid_ppm_redaction")?;
+            Ok::<Value, &'static str>(json!({
+                "item_index": item_index,
+                "status": "redacted",
+                "visual_verification": {
+                    "format": verification.format,
+                    "width": verification.width,
+                    "height": verification.height,
+                    "redacted_region_count": verification.redacted_region_count,
+                    "redacted_pixel_count": verification.redacted_pixel_count,
+                    "unchanged_pixel_count": verification.unchanged_pixel_count,
+                    "output_byte_count": verification.output_byte_count,
+                    "verified_changed_pixels_within_regions": verification.verified_changed_pixels_within_regions,
+                }
+            }))
+        })();
+        match result {
+            Ok(item_summary) => {
+                succeeded_item_count += 1;
+                summary_items.push(item_summary);
+            }
+            Err(error_code) => {
+                failed_item_count += 1;
+                summary_items.push(json!({
+                    "item_index": item_index,
+                    "status": "failed",
+                    "error_code": error_code,
+                }));
+            }
+        }
+    }
+
+    let summary = json!({
+        "artifact": "image_redaction_batch_summary",
+        "schema_version": 1,
+        "format": "ppm_p6",
+        "total_item_count": items.len(),
+        "succeeded_item_count": succeeded_item_count,
+        "failed_item_count": failed_item_count,
+        "raw_paths_included": false,
+        "raw_regions_included": false,
+        "raw_bounding_boxes_included": false,
+        "image_bytes_included": false,
+        "items": summary_items,
+    });
+    write_json_artifact(
+        &args.summary_output,
+        &summary,
+        "image redaction batch summary",
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "artifact": "image_redaction_batch_summary",
+            "format": "ppm_p6",
+            "total_item_count": items.len(),
+            "succeeded_item_count": succeeded_item_count,
+            "failed_item_count": failed_item_count,
+            "summary_written": true,
+        }))
+        .map_err(|err| format!("failed to render image redaction batch summary: {err}"))?
+    );
+    Ok(())
 }
 
 fn run_redact_image_ppm(args: RedactImagePpmArgs) -> Result<(), String> {
@@ -4352,7 +4556,7 @@ fn exit_with_usage(error: &str) -> ! {
 }
 
 fn usage() -> &'static str {
-    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json> [--output-pdf-path <output.pdf>]\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json> [--export-report <export.json>]\n       mdid-cli offline-readiness --privacy-runner-path <path> --ocr-runner-path <path> --ocr-fixture-path <path> [--python-command <cmd>] [--packaging-output <manifest.json>] [--governance-output <summary.json>]\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter --image-path <path> --ocr-runner-path <path> --privacy-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-small-json --image-path <path> --ocr-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-handoff --image-path <path> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n       mdid-cli portable-transfer-summary --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF, write a PHI-safe JSON report, and export PDF bytes only for clean text-layer inputs.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-privacy-evidence Run local OCR privacy evidence and write a bounded PHI-safe JSON report.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count.\n  portable-transfer-summary Print a PHI-safe portable transfer workflow summary for an encrypted artifact."
+    "Usage: mdid-cli [status]\n       mdid-cli verify-artifacts --artifact-paths-json <json-array> [--max-bytes <bytes>]\n       mdid-cli deidentify-csv --csv-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-xlsx --xlsx-path <path> --policies-json <json> --vault-path <path> --passphrase <value> --output-path <path>\n       mdid-cli deidentify-dicom --dicom-path <input.dcm> --private-tag-policy <remove|review|required|keep> --vault-path <vault.json> --passphrase <passphrase> --output-path <output.dcm>\n       mdid-cli deidentify-pdf --pdf-path <input.pdf> --source-name <name.pdf> --report-path <report.json> [--output-pdf-path <output.pdf>]\n       mdid-cli review-media --artifact-label <label> --format <image|video|fcs> --metadata-json <json> --requires-visual-review <true|false> --unsupported-payload <true|false> --report-path <report.json> [--export-report <export.json>]\n       mdid-cli offline-readiness --privacy-runner-path <path> --ocr-runner-path <path> --ocr-fixture-path <path> [--python-command <cmd>] [--packaging-output <manifest.json>] [--governance-output <summary.json>]\n       mdid-cli privacy-filter-text (--input-path <text> | --stdin) --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>] [--mock]\n       mdid-cli privacy-filter-corpus --fixture-dir <dir> --runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-to-privacy-filter --image-path <path> --ocr-runner-path <path> --privacy-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-to-privacy-filter-corpus --fixture-dir <dir> --ocr-runner-path <path> --privacy-runner-path <path> --bridge-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <path-or-command>]\n       mdid-cli ocr-handoff-corpus --fixture-dir <dir> --runner-path <path> --report-path <path> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli ocr-small-json --image-path <path> --ocr-runner-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-privacy-evidence --image-path <image> --runner-path <runner.py> --output <report.json> [--summary-output <summary.json>] [--python-command <cmd>] [--mock]\n       mdid-cli ocr-handoff --image-path <path> --ocr-runner-path <path> --handoff-builder-path <path> --report-path <report.json> [--summary-output <summary.json>] [--python-command <cmd>]\n       mdid-cli redact-image-ppm-batch --manifest-json <json-array> --summary-output <summary.json>\n       mdid-cli vault-audit --vault-path <vault.json> --passphrase <passphrase> [--limit <count>] [--offset <count>]\n       mdid-cli vault-decode --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --output-target <target> --justification <text> --report-path <report.json>\n       mdid-cli vault-export --vault-path <vault.json> --passphrase <passphrase> --record-ids-json <json> --export-passphrase <passphrase> --context <text> --artifact-path <export.json>\n       mdid-cli vault-import --vault-path <vault.json> --passphrase <passphrase> --artifact-path <export.json> --portable-passphrase <passphrase> --context <text>\n       mdid-cli vault-inspect-artifact --artifact-path <export.json> --portable-passphrase <passphrase>\n       mdid-cli portable-transfer-summary --artifact-path <export.json> --portable-passphrase <passphrase>\n\nmdid-cli is the local de-identification automation surface.\nCommands:\n  status              Print a readiness banner for the local CLI surface.\n  verify-artifacts    Verify local artifact existence and size with metadata-only PHI-safe JSON.\n  deidentify-csv      Rewrite a local CSV using explicit field policies.\n  deidentify-xlsx     Rewrite a bounded local XLSX using explicit field policies.\n  deidentify-dicom    Rewrite a bounded local DICOM file with a PHI-safe summary.\n  deidentify-pdf      Review a bounded local PDF, write a PHI-safe JSON report, and export PDF bytes only for clean text-layer inputs.\n  review-media        Review conservative media metadata and write a PHI-safe JSON report; no media rewrite/export.\n  privacy-filter-text Run a local privacy filter runner for text and write its bounded JSON report.\n  privacy-filter-corpus Run a local synthetic text corpus privacy filter and print aggregate PHI-safe JSON.\n  ocr-handoff-corpus Run a local OCR handoff corpus runner and print aggregate PHI-safe JSON.\n  ocr-privacy-evidence Run local OCR privacy evidence and write a bounded PHI-safe JSON report.\n  ocr-handoff        Run bounded synthetic OCR extraction handoff and validate its JSON report.\n  redact-image-ppm-batch Redact PPM P6 images from a local manifest and write a PHI-safe batch summary.\n  vault-audit         Print bounded PHI-safe vault audit event metadata in reverse chronological order; read-only.\n  vault-decode        Decode explicitly scoped vault records to a report file and print a PHI-safe summary.\n  vault-export        Export explicitly scoped vault records to an encrypted portable artifact and print a PHI-safe summary.\n  vault-import        Import encrypted portable vault records into a local vault and print a PHI-safe summary.\n  vault-inspect-artifact Inspect an encrypted portable vault artifact and print only a PHI-safe record count.\n  portable-transfer-summary Print a PHI-safe portable transfer workflow summary for an encrypted artifact."
 }
 
 #[cfg(test)]

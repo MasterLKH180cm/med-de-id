@@ -146,6 +146,272 @@ fn redact_image_ppm_writes_redacted_bytes_and_phi_safe_summary() {
 }
 
 #[test]
+fn redact_image_ppm_batch_continues_after_item_failure_without_path_leaks() {
+    let dir = tempdir().unwrap();
+    let input_ok = dir.path().join("patient-jane-face.ppm");
+    let input_bad = dir.path().join("patient-jane-bad.ppm");
+    let output_ok = dir.path().join("patient-jane-face-redacted.ppm");
+    let output_bad = dir.path().join("patient-jane-bad-redacted.ppm");
+    let input_same_as_output = dir.path().join("patient-jane-in-place.ppm");
+    let summary_path = dir.path().join("patient-jane-summary.json");
+
+    fs::write(
+        &input_ok,
+        [b"P6\n2 1\n255\n".as_slice(), &[1, 2, 3, 4, 5, 6]].concat(),
+    )
+    .unwrap();
+    fs::write(&input_bad, b"not a ppm").unwrap();
+    let pre_existing_bad_output = b"pre-existing redacted output must survive";
+    fs::write(&output_bad, pre_existing_bad_output).unwrap();
+    let same_path_original = [b"P6\n1 1\n255\n".as_slice(), &[9, 8, 7]].concat();
+    fs::write(&input_same_as_output, &same_path_original).unwrap();
+
+    let manifest = serde_json::json!([
+        {
+            "input": input_ok,
+            "output": output_ok,
+            "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+        },
+        {
+            "input": input_bad,
+            "output": output_bad,
+            "regions": [{"x": 0,"y":0,"width":1,"height":1}]
+        },
+        {
+            "input": input_same_as_output,
+            "output": input_same_as_output,
+            "regions": [{"x":0,"y":0,"width":1,"height":1}]
+        }
+    ]);
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm-batch",
+            "--manifest-json",
+            &manifest.to_string(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let redacted = fs::read(&output_ok).unwrap();
+    assert_eq!(&redacted[11..14], &[0, 0, 0]);
+    assert_eq!(
+        fs::read(&output_bad).unwrap(),
+        pre_existing_bad_output,
+        "failed item must preserve pre-existing output"
+    );
+    assert_eq!(
+        fs::read(&input_same_as_output).unwrap(),
+        same_path_original,
+        "input==output item must not corrupt source"
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("image_redaction_batch_summary"));
+    assert!(stderr.is_empty());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "image_redaction_batch_summary");
+    assert_eq!(summary["total_item_count"], 3);
+    assert_eq!(summary["succeeded_item_count"], 1);
+    assert_eq!(summary["failed_item_count"], 2);
+    assert_eq!(summary["items"][0]["status"], "redacted");
+    assert_eq!(
+        summary["items"][0]["visual_verification"]["redacted_region_count"],
+        1
+    );
+    assert_eq!(
+        summary["items"][0]["visual_verification"]["verified_changed_pixels_within_regions"],
+        true
+    );
+    assert!(
+        summary["items"][0]["visual_verification"]
+            .get("redacted_area_count")
+            .is_none(),
+        "batch summary must not use area terminology"
+    );
+    assert!(
+        summary["items"][0]["visual_verification"]
+            .get("verified_changed_pixels_within_redaction_areas")
+            .is_none(),
+        "batch summary must use regions terminology"
+    );
+    assert_eq!(summary["items"][1]["status"], "failed");
+    assert_eq!(summary["items"][1]["error_code"], "invalid_ppm_redaction");
+    assert_eq!(summary["items"][2]["status"], "failed");
+    assert_eq!(summary["items"][2]["error_code"], "unsafe_output_path");
+    for unsafe_text in [
+        "patient-jane",
+        input_ok.to_str().unwrap(),
+        input_bad.to_str().unwrap(),
+        output_ok.to_str().unwrap(),
+        output_bad.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        "bbox",
+        "P6",
+        "1,2,3",
+        "4,5,6",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn redact_image_ppm_batch_overwrites_existing_output_on_success() {
+    let dir = tempdir().unwrap();
+    let phi_dir = dir.path().join("Jane-Example-MRN-12345");
+    fs::create_dir(&phi_dir).unwrap();
+    let input_path = phi_dir.join("Jane-source.ppm");
+    let output_path = phi_dir.join("Jane-redacted.ppm");
+    let summary_path = phi_dir.join("Jane-summary.json");
+    let input = [b"P6\n2 1\n255\n".as_slice(), &[11, 12, 13, 21, 22, 23]].concat();
+    let sentinel = b"existing output sentinel must be replaced";
+    fs::write(&input_path, input).unwrap();
+    fs::write(&output_path, sentinel).unwrap();
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm-batch",
+            "--manifest-json",
+            &serde_json::json!([
+                {
+                    "input": input_path,
+                    "output": output_path,
+                    "regions": [{"x": 1, "y": 0, "width": 1, "height": 1}]
+                }
+            ])
+            .to_string(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let redacted = fs::read(&output_path).unwrap();
+    assert_ne!(
+        redacted, sentinel,
+        "successful batch item must replace output"
+    );
+    assert_eq!(
+        redacted,
+        [b"P6\n2 1\n255\n".as_slice(), &[11, 12, 13, 0, 0, 0]].concat()
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("image_redaction_batch_summary"));
+    assert!(stderr.is_empty());
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["artifact"], "image_redaction_batch_summary");
+    assert_eq!(summary["total_item_count"], 1);
+    assert_eq!(summary["succeeded_item_count"], 1);
+    assert_eq!(summary["failed_item_count"], 0);
+    assert_eq!(summary["items"][0]["status"], "redacted");
+    assert_eq!(
+        summary["items"][0]["visual_verification"]["verified_changed_pixels_within_regions"],
+        true
+    );
+    for unsafe_text in [
+        "Jane",
+        "MRN-12345",
+        input_path.to_str().unwrap(),
+        output_path.to_str().unwrap(),
+        summary_path.to_str().unwrap(),
+        phi_dir.to_str().unwrap(),
+        "11,12,13",
+        "21,22,23",
+        "existing output sentinel",
+    ] {
+        assert!(!stdout.contains(unsafe_text), "stdout leaked {unsafe_text}");
+        assert!(!stderr.contains(unsafe_text), "stderr leaked {unsafe_text}");
+        assert!(
+            !summary_text.contains(unsafe_text),
+            "summary leaked {unsafe_text}"
+        );
+    }
+}
+
+#[test]
+fn redact_image_ppm_batch_preserves_preexisting_temp_collision_files() {
+    let dir = tempdir().unwrap();
+    let input_bad = dir.path().join("patient-jane-bad.ppm");
+    let output_path = dir.path().join("patient-jane-redacted.ppm");
+    let summary_path = dir.path().join("patient-jane-summary.json");
+    let old_deterministic_temp_path = output_path.with_extension("ppm.mdid-redaction-tmp");
+    let old_deterministic_backup_path = output_path.with_extension("ppm.mdid-redaction-backup");
+    let sentinel = b"pre-existing temp-like collision file must survive unchanged";
+    let backup_sentinel = b"pre-existing backup-like collision file must survive unchanged";
+
+    fs::write(&input_bad, b"not a ppm").unwrap();
+    fs::write(&old_deterministic_temp_path, sentinel).unwrap();
+    fs::write(&old_deterministic_backup_path, backup_sentinel).unwrap();
+
+    let manifest = serde_json::json!([
+        {
+            "input": input_bad,
+            "output": output_path,
+            "regions": [{"x": 0, "y": 0, "width": 1, "height": 1}]
+        }
+    ]);
+
+    let output = Command::cargo_bin("mdid-cli")
+        .unwrap()
+        .args([
+            "redact-image-ppm-batch",
+            "--manifest-json",
+            &manifest.to_string(),
+            "--summary-output",
+            summary_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(&old_deterministic_temp_path).unwrap(),
+        sentinel,
+        "batch failure must not delete or overwrite pre-existing temp-like files"
+    );
+    assert_eq!(
+        fs::read(&old_deterministic_backup_path).unwrap(),
+        backup_sentinel,
+        "batch failure must not delete or overwrite pre-existing backup-like files"
+    );
+    assert!(!output_path.exists(), "failed item must not create output");
+
+    let summary_text = fs::read_to_string(&summary_path).unwrap();
+    let summary: Value = serde_json::from_str(&summary_text).unwrap();
+    assert_eq!(summary["failed_item_count"], 1);
+    assert_eq!(summary["items"][0]["status"], "failed");
+    assert_eq!(summary["items"][0]["error_code"], "invalid_ppm_redaction");
+}
+
+#[test]
 fn redact_image_ppm_summary_counts_unique_pixels_for_overlapping_regions() {
     let dir = tempdir().unwrap();
     let input_path = dir.path().join("source.ppm");
@@ -6232,6 +6498,7 @@ fn cli_usage_stays_deidentification_scoped() {
         .stderr(predicate::str::contains("review-media"))
         .stderr(predicate::str::contains("privacy-filter-text"))
         .stderr(predicate::str::contains("ocr-handoff"))
+        .stderr(predicate::str::contains("redact-image-ppm-batch"))
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());
