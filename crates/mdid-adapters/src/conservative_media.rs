@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use mdid_domain::{
     ConservativeMediaCandidate, ConservativeMediaFormat, ConservativeMediaRef,
     ConservativeMediaScanStatus, ConservativeMediaSummary,
@@ -27,12 +29,20 @@ fn classify_conservative_media_phi_type(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConservativeMediaAdapterError {
     EmptyArtifactLabel,
+    UnsupportedFcsVersion,
+    NonFcsArtifact,
+    InvalidFcsHeader,
+    InvalidFcsTextSegment,
 }
 
 impl std::fmt::Display for ConservativeMediaAdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyArtifactLabel => f.write_str("artifact label must not be empty"),
+            Self::UnsupportedFcsVersion => f.write_str("unsupported FCS version"),
+            Self::NonFcsArtifact => f.write_str("artifact is not FCS"),
+            Self::InvalidFcsHeader => f.write_str("invalid FCS header"),
+            Self::InvalidFcsTextSegment => f.write_str("invalid FCS TEXT segment"),
         }
     }
 }
@@ -123,7 +133,108 @@ impl std::fmt::Debug for RedactedConservativeMediaCandidate<'_> {
 
 pub struct ConservativeMediaAdapter;
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct FcsTextRewriteRequest {
+    pub replacements: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FcsTextRewriteSummary {
+    pub replacement_count: usize,
+    pub input_text_byte_len: usize,
+    pub output_text_byte_len: usize,
+    pub input_byte_len: usize,
+    pub output_byte_len: usize,
+    pub rewritten_keys: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct FcsTextRewriteOutput {
+    pub bytes: Vec<u8>,
+    pub summary: FcsTextRewriteSummary,
+}
+
+impl std::fmt::Debug for FcsTextRewriteOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FcsTextRewriteOutput")
+            .field("bytes", &"<redacted>")
+            .field("summary", &self.summary)
+            .finish()
+    }
+}
+
 impl ConservativeMediaAdapter {
+    pub fn rewrite_fcs_text_segment(
+        bytes: &[u8],
+        request: FcsTextRewriteRequest,
+    ) -> Result<FcsTextRewriteOutput, ConservativeMediaAdapterError> {
+        if bytes.len() < 58 {
+            return Err(ConservativeMediaAdapterError::InvalidFcsHeader);
+        }
+        if &bytes[0..3] != b"FCS" {
+            return Err(ConservativeMediaAdapterError::NonFcsArtifact);
+        }
+        if &bytes[3..5] != b"3." {
+            return Err(ConservativeMediaAdapterError::UnsupportedFcsVersion);
+        }
+        let text_start = parse_fcs_offset(&bytes[10..18])?;
+        let text_end = parse_fcs_offset(&bytes[18..26])?;
+        if text_start >= bytes.len() || text_end >= bytes.len() || text_start > text_end {
+            return Err(ConservativeMediaAdapterError::InvalidFcsTextSegment);
+        }
+        let text = &bytes[text_start..=text_end];
+        if text.is_empty() {
+            return Err(ConservativeMediaAdapterError::InvalidFcsTextSegment);
+        }
+        let delimiter = text[0];
+        if delimiter == 0 || !delimiter.is_ascii() {
+            return Err(ConservativeMediaAdapterError::InvalidFcsTextSegment);
+        }
+        let mut parts = text[1..]
+            .split(|byte| *byte == delimiter)
+            .collect::<Vec<_>>();
+        if parts.last().is_some_and(|part| part.is_empty()) {
+            parts.pop();
+        }
+        if parts.len() % 2 != 0 {
+            return Err(ConservativeMediaAdapterError::InvalidFcsTextSegment);
+        }
+        let mut output_text = Vec::with_capacity(text.len());
+        output_text.push(delimiter);
+        let mut rewritten_keys = Vec::new();
+        for pair in parts.chunks(2) {
+            let key = std::str::from_utf8(pair[0])
+                .map_err(|_| ConservativeMediaAdapterError::InvalidFcsTextSegment)?;
+            output_text.extend_from_slice(pair[0]);
+            output_text.push(delimiter);
+            if let Some(replacement) = request.replacements.get(key) {
+                output_text.extend_from_slice(replacement.as_bytes());
+                rewritten_keys.push(key.to_string());
+            } else {
+                output_text.extend_from_slice(pair[1]);
+            }
+            output_text.push(delimiter);
+        }
+        let new_text_end = text_start + output_text.len() - 1;
+        let mut out = Vec::with_capacity(bytes.len() - text.len() + output_text.len());
+        out.extend_from_slice(&bytes[..text_start]);
+        out.extend_from_slice(&output_text);
+        out.extend_from_slice(&bytes[text_end + 1..]);
+        out[18..26].copy_from_slice(format!("{new_text_end:>8}").as_bytes());
+        let summary = FcsTextRewriteSummary {
+            replacement_count: rewritten_keys.len(),
+            input_text_byte_len: text.len(),
+            output_text_byte_len: output_text.len(),
+            input_byte_len: bytes.len(),
+            output_byte_len: out.len(),
+            rewritten_keys,
+        };
+        Ok(FcsTextRewriteOutput {
+            bytes: out,
+            summary,
+        })
+    }
+
     pub fn extract_metadata(
         input: ConservativeMediaInput,
     ) -> Result<ExtractedConservativeMediaData, ConservativeMediaAdapterError> {
@@ -184,4 +295,15 @@ impl ConservativeMediaAdapter {
             summary,
         })
     }
+}
+
+fn parse_fcs_offset(bytes: &[u8]) -> Result<usize, ConservativeMediaAdapterError> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| ConservativeMediaAdapterError::InvalidFcsHeader)?;
+    if !text.chars().all(|c| c == ' ' || c.is_ascii_digit()) {
+        return Err(ConservativeMediaAdapterError::InvalidFcsHeader);
+    }
+    text.trim()
+        .parse::<usize>()
+        .map_err(|_| ConservativeMediaAdapterError::InvalidFcsHeader)
 }

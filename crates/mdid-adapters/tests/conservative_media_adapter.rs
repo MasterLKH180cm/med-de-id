@@ -1,6 +1,6 @@
 use mdid_adapters::{
     ConservativeMediaAdapter, ConservativeMediaAdapterError, ConservativeMediaInput,
-    ConservativeMediaMetadataEntry,
+    ConservativeMediaMetadataEntry, FcsTextRewriteRequest,
 };
 use mdid_domain::{ConservativeMediaFormat, ConservativeMediaScanStatus};
 
@@ -9,6 +9,86 @@ fn metadata_entry(key: &str, value: &str) -> ConservativeMediaMetadataEntry {
         key: key.to_string(),
         value: value.to_string(),
     }
+}
+
+fn fcs_fixture(text: &str, data: &[u8]) -> Vec<u8> {
+    let text_start = 58usize;
+    let text_end = text_start + text.len() - 1;
+    let data_start = text_end + 1;
+    let data_end = data_start + data.len() - 1;
+    let mut header = b"FCS3.1    000000000000000000000000000000000000000000000000".to_vec();
+    header[10..18].copy_from_slice(format!("{text_start:>8}").as_bytes());
+    header[18..26].copy_from_slice(format!("{text_end:>8}").as_bytes());
+    header[26..34].copy_from_slice(format!("{data_start:>8}").as_bytes());
+    header[34..42].copy_from_slice(format!("{data_end:>8}").as_bytes());
+    [header, text.as_bytes().to_vec(), data.to_vec()].concat()
+}
+
+#[test]
+fn fcs_text_rewrite_replaces_only_requested_text_values_and_preserves_data_bytes() {
+    let data = [0, 1, 2, 3, 250, 251, 252, 253];
+    let input = fcs_fixture(
+        "|$BEGINANALYSIS|0|$SMNO|MRN-12345|$OP|Dr. Alice Example|$SRC|Bone Marrow|",
+        &data,
+    );
+
+    let output = ConservativeMediaAdapter::rewrite_fcs_text_segment(
+        &input,
+        FcsTextRewriteRequest {
+            replacements: [
+                ("$SMNO".to_string(), "[FCS_SAMPLE]".to_string()),
+                ("$OP".to_string(), "[FCS_OPERATOR]".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        },
+    )
+    .unwrap();
+
+    assert!(output
+        .bytes
+        .windows(b"[FCS_SAMPLE]".len())
+        .any(|w| w == b"[FCS_SAMPLE]"));
+    assert!(output
+        .bytes
+        .windows(b"[FCS_OPERATOR]".len())
+        .any(|w| w == b"[FCS_OPERATOR]"));
+    assert!(!output
+        .bytes
+        .windows(b"MRN-12345".len())
+        .any(|w| w == b"MRN-12345"));
+    assert!(!output
+        .bytes
+        .windows(b"Dr. Alice Example".len())
+        .any(|w| w == b"Dr. Alice Example"));
+    assert!(output
+        .bytes
+        .windows(b"Bone Marrow".len())
+        .any(|w| w == b"Bone Marrow"));
+    assert_eq!(&output.bytes[output.bytes.len() - data.len()..], data);
+    assert_eq!(output.summary.replacement_count, 2);
+    assert_eq!(output.summary.rewritten_keys, vec!["$SMNO", "$OP"]);
+    let debug = format!("{output:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("MRN-12345"));
+    assert!(!debug.contains("Dr. Alice Example"));
+}
+
+#[test]
+fn fcs_text_rewrite_fails_closed_on_invalid_text_offsets() {
+    let mut input = fcs_fixture("|$SMNO|MRN-12345|", &[1, 2, 3]);
+    input[10..18].copy_from_slice(b"     999");
+    let err = ConservativeMediaAdapter::rewrite_fcs_text_segment(
+        &input,
+        FcsTextRewriteRequest {
+            replacements: [("$SMNO".to_string(), "[FCS_SAMPLE]".to_string())]
+                .into_iter()
+                .collect(),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(err, ConservativeMediaAdapterError::InvalidFcsTextSegment);
 }
 
 #[test]
