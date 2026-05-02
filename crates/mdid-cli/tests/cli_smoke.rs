@@ -359,10 +359,13 @@ fn redact_image_ppm_batch_preserves_preexisting_temp_collision_files() {
     let output_path = dir.path().join("patient-jane-redacted.ppm");
     let summary_path = dir.path().join("patient-jane-summary.json");
     let old_deterministic_temp_path = output_path.with_extension("ppm.mdid-redaction-tmp");
+    let old_deterministic_backup_path = output_path.with_extension("ppm.mdid-redaction-backup");
     let sentinel = b"pre-existing temp-like collision file must survive unchanged";
+    let backup_sentinel = b"pre-existing backup-like collision file must survive unchanged";
 
     fs::write(&input_bad, b"not a ppm").unwrap();
     fs::write(&old_deterministic_temp_path, sentinel).unwrap();
+    fs::write(&old_deterministic_backup_path, backup_sentinel).unwrap();
 
     let manifest = serde_json::json!([
         {
@@ -393,6 +396,11 @@ fn redact_image_ppm_batch_preserves_preexisting_temp_collision_files() {
         fs::read(&old_deterministic_temp_path).unwrap(),
         sentinel,
         "batch failure must not delete or overwrite pre-existing temp-like files"
+    );
+    assert_eq!(
+        fs::read(&old_deterministic_backup_path).unwrap(),
+        backup_sentinel,
+        "batch failure must not delete or overwrite pre-existing backup-like files"
     );
     assert!(!output_path.exists(), "failed item must not create output");
 

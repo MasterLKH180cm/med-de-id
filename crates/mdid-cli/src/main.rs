@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fs,
+    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     process,
@@ -1360,6 +1360,81 @@ fn run_command(command: CliCommand) -> Result<(), String> {
     }
 }
 
+fn create_unique_ppm_batch_sidecar(path: &Path, purpose: &str) -> std::io::Result<PathBuf> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("output.ppm");
+
+    for _ in 0..32 {
+        let candidate = directory.join(format!(
+            ".{file_name}.mdid-redaction-{purpose}-{}",
+            Uuid::new_v4()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not reserve unique redaction sidecar path",
+    ))
+}
+
+fn write_ppm_batch_output_safely(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp_path = create_unique_ppm_batch_sidecar(path, "tmp")?;
+    let mut temp_created = true;
+    let mut backup_path: Option<PathBuf> = None;
+
+    let write_result = (|| {
+        fs::write(&temp_path, bytes)?;
+
+        if !path.exists() {
+            match fs::rename(&temp_path, path) {
+                Ok(()) => {
+                    temp_created = false;
+                    return Ok(());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        let reserved_backup_path = create_unique_ppm_batch_sidecar(path, "backup")?;
+        fs::remove_file(&reserved_backup_path)?;
+        fs::rename(path, &reserved_backup_path)?;
+        backup_path = Some(reserved_backup_path.clone());
+
+        if let Err(err) = fs::rename(&temp_path, path) {
+            let _ = fs::rename(&reserved_backup_path, path);
+            return Err(err);
+        }
+        temp_created = false;
+        let _ = fs::remove_file(&reserved_backup_path);
+        backup_path = None;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        if temp_created {
+            let _ = fs::remove_file(&temp_path);
+        }
+        if let Some(created_backup_path) = backup_path {
+            let _ = fs::remove_file(created_backup_path);
+        }
+    }
+
+    write_result
+}
+
 fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), String> {
     let items: Vec<ImageRedactionBatchManifestItem> = serde_json::from_str(&args.manifest_json)
         .map_err(|_| "invalid image redaction batch manifest".to_string())?;
@@ -1382,7 +1457,8 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
             let (redacted, verification) =
                 redact_ppm_p6_bytes_with_verification(&input, &item.regions, [0, 0, 0])
                     .map_err(|_| "invalid_ppm_redaction")?;
-            fs::write(&item.output, &redacted).map_err(|_| "invalid_ppm_redaction")?;
+            write_ppm_batch_output_safely(&item.output, &redacted)
+                .map_err(|_| "invalid_ppm_redaction")?;
             Ok::<Value, &'static str>(json!({
                 "item_index": item_index,
                 "status": "redacted",
