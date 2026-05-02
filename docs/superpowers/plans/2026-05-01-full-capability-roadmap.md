@@ -16,8 +16,8 @@
 - Current README snapshot before this roadmap: CLI 96%, Browser/Web 99%, Desktop app 99%, Overall 97%.
 - Open GitHub issues: `#4` DICOM, `#5` PDF/OCR, `#6` conservative media/FCS remain open; `#1`-`#3` are closed.
 - Current gap cluster from README and plans: full OCR, visual redaction, image pixel redaction, handwriting recognition, final PDF rewrite/export, richer browser/desktop workflow depth, production packaging/hardening, broader controller/workflow orchestration.
-- User FIRST PRIORITY ACTION ITEMS are tracked explicitly as: (1) text-only PII detection/masking POC hardening, (2) local OCR execution depth and model-quality evidence, (3) visual redaction foundations, (4) image pixel redaction/rewrite foundations, (5) handwriting recognition workflow honesty, (6) final PDF rewrite/export, (7) Browser/Web workflow depth, (8) Desktop workstation workflow depth, (9) de-id-scoped runtime/controller/job orchestration, (10) conservative media disclosure/export honesty, (11) offline/local-first packaging and hardening evidence, and (12) PHI-safe verification/audit evidence across all surfaces.
-- This list is a priority tracking list, not a completion claim; each item remains bounded by the task/step checkboxes and evidence below.
+- User FIRST PRIORITY ACTION ITEMS are tracked explicitly as: (1) Full OCR pipeline with real local OCR, multi-page/multi-file, error recovery, and model-quality benchmarking; (2) actual visual/image pixel redaction with bbox-driven image/PDF page pixel redaction and visual verification loop; (3) full PDF rewrite/export with redacted PDF bytes across CLI/Browser/Desktop and rewrite validation; (4) media-byte rewrite/export for image/video/FCS bytes; (5) handwriting recognition/detection/redaction with conservative fallback; (6) FCS semantic parsing, field-level PHI classification, safe review/rewrite/export; (7) generalized spreadsheet/workbook handling across multi-sheet/complex workbook fidelity, not only first-non-empty-sheet; (8) Browser/Web workflow depth including richer upload/download/file-picker UX, actual OCR/visual/PDF execution where applicable, deeper vault/portable UX, and review polish; (9) Desktop workstation workflow depth including actual execution/file-picker/save UX, OCR/visual/PDF/media flows, deeper vault decode/audit investigation, portable transfer UX, packaging/hardening; (10) portable transfer workflow UX across Browser/Desktop/CLI with mode selection, file-picker/save flows, transfer-state review, error recovery, audit-friendly handoff copy; (11) production packaging/distribution/hardening with Windows installer/signed binary/release packaging/external packaging verification/distribution hardening/field validation loop; and (12) deeper detection/policy coverage through policy/detection crates, false-positive bounded semantics, policy configuration, and remaining text detector gaps.
+- This list is a priority tracking list, not a completion claim; each item remains bounded by the task/step checkboxes and evidence below. Current bounded PPM P6 visual redaction work advances items 2 and 9 only; it does not claim OCR, PDF page redaction, PNG/JPEG/video/FCS rewrite, packaging, or real-model benchmarking completion.
 - Because no full-capability roadmap existed, this cron round is allowed to land the roadmap/tracking foundation before selecting the next code task. Future rounds must use this roadmap to select implementation work, not keep producing plan-only churn.
 
 ## Non-goals and product boundaries
@@ -221,9 +221,21 @@ source "$HOME/.cargo/env" && cargo test -p mdid-application --test visual_redact
 source "$HOME/.cargo/env" && CARGO_BUILD_JOBS=1 cargo test -p mdid-runtime visual_redaction -- --nocapture
 ```
 
-- [ ] **Step 4: Browser/desktop review/save helpers**
+- [x] **Step 4: Browser/desktop review/save helpers**
 
-Not yet complete. Browser/Desktop region review and save helpers remain pending.
+Browser completed in the bounded PPM-only slice before this round. This round adds Desktop workstation helpers for the same explicit PPM P6 runtime contract: `.ppm` file import maps to `DesktopWorkflowMode::PpmVisualRedaction`, desktop request preparation accepts explicit user-provided bbox region JSON and submits `{ ppm_bytes_base64, regions }` to `/visual-redaction/ppm` without source names or policy payloads, runtime-shaped responses expose redacted PPM bytes for save as `*-redacted.ppm` only when verification reports `format: "ppm_p6"`, nonzero redacted regions, and changed pixels inside approved regions, request/output Debug remains PHI-safe, and egui mode copy stays narrow about no OCR, automatic detection, PDF/PNG/JPEG/video rewrite, or generalized workflow behavior.
+
+Verification added in this slice:
+
+```bash
+source "$HOME/.cargo/env" && cargo test -p mdid-desktop ppm_visual_redaction -- --nocapture
+source "$HOME/.cargo/env" && cargo test -p mdid-desktop ppm_file_import_targets_visual_redaction_mode -- --nocapture
+source "$HOME/.cargo/env" && cargo test -p mdid-desktop
+source "$HOME/.cargo/env" && cargo clippy -p mdid-desktop --all-targets -- -D warnings
+git diff --check
+```
+
+This does **not** claim PDF page pixel redaction, OCR, handwriting recognition, PNG/JPEG/video/FCS media-byte rewrite/export, or production packaging completion.
 
 - [x] **Step 5: Verification for landed domain/adapters foundation**
 
