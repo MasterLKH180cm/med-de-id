@@ -6498,6 +6498,7 @@ fn cli_usage_stays_deidentification_scoped() {
         .stderr(predicate::str::contains("review-media"))
         .stderr(predicate::str::contains("privacy-filter-text"))
         .stderr(predicate::str::contains("ocr-handoff"))
+        .stderr(predicate::str::contains("redact-image-ppm-batch"))
         .stderr(predicate::str::contains("moat").not())
         .stderr(predicate::str::contains("controller").not())
         .stderr(predicate::str::contains("agent").not());
