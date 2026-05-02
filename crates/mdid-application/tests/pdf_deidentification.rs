@@ -10,6 +10,17 @@ const MIXED_MULTIPAGE_PDF: &[u8] =
     include_bytes!("../../mdid-adapters/tests/fixtures/pdf/mixed-multipage.pdf");
 const INVALID_PDF_BYTES: &[u8] = b"not a pdf";
 
+fn clinic_note_text_layer_pdf() -> Vec<u8> {
+    let mut pdf = TEXT_LAYER_PDF.to_vec();
+    let needle = b"Alice Smith";
+    let offset = pdf
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("fixture should contain Alice Smith text fragment");
+    pdf[offset..offset + needle.len()].copy_from_slice(b"ClinicNote ");
+    pdf
+}
+
 #[test]
 fn pdf_deidentification_routes_handwriting_suspicion_to_manual_review_without_rewrite() {
     let output = PdfDeidentificationService
@@ -82,6 +93,37 @@ fn pdf_deidentification_routes_text_layer_candidates_to_review() {
         .review_queue
         .iter()
         .any(|candidate| candidate.source_text.contains("Alice Smith")));
+}
+
+#[test]
+fn pdf_deidentification_exports_clean_one_page_text_layer_without_review_queue() {
+    let service = PdfDeidentificationService;
+    let pdf = clinic_note_text_layer_pdf();
+
+    let output = service
+        .deidentify_bytes(&pdf, "clinic-note.pdf")
+        .expect("clean one-page text layer pdf should parse");
+
+    assert_eq!(output.summary.total_pages, 1);
+    assert!(output.summary.total_pages > 0);
+    assert_eq!(output.summary.text_layer_pages, 1);
+    assert_eq!(output.summary.ocr_required_pages, 0);
+    assert_eq!(output.summary.extracted_candidates, 0);
+    assert_eq!(output.summary.review_required_candidates, 0);
+    assert!(!output.summary.requires_review());
+    assert_eq!(output.page_statuses.len(), 1);
+    assert_eq!(
+        output.page_statuses[0].status,
+        PdfScanStatus::TextLayerPresent
+    );
+    assert_eq!(output.review_queue.len(), 0);
+    assert_eq!(
+        output.rewrite_status,
+        PdfRewriteStatus::CleanTextLayerPdfBytesAvailable
+    );
+    assert!(!output.no_rewritten_pdf);
+    assert!(!output.review_only);
+    assert_eq!(output.rewritten_pdf_bytes.as_deref(), Some(pdf.as_slice()));
 }
 
 #[test]

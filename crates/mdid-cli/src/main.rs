@@ -4053,8 +4053,10 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
             .rewritten_pdf_bytes
             .as_ref()
             .ok_or_else(|| "PDF rewrite/export unavailable for this input".to_string())?;
-        fs::write(output_pdf_path, rewritten_pdf_bytes)
-            .map_err(|err| format!("failed to write output PDF: {err}"))?;
+        if let Err(err) = fs::write(output_pdf_path, rewritten_pdf_bytes) {
+            let _ = fs::remove_file(output_pdf_path);
+            return Err(format!("failed to write output PDF: {err}"));
+        }
         let written_bytes = fs::read(output_pdf_path).map_err(|_| {
             let _ = fs::remove_file(output_pdf_path);
             "PDF rewrite validation failed: exported bytes could not be read".to_string()

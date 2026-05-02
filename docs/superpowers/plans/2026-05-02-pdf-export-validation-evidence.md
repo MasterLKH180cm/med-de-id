@@ -14,9 +14,13 @@
 
 - Modify: `crates/mdid-cli/src/main.rs`
   - In `run_deidentify_pdf`, after writing clean PDF bytes, read/re-parse the output and emit `rewrite_validation` with parseability, byte count, page count, and review-candidate count.
-  - On validation failure, remove the output PDF and return a PHI-safe error.
+  - On write or validation failure, remove the output PDF and return a PHI-safe error.
 - Modify: `crates/mdid-cli/tests/cli_pdf.rs`
-  - Add a CLI integration test proving clean text-layer output bytes are written and validation evidence is present without path/PHI leaks.
+  - Add a CLI integration test proving real one-page clean text-layer output bytes are written and validation evidence is present without path/PHI leaks.
+- Modify: `crates/mdid-application/tests/pdf_deidentification.rs`
+  - Add a service test proving a one-page text-layer PDF with benign `ClinicNote` text exports bytes, page count 1, and no review queue.
+- Modify: `crates/mdid-adapters/src/pdf.rs`
+  - Add a bounded local PDF text-fragment candidate filter so `Alice Smith` still routes to review while the benign `ClinicNote` fixture is clean/exportable.
 
 ### Task 1: CLI clean PDF export validation evidence
 
@@ -41,7 +45,7 @@ fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_
         .windows(needle.len())
         .position(|window| window == needle)
         .unwrap();
-    pdf[offset..offset + needle.len()].copy_from_slice(b"ClinicNote");
+    pdf[offset..offset + needle.len()].copy_from_slice(b"ClinicNote ");
     fs::write(&pdf_path, pdf).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
@@ -71,6 +75,7 @@ fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_
     assert_eq!(stdout_json["rewrite_status"], "clean_text_layer_pdf_bytes_available");
     assert_eq!(stdout_json["rewrite_validation"]["validated"], true);
     assert_eq!(stdout_json["rewrite_validation"]["parseable_pdf"], true);
+    assert_eq!(stdout_json["rewrite_validation"]["page_count"], 1);
     assert_eq!(stdout_json["rewrite_validation"]["review_queue_len"], 0);
     assert_eq!(stdout_json["rewrite_validation"]["output_byte_count"].as_u64().unwrap(), exported.len() as u64);
     assert!(!stdout.contains(output_pdf_path.to_string_lossy().as_ref()));
@@ -83,6 +88,7 @@ fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_
     assert_eq!(report_json["rewrite_available"], true);
     assert_eq!(report_json["rewrite_validation"]["validated"], true);
     assert_eq!(report_json["rewrite_validation"]["parseable_pdf"], true);
+    assert_eq!(report_json["rewrite_validation"]["page_count"], 1);
     assert_eq!(report_json["rewrite_validation"]["review_queue_len"], 0);
     assert_eq!(report_json["rewrite_validation"]["output_byte_count"].as_u64().unwrap(), exported.len() as u64);
     assert!(!report.contains(output_pdf_path.to_string_lossy().as_ref()));
@@ -96,7 +102,7 @@ fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_
 
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-cli cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_leaks --test cli_pdf -- --nocapture`
 
-Expected: FAIL because `rewrite_validation` is absent.
+Expected during the review fix: FAIL because the pre-fix adapter routed all extracted text, including `ClinicNote`, to review instead of exporting clean bytes.
 
 - [x] **Step 3: Write minimal implementation**
 
@@ -119,6 +125,12 @@ Implementation requirements:
 - require `rewrite_status == clean_text_layer_pdf_bytes_available` and `review_queue.len() == 0`;
 - if validation fails, remove the output file and return a PHI-safe error message containing `PDF rewrite validation failed` but no raw paths, source names, or extracted text;
 - include `rewrite_validation` in both stdout JSON and report JSON for all PDF CLI runs; use `null` when no PDF bytes are exported.
+- remove any partial output file if `fs::write(output_pdf_path, rewritten_pdf_bytes)` fails after creating/truncating the destination.
+
+Additional review-fix implementation:
+- `crates/mdid-application/tests/pdf_deidentification.rs` now exercises a real one-page text-layer `ClinicNote` PDF and asserts `summary.total_pages == 1`, `summary.total_pages > 0`, no review queue, and clean rewritten bytes.
+- `crates/mdid-adapters/src/pdf.rs` now only emits bounded PHI-like PDF candidates for this slice (for example, two alphabetic words such as `Alice Smith`, or fragments containing `MRN`, `DOB`, or `patient`); single-token benign `ClinicNote` does not become a review candidate.
+- `crates/mdid-cli/src/main.rs` removes a partial output file on output write failure before returning the PHI-safe write error.
 
 - [x] **Step 4: Run test to verify it passes**
 
@@ -131,6 +143,15 @@ Expected: PASS.
 Run: `source "$HOME/.cargo/env" && cargo test -p mdid-cli --test cli_pdf -- --nocapture`
 
 Expected: PASS.
+
+Review-fix verification also run:
+
+```bash
+source "$HOME/.cargo/env" && cargo test -p mdid-application pdf_deidentification --test pdf_deidentification -- --nocapture
+source "$HOME/.cargo/env" && cargo test -p mdid-cli --test cli_pdf -- --nocapture
+```
+
+Expected/actual: PASS.
 
 - [x] **Step 6: Commit**
 

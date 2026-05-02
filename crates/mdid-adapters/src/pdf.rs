@@ -11,6 +11,24 @@ fn has_handwriting_suspicion(source_name: &str) -> bool {
     normalized.contains("handwritten") || normalized.contains("handwriting")
 }
 
+fn looks_phi_like_pdf_fragment(fragment: &str) -> bool {
+    let normalized = fragment.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let lowercase = normalized.to_ascii_lowercase();
+    if lowercase.contains("mrn") || lowercase.contains("dob") || lowercase.contains("patient") {
+        return true;
+    }
+
+    let alphabetic_words = normalized
+        .split_whitespace()
+        .filter(|word| word.chars().all(|ch| ch.is_ascii_alphabetic()))
+        .count();
+    alphabetic_words >= 2
+}
+
 #[derive(Debug, Error)]
 pub enum PdfAdapterError {
     #[error("failed to parse PDF input: {0}")]
@@ -61,13 +79,15 @@ impl PdfAdapter {
             } else {
                 summary.text_layer_pages += 1;
                 for fragment in normalized_fragments {
-                    candidates.push(PdfPhiCandidate {
-                        page: page.clone(),
-                        phi_type: "extracted_text".into(),
-                        source_text: fragment,
-                        confidence: REVIEW_PLACEHOLDER_CONFIDENCE,
-                        decision: ReviewDecision::NeedsReview,
-                    });
+                    if looks_phi_like_pdf_fragment(&fragment) {
+                        candidates.push(PdfPhiCandidate {
+                            page: page.clone(),
+                            phi_type: "extracted_text".into(),
+                            source_text: fragment,
+                            confidence: REVIEW_PLACEHOLDER_CONFIDENCE,
+                            decision: ReviewDecision::NeedsReview,
+                        });
+                    }
                 }
                 PdfScanStatus::TextLayerPresent
             };

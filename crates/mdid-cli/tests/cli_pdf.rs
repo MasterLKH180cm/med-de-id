@@ -6,17 +6,24 @@ fn text_layer_pdf_fixture() -> Vec<u8> {
     fs::read("../mdid-adapters/tests/fixtures/pdf/text-layer-minimal.pdf").unwrap()
 }
 
+fn clean_text_layer_pdf_fixture() -> Vec<u8> {
+    let mut pdf = text_layer_pdf_fixture();
+    let needle = b"Alice Smith";
+    let offset = pdf
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .unwrap();
+    pdf[offset..offset + needle.len()].copy_from_slice(b"ClinicNote ");
+    pdf
+}
+
 #[test]
 fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_leaks() {
     let dir = tempdir().unwrap();
     let pdf_path = dir.path().join("clean-record.pdf");
     let report_path = dir.path().join("clean-report.json");
     let output_pdf_path = dir.path().join("clean-output.pdf");
-    fs::write(
-        &pdf_path,
-        b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\nxref\n0 3\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n110\n%%EOF\n",
-    )
-    .unwrap();
+    fs::write(&pdf_path, clean_text_layer_pdf_fixture()).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
         .arg("deidentify-pdf")
@@ -48,6 +55,7 @@ fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_
     );
     assert_eq!(stdout_json["rewrite_validation"]["validated"], true);
     assert_eq!(stdout_json["rewrite_validation"]["parseable_pdf"], true);
+    assert_eq!(stdout_json["rewrite_validation"]["page_count"], 1);
     assert_eq!(stdout_json["rewrite_validation"]["review_queue_len"], 0);
     assert_eq!(
         stdout_json["rewrite_validation"]["output_byte_count"]
@@ -65,6 +73,7 @@ fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_
     assert_eq!(report_json["rewrite_available"], true);
     assert_eq!(report_json["rewrite_validation"]["validated"], true);
     assert_eq!(report_json["rewrite_validation"]["parseable_pdf"], true);
+    assert_eq!(report_json["rewrite_validation"]["page_count"], 1);
     assert_eq!(report_json["rewrite_validation"]["review_queue_len"], 0);
     assert_eq!(
         report_json["rewrite_validation"]["output_byte_count"]
