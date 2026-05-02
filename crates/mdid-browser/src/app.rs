@@ -8,7 +8,7 @@ const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
-const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; media metadata JSON files also load as text; XLSX, PDF, and PPM files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. PPM mode is PPM P6 only with explicit bbox regions. Media metadata JSON sends metadata only, not media bytes. This does not add OCR, automatic visual detection, vault browsing, or auth/session.";
+const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; media metadata JSON files also load as text; XLSX, PDF, PPM and PNG files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. PPM mode is PPM P6 only and PNG mode is PNG only with explicit bbox regions. Media metadata JSON sends metadata only, not media bytes. This does not add OCR, automatic visual detection, vault browsing, or auth/session.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS: usize = 64;
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
@@ -32,6 +32,7 @@ enum InputMode {
     PrivacyFilterSummary,
     OcrToPrivacyFilterSummary,
     PpmVisualRedaction,
+    PngVisualRedaction,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,6 +59,7 @@ impl InputMode {
                 | Self::VaultExport
                 | Self::PortableArtifactInspect
                 | Self::PortableArtifactImport
+                | Self::PngVisualRedaction
         )
     }
 
@@ -75,6 +77,8 @@ impl InputMode {
             Some(Self::DicomBase64)
         } else if file_name.ends_with(".ppm") {
             Some(Self::PpmVisualRedaction)
+        } else if file_name.ends_with(".png") {
+            Some(Self::PngVisualRedaction)
         } else if file_name == "mdid-browser-portable-artifact.json"
             || file_name.ends_with(".mdid-portable.json")
             || file_name.ends_with("-mdid-portable.json")
@@ -101,6 +105,7 @@ impl InputMode {
             "privacy-filter-summary" => Self::PrivacyFilterSummary,
             "ocr-to-privacy-filter-summary" => Self::OcrToPrivacyFilterSummary,
             "ppm-visual-redaction" => Self::PpmVisualRedaction,
+            "png-visual-redaction" => Self::PngVisualRedaction,
             _ => Self::CsvText,
         }
     }
@@ -120,6 +125,7 @@ impl InputMode {
             Self::PrivacyFilterSummary => "privacy-filter-summary",
             Self::OcrToPrivacyFilterSummary => "ocr-to-privacy-filter-summary",
             Self::PpmVisualRedaction => "ppm-visual-redaction",
+            Self::PngVisualRedaction => "png-visual-redaction",
         }
     }
 
@@ -138,6 +144,7 @@ impl InputMode {
             Self::PrivacyFilterSummary => "Privacy Filter summary",
             Self::OcrToPrivacyFilterSummary => "OCR to Privacy Filter summary",
             Self::PpmVisualRedaction => "PPM visual redaction",
+            Self::PngVisualRedaction => "PNG visual redaction",
         }
     }
 
@@ -175,6 +182,9 @@ impl InputMode {
             Self::PpmVisualRedaction => {
                 "Import PPM P6 bytes as base64 and paste explicit bbox regions JSON here"
             }
+            Self::PngVisualRedaction => {
+                "Import PNG bytes as base64 and paste explicit bbox regions JSON here"
+            }
         }
     }
 
@@ -193,6 +203,7 @@ impl InputMode {
             Self::PrivacyFilterSummary => Some("Privacy Filter summary mode is local-only: paste/import an existing Privacy Filter JSON report to prepare a PHI-safe summary download. It does not submit to a runtime endpoint and does not run Privacy Filter."),
             Self::OcrToPrivacyFilterSummary => Some("OCR to Privacy Filter summary mode is local-only: paste/import an existing OCR-to-Privacy-Filter JSON report to prepare a PHI-safe summary download. It does not submit to a runtime endpoint, run OCR, run Privacy Filter, perform visual redaction, redact image pixels, or export/rewrite PDFs."),
             Self::PpmVisualRedaction => Some("PPM visual redaction mode is bounded to PPM P6 only with explicit bbox regions approved by the user. No OCR or automatic visual detection is performed, and this browser flow does not support PNG, JPEG, PDF, video, or Desktop capture."),
+            Self::PngVisualRedaction => Some("PNG visual redaction mode is bounded to PNG only with explicit bbox regions approved by the user. No OCR or automatic visual detection is performed, and this browser flow does not support JPEG, PDF, video, or Desktop capture."),
         }
     }
 
@@ -211,6 +222,7 @@ impl InputMode {
             Self::PrivacyFilterSummary => "",
             Self::OcrToPrivacyFilterSummary => "",
             Self::PpmVisualRedaction => "/visual-redaction/ppm",
+            Self::PngVisualRedaction => "/visual-redaction/png",
         }
     }
 
@@ -220,6 +232,7 @@ impl InputMode {
             Self::DicomBase64 => "DICOM base64",
             Self::MediaMetadataJson => "media metadata JSON",
             Self::PpmVisualRedaction => "bbox regions JSON",
+            Self::PngVisualRedaction => "bbox regions JSON",
             _ => self.label(),
         }
     }
@@ -231,6 +244,7 @@ impl InputMode {
                 | Self::DicomBase64
                 | Self::MediaMetadataJson
                 | Self::PpmVisualRedaction
+                | Self::PngVisualRedaction
         )
     }
 
@@ -250,9 +264,11 @@ impl InputMode {
             | Self::PortableArtifactImport
             | Self::PrivacyFilterSummary
             | Self::OcrToPrivacyFilterSummary => BrowserFileReadMode::Text,
-            Self::XlsxBase64 | Self::PdfBase64 | Self::DicomBase64 | Self::PpmVisualRedaction => {
-                BrowserFileReadMode::DataUrlBase64
-            }
+            Self::XlsxBase64
+            | Self::PdfBase64
+            | Self::DicomBase64
+            | Self::PpmVisualRedaction
+            | Self::PngVisualRedaction => BrowserFileReadMode::DataUrlBase64,
         }
     }
 }
@@ -538,6 +554,103 @@ fn build_visual_redaction_ppm_request_payload(
         "ppm_bytes_base64": ppm_p6_bytes_base64,
         "regions": bbox_regions,
     }))
+}
+
+fn build_visual_redaction_png_request_payload(
+    png_bytes_base64: &str,
+    regions_json: &str,
+) -> Result<String, String> {
+    let regions: serde_json::Value = serde_json::from_str(regions_json.trim())
+        .map_err(|_| "PNG visual redaction requires valid bbox regions JSON.".to_string())?;
+    serde_json::to_string(&serde_json::json!({
+        "png_bytes_base64": png_bytes_base64.trim(),
+        "regions": regions,
+    }))
+    .map_err(|_| "PNG visual redaction request could not be prepared.".to_string())
+}
+
+fn visual_redaction_png_download_available(response_json: &str) -> bool {
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(response_json) else {
+        return false;
+    };
+    response
+        .pointer("/verification/format")
+        .and_then(serde_json::Value::as_str)
+        == Some("png")
+        && response
+            .pointer("/verification/verified_changed_pixels_within_regions")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && response
+            .pointer("/verification/redacted_region_count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count > 0)
+        && response
+            .get("rewritten_png_bytes_base64")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|bytes| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(bytes.trim())
+                    .ok()
+            })
+            .is_some()
+}
+
+fn render_visual_redaction_png_safe_output(response_json: &str) -> Result<String, String> {
+    let response: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|_| "PNG visual redaction response was not valid JSON.".to_string())?;
+    let verification = response
+        .get("verification")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "PNG visual redaction response did not include verification.".to_string())?;
+    let mut safe = serde_json::Map::new();
+    for field in [
+        "format",
+        "width",
+        "height",
+        "redacted_region_count",
+        "redacted_pixel_count",
+        "unchanged_pixel_count",
+        "output_byte_count",
+        "verified_changed_pixels_within_regions",
+    ] {
+        if let Some(value) = verification.get(field) {
+            safe.insert(field.to_string(), value.clone());
+        }
+    }
+    serde_json::to_string_pretty(&serde_json::json!({
+        "png_visual_redaction": {
+            "download_available": visual_redaction_png_download_available(response_json),
+            "verification": safe,
+        }
+    }))
+    .map_err(|_| "PNG visual redaction safe output could not be rendered.".to_string())
+}
+
+fn build_visual_redaction_png_download(
+    response_json: &str,
+) -> Result<BrowserDownloadPayload, String> {
+    const ERROR: &str = "PNG visual redaction download is only available after verified png redaction with changed pixels inside explicit regions.";
+    if !visual_redaction_png_download_available(response_json) {
+        return Err(ERROR.to_string());
+    }
+    let response: serde_json::Value =
+        serde_json::from_str(response_json).map_err(|_| ERROR.to_string())?;
+    let bytes = response
+        .get("rewritten_png_bytes_base64")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|encoded| {
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .ok()
+        })
+        .ok_or_else(|| ERROR.to_string())?;
+    Ok(BrowserDownloadPayload {
+        file_name: "mdid-browser-redacted.png".to_string(),
+        mime_type: "image/png",
+        bytes,
+        is_text: false,
+    })
 }
 
 fn visual_redaction_ppm_download_available(response_json: &str) -> bool {
@@ -1867,6 +1980,9 @@ impl BrowserFlowState {
                 InputMode::PpmVisualRedaction => {
                     return "mdid-browser-redacted.ppm".to_string();
                 }
+                InputMode::PngVisualRedaction => {
+                    return "mdid-browser-redacted.png".to_string();
+                }
                 InputMode::VaultAuditEvents => {
                     return format!("{stem}-vault-audit-events.json");
                 }
@@ -1912,6 +2028,7 @@ impl BrowserFlowState {
                 "mdid-browser-ocr-to-privacy-filter-summary.json"
             }
             InputMode::PpmVisualRedaction => "mdid-browser-redacted.ppm",
+            InputMode::PngVisualRedaction => "mdid-browser-redacted.png",
         }
         .to_string()
     }
@@ -1976,6 +2093,9 @@ impl BrowserFlowState {
     fn can_export_output(&self) -> bool {
         if self.input_mode == InputMode::PpmVisualRedaction {
             return self.can_export_visual_redaction_ppm();
+        }
+        if self.input_mode == InputMode::PngVisualRedaction {
+            return self.can_export_visual_redaction_png();
         }
         !self.result_output.trim().is_empty()
             || (matches!(
@@ -2058,6 +2178,14 @@ impl BrowserFlowState {
                 .is_some_and(visual_redaction_ppm_download_available)
     }
 
+    fn can_export_visual_redaction_png(&self) -> bool {
+        self.input_mode == InputMode::PngVisualRedaction
+            && self
+                .raw_visual_redaction_ppm_response
+                .as_deref()
+                .is_some_and(visual_redaction_png_download_available)
+    }
+
     fn display_result_output(&self) -> String {
         if self.input_mode == InputMode::PdfBase64
             && serde_json::from_str::<serde_json::Value>(&self.result_output)
@@ -2101,6 +2229,25 @@ impl BrowserFlowState {
                     .to_string()
             })?;
         build_visual_redaction_ppm_download(response_json)
+    }
+
+    fn prepared_visual_redaction_png_download_payload(
+        &self,
+    ) -> Result<BrowserDownloadPayload, String> {
+        if !self.can_export_visual_redaction_png() {
+            return Err(
+                "PNG visual redaction download is only available after a verified PNG response."
+                    .to_string(),
+            );
+        }
+        let response_json = self
+            .raw_visual_redaction_ppm_response
+            .as_deref()
+            .ok_or_else(|| {
+                "PNG visual redaction download is only available after a verified PNG response."
+                    .to_string()
+            })?;
+        build_visual_redaction_png_download(response_json)
     }
 
     fn prepared_tabular_report_download_payload(&self) -> Result<BrowserDownloadPayload, String> {
@@ -2318,6 +2465,7 @@ impl BrowserFlowState {
                 is_text: true,
             }),
             InputMode::PpmVisualRedaction => self.prepared_visual_redaction_ppm_download_payload(),
+            InputMode::PngVisualRedaction => self.prepared_visual_redaction_png_download_payload(),
             InputMode::PdfBase64 => build_pdf_review_report_download(
                 &self.result_output,
                 self.imported_file_name.as_deref().or_else(|| {
@@ -2936,6 +3084,15 @@ fn build_submit_request(
         });
     }
 
+    if input_mode == InputMode::PngVisualRedaction {
+        let body_json = build_visual_redaction_png_request_payload(payload, source_name)?;
+        return Ok(RuntimeSubmitRequest {
+            endpoint: input_mode.endpoint(),
+            input_mode,
+            body_json,
+        });
+    }
+
     if input_mode == InputMode::MediaMetadataJson {
         let value: serde_json::Value = serde_json::from_str(payload.trim()).map_err(|_| {
             "Media metadata JSON must be a JSON object accepted by the local media review runtime route."
@@ -2985,6 +3142,9 @@ fn build_submit_request(
         }
         InputMode::PpmVisualRedaction => {
             unreachable!("PPM visual redaction requests are handled before policy parsing")
+        }
+        InputMode::PngVisualRedaction => {
+            unreachable!("PNG visual redaction requests are handled before policy parsing")
         }
         InputMode::VaultAuditEvents => {
             unreachable!("Vault audit events requests are handled before policy parsing")
@@ -3117,6 +3277,25 @@ fn parse_runtime_success(
                     "No review items returned.".to_string()
                 } else {
                     "Redacted PPM download unavailable pending verified changed pixels inside explicit regions.".to_string()
+                },
+            })
+        }
+        InputMode::PngVisualRedaction => {
+            let download_available = visual_redaction_png_download_available(response_body);
+            Ok(RuntimeResponseEnvelope {
+                rewritten_output: render_visual_redaction_png_safe_output(response_body)?,
+                decoded_values_output: None,
+                safe_response_metadata: serde_json::json!({
+                    "mode": "png_visual_redaction",
+                    "download_available": download_available,
+                }),
+                raw_visual_redaction_ppm_response: Some(response_body.trim().to_string()),
+                summary: "PNG visual redaction response received for explicit bbox regions."
+                    .to_string(),
+                review_queue: if download_available {
+                    "No review items returned.".to_string()
+                } else {
+                    "Redacted PNG download unavailable pending verified changed pixels inside explicit regions.".to_string()
                 },
             })
         }
@@ -3988,15 +4167,15 @@ pub fn App() -> impl IntoView {
                 <h2>"Input"</h2>
                 <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
                 <label>
-                    "Import local CSV/XLSX/PDF/DICOM/PPM/media metadata JSON payload"
+                    "Import local CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON payload"
                     <input
-                        accept=".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.json"
+                        accept=".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.png,.json"
                         on:change=on_file_import_change
                         type="file"
                     />
                 </label>
                 <p class="input-disclosure">
-                    "This bounded control validates CSV/XLSX/PDF/DICOM/PPM/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. PPM payloads remain base64 text for explicit bbox PPM P6 visual redaction. JSON payloads remain metadata-only and do not include media bytes."
+                    "This bounded control validates CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. PPM and PNG payloads remain base64 text for explicit bbox visual redaction. JSON payloads remain metadata-only and do not include media bytes."
                 </p>
                 <label>
                     "Input mode"
@@ -4014,6 +4193,7 @@ pub fn App() -> impl IntoView {
                         <option value="privacy-filter-summary">"Privacy Filter summary"</option>
                         <option value="ocr-to-privacy-filter-summary">"OCR to Privacy Filter summary"</option>
                         <option value="ppm-visual-redaction">"PPM visual redaction"</option>
+                        <option value="png-visual-redaction">"PNG visual redaction"</option>
                     </select>
                 </label>
 
@@ -4239,17 +4419,145 @@ mod tests {
         build_portable_artifact_inspect_request_payload, build_portable_response_report_download,
         build_privacy_filter_summary_download, build_submit_request,
         build_vault_audit_request_payload, build_vault_decode_request_payload,
-        build_vault_export_request_payload, build_visual_redaction_ppm_request_payload,
+        build_vault_export_request_payload, build_visual_redaction_png_download,
+        build_visual_redaction_png_request_payload, build_visual_redaction_ppm_request_payload,
         file_import_payload_from_data_url, format_review_queue, format_summary,
         parse_runtime_error, parse_runtime_success, render_runtime_response,
-        render_visual_redaction_ppm_safe_output, validate_browser_import_size, BrowserFileReadMode,
-        BrowserFlowState, InputMode, RuntimeReviewCandidate, RuntimeSummary,
-        BROWSER_FILE_IMPORT_COPY, DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY,
-        FETCH_UNAVAILABLE_MESSAGE, IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
+        render_visual_redaction_png_safe_output, render_visual_redaction_ppm_safe_output,
+        validate_browser_import_size, BrowserFileReadMode, BrowserFlowState, InputMode,
+        RuntimeReviewCandidate, RuntimeSummary, BROWSER_FILE_IMPORT_COPY,
+        DEFAULT_FIELD_POLICY_JSON, EXPORT_FILENAME_WARNING_COPY, FETCH_UNAVAILABLE_MESSAGE,
+        IDLE_REVIEW_QUEUE, IDLE_SUMMARY, MAX_BROWSER_IMPORT_BYTES,
     };
     use serde_json::json;
 
     type BrowserAppState = BrowserFlowState;
+
+    #[test]
+    fn visual_redaction_png_file_import_targets_visual_redaction_mode() {
+        assert_eq!(
+            InputMode::from_file_name("Patient Jane Example.PNG"),
+            Some(InputMode::PngVisualRedaction)
+        );
+        assert_eq!(
+            InputMode::PngVisualRedaction.endpoint(),
+            "/visual-redaction/png"
+        );
+        assert_eq!(
+            InputMode::PngVisualRedaction.browser_file_read_mode(),
+            BrowserFileReadMode::DataUrlBase64
+        );
+    }
+
+    #[test]
+    fn visual_redaction_png_request_uses_runtime_contract_without_source_names() {
+        let payload = build_visual_redaction_png_request_payload(
+            "cG5nLWJ5dGVz",
+            r#"[{"x":0,"y":0,"width":1,"height":1}]"#,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["png_bytes_base64"], "cG5nLWJ5dGVz");
+        assert_eq!(value["regions"][0]["width"], 1);
+        assert!(value.get("ppm_bytes_base64").is_none());
+        assert!(!payload.contains("Patient Jane Example"));
+    }
+
+    #[test]
+    fn visual_redaction_png_safe_output_and_download_are_gated_by_verification() {
+        let response = serde_json::json!({
+            "rewritten_png_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"redacted-png-bytes"),
+            "verification": {
+                "format": "png",
+                "width": 2,
+                "height": 1,
+                "redacted_region_count": 1,
+                "redacted_pixel_count": 1,
+                "unchanged_pixel_count": 1,
+                "output_byte_count": 18,
+                "verified_changed_pixels_within_regions": true
+            },
+            "source_name": "Patient Jane Example.png",
+            "regions": [{"x":0,"y":0,"width":1,"height":1}]
+        })
+        .to_string();
+
+        let safe = render_visual_redaction_png_safe_output(&response).unwrap();
+        assert!(safe.contains("png_visual_redaction"));
+        assert!(safe.contains("download_available"));
+        assert!(!safe.contains("Patient Jane Example"));
+        assert!(!safe.contains("redacted-png-bytes"));
+        assert!(!safe.contains("\"regions\""));
+
+        let download = build_visual_redaction_png_download(&response).unwrap();
+        assert_eq!(download.file_name, "mdid-browser-redacted.png");
+        assert_eq!(download.mime_type, "image/png");
+        assert_eq!(download.bytes, b"redacted-png-bytes");
+        assert!(!download.is_text);
+    }
+
+    #[test]
+    fn visual_redaction_png_download_rejects_wrong_format_or_unverified_response_phi_safely() {
+        for response in [
+            serde_json::json!({
+                "rewritten_png_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"redacted-png-bytes"),
+                "verification": {"format":"ppm_p6","redacted_region_count":1,"verified_changed_pixels_within_regions":true}
+            }),
+            serde_json::json!({
+                "rewritten_png_bytes_base64": "not base64 Patient Jane Example.png",
+                "verification": {"format":"png","redacted_region_count":1,"verified_changed_pixels_within_regions":true}
+            }),
+            serde_json::json!({
+                "rewritten_png_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"redacted-png-bytes"),
+                "verification": {"format":"png","redacted_region_count":0,"verified_changed_pixels_within_regions":true}
+            }),
+            serde_json::json!({
+                "rewritten_png_bytes_base64": base64::engine::general_purpose::STANDARD.encode(b"redacted-png-bytes"),
+                "verification": {"format":"png","redacted_region_count":1,"verified_changed_pixels_within_regions":false}
+            }),
+        ] {
+            let error = build_visual_redaction_png_download(&response.to_string()).unwrap_err();
+            assert!(error.contains("PNG visual redaction download is only available"));
+            assert!(!error.contains("Patient Jane Example"));
+            assert!(!error.contains("not base64"));
+        }
+    }
+
+    #[test]
+    fn visual_redaction_png_runtime_errors_hide_phi_details() {
+        let body = json!({
+            "error": {
+                "code": "png_visual_redaction_failure",
+                "message": "invalid png for Patient Jane Example MRN-12345 in source image"
+            },
+            "png_bytes_base64": "raw-png-payload-containing-sensitive-context"
+        })
+        .to_string();
+
+        let error = parse_runtime_error(InputMode::PngVisualRedaction, 422, &body);
+
+        assert_eq!(
+            error,
+            "Runtime request failed. Details hidden for PHI and secret safety. Status: 422."
+        );
+        for forbidden in [
+            "png_visual_redaction_failure",
+            "Patient Jane Example",
+            "MRN-12345",
+            "raw-png-payload",
+        ] {
+            assert!(!error.contains(forbidden), "leaked {forbidden}");
+        }
+    }
+
+    #[test]
+    fn visual_redaction_png_import_disclosure_mentions_png_base64_payloads() {
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("PNG"));
+        assert!(
+            BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG files load as base64 payloads")
+                || BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG payloads remain base64")
+        );
+    }
 
     #[test]
     fn visual_redaction_ppm_imports_use_base64_data_url_mode() {
@@ -5305,6 +5613,7 @@ mod tests {
                 "requires_ocr_pages": 2,
                 "visual_review_pages": 2,
                 "blocked_page_count": 3,
+                "handwriting_review_required_pages": 0,
                 "rewrite_available": false
             })
         );
@@ -7980,9 +8289,8 @@ mod tests {
         assert!(BROWSER_FILE_IMPORT_COPY.contains("media metadata JSON files also load as text"));
         assert!(BROWSER_FILE_IMPORT_COPY
             .contains("Media metadata JSON sends metadata only, not media bytes"));
-        assert!(
-            BROWSER_FILE_IMPORT_COPY.contains("XLSX, PDF, and PPM files load as base64 payloads")
-        );
+        assert!(BROWSER_FILE_IMPORT_COPY
+            .contains("XLSX, PDF, PPM and PNG files load as base64 payloads"));
         assert!(BROWSER_FILE_IMPORT_COPY.contains(
             "does not add OCR, automatic visual detection, vault browsing, or auth/session"
         ));
@@ -7994,9 +8302,13 @@ mod tests {
 
         assert!(source
             .contains("<option value=\"media-metadata-json\">\"Media metadata JSON\"</option>"));
-        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.json\""));
-        assert!(source.contains("Import local CSV/XLSX/PDF/DICOM/PPM/media metadata JSON payload"));
-        assert!(source.contains("validates CSV/XLSX/PDF/DICOM/PPM/media metadata JSON selection"));
+        assert!(source.contains("accept=\".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.png,.json\""));
+        assert!(
+            source.contains("Import local CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON payload")
+        );
+        assert!(
+            source.contains("validates CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON selection")
+        );
         assert!(source
             .contains("PPM payloads remain base64 text for explicit bbox PPM P6 visual redaction"));
         assert!(
