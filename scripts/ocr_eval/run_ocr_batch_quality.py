@@ -31,7 +31,7 @@ NON_GOALS = sorted(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("image_paths", nargs="+")
+    parser.add_argument("image_paths", nargs="*")
     parser.add_argument(
         "--runner-path",
         default="scripts/ocr_eval/run_small_ocr.py",
@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--mock",
         action="store_true",
         help="Ask the single-image runner to use explicit fixture-backed mock OCR",
+    )
+    parser.add_argument(
+        "--manifest",
+        help="Path to a JSON manifest describing documents and page image paths",
     )
     return parser
 
@@ -98,7 +102,78 @@ def run_one(runner_path: str, image_path: str, mock: bool, index: int) -> dict:
     }
 
 
-def build_summary(items: list[dict]) -> dict:
+def safe_document_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or len(stripped) > 128:
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in stripped):
+        return None
+    return stripped
+
+
+def load_manifest_pages(manifest_path: str) -> tuple[list[dict], list[dict]] | None:
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    documents = payload.get("documents") if isinstance(payload, dict) else None
+    if not isinstance(documents, list):
+        return None
+
+    pages: list[dict] = []
+    document_specs: list[dict] = []
+    for document_index, document in enumerate(documents, start=1):
+        if not isinstance(document, dict):
+            return None
+        if safe_document_id(document.get("document_id")) is None:
+            return None
+        document_id = f"document-{document_index}"
+        document_pages = document.get("pages")
+        if not isinstance(document_pages, list):
+            return None
+        document_specs.append({"document_id": document_id, "page_count": len(document_pages)})
+        for page in document_pages:
+            if not isinstance(page, dict):
+                return None
+            page_number = page.get("page_number")
+            image_path = page.get("image_path")
+            if not isinstance(page_number, int) or isinstance(page_number, bool):
+                return None
+            if page_number < 1 or not isinstance(image_path, str) or not image_path:
+                return None
+            pages.append(
+                {
+                    "document_id": document_id,
+                    "page_number": page_number,
+                    "image_path": image_path,
+                }
+            )
+    return pages, document_specs
+
+
+def build_document_summaries(items: list[dict], document_specs: list[dict]) -> list[dict]:
+    summaries = []
+    for spec in document_specs:
+        document_items = [
+            item for item in items if item.get("document_id") == spec["document_id"]
+        ]
+        succeeded_count = sum(1 for item in document_items if item["status"] == "succeeded")
+        summaries.append(
+            {
+                "document_id": spec["document_id"],
+                "page_count": spec["page_count"],
+                "succeeded_count": succeeded_count,
+                "failed_count": len(document_items) - succeeded_count,
+            }
+        )
+    return summaries
+
+
+def build_summary(items: list[dict], document_specs: list[dict] | None = None) -> dict:
     successes = [item for item in items if item["status"] == "succeeded"]
     failed_count = len(items) - len(successes)
     engine_status_counts = Counter(item["engine_status"] for item in successes)
@@ -107,7 +182,7 @@ def build_summary(items: list[dict]) -> dict:
         and len(successes) == len(items)
         and all(item["engine_status"] == REAL_ENGINE_STATUS for item in successes)
     )
-    return {
+    summary = {
         "artifact": "ocr_batch_quality_summary",
         "schema_version": 1,
         "candidate": CANDIDATE_RECOGNIZER,
@@ -128,15 +203,40 @@ def build_summary(items: list[dict]) -> dict:
         "network_api_called": False,
         "non_goals": NON_GOALS,
     }
+    if document_specs is not None:
+        summary["document_count"] = len(document_specs)
+        summary["documents"] = build_document_summaries(items, document_specs)
+    return summary
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    items = [
-        run_one(args.runner_path, image_path, args.mock, index)
-        for index, image_path in enumerate(args.image_paths)
-    ]
-    sys.stdout.write(json.dumps(build_summary(items), indent=2, sort_keys=True))
+    if args.manifest and args.image_paths:
+        sys.stderr.write("OCR manifest cannot be combined with positional image paths\n")
+        return 2
+    if not args.manifest and not args.image_paths:
+        sys.stderr.write("OCR batch requires image paths or manifest\n")
+        return 2
+
+    document_specs = None
+    if args.manifest:
+        manifest = load_manifest_pages(args.manifest)
+        if manifest is None:
+            sys.stderr.write("OCR manifest is malformed\n")
+            return 2
+        manifest_pages, document_specs = manifest
+        items = []
+        for index, page in enumerate(manifest_pages):
+            item = run_one(args.runner_path, page["image_path"], args.mock, index)
+            item["document_id"] = page["document_id"]
+            item["page_number"] = page["page_number"]
+            items.append(item)
+    else:
+        items = [
+            run_one(args.runner_path, image_path, args.mock, index)
+            for index, image_path in enumerate(args.image_paths)
+        ]
+    sys.stdout.write(json.dumps(build_summary(items, document_specs), indent=2, sort_keys=True))
     sys.stdout.write("\n")
     return 0
 
