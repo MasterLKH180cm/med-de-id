@@ -8,7 +8,7 @@ const IDLE_SUMMARY: &str = "Awaiting submission.";
 const IDLE_REVIEW_QUEUE: &str = "No review items yet.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_BROWSER_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
-const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; media metadata JSON files also load as text; XLSX, PDF, and PPM files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. PPM mode is PPM P6 only with explicit bbox regions. Media metadata JSON sends metadata only, not media bytes. This does not add OCR, automatic visual detection, vault browsing, or auth/session.";
+const BROWSER_FILE_IMPORT_COPY: &str = "Bounded browser file import: CSV files load as text; media metadata JSON files also load as text; XLSX, PDF, PPM and PNG files load as base64 payloads for existing localhost runtime routes; DICOM files also load as base64 payloads for the existing DICOM runtime route. PPM mode is PPM P6 only and PNG mode is PNG only with explicit bbox regions. Media metadata JSON sends metadata only, not media bytes. This does not add OCR, automatic visual detection, vault browsing, or auth/session.";
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
 const MAX_IMPORT_DERIVED_EXPORT_STEM_CHARS: usize = 64;
 #[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
@@ -59,6 +59,7 @@ impl InputMode {
                 | Self::VaultExport
                 | Self::PortableArtifactInspect
                 | Self::PortableArtifactImport
+                | Self::PngVisualRedaction
         )
     }
 
@@ -4166,15 +4167,15 @@ pub fn App() -> impl IntoView {
                 <h2>"Input"</h2>
                 <p class="input-disclosure">{BROWSER_FILE_IMPORT_COPY}</p>
                 <label>
-                    "Import local CSV/XLSX/PDF/DICOM/PPM/media metadata JSON payload"
+                    "Import local CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON payload"
                     <input
-                        accept=".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.json"
+                        accept=".csv,.xlsx,.pdf,.dcm,.dicom,.ppm,.png,.json"
                         on:change=on_file_import_change
                         type="file"
                     />
                 </label>
                 <p class="input-disclosure">
-                    "This bounded control validates CSV/XLSX/PDF/DICOM/PPM/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. PPM payloads remain base64 text for explicit bbox PPM P6 visual redaction. JSON payloads remain metadata-only and do not include media bytes."
+                    "This bounded control validates CSV/XLSX/PDF/DICOM/PPM/PNG/media metadata JSON selection for the existing payload box. CSV content remains text; XLSX/PDF/DICOM payloads remain base64 text for localhost runtime routes. PPM and PNG payloads remain base64 text for explicit bbox visual redaction. JSON payloads remain metadata-only and do not include media bytes."
                 </p>
                 <label>
                     "Input mode"
@@ -4192,6 +4193,7 @@ pub fn App() -> impl IntoView {
                         <option value="privacy-filter-summary">"Privacy Filter summary"</option>
                         <option value="ocr-to-privacy-filter-summary">"OCR to Privacy Filter summary"</option>
                         <option value="ppm-visual-redaction">"PPM visual redaction"</option>
+                        <option value="png-visual-redaction">"PNG visual redaction"</option>
                     </select>
                 </label>
 
@@ -4519,6 +4521,40 @@ mod tests {
             assert!(!error.contains("Patient Jane Example"));
             assert!(!error.contains("not base64"));
         }
+    }
+
+    #[test]
+    fn visual_redaction_png_runtime_errors_hide_phi_details() {
+        let body = json!({
+            "error": {
+                "code": "png_visual_redaction_failure",
+                "message": "invalid png for Patient Jane Example MRN-12345 in source image"
+            },
+            "png_bytes_base64": "raw-png-payload-containing-sensitive-context"
+        })
+        .to_string();
+
+        let error = parse_runtime_error(InputMode::PngVisualRedaction, 422, &body);
+
+        assert_eq!(
+            error,
+            "Runtime request failed. Details hidden for PHI and secret safety. Status: 422."
+        );
+        for forbidden in [
+            "png_visual_redaction_failure",
+            "Patient Jane Example",
+            "MRN-12345",
+            "raw-png-payload",
+        ] {
+            assert!(!error.contains(forbidden), "leaked {forbidden}");
+        }
+    }
+
+    #[test]
+    fn visual_redaction_png_import_disclosure_mentions_png_base64_payloads() {
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("PNG"));
+        assert!(BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG files load as base64 payloads")
+            || BROWSER_FILE_IMPORT_COPY.contains("PPM and PNG payloads remain base64"));
     }
 
     #[test]
