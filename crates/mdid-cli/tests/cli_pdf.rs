@@ -88,6 +88,38 @@ fn cli_deidentify_pdf_validates_clean_text_layer_output_pdf_without_path_or_phi_
 }
 
 #[test]
+fn cli_deidentify_pdf_removes_output_pdf_when_report_write_fails_after_export() {
+    let dir = tempdir().unwrap();
+    let pdf_path = dir.path().join("clean-record.pdf");
+    let report_path = dir.path().join("report-dir");
+    let output_pdf_path = dir.path().join("clean-output.pdf");
+    fs::write(&pdf_path, clean_text_layer_pdf_fixture()).unwrap();
+    fs::create_dir(&report_path).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mdid-cli"))
+        .arg("deidentify-pdf")
+        .arg("--pdf-path")
+        .arg(&pdf_path)
+        .arg("--source-name")
+        .arg("exported.pdf")
+        .arg("--report-path")
+        .arg(&report_path)
+        .arg("--output-pdf-path")
+        .arg(&output_pdf_path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!output_pdf_path.exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to write PDF report"));
+    assert!(!stderr.contains(output_pdf_path.to_string_lossy().as_ref()));
+    assert!(!stderr.contains("clean-output.pdf"));
+    assert!(!stderr.contains("ClinicNote"));
+    assert!(!stderr.contains("Alice Smith"));
+}
+
+#[test]
 fn cli_deidentify_pdf_refuses_output_pdf_for_lowercase_review_queue_candidates() {
     let dir = tempdir().unwrap();
     let pdf_path = dir.path().join("patient-alice.pdf");

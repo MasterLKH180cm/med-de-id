@@ -4067,7 +4067,8 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
                 let _ = fs::remove_file(output_pdf_path);
                 "PDF rewrite validation failed: exported bytes are not parseable".to_string()
             })?;
-        if validation.rewrite_status != PdfRewriteStatus::CleanTextLayerPdfBytesAvailable
+        if validation.summary.total_pages == 0
+            || validation.rewrite_status != PdfRewriteStatus::CleanTextLayerPdfBytesAvailable
             || !validation.review_queue.is_empty()
         {
             let _ = fs::remove_file(output_pdf_path);
@@ -4102,12 +4103,16 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "rewritten_pdf_bytes": if args.output_pdf_path.is_some() && rewrite_available { json!("<written-to-output-pdf-path>") } else { serde_json::Value::Null },
         "rewrite_validation": rewrite_validation.clone(),
     });
-    fs::write(
+    if let Err(err) = fs::write(
         &args.report_path,
         serde_json::to_string_pretty(&report)
             .map_err(|err| format!("failed to render PDF report: {err}"))?,
-    )
-    .map_err(|err| format!("failed to write PDF report: {err}"))?;
+    ) {
+        if let Some(output_pdf_path) = args.output_pdf_path.as_ref() {
+            let _ = fs::remove_file(output_pdf_path);
+        }
+        return Err(format!("failed to write PDF report: {err}"));
+    }
 
     let stdout = json!({
         "report_path": "<redacted>",

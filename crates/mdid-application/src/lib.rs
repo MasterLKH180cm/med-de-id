@@ -295,7 +295,8 @@ impl PdfDeidentificationService {
     ) -> Result<PdfDeidentificationOutput, ApplicationError> {
         let mut extracted = PdfAdapter::new().extract(bytes, source_name)?;
 
-        let can_export_clean_text_layer = extracted.candidates.is_empty()
+        let can_export_clean_text_layer = extracted.summary.total_pages > 0
+            && extracted.candidates.is_empty()
             && extracted
                 .pages
                 .iter()

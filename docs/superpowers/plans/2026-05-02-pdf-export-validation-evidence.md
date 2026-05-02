@@ -153,6 +153,12 @@ source "$HOME/.cargo/env" && cargo test -p mdid-cli --test cli_pdf -- --nocaptur
 
 Expected/actual: PASS.
 
+- Review-fix verification also covered conservative fail-closed blockers requested after quality re-review:
+  - PDF text-layer clean-export filtering now uses bounded allowlist semantics: only the benign `ClinicNote` fixture fragment is allowed to remain clean; all other non-empty extracted text fragments route to review.
+  - Application tests prove mixed/single-token suspicious fragments (`Cher Smith?`, `SSN12345678`, `5551234567`, `A1234567`) route to review and do not export rewritten bytes while existing Alice/alice review behavior remains covered.
+  - Production clean-export eligibility now requires `summary.total_pages > 0`; a parseable zero-page PDF is review-only with no rewritten bytes.
+  - CLI report-write failure after output PDF creation now removes the already-written output PDF before returning a PHI-safe error.
+
 - [x] **Step 6: Commit**
 
 ```bash

@@ -11,22 +11,13 @@ fn has_handwriting_suspicion(source_name: &str) -> bool {
     normalized.contains("handwritten") || normalized.contains("handwriting")
 }
 
-fn looks_phi_like_pdf_fragment(fragment: &str) -> bool {
+fn is_known_benign_clean_export_fragment(fragment: &str) -> bool {
+    matches!(fragment, "ClinicNote" | "ClinicNote ")
+}
+
+fn should_route_pdf_fragment_to_review(fragment: &str) -> bool {
     let normalized = fragment.trim();
-    if normalized.is_empty() {
-        return false;
-    }
-
-    let lowercase = normalized.to_ascii_lowercase();
-    if lowercase.contains("mrn") || lowercase.contains("dob") || lowercase.contains("patient") {
-        return true;
-    }
-
-    let alphabetic_words = normalized
-        .split_whitespace()
-        .filter(|word| word.chars().all(|ch| ch.is_ascii_alphabetic()))
-        .count();
-    alphabetic_words >= 2
+    !normalized.is_empty() && !is_known_benign_clean_export_fragment(fragment)
 }
 
 #[derive(Debug, Error)]
@@ -79,7 +70,7 @@ impl PdfAdapter {
             } else {
                 summary.text_layer_pages += 1;
                 for fragment in normalized_fragments {
-                    if looks_phi_like_pdf_fragment(&fragment) {
+                    if should_route_pdf_fragment_to_review(&fragment) {
                         candidates.push(PdfPhiCandidate {
                             page: page.clone(),
                             phi_type: "extracted_text".into(),
