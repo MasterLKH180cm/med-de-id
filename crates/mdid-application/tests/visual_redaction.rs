@@ -1,5 +1,7 @@
 use mdid_adapters::ImageRedactionError;
-use mdid_application::{ApplicationError, VisualRedactionError, VisualRedactionService};
+use mdid_application::{
+    ApplicationError, VisualRedactionError, VisualRedactionOutput, VisualRedactionService,
+};
 use mdid_domain::ImageRedactionRegion;
 
 fn sample_ppm() -> Vec<u8> {
@@ -32,9 +34,9 @@ fn visual_redaction_service_redacts_ppm_and_returns_phi_safe_verification() {
         .redact_ppm_p6_bytes(&sample_ppm(), &[region])
         .unwrap();
 
-    assert_eq!(&output.rewritten_ppm_bytes[..11], b"P6\n3 2\n255\n");
-    assert_eq!(&output.rewritten_ppm_bytes[14..17], &[0, 0, 0]);
-    assert_eq!(&output.rewritten_ppm_bytes[23..26], &[0, 0, 0]);
+    assert_eq!(&output.rewritten_bytes[..11], b"P6\n3 2\n255\n");
+    assert_eq!(&output.rewritten_bytes[14..17], &[0, 0, 0]);
+    assert_eq!(&output.rewritten_bytes[23..26], &[0, 0, 0]);
     assert_eq!(output.verification.format, "ppm_p6");
     assert_eq!(output.verification.width, 3);
     assert_eq!(output.verification.height, 2);
@@ -44,7 +46,7 @@ fn visual_redaction_service_redacts_ppm_and_returns_phi_safe_verification() {
 
     let debug = format!("{output:?}");
     assert!(debug.contains("[REDACTED]"), "{debug}");
-    assert!(!debug.contains("rewritten_ppm_bytes: ["), "{debug}");
+    assert!(!debug.contains("rewritten_bytes: ["), "{debug}");
     assert!(!debug.contains("patient-face.ppm"), "{debug}");
     assert!(!debug.contains("/tmp"), "{debug}");
 }
@@ -71,10 +73,10 @@ fn visual_redaction_service_redacts_png_and_returns_bounded_verification() {
     let input = sample_png();
     let region = ImageRedactionRegion::new(0, 0, 1, 1).unwrap();
 
-    let output = service.redact_png_bytes(&input, &[region]).unwrap();
+    let output: VisualRedactionOutput = service.redact_png_bytes(&input, &[region]).unwrap();
 
-    assert!(!output.rewritten_png_bytes.is_empty());
-    assert_ne!(output.rewritten_png_bytes, input);
+    assert!(!output.rewritten_bytes.is_empty());
+    assert_ne!(output.rewritten_bytes, input);
     assert_eq!(output.verification.format, "png");
     assert_eq!(output.verification.width, 2);
     assert_eq!(output.verification.height, 1);
@@ -83,12 +85,12 @@ fn visual_redaction_service_redacts_png_and_returns_bounded_verification() {
     assert_eq!(output.verification.unchanged_pixel_count, 1);
     assert_eq!(
         output.verification.output_byte_count,
-        output.rewritten_png_bytes.len() as u64
+        output.rewritten_bytes.len() as u64
     );
     assert!(output.verification.verified_changed_pixels_within_regions);
 
     let decoded =
-        image::load_from_memory_with_format(&output.rewritten_png_bytes, image::ImageFormat::Png)
+        image::load_from_memory_with_format(&output.rewritten_bytes, image::ImageFormat::Png)
             .unwrap()
             .to_rgba8();
     assert_eq!(decoded.get_pixel(0, 0).0, [0, 0, 0, 255]);
@@ -96,7 +98,7 @@ fn visual_redaction_service_redacts_png_and_returns_bounded_verification() {
 
     let debug = format!("{output:?}");
     assert!(debug.contains("[REDACTED]"), "{debug}");
-    assert!(!debug.contains("rewritten_png_bytes: ["), "{debug}");
+    assert!(!debug.contains("rewritten_bytes: ["), "{debug}");
 }
 
 #[test]

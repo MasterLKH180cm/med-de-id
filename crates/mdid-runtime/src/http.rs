@@ -1065,7 +1065,7 @@ async fn visual_redaction_ppm(
         Ok(output) => (
             StatusCode::OK,
             Json(VisualRedactionPpmResponse {
-                rewritten_ppm_bytes_base64: STANDARD.encode(output.rewritten_ppm_bytes),
+                rewritten_ppm_bytes_base64: STANDARD.encode(output.rewritten_bytes),
                 verification: output.verification,
             }),
         )
@@ -1091,7 +1091,7 @@ async fn visual_redaction_png(
         Ok(output) => (
             StatusCode::OK,
             Json(VisualRedactionPngResponse {
-                rewritten_png_bytes_base64: STANDARD.encode(output.rewritten_png_bytes),
+                rewritten_png_bytes_base64: STANDARD.encode(output.rewritten_bytes),
                 verification: output.verification,
             }),
         )
@@ -1630,7 +1630,7 @@ fn invalid_visual_redaction_response() -> (StatusCode, Json<ErrorEnvelope>) {
         Json(ErrorEnvelope {
             error: ErrorBody {
                 code: "invalid_visual_redaction",
-                message: "request body did not contain a valid PPM visual redaction request",
+                message: "request body did not contain a valid visual redaction request",
             },
         }),
     )

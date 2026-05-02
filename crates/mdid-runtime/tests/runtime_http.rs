@@ -201,6 +201,11 @@ async fn visual_redaction_png_endpoint_returns_rewritten_bytes_and_verification(
         .unwrap();
     assert!(!rewritten.is_empty());
     assert_ne!(rewritten, input);
+    let decoded = image::load_from_memory_with_format(&rewritten, image::ImageFormat::Png)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(decoded.get_pixel(0, 0).0, [0, 0, 0, 255]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [20, 21, 22, 255]);
     assert_eq!(json["verification"]["format"], "png");
     assert_eq!(json["verification"]["width"], 2);
     assert_eq!(json["verification"]["height"], 1);
@@ -244,6 +249,7 @@ async fn visual_redaction_png_endpoint_rejects_invalid_inputs_phi_safely() {
         );
         assert!(!body_text.contains("not a png"), "{body_text}");
         assert!(!body_text.contains("png_bytes_base64"), "{body_text}");
+        assert!(!body_text.contains("PPM"), "{body_text}");
         assert!(!body_text.contains("10,11,12"), "{body_text}");
     }
 }
