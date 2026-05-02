@@ -1439,6 +1439,13 @@ fn write_ppm_batch_output_safely(path: &Path, bytes: &[u8]) -> std::io::Result<(
 fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), String> {
     let items: Vec<ImageRedactionBatchManifestItem> = serde_json::from_str(&args.manifest_json)
         .map_err(|_| "invalid image redaction batch manifest".to_string())?;
+    for item in &items {
+        if paths_are_same_existing_or_lexical(&args.summary_output, &item.input)
+            || paths_are_same_existing_or_lexical(&args.summary_output, &item.output)
+        {
+            return Err("image redaction batch summary path must differ from manifest input and output paths".to_string());
+        }
+    }
     let mut summary_items = Vec::with_capacity(items.len());
     let mut succeeded_item_count = 0usize;
     let mut failed_item_count = 0usize;
@@ -1470,7 +1477,6 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
                     "redacted_region_count": verification.redacted_region_count,
                     "redacted_pixel_count": verification.redacted_pixel_count,
                     "unchanged_pixel_count": verification.unchanged_pixel_count,
-                    "output_byte_count": verification.output_byte_count,
                     "verified_changed_pixels_within_regions": verification.verified_changed_pixels_within_regions,
                 }
             }))
@@ -1511,15 +1517,8 @@ fn run_redact_image_ppm_batch(args: RedactImagePpmBatchArgs) -> Result<(), Strin
     )?;
     println!(
         "{}",
-        serde_json::to_string(&json!({
-            "artifact": "image_redaction_batch_summary",
-            "format": "ppm_p6",
-            "total_item_count": items.len(),
-            "succeeded_item_count": succeeded_item_count,
-            "failed_item_count": failed_item_count,
-            "summary_written": true,
-        }))
-        .map_err(|err| format!("failed to render image redaction batch summary: {err}"))?
+        serde_json::to_string(&summary)
+            .map_err(|err| format!("failed to render image redaction batch summary: {err}"))?
     );
     Ok(())
 }
