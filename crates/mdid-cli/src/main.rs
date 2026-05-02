@@ -19,7 +19,8 @@ use mdid_application::{
 };
 use mdid_domain::{
     AuditEvent, AuditEventKind, BatchSummary, ConservativeMediaFormat, DecodeRequest,
-    DicomPrivateTagPolicy, ImageRedactionRegion, PdfPageRef, PdfScanStatus, SurfaceKind,
+    DicomPrivateTagPolicy, ImageRedactionRegion, PdfPageRef, PdfRewriteStatus, PdfScanStatus,
+    SurfaceKind,
 };
 use mdid_vault::{LocalVaultStore, PortableVaultArtifact};
 use rust_xlsxwriter::Workbook;
@@ -4046,6 +4047,7 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
 
     let review_queue_len = output.review_queue.len();
     let rewrite_available = output.rewritten_pdf_bytes.is_some();
+    let mut rewrite_validation = serde_json::Value::Null;
     if let Some(output_pdf_path) = args.output_pdf_path.as_ref() {
         let rewritten_pdf_bytes = output
             .rewritten_pdf_bytes
@@ -4053,6 +4055,31 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
             .ok_or_else(|| "PDF rewrite/export unavailable for this input".to_string())?;
         fs::write(output_pdf_path, rewritten_pdf_bytes)
             .map_err(|err| format!("failed to write output PDF: {err}"))?;
+        let written_bytes = fs::read(output_pdf_path).map_err(|_| {
+            let _ = fs::remove_file(output_pdf_path);
+            "PDF rewrite validation failed: exported bytes could not be read".to_string()
+        })?;
+        let validation = PdfDeidentificationService
+            .deidentify_bytes(&written_bytes, "exported.pdf")
+            .map_err(|_| {
+                let _ = fs::remove_file(output_pdf_path);
+                "PDF rewrite validation failed: exported bytes are not parseable".to_string()
+            })?;
+        if validation.rewrite_status != PdfRewriteStatus::CleanTextLayerPdfBytesAvailable
+            || !validation.review_queue.is_empty()
+        {
+            let _ = fs::remove_file(output_pdf_path);
+            return Err(
+                "PDF rewrite validation failed: exported bytes are not eligible".to_string(),
+            );
+        }
+        rewrite_validation = json!({
+            "validated": true,
+            "parseable_pdf": true,
+            "page_count": validation.summary.total_pages,
+            "review_queue_len": validation.review_queue.len(),
+            "output_byte_count": written_bytes.len(),
+        });
     }
     let page_statuses: Vec<PdfPageStatusReport> = output
         .page_statuses
@@ -4071,6 +4098,7 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "no_rewritten_pdf": output.no_rewritten_pdf,
         "review_only": output.review_only,
         "rewritten_pdf_bytes": if args.output_pdf_path.is_some() && rewrite_available { json!("<written-to-output-pdf-path>") } else { serde_json::Value::Null },
+        "rewrite_validation": rewrite_validation.clone(),
     });
     fs::write(
         &args.report_path,
@@ -4085,6 +4113,7 @@ fn run_deidentify_pdf(args: DeidentifyPdfArgs) -> Result<(), String> {
         "review_queue_len": report["review_queue_len"].clone(),
         "rewrite_available": rewrite_available,
         "rewrite_status": report["rewrite_status"].clone(),
+        "rewrite_validation": report["rewrite_validation"].clone(),
         "no_rewritten_pdf": report["no_rewritten_pdf"].clone(),
         "review_only": report["review_only"].clone(),
     });
