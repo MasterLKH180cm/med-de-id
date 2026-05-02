@@ -74,6 +74,54 @@ fn fcs_metadata_extraction_stays_metadata_only_without_visual_claims() {
 }
 
 #[test]
+fn fcs_metadata_uses_semantic_phi_types_for_known_text_keys() {
+    let input = ConservativeMediaInput {
+        artifact_label: "flow/panel.fcs".to_string(),
+        format: ConservativeMediaFormat::Fcs,
+        metadata: vec![
+            metadata_entry("$FIL", "Jane-Doe-panel.fcs"),
+            metadata_entry("$SMNO", "MRN-12345"),
+            metadata_entry("$SRC", "Bone Marrow aspirate"),
+            metadata_entry("$OP", "Dr. Alice Example"),
+            metadata_entry("$DATE", "2026-04-23"),
+            metadata_entry("CUSTOM_NOTE", "Research subject Jane Example"),
+        ],
+        requires_visual_review: false,
+        unsupported_payload: false,
+    };
+
+    let output = ConservativeMediaAdapter::extract_metadata(input).unwrap();
+
+    let phi_types = output
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.field_ref.metadata_key.as_str(),
+                candidate.phi_type.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        phi_types,
+        vec![
+            ("$FIL", "fcs_filename_identifier"),
+            ("$SMNO", "fcs_sample_identifier"),
+            ("$SRC", "fcs_source_identifier"),
+            ("$OP", "fcs_operator_identifier"),
+            ("$DATE", "fcs_collection_date"),
+            ("CUSTOM_NOTE", "metadata_identifier"),
+        ]
+    );
+    assert!(output
+        .candidates
+        .iter()
+        .all(|candidate| candidate.status == ConservativeMediaScanStatus::MetadataOnly));
+    assert_eq!(output.summary.review_required_candidates, 6);
+}
+
+#[test]
 fn unsupported_payload_counts_item_without_fabricating_candidates() {
     let input = ConservativeMediaInput {
         artifact_label: "video/unknown-container.bin".to_string(),
